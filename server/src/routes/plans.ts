@@ -25,7 +25,7 @@ import { buildShareSnapshotPdf } from '../services/ShareSnapshotService'; // T03
 import { backfillComplexity, listInvalid as listInvalidComplexity, listMissing as listMissingComplexity } from '../services/PlanComplexity'; // T01058 后续 / T02122：计划行复杂度批量补算 + 值域断言
 import { resolvePrdContext } from '../util/prdContext'; // T00763：计划关联 PRD → 评估上下文
 import { parseLimit, parseOffset, wantsTotal } from '../util/list-page'; // T02284：列表分页参数统一口径（limit/offset/total=1）
-import { exportGate, REPORT_GATE } from '../util/export-gate'; // T00789：导出类并发闸；T02105：启动会稿与周报共用 REPORT_GATE
+import { exportGate, REPORT_GATE, EXPORT_QUEUE_WAIT_EXPORTED } from '../util/export-gate'; // T00789：导出类并发闸；T02105：启动会稿与周报共用 REPORT_GATE；M2-b：纯导出端点开有界排队
 import { startSseKeepalive } from './sseKeepalive'; // T03959：SSE 静默期保活帧（防长耗时模型调用期间链路被掐）
 
 /**
@@ -636,7 +636,7 @@ planApi.post('/import', raw({ type: () => true, limit: '30mb' }), (req, res) => 
 });
 
 // T01071-FR5.3：项目全量 Markdown 导出（任务清单 + WBS + 需求矩阵，单文档）
-planApi.get('/export-md', exportGate('plans-export-md'), (req, res) => {
+planApi.get('/export-md', exportGate('plans-export-md', undefined, { queueMs: EXPORT_QUEUE_WAIT_EXPORTED }), (req, res) => {
   const projectId = req.query.projectId;
   if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
   try {
@@ -651,7 +651,7 @@ planApi.get('/export-md', exportGate('plans-export-md'), (req, res) => {
 });
 
 // T00789：同步主线程导出（实测 ~283ms/次），加并发闸避免多路导出串行叠加阻塞
-planApi.get('/export', exportGate('plans-export'), (req, res) => {
+planApi.get('/export', exportGate('plans-export', undefined, { queueMs: EXPORT_QUEUE_WAIT_EXPORTED }), (req, res) => {
   const projectId = req.query.projectId;
   if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
   PlanService.exportExcel(projectId).then((buf) => {
@@ -880,7 +880,7 @@ planApi.patch('/prd-docs/:id/status', (req, res) => {
  * md 直接回正文原文；docx/pdf 由服务端合成（docx / pdfkit + 系统中文黑体，与报表构建器同口径），
  * 客户端只负责触发下载，保证两处入口导出结果一致、不依赖浏览器端能力。
  */
-planApi.get('/prd-docs/:id/export', exportGate('prd-doc-export', undefined, { defer: true }), async (req, res) => {
+planApi.get('/prd-docs/:id/export', exportGate('prd-doc-export', undefined, { defer: true, queueMs: EXPORT_QUEUE_WAIT_EXPORTED }), async (req, res) => {
   // T01361（S6551）：query 参数先 typeof 收窄，避免 object 形态进入字符串化
   const fmtRaw = req.query.format;
   const format = (typeof fmtRaw === 'string' ? fmtRaw : 'md').toLowerCase();
@@ -1006,7 +1006,7 @@ planApi.get('/prd-requirements', (req, res) => wrap(res, () => PlanService.listR
  * T00959：需求跟踪矩阵导出 Excel——数据与界面同源（PlanService.listRequirements），
  * 列序与界面一致；状态/优先级转中文标签，关联计划/待办多条以「；」拼接。
  */
-planApi.get('/prd-requirements/export', exportGate('req-matrix-export', undefined, { defer: true }), async (req, res) => {
+planApi.get('/prd-requirements/export', exportGate('req-matrix-export', undefined, { defer: true, queueMs: EXPORT_QUEUE_WAIT_EXPORTED }), async (req, res) => {
   const projectId = pid(req);
   const STATUS_LABEL: Record<string, string> = { todo: '待开始', doing: '进行中', done: '已完成', changed: '已变更' };
   const PRIORITY_LABEL: Record<string, string> = { high: '高', medium: '中', normal: '普通', low: '低' };
@@ -1250,7 +1250,7 @@ async function renderCaseExport<T>(
  * `TestCaseService`——与列表同一套 `buildCaseWhere`，界面看到什么就导出什么，不在路由里另写查询。
  * `reqId` 传 `null` 与 `reorder` 同语义 = 仅孤儿用例范围。
  */
-planApi.post('/test-cases/export', exportGate('testcase-export', undefined, { defer: true }), async (req, res) => {
+planApi.post('/test-cases/export', exportGate('testcase-export', undefined, { defer: true, queueMs: EXPORT_QUEUE_WAIT_EXPORTED }), async (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
   if (typeof b.projectId !== 'string' || !b.projectId) return res.status(400).json({ error: 'projectId 必填' });
   const format = typeof b.format === 'string' ? b.format.toLowerCase() : '';

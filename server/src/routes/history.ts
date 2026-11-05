@@ -20,15 +20,18 @@ function now(): string {
  */
 export const historyApi = express.Router();
 
+/** 已沉淀判据：写成可走部分索引 idx_projects_history_at 的形态（COALESCE 形态索引失效），语义等价 */
+const SNAPSHOT_WHERE = "history_at IS NOT NULL AND history_at <> ''";
+
 /** 统计：可沉淀项目数 / 历史快照数 / 快照内任务与计划总量 */
 historyApi.get('/summary', (_req, res) => {
   const db = getDb();
   // T02938：「现行项目」判据取单源常量（与 GET /api/projects、MCP 按名解析同一串）
   const active = (db.prepare(`SELECT COUNT(*) AS c FROM projects WHERE ${ACTIVE_PROJECT_WHERE}`).get() as { c: number }).c;
-  const snaps = (db.prepare("SELECT COUNT(*) AS c FROM projects WHERE COALESCE(history_at,'') != ''").get() as { c: number }).c;
-  const snapTasks = (db.prepare("SELECT COUNT(*) AS c FROM tasks WHERE project_id IN (SELECT id FROM projects WHERE COALESCE(history_at,'') != '')").get() as { c: number }).c;
-  const snapPlans = (db.prepare("SELECT COUNT(*) AS c FROM plan_tasks WHERE project_id IN (SELECT id FROM projects WHERE COALESCE(history_at,'') != '')").get() as { c: number }).c;
-  const span = db.prepare("SELECT MIN(history_at) AS first, MAX(history_at) AS last FROM projects WHERE COALESCE(history_at,'') != ''").get() as { first: string | null; last: string | null };
+  const snaps = (db.prepare(`SELECT COUNT(*) AS c FROM projects WHERE ${SNAPSHOT_WHERE}`).get() as { c: number }).c;
+  const snapTasks = (db.prepare(`SELECT COUNT(*) AS c FROM tasks WHERE project_id IN (SELECT id FROM projects WHERE ${SNAPSHOT_WHERE})`).get() as { c: number }).c;
+  const snapPlans = (db.prepare(`SELECT COUNT(*) AS c FROM plan_tasks WHERE project_id IN (SELECT id FROM projects WHERE ${SNAPSHOT_WHERE})`).get() as { c: number }).c;
+  const span = db.prepare(`SELECT MIN(history_at) AS first, MAX(history_at) AS last FROM projects WHERE ${SNAPSHOT_WHERE}`).get() as { first: string | null; last: string | null };
   res.json({
     activeProjects: active,
     snapshotProjects: snaps,
@@ -48,7 +51,7 @@ historyApi.get('/summary', (_req, res) => {
  *  第 237/250 行），不可省略；本优化针对查询次数而非列裁剪。 */
 historyApi.get('/list', (_req, res) => {
   const db = getDb();
-  const projects = db.prepare("SELECT id, name, description, history_at FROM projects WHERE COALESCE(history_at,'') != '' ORDER BY history_at DESC").all() as Array<{ id: string; name: string; description: string; history_at: string }>;
+  const projects = db.prepare(`SELECT id, name, description, history_at FROM projects WHERE ${SNAPSHOT_WHERE} ORDER BY history_at DESC`).all() as Array<{ id: string; name: string; description: string; history_at: string }>;
   if (projects.length === 0) return res.json({ snapshots: [] });
 
   // 占位符按项目数动态生成；IN 查询一次取回全部快照的任务/计划

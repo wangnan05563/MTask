@@ -88,6 +88,15 @@ export interface GitCollectOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * 「默认参数调用」判定：缓存与命令合流共用这一条口径。
+ * 带 signal 的请求其 abort 属于调用方自己；带自定义 timeout/maxBuffer 的请求其失败语义与默认不同
+ * （门里就靠它构造 timeout / too-large 降级）——两者都不能拿别处的结果冒充本次的结果。
+ */
+export function isCacheableGitCall(opts: GitCollectOptions): boolean {
+  return !opts.signal && opts.timeoutMs === undefined && opts.maxBuffer === undefined;
+}
+
 export interface GitRunResult {
   stdout: string;
   stderr: string;
@@ -191,6 +200,26 @@ function classifyExecError(e: ExecFileException): GitCollectError {
   return new GitCollectError('failed', `Git 采集失败：${(stderr || e.message).trim().slice(0, 300)}`);
 }
 
+/**
+ * M3（压测优化）：同命令合流——同一条正在执行的只读 git 命令只跑一次，后来者搭车。
+ *
+ * 一次 `git` 子进程在本机要付 0.3–1.5s 启动成本，压测里 git 专项（10 并发）P95 8,568.9ms 的主因
+ * 不是单条命令慢，而是十几个 git 同时拉起互相争 CPU/IO，还连带拖慢普通接口。
+ *
+ * 曾在此再加「进程级并发闸门（4 槽 FIFO，全量 / 只限 diff 正文两版）」，两轮同场 A/B 判负，故撤掉：
+ * 外部负载重的批次里重端点 P95 13,312→9,991ms 看似有收益，代价是轻端点被排在十秒级 diff 之后
+ * （`r_task_git` P99 1,589→2,641ms）；机器空闲的批次里只限 diff 也一样——重端点反而更差
+ * （P95 7,500→9,231ms）、轻端点照样变差（`g_git_summaries` P95 13.2→317ms）。同时在跑的 git 数
+ * 确实从均值 7.5 降到 1.4，但排队只是把等待转嫁成尾延迟，并没有减少单个请求的工作量，
+ * 所以限流不是这条路径的瓶颈解法；真正的解法是省掉重复取数（H1 缓存 + 这里的合流）。
+ *
+ * 合流不产生排队：joiner 搭的是同一趟车的剩余时间，且只有命令完全相同才有车可搭，
+ * 因此它只省掉重复 spawn，不引入新的等待路径。合流只覆盖默认参数的调用：带 signal 的请求
+ * 其 abort 属于调用方自己，不能让别的请求共享同一次执行后被一起打断；
+ * 带自定义 timeout/maxBuffer 的也不共享，避免语义漂移。
+ */
+const gitInflight = new Map<string, Promise<GitRunResult>>();
+
 /** 执行一条只读 Git 命令；所有错误统一转成带 kind 的 GitCollectError */
 export function runGitReadonly(
   subcommand: string,
@@ -200,6 +229,12 @@ export function runGitReadonly(
   opts: GitCollectOptions = {},
 ): Promise<GitRunResult> {
   const argv = buildGitArgv(subcommand, flags, positional);
+  const shareable = isCacheableGitCall(opts);
+  const key = shareable ? `${cwd}\u0000${argv.join('\u0000')}` : '';
+  if (shareable) {
+    const running = gitInflight.get(key);
+    if (running) return running;
+  }
   const execOpts = {
     cwd,
     timeout: opts.timeoutMs ?? GIT_TIMEOUT_MS,
@@ -208,12 +243,21 @@ export function runGitReadonly(
     encoding: 'utf8' as const,
     ...(opts.signal ? { signal: opts.signal } : {}),
   };
-  return new Promise<GitRunResult>((resolve, reject) => {
+  const run = new Promise<GitRunResult>((resolve, reject) => {
     execFile('git', argv, execOpts, (err, stdout, stderr) => {
       if (err) { reject(classifyExecError(err)); return; }
       resolve({ stdout: String(stdout ?? ''), stderr: String(stderr ?? ''), argv });
     });
   });
+  if (shareable) {
+    gitInflight.set(key, run);
+    // 只在仍是这次执行登记的条目时清除：joiner 不该误删后来者的执行
+    const clear = () => {
+      if (gitInflight.get(key) === run) gitInflight.delete(key);
+    };
+    run.then(clear, clear);
+  }
+  return run;
 }
 
 export interface GitProbeResult {
@@ -308,6 +352,98 @@ export interface CommitSummariesResult {
   commits: CommitSummaryRow[];
   /** 不在当前仓库中的 SHA（换绑工作空间后的旧链接即落此处，§2「不静默失败」） */
   missing: string[];
+  /** 本次真正走 git 取数的条数（缓存命中不计）——分页成本回填只认全取数的那几轮，见 collectSummaryPage */
+  fetched: number;
+}
+
+/**
+ * M3-b（#45 裁定）：按 SHA 的摘要缓存。
+ *
+ * 摘要里只有 `refs`（`%D` 的分支/标签装饰）会随仓库推进漂移，
+ * sha/shortSha/author/date/subject/parents 全部由提交对象本身决定、永不改变。
+ * 所以条目永久保留不可变字段，`refs` 过了 TTL 只在**后台**单飞刷新：
+ * 命中路径立刻返回（不让首屏/分页等一次 spawn），下一个访问点看到的才是新标签。
+ * 与 H2（Sonar 探测缓存）同一套「长 TTL + 过期后台刷新」形状。
+ */
+const SUMMARY_CACHE_MAX = 4000;
+/** 装饰名（分支/标签指向）的刷新周期：与路由层 60s 摘要缓存同口径，不引入新的时效概念 */
+export const SUMMARY_REFS_TTL_MS = 60_000;
+
+interface CachedSummary {
+  row: CommitSummaryRow;
+  /** 这份 refs 是什么时候取到的（不可变字段不受时效影响） */
+  refsAt: number;
+}
+
+const summaryCache = new Map<string, CachedSummary>();
+const summaryRefsInflight = new Map<string, Promise<void>>();
+
+const summaryKey = (cwd: string, sha: string) => `${cwd}|${sha}`;
+
+/** 缓存行对外一律给副本：调用方（路由序列化、门）改数组不该污染缓存 */
+function cloneSummary(row: CommitSummaryRow): CommitSummaryRow {
+  return { ...row, refs: [...row.refs], parents: [...row.parents] };
+}
+
+function isFullSha(token: string): boolean {
+  return /^[0-9a-f]{40}$/.test(token);
+}
+
+function readSummaryCache(cwd: string, sha: string): CommitSummaryRow | null {
+  const key = summaryKey(cwd, sha);
+  const hit = summaryCache.get(key);
+  if (!hit) return null;
+  // 命中即移到队尾（Map 迭代序即 LRU 序）
+  summaryCache.delete(key);
+  summaryCache.set(key, hit);
+  if (Date.now() - hit.refsAt > SUMMARY_REFS_TTL_MS) scheduleRefsRefresh(cwd, sha, key);
+  return cloneSummary(hit.row);
+}
+
+function writeSummaryCache(cwd: string, row: CommitSummaryRow): void {
+  const key = summaryKey(cwd, row.sha);
+  summaryCache.delete(key);
+  summaryCache.set(key, { row: cloneSummary(row), refsAt: Date.now() });
+  if (summaryCache.size > SUMMARY_CACHE_MAX) {
+    const oldest = summaryCache.keys().next().value;
+    if (oldest !== undefined) summaryCache.delete(oldest);
+  }
+}
+
+/**
+ * 过期装饰名的后台刷新：只改 `refs`，不重排缓存、不影响本次返回值。
+ * 失败就留着旧 refs（分支/标签装饰不是正确性数据），下一个 TTL 之后再试。
+ */
+function scheduleRefsRefresh(cwd: string, sha: string, key: string): void {
+  if (summaryRefsInflight.has(key)) return;
+  // 同键的下一次刷新只可能在 TTL 再次过期之后（那已是 60s 后），登记在此处无条件删除即可
+  const refreshing = fetchSummaries(cwd, [sha], {})
+    .then(({ commits }) => {
+      const fresh = commits.find((c) => c.sha === sha);
+      const hit = summaryCache.get(key);
+      if (fresh && hit && hit.row.sha === sha) {
+        hit.row.refs = fresh.refs;
+        hit.refsAt = Date.now();
+      }
+    })
+    .catch(() => { /* 后台刷新不打扰请求路径 */ })
+    .finally(() => { summaryRefsInflight.delete(key); });
+  summaryRefsInflight.set(key, refreshing);
+}
+
+/** 只读探测：该 SHA 是否已有摘要条目（不触发 LRU 提升，也不管装饰名是否过期） */
+export function peekSummaryCache(cwd: string, sha: string): boolean {
+  return summaryCache.has(summaryKey(cwd, sha));
+}
+
+/** 清空按 SHA 的摘要缓存（门与压测据此构造「冷」起点；生产路径不调用） */
+export function clearSummaryMetaCache(): void {
+  summaryCache.clear();
+}
+
+/** 摘要缓存条数（只用于门的「确实命中」判据） */
+export function summaryCacheSize(): number {
+  return summaryCache.size;
 }
 
 /**
@@ -316,22 +452,20 @@ export interface CommitSummariesResult {
  * 任一 SHA 解析不了会让整条命令非零退出，因此失败时退化为逐个点名：
  * 这样「工作空间换绑后旧 SHA 已不存在」能在 `missing` 里可见，而不是整页摘要消失。
  */
-export async function collectCommitSummaries(
+async function fetchSummaries(
   cwd: string,
   shas: string[],
-  opts: GitCollectOptions = {},
-): Promise<CommitSummariesResult> {
-  const uniq = [...new Set(shas)].map((s) => assertSingleRevision(s));
-  if (!uniq.length) return { commits: [], missing: [] };
+  opts: GitCollectOptions,
+): Promise<{ commits: CommitSummaryRow[]; missing: string[] }> {
   try {
-    const r = await runGitReadonly('log', ['--no-walk', SUMMARY_FORMAT_FLAG], uniq, cwd, opts);
+    const r = await runGitReadonly('log', ['--no-walk', SUMMARY_FORMAT_FLAG], shas, cwd, opts);
     return { commits: parseCommitSummaries(r.stdout), missing: [] };
   } catch (e) {
     if (!(e instanceof GitCollectError)) throw e;
     if (['no-git', 'not-a-repo', 'timeout', 'too-large'].includes(e.kind)) throw e;
     const commits: CommitSummaryRow[] = [];
     const missing: string[] = [];
-    for (const sha of uniq) {
+    for (const sha of shas) {
       try {
         const one = await runGitReadonly('log', ['--no-walk', SUMMARY_FORMAT_FLAG], [sha], cwd, opts);
         commits.push(...parseCommitSummaries(one.stdout));
@@ -341,6 +475,51 @@ export async function collectCommitSummaries(
     }
     return { commits, missing };
   }
+}
+
+/**
+ * 摘要取数的唯一入口（缓存 + 取数）。
+ *
+ * 只有「全部是 40 位小写 SHA」才走缓存键：分支名/标签/短 SHA 的解析结果会随仓库推进漂移
+ * （刚新建的分支、刚 fetch 的对象名），拿缓存回复就是把它判成不存在。
+ * `--no-walk` 按命令行顺序出记录，所以缓存命中与本次取数按请求顺序合并后，
+ * 输出顺序与未加缓存时逐字节一致。
+ */
+export async function collectCommitSummaries(
+  cwd: string,
+  shas: string[],
+  opts: GitCollectOptions = {},
+): Promise<CommitSummariesResult> {
+  const uniq = [...new Set(shas)].map((s) => assertSingleRevision(s));
+  if (!uniq.length) return { commits: [], missing: [], fetched: 0 };
+  if (!isCacheableGitCall(opts) || !uniq.every(isFullSha)) {
+    const r = await fetchSummaries(cwd, uniq, opts);
+    return { ...r, fetched: uniq.length };
+  }
+  const bySha = new Map<string, CommitSummaryRow>();
+  const pending: string[] = [];
+  for (const sha of uniq) {
+    const hit = readSummaryCache(cwd, sha);
+    if (hit) bySha.set(sha, hit);
+    else pending.push(sha);
+  }
+  let missing: string[] = [];
+  if (pending.length) {
+    const res = await fetchSummaries(cwd, pending, opts);
+    for (const row of res.commits) {
+      bySha.set(row.sha, row);
+      writeSummaryCache(cwd, row);
+    }
+    missing = res.missing;
+  }
+  return {
+    commits: uniq.flatMap((sha) => {
+      const row = bySha.get(sha);
+      return row ? [row] : [];
+    }),
+    missing,
+    fetched: pending.length,
+  };
 }
 
 export type CommitFileStatus = 'A' | 'M' | 'D' | 'R' | 'T';

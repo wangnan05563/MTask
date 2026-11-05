@@ -117,7 +117,7 @@ export function normalizeSonarUrl(raw: string): string {
  * SonarQube 25.x 起所有 Token 都带 `sqX_` 前缀（squ_ 用户 / sqp_ 项目分析 / sqa_ 全局分析）+ 长 hex 载荷。
  * 设置页「认证 Token」与「Sonar project key」两个框紧邻，真机出现过 Token 被贴进 projectKey 框：
  * 那串会既作为 URL query 发给服务器（进对方访问日志），又被原样回显在连接测试的报错文案里，
- * 等于把凭据扩散到两处非密文位置。只认「前缀 + 足够长的 hex」，`26_MTask` 这类正常 key 不会误判。
+ * 等于把凭据扩散到两处非密文位置。只认「前缀 + 足够长的 hex」，`MTask` 这类正常 key 不会误判。
  */
 const SONAR_TOKEN_SHAPE = /^sq[a-z]_[0-9a-f]{24,}$/i;
 function looksLikeSonarToken(value: string): boolean {
@@ -760,7 +760,7 @@ async function testProjectPart(
   }
   // Token 形态的值不发给服务器、也不回显：映射里那份会被保存拦截，未保存的草稿走这条兜底。
   if (looksLikeSonarToken(projectKey)) {
-    errors.push({ kind: 'project-not-found', message: '「Sonar project key」里填的是 Token 形态的值（sqX_ 前缀），已拒绝外发', hint: 'Token 只填在「认证 Token」框；project key 在 SonarQube「项目 → 标记为项目」处，形如 26_MTask。' });
+    errors.push({ kind: 'project-not-found', message: '「Sonar project key」里填的是 Token 形态的值（sqX_ 前缀），已拒绝外发', hint: 'Token 只填在「认证 Token」框；project key 在 SonarQube「项目 → 标记为项目」处，形如 MTask。' });
     return { ok: false, projectKey: '' };
   }
   try {

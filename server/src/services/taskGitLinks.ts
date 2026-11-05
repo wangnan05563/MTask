@@ -15,11 +15,14 @@ import { getDb } from '../db/connection';
 import { notifyChange } from './ChangeBus';
 import {
   GitCollectError,
+  clearSummaryMetaCache,
   collectCommitFiles,
   collectCommitFilesBatch,
   collectCommitSummaries,
   collectRemoteUrl,
+  isCacheableGitCall,
   parseUnifiedDiff,
+  peekSummaryCache,
   runGitReadonly,
   assertSafeRepoPath,
   truncateDiffText,
@@ -110,15 +113,61 @@ export function resolveTask(ref: { taskNo?: string; id?: string }): TaskRef | nu
   };
 }
 
+/**
+ * M3-b（#45 裁定）：SHA 解析的进程级缓存。
+ * 提交对象是内容地址，`<40 位 SHA>^{commit}` 的解析结果永不改变；而文件页每次请求都要先付一发
+ * `rev-parse`（本机实测 ≈119ms），压测里同一个 URL 会被反复打到。
+ * 只缓存「输入本身是十六进制 SHA」的解析结果——分支名/标签随时会移动，必须每次现查；
+ * 解析失败不缓存（`git fetch` 之后应当立刻可见），null 也不进缓存。
+ */
+const REV_PARSE_CACHE_MAX = 2000;
+const revParseCache = new Map<string, string>();
+const revParseInflight = new Map<string, Promise<string | null>>();
+
+const revParseKey = (cwd: string, input: string) => `${cwd}|${input.toLowerCase()}`;
+
+const isHexSha = (input: string) => /^[0-9a-f]{7,40}$/.test(input);
+
 /** 解析成 40 位 commit SHA；仓库里不存在时返回 null（调用方计入 errors/missing，不抛错） */
 export async function resolveCommitSha(cwd: string, input: string, opts: GitCollectOptions = {}): Promise<string | null> {
-  try {
-    const r = await runGitReadonly('rev-parse', ['--verify', '--quiet'], [`${input}^{commit}`], cwd, opts);
-    const sha = r.stdout.trim();
-    return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
-  } catch {
-    return null;
+  const cacheable = isCacheableGitCall(opts) && isHexSha(input);
+  const key = revParseKey(cwd, input);
+  if (cacheable) {
+    const hit = revParseCache.get(key);
+    if (hit) {
+      revParseCache.delete(key);
+      revParseCache.set(key, hit);
+      return hit;
+    }
+    // 同一 SHA 的并发请求合流（与 runGitReadonly 的合流同口径，不引入排队）
+    const running = revParseInflight.get(key);
+    if (running) return running;
   }
+  const resolved: Promise<string | null> = (async () => {
+    try {
+      const r = await runGitReadonly('rev-parse', ['--verify', '--quiet'], [`${input}^{commit}`], cwd, opts);
+      const sha = r.stdout.trim();
+      return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+    } catch {
+      return null;
+    }
+  })();
+  if (!cacheable) return resolved;
+  // 同键的下一条只可能在本条落地（即这里删掉登记）之后才建立，故删除无需比对归属
+  const tracked = resolved.then((sha) => {
+    revParseInflight.delete(key);
+    if (sha) {
+      revParseCache.delete(key);
+      revParseCache.set(key, sha);
+      if (revParseCache.size > REV_PARSE_CACHE_MAX) {
+        const oldest = revParseCache.keys().next().value;
+        if (oldest !== undefined) revParseCache.delete(oldest);
+      }
+    }
+    return sha;
+  });
+  revParseInflight.set(key, tracked);
+  return tracked;
 }
 
 function writeGitLinkEvent(task: TaskRef, op: 'link' | 'unlink', sha: string, source: GitLinkSource): void {
@@ -427,20 +476,35 @@ export async function safeRemoteUrl(cwd: string, opts: GitCollectOptions = {}): 
 
 /**
  * T03642：提交文件清单缓存。同一提交的 numstat/name-status 是**不可变**数据（SHA 决定内容），
- * 而抽屉首屏与文件页会对同一 SHA 各取一次、每次两条 git 进程。键含 base（首提交用空树），
- * 5 分钟过期只是防止内存无界增长，不影响正确性。
+ * 而抽屉首屏与文件页会对同一 SHA 各取一次、每次两条 git 进程。键含 base（首提交用空树）。
+ * 内容不可变故不设 TTL，改按条数上限做 LRU 淘汰（命中刷新位置、写入超限丢最久未用），
+ * 避免过期后对同一提交重复 spawn——这正是压测里 g_git_sha_files P95 8.9s 的主因。
  */
-const COMMIT_FILES_TTL_MS = 5 * 60_000;
-const commitFilesCache = new Map<string, { at: number; files: CommitFileEntry[] }>();
+const COMMIT_FILES_CACHE_MAX = 2000;
+const commitFilesCache = new Map<string, CommitFileEntry[]>();
 
 /** 缓存键含 base（首提交用空树），与单提交取数用的基线一致 */
 const commitFilesKey = (cwd: string, sha: string, parents: string[]) =>
   `${cwd}|${parents.length ? parents[0] : GIT_EMPTY_TREE_SHA1}|${sha}`;
 
-/** 读缓存：未命中或已过期返回 null（单提交路径与批量路径共用同一份时效口径） */
+/** 读缓存：未命中返回 null；命中即移到队尾（Map 迭代序即 LRU 序） */
 function readCommitFilesCache(cwd: string, sha: string, parents: string[]): CommitFileEntry[] | null {
-  const hit = commitFilesCache.get(commitFilesKey(cwd, sha, parents));
-  return hit && Date.now() - hit.at < COMMIT_FILES_TTL_MS ? hit.files : null;
+  const key = commitFilesKey(cwd, sha, parents);
+  const hit = commitFilesCache.get(key);
+  if (!hit) return null;
+  commitFilesCache.delete(key);
+  commitFilesCache.set(key, hit);
+  return hit;
+}
+
+/** 写缓存：同一键覆盖（结果按 SHA 不可变，覆盖只可能是同值），超限淘汰最久未用的一条 */
+function writeCommitFilesCache(key: string, files: CommitFileEntry[]) {
+  commitFilesCache.delete(key);
+  commitFilesCache.set(key, files);
+  if (commitFilesCache.size > COMMIT_FILES_CACHE_MAX) {
+    const oldest = commitFilesCache.keys().next().value;
+    if (oldest !== undefined) commitFilesCache.delete(oldest);
+  }
 }
 
 async function collectCommitFilesCached(cwd: string, sha: string, parents: string[], opts: GitCollectOptions): Promise<CommitFileEntry[]> {
@@ -448,7 +512,7 @@ async function collectCommitFilesCached(cwd: string, sha: string, parents: strin
   if (cached) return cached;
   const key = commitFilesKey(cwd, sha, parents);
   const files = await collectCommitFiles(cwd, sha, parents, opts);
-  commitFilesCache.set(key, { at: Date.now(), files });
+  writeCommitFilesCache(key, files);
   return files;
 }
 
@@ -459,11 +523,10 @@ async function collectCommitFilesCached(cwd: string, sha: string, parents: strin
  * 由单提交路径去判定并如实报错，不能在这里塞一个空清单把缺失误诊为「无改动」。
  */
 function seedCommitFilesCache(cwd: string, bySha: Map<string, CommitSummaryRow>, batch: Map<string, CommitFileEntry[]>) {
-  const at = Date.now();
   for (const [sha, files] of batch) {
     const c = bySha.get(sha);
     if (!c) continue;
-    commitFilesCache.set(commitFilesKey(cwd, sha, c.parents), { at, files });
+    writeCommitFilesCache(commitFilesKey(cwd, sha, c.parents), files);
   }
 }
 
@@ -495,6 +558,16 @@ export interface GitFilesResult {
   degraded?: { kind: GitErrorKind | 'no-workspace'; message: string };
 }
 
+/**
+ * M3-b（#45 裁定）：单文件 diff hunk 缓存。
+ * `?diff=1` 的抽屉展开会对同一提交**逐文件**各 spawn 一发 diff（夹具实测：7 个文件 983ms，单发 ≈140ms），
+ * 而 (仓库, 基线, 提交, 路径) 决定的正文按内容地址永不改变，所以长期缓存、按条数 LRU 淘汰。
+ * 两条不缓存的边界：单条超过 256KB（大 diff 不该把内存顶满）、取数失败（瞬时错误不能粘住成空 hunk）。
+ */
+const DIFF_HUNKS_CACHE_MAX = 2000;
+const DIFF_HUNKS_MAX_ENTRY_BYTES = 256 * 1024;
+const diffHunksCache = new Map<string, { hunks: GitHunk[]; truncated: boolean }>();
+
 /** 单个文件的 diff hunk；取不到就留空（个别路径的 diff 会失败，但清单本身仍要下发） */
 async function diffHunksFor(
   cwd: string,
@@ -502,10 +575,28 @@ async function diffHunksFor(
   relPath: string,
   opts: GitCollectOptions,
 ): Promise<{ hunks: GitHunk[]; truncated: boolean }> {
+  const cacheable = isCacheableGitCall(opts);
+  const key = `${cwd}|${range.join('\u0000')}|${relPath}`;
+  if (cacheable) {
+    const hit = diffHunksCache.get(key);
+    if (hit) {
+      diffHunksCache.delete(key);
+      diffHunksCache.set(key, hit);
+      return hit;
+    }
+  }
   try {
     const raw = await collectDiffTracked(cwd, range, relPath, opts);
     // 结构化 hunk 下发（行首保留 diff 前缀），渲染口径与讲稿面板一致
-    return { hunks: parseUnifiedDiff(raw.text).flatMap((c) => c.hunks), truncated: raw.truncated };
+    const result = { hunks: parseUnifiedDiff(raw.text).flatMap((c) => c.hunks), truncated: raw.truncated };
+    if (cacheable && Buffer.byteLength(raw.text, 'utf8') <= DIFF_HUNKS_MAX_ENTRY_BYTES) {
+      diffHunksCache.set(key, result);
+      if (diffHunksCache.size > DIFF_HUNKS_CACHE_MAX) {
+        const oldest = diffHunksCache.keys().next().value;
+        if (oldest !== undefined) diffHunksCache.delete(oldest);
+      }
+    }
+    return result;
   } catch {
     return { hunks: [], truncated: false };
   }
@@ -590,6 +681,19 @@ export function clearSummaryCostCache(): void {
   summaryCost.clear();
 }
 
+/**
+ * 清空全部 Git 读缓存（摘要 / SHA 解析 / 文件清单 / 单文件 hunk / origin 远端 / 摘要成本）。
+ * 只给门与压测构造「冷起点」用（判据要能证明冷/热两条腿各自的数字），生产路径不调用。
+ */
+export function clearGitCaches(): void {
+  clearSummaryMetaCache();
+  clearSummaryCostCache();
+  commitFilesCache.clear();
+  remoteUrlCache.clear();
+  revParseCache.clear();
+  diffHunksCache.clear();
+}
+
 /** 整页取数结束后回填实测成本（EWMA；超过 TTL 的旧样本不再参与） */
 export function recordSummaryCost(workspacePath: string, shaCount: number, elapsedMs: number): void {
   if (!workspacePath || shaCount <= 0) return;
@@ -614,6 +718,24 @@ export function resolveSummaryCapFor(workspacePath: string, shaCount: number): n
 }
 
 /**
+ * 取数预算之内还能往前推多少条：已缓存的 SHA 不占预算（命中零 spawn），
+ * 只有真正要问 git 的条目才受 `cap` 限制。返回值仍是「请求序列的前缀长度」，
+ * 保持 `capped = shas.slice(0, k)` 这条不变量——调用方靠它把没服务到的尾部计入 missing。
+ */
+function summaryPrefixWithinCap(workspacePath: string, shas: string[], cap: number): number {
+  let budget = cap;
+  let take = 0;
+  for (; take < shas.length; take += 1) {
+    if (isFullShaToken(shas[take]) && peekSummaryCache(workspacePath, shas[take])) continue;
+    if (budget <= 0) break;
+    budget -= 1;
+  }
+  return take;
+}
+
+const isFullShaToken = (token: string) => /^[0-9a-f]{40}$/.test(token);
+
+/**
  * 一页摘要的唯一取数入口：定上限 → 取数 → 回填成本。
  * 上限只决定「这次解析多少条」，被截掉的部分由调用方计入 missing（前端据此提示未解析）。
  */
@@ -622,10 +744,15 @@ export async function collectSummaryPage(
   shas: string[],
   opts: GitCollectOptions = {},
 ): Promise<{ commits: CommitSummaryRow[]; missing: string[]; capped: string[] }> {
-  const capped = shas.slice(0, resolveSummaryCapFor(workspacePath, shas.length));
+  const cap = resolveSummaryCapFor(workspacePath, shas.length);
+  // 只有走缓存的调用才放宽前缀（带 signal/timeout/maxBuffer 的每页都要现取，预算照旧）
+  const take = isCacheableGitCall(opts) ? summaryPrefixWithinCap(workspacePath, shas, cap) : cap;
+  const capped = shas.slice(0, take);
   const t0 = Date.now();
-  const { commits, missing } = await collectCommitSummaries(workspacePath, capped, opts);
-  recordSummaryCost(workspacePath, capped.length, Date.now() - t0);
+  const { commits, missing, fetched } = await collectCommitSummaries(workspacePath, capped, opts);
+  // 全命中时 elapsed ≈ 0，不能拿它当成本样本：EWMA 会被拉向 0，下一页上限掉回冷启动 60 条，
+  // 剩下 140 条真实 SHA 就被静默判成「未解析」。只在整页确实走了 git 时回填。
+  if (fetched >= capped.length) recordSummaryCost(workspacePath, capped.length, Date.now() - t0);
   return { commits, missing, capped };
 }
 

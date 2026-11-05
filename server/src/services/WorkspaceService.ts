@@ -1,4 +1,5 @@
 import { readFileSync, readdirSync, statSync, watch } from 'node:fs';
+import { readFile as readFileAsync, readdir as readdirAsync, stat as statAsync } from 'node:fs/promises'; // H3：检索正文读取走 threadpool；L5：符号遍历的 readdir/stat/read 同走 threadpool
 import type { FSWatcher } from 'node:fs';
 import { join, resolve, sep, extname } from 'node:path';
 import { getDb } from '../db/connection';
@@ -36,6 +37,21 @@ const READ_LINE_MAX_CHARS = 500;
  */
 const SEARCH_MAX_FILES = 800;                  // 单次检索最多扫描的文件数
 const SEARCH_MAX_BYTES = 24 * 1024 * 1024;     // 单次检索最多读取的内容字节数（24MB）
+
+/**
+ * H3（性能清单 2026-11-02，承接 T00786 预算与 T02200 让路）：请求路径上的检索不再独占事件循环。
+ * T00786 的双预算把「最坏情形」从全树遍历压到有界扫描，但**有界扫描本身仍是一段不间断的同步阻塞**：
+ * 同一份库副本上实测无命中扫描 800 文件要 2.0~2.9s，冷树（首次读到的目录）单次请求观察到 107s，
+ * 而这段期间内其它接口一律排队——探针读数（P95 67.7ms，因为常见词在第 44 个文件就早退）看不到这一面。
+ * 成本构成（同一批 628 文件 / 24MB）：readFileSync 3,770ms、目录遍历+stat 1,024ms、解码+切行 328ms、匹配 171ms
+ * ——大头是 I/O，不是匹配。
+ * 因此遍历核心改为生成器，把「读哪个文件」「什么时候让出」交回驱动：
+ *   同步驱动（`search`）：逐字节保持改造前行为，供 workspaceQa 等既有进程内调用方使用；
+ *   异步驱动（`searchAsync`，HTTP 路由走这条）：每个正文读取交 threadpool 并 await，
+ *   累积 CPU 达 `SEARCH_SLICE_MS` 再让出事件循环一拍（与 SYMBOL_SLICE_MS/MEMO_SLICE_MS 同族同值）。
+ * 目录列表（readdir）仍是同步的单次系统调用，只在片间让路，不改成异步以免遍历顺序与截断语义受影响。
+ */
+const SEARCH_SLICE_MS = 25;
 
 /**
  * T00782：memo 预扫描的独立预算——它是「扫一次供 5 分钟内全部关键词复用」，
@@ -219,14 +235,18 @@ function dropWorkspaceWatch(projectId: string): void {
   workspaceWatches.delete(projectId);
 }
 
-/** 只遍历目录（沿用同一忽略规则源），产出目录条目指纹；读不动的目录或超上限返回 null */
-function buildDirSnapshot(workspace: string, rules: IgnoreRule[]): DirSnapshot | null {
+/**
+ * 只遍历目录（沿用同一忽略规则源），产出目录条目指纹；读不动的目录或超上限返回 null。
+ * L5：readdir 改走 threadpool——这趟遍历每次都跑满全树（深扫后登记一次、短路前比对一次），
+ * 实测大树单次 readdirSync 可占主线程数百毫秒，且它不在分片事务内、原先没有让路点。
+ */
+async function buildDirSnapshot(workspace: string, rules: IgnoreRule[]): Promise<DirSnapshot | null> {
   const dirs: DirSnapshot = new Map();
   const stack: Array<{ dir: string; rel: string }> = [{ dir: workspace, rel: '' }];
   while (stack.length > 0) {
     if (dirs.size >= SYMBOL_SNAPSHOT_MAX_DIRS) return null;
     const frame = stack.pop() as { dir: string; rel: string };
-    const entries = readDirEntries(frame.dir);
+    const entries = await readDirEntriesAsync(frame.dir);
     if (!entries) return null;
     dirs.set(frame.rel, dirSignature(frame, entries, rules, stack));
   }
@@ -237,6 +257,15 @@ function buildDirSnapshot(workspace: string, rules: IgnoreRule[]): DirSnapshot |
 function readDirEntries(dir: string): Array<{ name: string; isDir: boolean }> | null {
   try {
     return readdirSync(dir, { withFileTypes: true }).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
+  } catch {
+    return null;
+  }
+}
+
+/** 同 readDirEntries，但走 threadpool（L5：结构快照的整树遍历不该钉在主线程） */
+async function readDirEntriesAsync(dir: string): Promise<Array<{ name: string; isDir: boolean }> | null> {
+  try {
+    return (await readdirAsync(dir, { withFileTypes: true })).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
   } catch {
     return null;
   }
@@ -267,8 +296,8 @@ function snapshotEqual(a: DirSnapshot, b: DirSnapshot): boolean {
 }
 
 /** 深扫完成后登记快照；快照不可得时清除旧快照（下次仍走深扫） */
-function commitTreeSnapshot(projectId: string, workspace: string, rules: IgnoreRule[], candidateFiles: number, oversized: number, events: number, symbolLimit: number): void {
-  const dirs = buildDirSnapshot(workspace, rules);
+async function commitTreeSnapshot(projectId: string, workspace: string, rules: IgnoreRule[], candidateFiles: number, oversized: number, events: number, symbolLimit: number): Promise<void> {
+  const dirs = await buildDirSnapshot(workspace, rules);
   if (!dirs) { treeSnapshots.delete(projectId); return; }
   treeSnapshots.set(projectId, { dirs, candidateFiles, oversized, symbolLimit, deepVerifiedAt: Date.now(), eventsAtSnapshot: events });
 }
@@ -465,6 +494,51 @@ interface SearchCtx {
   scannedFiles: number;
   scannedBytes: number;
   budgetExceeded: boolean;
+  // H3：本片起点时刻（异步驱动据此让路；同步驱动不读它，行为与改造前一致）
+  sliceStart: number;
+}
+
+/**
+ * H3：遍历核心与驱动之间只有两种「交还控制权」请求——
+ * `{ read }` 请驱动读一个正文文件（同步驱动当场读，异步驱动交 threadpool 并 await）、
+ * `{ pause }` 请驱动让出事件循环一拍（同步驱动直接跳过）。
+ */
+type SearchReadStep = { read: string };
+type SearchPauseStep = { pause: true };
+type SearchStep = SearchReadStep | SearchPauseStep;
+type SearchGen = Generator<SearchStep, void, Buffer | null>;
+
+function isReadStep(step: SearchStep): step is SearchReadStep {
+  return 'read' in step;
+}
+
+function readSyncOrNull(abs: string): Buffer | null {
+  try { return readFileSync(abs); } catch { return null; }
+}
+
+/** H3 同步驱动：保留改造前「一次跑完整轮扫描」的行为，供 workspaceQa 等既有进程内调用方使用 */
+function driveSearchSync(gen: SearchGen): void {
+  let step = gen.next(null);
+  while (!step.done) {
+    const value = step.value;
+    step = isReadStep(value) ? gen.next(readSyncOrNull(value.read)) : gen.next(null);
+  }
+}
+
+/** H3 异步驱动：正文读取不进主线程，CPU 攒够一片就把事件循环交出去 */
+async function driveSearchAsync(gen: SearchGen): Promise<void> {
+  let step = gen.next(null);
+  while (!step.done) {
+    const value = step.value;
+    if (isReadStep(value)) {
+      let buf: Buffer | null = null;
+      try { buf = await readFileAsync(value.read); } catch { buf = null; }
+      step = gen.next(buf);
+    } else {
+      await yieldToEventLoop();
+      step = gen.next(null);
+    }
+  }
 }
 
 const BINARY_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.zip', '.exe', '.dll', '.node', '.woff', '.woff2', '.ttf', '.mp4', '.db']);
@@ -475,10 +549,11 @@ function budgetHit(ctx: SearchCtx): boolean {
 }
 
 /** 全文匹配单个文件：最多 3 条命中，命中追加进 ctx.hits（跳过大文件与二进制内容）。
- *  T00786：返回本次实际读取的字节数（供调用方累加扫描预算）；跳过/读取失败返回 0。 */
-function scanFileContent(abs: string, relChild: string, needle: string, hits: Array<{ path: string; line: number; snippet: string }>): number {
-  let buf: Buffer;
-  try { buf = readFileSync(abs); } catch { return 0; }
+ *  T00786：返回本次实际读取的字节数（供调用方累加扫描预算）；跳过/读取失败返回 0。
+ *  H3：正文读取改为向驱动发一次 `{ read }` 请求，读取本身不再钉住主线程。 */
+function* scanFileContent(abs: string, relChild: string, needle: string, hits: Array<{ path: string; line: number; snippet: string }>): Generator<SearchStep, number, Buffer | null> {
+  const buf = yield { read: abs };
+  if (buf === null) return 0;
   if (buf.length > SEARCH_FILE_MAX_BYTES) return 0;
   const text = buf.toString('utf8');
   if (text.includes('\0')) return 0; // 二进制
@@ -494,8 +569,8 @@ function scanFileContent(abs: string, relChild: string, needle: string, hits: Ar
   return buf.length;
 }
 
-/** 目录递归：忽略规则 → 目录下钻 → glob 过滤 → 文件名/全文命中（T00786：带扫描预算） */
-function searchWalk(ctx: SearchCtx, dir: string, rel: string): void {
+/** 目录递归：忽略规则 → 目录下钻 → glob 过滤 → 文件名/全文命中（T00786：带扫描预算；H3：片间可让路） */
+function* searchWalk(ctx: SearchCtx, dir: string, rel: string): SearchGen {
   if (ctx.hits.length >= SEARCH_LIMIT || budgetHit(ctx)) { if (budgetHit(ctx)) { ctx.budgetExceeded = true; } return; }
   let entries: Array<{ name: string; isDir: boolean }>;
   try {
@@ -504,16 +579,18 @@ function searchWalk(ctx: SearchCtx, dir: string, rel: string): void {
   for (const e of entries) {
     if (ctx.hits.length >= SEARCH_LIMIT) return;
     if (budgetHit(ctx)) { ctx.budgetExceeded = true; return; }
-    searchVisitEntry(ctx, dir, rel, e);
+    yield* searchVisitEntry(ctx, dir, rel, e);
+    // H3：一条目录项处理完就是一个安全让路点（目录下钻已在 yield* 里递归完，不会半途丢状态）
+    if (Date.now() - ctx.sliceStart >= SEARCH_SLICE_MS) { ctx.sliceStart = Date.now(); yield { pause: true }; }
   }
 }
 
 /** 单条目录项处理：忽略规则 → 目录下钻 / glob 过滤 → 文件名命中 / 全文命中 */
-function searchVisitEntry(ctx: SearchCtx, dir: string, rel: string, e: { name: string; isDir: boolean }): void {
+function* searchVisitEntry(ctx: SearchCtx, dir: string, rel: string, e: { name: string; isDir: boolean }): SearchGen {
   const relChild = rel ? `${rel}/${e.name}` : e.name;
   if (isIgnored(relChild, e.isDir, ctx.rules)) return;
   const abs = join(dir, e.name);
-  if (e.isDir) { searchWalk(ctx, abs, relChild); return; }
+  if (e.isDir) { yield* searchWalk(ctx, abs, relChild); return; }
   if (ctx.globRe && !ctx.globRe.test(relChild)) return; // H-3：glob 过滤对文件名命中同样生效（原先被绕过）
   // 文件名匹配
   if (relChild.toLowerCase().includes(ctx.needle)) {
@@ -524,7 +601,7 @@ function searchVisitEntry(ctx: SearchCtx, dir: string, rel: string, e: { name: s
   if (BINARY_EXTS.has(extname(e.name).toLowerCase())) return;
   // T00786：进入正文扫描前记账（文件名命中不消耗字节预算，但仍计入文件数上限）
   ctx.scannedFiles++;
-  ctx.scannedBytes += scanFileContent(abs, relChild, ctx.needle, ctx.hits);
+  ctx.scannedBytes += yield* scanFileContent(abs, relChild, ctx.needle, ctx.hits);
 }
 
 interface SymbolExtractor { exts: string[]; kind: string; re: RegExp }
@@ -555,11 +632,42 @@ interface SymbolIndexCtx {
   delStmt: AnyStatement;
 }
 
-/** 单文件符号提取：mtime 未变跳过；变化则重建该文件条目并按 extractor 正则抽取（上限 200/文件） */
-function indexFileSymbols(ctx: SymbolIndexCtx, abs: string, relChild: string): void {
+/**
+ * L5：遍历核心与驱动之间的三类文件系统请求。
+ * 与 H3 的检索生成器同一思路：核心只声明「要读哪个目录/哪个文件的元数据/正文」，
+ * 由驱动决定同步落地还是交 threadpool 并 await，并在片间让出事件循环。
+ */
+type SymbolFsStep =
+  | { op: 'readdir'; dir: string }
+  | { op: 'stat'; abs: string }
+  | { op: 'read'; abs: string };
+type SymbolFsResult =
+  | { op: 'readdir'; entries: Array<{ name: string; isDir: boolean }> | null }
+  | { op: 'stat'; st: { mtimeMs: number; size: number } | null }
+  | { op: 'read'; text: string | null };
+type SymbolGen = Generator<SymbolFsStep, void, SymbolFsResult>;
+
+/** L5：行号一次线性推进——原实现每个命中都 `slice(0,index).split('\n')`，密集中大文件实测达 O(200×文件大小) */
+function lineCounter(text: string): (idx: number) => number {
+  let scannedTo = 0;
+  let line = 1;
+  return (idx: number): number => {
+    while (true) {
+      const nl = text.indexOf('\n', scannedTo);
+      if (nl === -1 || nl >= idx) return line;
+      line++; scannedTo = nl + 1;
+    }
+  };
+}
+
+/** 单文件符号提取：mtime 未变跳过；变化则重建该文件条目并按 extractor 正则抽取（上限 200/文件）。
+ *  L5：stat 与正文读取都交给驱动（异步驱动走 threadpool），本函数只做判定/抽取/写库。
+ *  驱动的每次恢复包在一层事务里，故这里的「删旧行 + 插新行」仍是单文件原子。 */
+function* indexFileSymbols(ctx: SymbolIndexCtx, abs: string, relChild: string): SymbolGen {
   const { projectId } = ctx;
-  let st;
-  try { st = statSync(abs); } catch { return; }
+  const statRes = yield { op: 'stat', abs };
+  const st = statRes.op === 'stat' ? statRes.st : null;
+  if (!st) return;
   const mtime = Math.floor(st.mtimeMs);
   // T00790②：改为查内存 Map（原先每个文件一条 SELECT MAX(file_mtime)）
   const seen = ctx.knownMtime.get(relChild) === mtime;
@@ -575,16 +683,18 @@ function indexFileSymbols(ctx: SymbolIndexCtx, abs: string, relChild: string): v
   }
   if (seen) { ctx.skipped++; return; }
   // 提取
-  const text = (() => { try { return readFileSync(abs, 'utf8'); } catch { return null; } })();
+  const readRes = yield { op: 'read', abs };
+  const text = readRes.op === 'read' ? readRes.text : null;
   if (text === null || text.includes('\0')) return;
   ctx.delStmt.run(projectId, relChild);
   for (const ex of ctx.extractors) {
     if (!ex.exts.includes(extname(relChild).toLowerCase())) continue;
     let m: RegExpExecArray | null;
     const re = new RegExp(ex.re.source, ex.re.flags);
+    const lineAt = lineCounter(text); // 每个 extractor 都从文件头重新起扫，游标不能跨 extractor 复用
     let count = 0;
     while ((m = re.exec(text)) !== null && count < 200) {
-      const line = text.slice(0, m.index).split('\n').length;
+      const line = lineAt(m.index);
       ctx.insStmt.run(uuid(), projectId, relChild, m[1], line, ex.kind, mtime, ctx.workspaceAbs);
       ctx.symbols++; count++;
     }
@@ -606,20 +716,18 @@ interface SymbolWalkState {
   truncated: boolean;
 }
 
-/** 目录展开入栈（readdirSync 失败=不可读目录，与原实现一致静默跳过） */
-function symbolPushDir(state: SymbolWalkState, dir: string, rel: string): void {
-  let entries: Array<{ name: string; isDir: boolean }>;
-  try {
-    entries = readdirSync(dir, { withFileTypes: true }).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
-  } catch { return; }
-  state.stack.push({ dir, rel, entries, i: 0 });
+/** 目录展开入栈（L5：readdir 交驱动；失败=不可读目录，与原实现一致静默跳过） */
+function* symbolPushDir(state: SymbolWalkState, dir: string, rel: string): SymbolGen {
+  const res = yield { op: 'readdir', dir };
+  if (res.op !== 'readdir' || !res.entries) return;
+  state.stack.push({ dir, rel, entries: res.entries, i: 0 });
 }
 
 /**
  * 走一个工作单元（一次真正的文件索引，或一次目录展开）。
  * 语义逐条对齐原 `symbolIndexWalk`（T00782 N-8 上限前置判断、忽略规则、扩展名过滤、深度优先）。
  */
-function symbolWalkStep(state: SymbolWalkState): void {
+function* symbolWalkStep(state: SymbolWalkState): SymbolGen {
   const { ctx } = state;
   while (state.stack.length > 0) {
     if (ctx.symbols >= ctx.limit) { state.done = true; state.truncated = true; state.stack.length = 0; return; } // N-8：达上限整体终止
@@ -629,29 +737,85 @@ function symbolWalkStep(state: SymbolWalkState): void {
     const relChild = frame.rel ? `${frame.rel}/${e.name}` : e.name;
     if (isIgnored(relChild, e.isDir, ctx.rules)) continue;
     const abs = join(frame.dir, e.name);
-    if (e.isDir) { symbolPushDir(state, abs, relChild); continue; }
+    if (e.isDir) { yield* symbolPushDir(state, abs, relChild); continue; }
     if (!ctx.countExts.has(extname(e.name).toLowerCase())) continue;
-    indexFileSymbols(ctx, abs, relChild);
+    yield* indexFileSymbols(ctx, abs, relChild);
     return;
   }
   state.done = true;
 }
 
+/** L5：一趟遍历的驱动状态（生成器 + 世代号 + 跨片未决请求） */
+interface SymbolWalkRun {
+  state: SymbolWalkState;
+  gen: SymbolGen;
+  generation: number;
+  /** 片尾发出、尚未取回结果的请求；下一片必须原样续上，否则生成器会把新片的入参当成它的答案 */
+  pending: SymbolFsStep | null;
+}
+
 /**
- * 跑一个时间片并在片尾提交。
- * T02200：better-sqlite3 的事务不能跨 await，故提交粒度由 T00790① 的「整轮一次」改为「每片一次」——
- * 片内仍是单次提交（逐符号 autocommit 的老问题不回退），片间让路。
+ * L5：每个项目最近一次刷新的世代号。
+ * 异步化后两个刷新请求可能在同一个 await 点交错——旧遍历即使正在等 threadpool，
+ * 拿到结果时也必须立刻收手，否则两轮会对着同一批行互相删插（T02200 的取代语义在新模型下的等价物）。
  */
-function runSymbolSlice(state: SymbolWalkState): void {
+const symbolWalkGenerations = new Map<string, number>();
+
+function symbolWalkStale(projectId: string, run: SymbolWalkRun): boolean {
+  return (symbolWalkGenerations.get(projectId) ?? 0) !== run.generation;
+}
+
+/** 中标轮次立刻停手；truncated 置位确保它不会被当成「树已走完」去登记结构快照 */
+function abortSymbolWalk(run: SymbolWalkRun): void {
+  run.state.done = true;
+  run.state.truncated = true;
+  run.state.stack.length = 0;
+}
+
+/**
+ * 跑一个时间片。
+ * T02200：原实现是「25ms 同步 + 每片一次事务」；L5 把 readdir/stat/read 交给 threadpool 后，
+ * 事务不能跨 await，故提交粒度改为「每个文件系统步骤一次」——生成器恢复时执行的那一组
+ * 删旧行/插新行仍在同一事务内（单文件原子，T02210 C-04 依赖这一点），逐符号 autocommit 的老问题不回退。
+ */
+async function runSymbolSlice(run: SymbolWalkRun): Promise<void> {
+  const projectId = run.state.ctx.projectId;
   const until = Date.now() + SYMBOL_SLICE_MS;
-  state.ctx.db.transaction(() => {
-    while (!state.done && Date.now() < until) symbolWalkStep(state);
-  })();
+  while (true) {
+    if (run.state.done) return;
+    if (symbolWalkStale(projectId, run)) { abortSymbolWalk(run); return; }
+    if (!run.pending) {
+      const next = run.gen.next();
+      if (next.done) { run.state.done = true; return; }
+      run.pending = next.value;
+    }
+    const req = run.pending;
+    run.pending = null;
+    let res: SymbolFsResult;
+    if (req.op === 'readdir') {
+      let entries: Array<{ name: string; isDir: boolean }> | null = null;
+      try { entries = (await readdirAsync(req.dir, { withFileTypes: true })).map((e) => ({ name: e.name, isDir: e.isDirectory() })); } catch { entries = null; }
+      res = { op: 'readdir', entries };
+    } else if (req.op === 'stat') {
+      let st: { mtimeMs: number; size: number } | null = null;
+      try { const s = await statAsync(req.abs); st = { mtimeMs: s.mtimeMs, size: s.size }; } catch { st = null; }
+      res = { op: 'stat', st };
+    } else {
+      let text: string | null = null;
+      try { text = await readFileAsync(req.abs, 'utf8'); } catch { text = null; }
+      res = { op: 'read', text };
+    }
+    if (symbolWalkStale(projectId, run)) { abortSymbolWalk(run); return; }
+    const step = run.state.ctx.db.transaction(() => run.gen.next(res))();
+    if (step.done) { run.state.done = true; return; }
+    run.pending = step.value;
+    if (Date.now() >= until) return; // 片尾：挂起请求留给下一片原样续上
+  }
 }
 
 /** T02200：项目级后台续跑任务（同一项目同时至多一个；新请求取代旧任务，避免两轮遍历交错写同一批行） */
 interface SymbolRefreshJob {
-  state: SymbolWalkState;
+  run: SymbolWalkRun;
   superseded: boolean;
 }
 const symbolJobs = new Map<string, SymbolRefreshJob>();
@@ -659,17 +823,17 @@ const symbolJobs = new Map<string, SymbolRefreshJob>();
 /** 后台续跑循环：片间让出，直到遍历完成或被新请求取代 */
 async function pumpSymbolJob(projectId: string, job: SymbolRefreshJob): Promise<void> {
   try {
-    while (!job.state.done && !job.superseded) {
+    while (!job.run.state.done && !job.superseded) {
       await yieldToEventLoop();
-      if (job.superseded || job.state.done) break;
-      runSymbolSlice(job.state);
+      if (job.superseded || job.run.state.done) break;
+      await runSymbolSlice(job.run);
     }
-    if (job.superseded) return;
+    if (job.superseded || symbolWalkStale(projectId, job.run)) return;
     if (symbolJobs.get(projectId) === job) symbolJobs.delete(projectId);
     invalidateSearchMemo(projectId);
-    const { ctx } = job.state;
+    const { ctx } = job.run.state;
     // T02210：走完才登记快照（因符号上限提前收摊的轮次树未走全，登记会让后续短路漏建）
-    if (!job.state.truncated) commitTreeSnapshot(projectId, ctx.workspaceAbs, ctx.rules, ctx.files + ctx.skipped, ctx.oversized, ctx.watch.events, ctx.limit);
+    if (!job.run.state.truncated) await commitTreeSnapshot(projectId, ctx.workspaceAbs, ctx.rules, ctx.files + ctx.skipped, ctx.oversized, ctx.watch.events, ctx.limit);
     console.log(`[workspace] 符号索引后台续跑完成：project=${projectId} 文件 ${ctx.files} 个、符号 ${ctx.symbols} 个、跳过 ${ctx.skipped} 个（其中超 ${Math.round(SYMBOL_FILE_MAX_BYTES / 1024)}KB 上限 ${ctx.oversized} 个）、本轮符号上限 ${ctx.limit} 条${ctx.symbols >= ctx.limit ? '（已触顶，树未走完）' : ''}`);
   } catch (e) {
     if (symbolJobs.get(projectId) === job) symbolJobs.delete(projectId);
@@ -1000,31 +1164,55 @@ function scoreSymbol(symbol: string, needles: readonly string[]): number {
   return score;
 }
 
+/** H3：一次检索的准备（入参校验 + 建 ctx + 起遍历生成器），同步/异步两种驱动共用 */
+function startSearch(projectId: string, q: string, glob?: string): { ctx: SearchCtx; gen: SearchGen } {
+  const query = q?.trim();
+  if (!query || query.length < 2) throw new Error('q 必填且至少 2 个字符');
+  const { workspace, rules } = getProjectWorkspace(projectId);
+  if (glob) assertSafeGlob(glob); // H-2：入口防护（ReDoS / 非法字符）
+  const ctx: SearchCtx = {
+    rules,
+    globRe: glob ? globToRegex(glob) : null,
+    needle: query.toLowerCase(),
+    hits: [],
+    scannedFiles: 0,
+    scannedBytes: 0,
+    budgetExceeded: false,
+    sliceStart: Date.now(),
+  };
+  return { ctx, gen: searchWalk(ctx, workspace, '') };
+}
+
+/** T00786：把「是否因预算截断」透出为附加属性（数组本身仍是原结构，前端与既有调用方零改动） */
+function finishSearch(ctx: SearchCtx): SearchHits {
+  const out = ctx.hits as SearchHits;
+  out.partial = ctx.budgetExceeded;
+  out.scannedFiles = ctx.scannedFiles;
+  return out;
+}
+
 export const WorkspaceService = {
   /**
    * 文件搜索：文件名匹配 + 全文关键词（大小写不敏感），返回 {path, line, snippet}（限 50 条）。
    * q 必填（≥2 字符）；glob 可选（限定文件名模式，如 *.ts）。
+   * H3：同步遍历，供进程内调用方（workspaceQa）使用——一次跑完、行为与改造前逐字节一致。
+   *      HTTP 请求路径请走 `searchAsync`，它才让路。
    */
   search(projectId: string, q: string, glob?: string): SearchHits {
-    const query = q?.trim();
-    if (!query || query.length < 2) throw new Error('q 必填且至少 2 个字符');
-    const { workspace, rules } = getProjectWorkspace(projectId);
-    if (glob) assertSafeGlob(glob); // H-2：入口防护（ReDoS / 非法字符）
-    const ctx: SearchCtx = {
-      rules,
-      globRe: glob ? globToRegex(glob) : null,
-      needle: query.toLowerCase(),
-      hits: [],
-      scannedFiles: 0,
-      scannedBytes: 0,
-      budgetExceeded: false,
-    };
-    searchWalk(ctx, workspace, '');
-    // T00786：把「是否因预算截断」透出为附加属性（数组本身仍是原结构，前端与既有调用方零改动）
-    const out = ctx.hits as SearchHits;
-    out.partial = ctx.budgetExceeded;
-    out.scannedFiles = ctx.scannedFiles;
-    return out;
+    const { ctx, gen } = startSearch(projectId, q, glob);
+    driveSearchSync(gen);
+    return finishSearch(ctx);
+  },
+
+  /**
+   * H3：`search` 的让路版——遍历逻辑同一份，差别只在驱动。
+   * 正文读取交给 libuv 线程池，每满 SEARCH_SLICE_MS 交还一次事件循环，
+   * 因此一轮最坏 2~3s 的有界扫描不再把同窗口内的其它接口全部挂住。
+   */
+  async searchAsync(projectId: string, q: string, glob?: string): Promise<SearchHits> {
+    const { ctx, gen } = startSearch(projectId, q, glob);
+    await driveSearchAsync(gen);
+    return finishSearch(ctx);
   },
 
   /**
@@ -1099,7 +1287,7 @@ export const WorkspaceService = {
       && !watchState.unsupported && watchState.watcher
       && watchState.events === snap.eventsAtSnapshot
       && Date.now() - snap.deepVerifiedAt < SYMBOL_DEEP_VERIFY_MS) {
-      const current = buildDirSnapshot(workspaceAbs, rules);
+      const current = await buildDirSnapshot(workspaceAbs, rules);
       // 结构指纹一致（无增删改名）+ 期间零监视事件（无内容写入）→ 整轮 stat 可省；
       // 此时也不失效检索 memo——内容既然没变，让 memo 继续命中才是短路的完整收益
       if (current && snapshotEqual(snap.dirs, current)) {
@@ -1125,20 +1313,36 @@ export const WorkspaceService = {
       delStmt: db.prepare<unknown[]>('DELETE FROM workspace_symbols WHERE project_id = ? AND path = ?'),
     };
     // T02200：取代仍在续跑的旧任务（显式刷新要看当前文件系统状态，两轮遍历交错会重复删插同一批行）
+    // L5：世代号先行——旧遍历在任何 await 醒来时都能立刻看到自己已过期
+    const generation = (symbolWalkGenerations.get(projectId) ?? 0) + 1;
+    symbolWalkGenerations.set(projectId, generation);
     const prev = symbolJobs.get(projectId);
     if (prev) { prev.superseded = true; symbolJobs.delete(projectId); }
     const state: SymbolWalkState = { ctx, stack: [], done: false, truncated: false };
-    symbolPushDir(state, workspace, '');
+    const run: SymbolWalkRun = {
+      state,
+      generation,
+      pending: null,
+      // symbolWalkStep 一次只处理一个文件就返回，故要循环到状态机自己收摊（空栈/触顶/中止）
+      gen: (function* (): SymbolGen {
+        yield* symbolPushDir(state, workspace, '');
+        while (!state.done) yield* symbolWalkStep(state);
+      })(),
+    };
     const until = Date.now() + inlineBudgetMs;
-    while (!state.done && Date.now() < until) runSymbolSlice(state);
+    // L5：片间显式让出——原先内联段是一整段 300ms 不间断的同步循环，深扫每次刷新都会压住事件循环
+    while (!state.done && !symbolWalkStale(projectId, run) && Date.now() < until) {
+      await runSymbolSlice(run);
+      if (!state.done) await yieldToEventLoop();
+    }
     invalidateSearchMemo(projectId); // T00782：索引刷新后检索 memo 失效（内容可能已变）
-    if (!state.done) {
-      const job: SymbolRefreshJob = { state, superseded: false };
+    if (!state.done && !symbolWalkStale(projectId, run)) {
+      const job: SymbolRefreshJob = { run, superseded: false };
       symbolJobs.set(projectId, job);
       void pumpSymbolJob(projectId, job);
-    } else if (!state.truncated) {
+    } else if (state.done && !state.truncated) {
       // T02210：一次请求内走完 → 当场登记结构快照，下一轮同状态热刷即短路
-      commitTreeSnapshot(projectId, workspaceAbs, rules, ctx.files + ctx.skipped, ctx.oversized, watchState.events, ctx.limit);
+      await commitTreeSnapshot(projectId, workspaceAbs, rules, ctx.files + ctx.skipped, ctx.oversized, watchState.events, ctx.limit);
     }
     if (ctx.oversized > 0) {
       console.log(`[workspace] 符号索引：project=${projectId} 按单文件字节上限跳过 ${ctx.oversized} 个（>${Math.round(SYMBOL_FILE_MAX_BYTES / 1024)}KB，正文本就超出检索读取窗口）`);

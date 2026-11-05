@@ -303,16 +303,6 @@ function isSingleProjectScope(projectId: string): boolean {
   return Boolean(projectId) && projectId !== ALL_PROJECTS;
 }
 
-/** T03215：窗口化只对列表视图生效，看板视图不参与 */
-function listWindowLength(viewMode: 'list' | 'board', len: number): number {
-  return viewMode === 'list' ? len : 0;
-}
-
-/** 搁置列表全量拉取（不分页），触底续页只对待办/已完成生效 */
-function listWindowHasMore(hasMore: boolean, viewMode: 'list' | 'board', tab: ActiveTab): boolean {
-  return hasMore && viewMode === 'list' && tab !== 'shelved';
-}
-
 /** 主列表查询条件（均经服务端过滤，保证分页前后口径一致） */
 interface TaskListFilters {
   search: string;
@@ -325,26 +315,26 @@ interface TaskListFilters {
 }
 
 /**
- * T03211/T03232：组装主列表请求参数。
+ * T03211/T03232：组装主列表请求参数（分页的 limit 由调用方按页大小常量下发，这里只管过滤）。
  * 「需要填值」的算子没填值时不下发（等同于未启用），避免用户刚选中字段就把列表筛空；
  * 自定义字段筛选/排序仅单项目视图生效（跨项目字段定义不同，无法统一谓词）。
  */
-function buildTaskListParams(projectId: string, offset: number, limit: number, f: TaskListFilters): URLSearchParams {
+function buildTaskListParams(projectId: string, offset: number, filters: TaskListFilters): URLSearchParams {
+  const { search, catFilter, priorityFilter, fieldFilterField, fieldFilterOp, fieldFilterValue, fieldSort } = filters;
   const p = scopeParams(projectId);
-  p.set('limit', String(limit));
   if (offset > 0) p.set('offset', String(offset));
-  const kw = f.search.trim();
+  const kw = search.trim();
   if (kw) p.set('keyword', kw);
-  if (f.catFilter === 'none') p.set('categoryId', 'none');
-  else if (f.catFilter) p.set('categoryId', f.catFilter);
-  if (f.priorityFilter) p.set('priority', f.priorityFilter);
-  const fieldFilterOn = Boolean(f.fieldFilterField) && Boolean(f.fieldFilterOp)
-    && (!FIELD_OP_NEEDS_VALUE.has(f.fieldFilterOp) || Boolean(f.fieldFilterValue.trim()));
+  if (catFilter === 'none') p.set('categoryId', 'none');
+  else if (catFilter) p.set('categoryId', catFilter);
+  if (priorityFilter) p.set('priority', priorityFilter);
+  const fieldFilterOn = Boolean(fieldFilterField) && Boolean(fieldFilterOp)
+    && (!FIELD_OP_NEEDS_VALUE.has(fieldFilterOp) || Boolean(fieldFilterValue.trim()));
   if (projectId !== ALL_PROJECTS && fieldFilterOn) {
-    p.set('fieldFilters', JSON.stringify([{ fieldId: f.fieldFilterField, op: f.fieldFilterOp, value: f.fieldFilterValue }]));
+    p.set('fieldFilters', JSON.stringify([{ fieldId: fieldFilterField, op: fieldFilterOp, value: fieldFilterValue }]));
   }
-  if (projectId !== ALL_PROJECTS && f.fieldSort) {
-    const [fid, dir] = f.fieldSort.split('|');
+  if (projectId !== ALL_PROJECTS && fieldSort) {
+    const [fid, dir] = fieldSort.split('|');
     if (fid) p.set('fieldSort', JSON.stringify({ fieldId: fid, dir: dir === 'desc' ? 'desc' : 'asc' }));
   }
   return p;
@@ -1058,9 +1048,10 @@ export function TasksPage() {
    */
   const fetchTasks = useCallback(async (projectId: string, offset: number, replace: boolean) => {
     if (!projectId) return;
-    const p = buildTaskListParams(projectId, offset, PAGE_SIZE, {
+    const p = buildTaskListParams(projectId, offset, {
       search, catFilter, priorityFilter, fieldFilterField, fieldFilterOp, fieldFilterValue, fieldSort,
     });
+    p.set('limit', String(PAGE_SIZE));
     // T02283：主列表拉取失败此前一路冒泡——`void loadTasks(activeProject)`（约 30 处调用点）不接拒绝，
     // 断供时既刷出 unhandled rejection，界面又停在「暂无待办任务」空态冒充正常。
     // 改为就地收下：失败只置 error 态，绝不覆盖上次成功数据（与 T02213 同口径）。
@@ -1149,8 +1140,8 @@ export function TasksPage() {
   const doneIds = useMemo(() => visibleDone.map((t) => t.id), [visibleDone]);
   const shelvedIds = useMemo(() => visibleShelved.map((t) => t.id), [visibleShelved]);
   // 一次只挂载一个 tab 的列表，故整块共用一个窗口实例（看板视图不参与窗口化）
-  const activeVisible = { done: visibleDone, shelved: visibleShelved, todo: visibleTodo }[activeTab];
-  const activeVisibleIds = { done: doneIds, shelved: shelvedIds, todo: todoIds }[activeTab];
+  const activeVisible = activeTab === 'done' ? visibleDone : activeTab === 'shelved' ? visibleShelved : visibleTodo;
+  const activeVisibleIds = activeTab === 'done' ? doneIds : activeTab === 'shelved' ? shelvedIds : todoIds;
   // ===== 八期 §3.1：任务 ↔ Git 提交徽标 =====
   // 摘要取数必须在组件级一次算好（本页唯一 SHA 集合 → 一次批量请求）：逐行请求等于让 200 行页面
   // 触发 200 次 git 子进程，且窗口化滚动会反复回收行、造成同一提交被反复解析（§3.1.6 红线）。
@@ -1281,8 +1272,8 @@ export function TasksPage() {
 
   // 搁置列表是全量拉取（不分页），触底续取只对带分页的待办/已完成生效，否则会在看不见的列表上白取一页
   const listWin = useTaskListWindow(
-    listWindowLength(viewMode, activeVisible.length),
-    listWindowHasMore(hasMore, viewMode, activeTab),
+    viewMode === 'list' ? activeVisible.length : 0,
+    hasMore && viewMode === 'list' && activeTab !== 'shelved',
     loadMore,
     !loadingMore,
   );
@@ -1656,11 +1647,14 @@ export function TasksPage() {
       if (editing) return;
       try {
         // T03211：外部变更签名轮询同样支持全部项目视图
+        // M4-b：这里原先拉的是 `/tasks?limit=500` 的**整行列表**（实测命中 500 行 = 402,501B、
+        // 服务端单次 9–21ms），却只用来拼下面这六个标量。改为走 /tasks/change-sig：同一套过滤与排序，
+        // 服务端只取六列并把拼串折成 SHA256 回传。参数一字未动，所以签名的变化时机与旧实现完全一致；
+        // 命中变更后仍按原路径 loadTasks 整行重取（那才是真正需要列表数据的时候）。
         const sigQ = scopeParams(activeProject);
         sigQ.set('archived', 'false');
         sigQ.set('limit', '500');
-        const list = await api.get<Task[]>(`/tasks?${sigQ.toString()}`);
-        const sig = list.map((t) => `${t.id}:${t.status}:${t.verified ? 1 : 0}:${t.updated_at}:${t.category_id ?? ''}:${t.priority}`).join('|');
+        const { sig } = await api.get<{ sig: string; rows: number }>(`/tasks/change-sig?${sigQ.toString()}`);
         if (sig === externalSigRef.current) return;
         externalSigRef.current = sig;
         await loadTasks(activeProject);
@@ -1826,7 +1820,6 @@ export function TasksPage() {
     if (!newTitle.trim() || !activeProject) return;
     // T03211：新建任务必须落到具体项目——全部项目视图没有默认归属，先要求选项目
     if (activeProject === ALL_PROJECTS) return flash('全部项目视图下请先选择具体项目再新建任务');
-    const creatingTitle = newTitle.trim();
     // 全程置 creating，按钮转圈禁用，避免智能分类等耗时步骤看起来"卡住"
     setBusy('tasks.create', true);
     try {
@@ -1859,7 +1852,10 @@ export function TasksPage() {
       clearSessionState('tasks.new.images');
       clearSessionState('tasks.new.descOpen');
       clearSessionState('tasks.new.category');
-      flash(`已创建：${creatingTitle}`, 'info'); // T03214（UX-02③）：成功走短提示，行本身由列表重载呈现
+      // T03214（UX-02③）：成功走短提示，行本身由列表重载呈现
+      // T04178：短提示进一步收口为固定文案——原先回显标题原文，长标题时提示条占满宽度、
+      // 视觉上像错误堆栈，用户误判为报错。成功提示严禁带任何任务原文（标题/描述/图片均不回显）。
+      flash('任务已创建', 'info');
       void loadTasks(activeProject);
     } catch (e) {
       // T03214（UX-02③）：原先只有 finally，创建失败冒泡成未捕获 rejection——用户看不到任何反馈，输入框内容也留着像没反应

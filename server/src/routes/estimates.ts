@@ -16,7 +16,7 @@ import { getDb } from '../db/connection'; // T02120：参数写入与留痕的�
 import { EstimateParamLogService } from '../services/EstimateParamLog'; // T02120：参数改值留痕
 import { PlanService } from '../services/PlanService';
 import type { PlanTaskRow } from '../services/PlanService';
-import { exportGate } from '../util/export-gate';
+import { exportGate, EXPORT_QUEUE_WAIT_EXPORTED } from '../util/export-gate';
 import { EstimateService, ESTIMATE_ERRORS, ESTIMATE_META, pointsError, unlockFlag, workdayCalendar, type EstimateInput, type EstimatePhase, type EstimateView } from '../services/EstimateService';
 import {
   DEFAULT_ESTIMATE_CONFIG,
@@ -860,7 +860,7 @@ function sendArtifact(res: import('express').Response, a: EstimateArtifact): voi
  */
 estimateApi.get(
   '/export-xlsx',
-  exportGate('estimates-export-xlsx', undefined, { defer: true }),
+  exportGate('estimates-export-xlsx', undefined, { defer: true, queueMs: EXPORT_QUEUE_WAIT_EXPORTED }),
   async (req, res) => {
     try {
       sendArtifact(res, await buildEstimateArtifact(pid(req), 'xlsx', {
@@ -882,7 +882,7 @@ estimateApi.get(
  */
 estimateApi.get(
   '/export-pdf',
-  exportGate('estimates-export-pdf', undefined, { defer: true }),
+  exportGate('estimates-export-pdf', undefined, { defer: true, queueMs: EXPORT_QUEUE_WAIT_EXPORTED }),
   async (req, res) => {
     try {
       sendArtifact(res, await buildEstimateArtifact(pid(req), 'pdf', {

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { DbAdminService } from '../services/DbAdminService';
-import { exportGate } from '../util/export-gate'; // T00789：导出类端点并发闸
+import { exportGate, EXPORT_QUEUE_WAIT_SLOW_EXPORT } from '../util/export-gate'; // T00789：导出类端点并发闸；M2-b：整库级慢导出开有界排队（8s 预算，取值见常量注释）
 
 /**
  * 数据库维护路由（设置 > 数据维护 Tab）。参考 17_xianyu api_db_admin 的等效 Express 实现。
@@ -58,4 +58,4 @@ dbAdminApi.post('/tables/:table/import', (req, res) => {
 
 // T00789：全表导出为同步重活（db.prepare().all() + map，无 await）→ defer 让出事件循环，
 // 否则同步执行期间无法接受后续请求，闸门计数永远到不了上限（见 export-gate.ts 注释）
-dbAdminApi.get('/tables/:table/export', exportGate('dbadmin-export', undefined, { defer: true }), (req, res) => wrap(res, () => DbAdminService.exportRows(req.params.table)));
+dbAdminApi.get('/tables/:table/export', exportGate('dbadmin-export', undefined, { defer: true, queueMs: EXPORT_QUEUE_WAIT_SLOW_EXPORT }), (req, res) => wrap(res, () => DbAdminService.exportRows(req.params.table)));

@@ -1,4 +1,5 @@
 import { getDb } from '../db/connection';
+import { createHash } from 'node:crypto'; // M4-b：外部变更签名的服务端聚合（SHA256 折一下六列拼串）
 import { PushService } from './PushService'; // T01440：Web Push
 import { notifyChange } from './ChangeBus';
 import { v4 as uuid } from 'uuid';
@@ -469,6 +470,58 @@ function buildTaskFilter(opts: TaskListOptions): { where: string[]; values: unkn
   return { where, values };
 }
 
+/** 列表排序主键（M4-b 起与 listChangeSig 共用同一份，避免两个形态的排序漂移）。
+ *  优先级按业务档位映射数值，保证 urgent>high>normal>low。 */
+const TASK_LIST_ORDER_BY: Record<NonNullable<TaskListOptions['sort']>, string> = {
+  pinned: 'pinned DESC, created_at DESC',
+  created_desc: 'created_at DESC',
+  created_asc: 'created_at ASC',
+  priority_desc: "CASE priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'normal' THEN 2 ELSE 1 END DESC, created_at DESC",
+  priority_asc: "CASE priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'normal' THEN 2 ELSE 1 END ASC, created_at ASC",
+  // T00446：手动排序（拖拽结果）——pinned 优先，user_sort 空值排最后
+  manual: "pinned DESC, CASE WHEN user_sort IS NULL THEN 1 ELSE 0 END, user_sort, created_at DESC",
+};
+
+/** 列表的 ORDER BY 子句；字段排序（T03232）接管排序主键时把它的参数追加到 WHERE 参数之后。
+ *  参数顺序必须与最终 SQL 的占位符顺序一致，所以这里就地 push 到调用方的 values 里。 */
+function resolveListOrder(opts: TaskListOptions, values: unknown[]): string {
+  // T04181（甲・静默回落）：`Record` 只约束静态字面量键，运行时 `opts.sort` 来自 query 的裸断言，
+  // 任意非白名单值（含空串/空格——`?? 'pinned'` 兜不住空串）查表 miss 会得到 undefined 并被拼成
+  // `ORDER BY undefined` ⇒ 500。未命中即回落默认序，与同文件 priority 的「非法值忽略保持全量」同口径。
+  let orderSql = TASK_LIST_ORDER_BY[opts.sort ?? 'pinned'] ?? TASK_LIST_ORDER_BY.pinned;
+  if (opts.fieldSort?.fieldId && opts.projectId) {
+    const byField = fieldSortClause(opts.fieldSort, liveFieldsOf(opts.projectId));
+    if (byField) { orderSql = byField.sql; values.push(...byField.values); }
+  }
+  return orderSql;
+}
+
+/**
+ * 分页子句与它的绑定参数（同样追加进 values，接在过滤/排序参数之后）。limit 缺省时不加分页。
+ * 这里的 `if (opts.limit) { … if (opts.offset) { … } }` 嵌套形态由 T03334 的 P-06 判据按字面锚定
+ * （钉的是「offset 只在 limit 分支内才拼」这一语义），M4-b 把 list/listChangeSig 的分页收拢到这里时
+ * 刻意保持原形态，避免等价重构把那条判据打成红。
+ */
+function resolveListPage(opts: TaskListOptions, values: unknown[]): string {
+  let sql = '';
+  if (opts.limit) {
+    sql += ' LIMIT ?';
+    values.push(opts.limit);
+    if (opts.offset) { sql += ' OFFSET ?'; values.push(opts.offset); }
+  }
+  return sql;
+}
+
+/** M4-b：构成「外部变更签名」的六列——前端每 10s 只为判断「这批任务有没有被人改过」，
+ *  取的就是这六个标量（列表页其余字段是渲染用的，签名不看）。列名与拼接顺序单源在此，
+ *  服务端拼串与等价探针共用，避免两处各写一份而漂移。 */
+export const TASK_SIG_COLUMNS = ['id', 'status', 'verified', 'updated_at', 'category_id', 'priority'] as const;
+
+/** 一行任务的签名片段：与前端 TasksPage 原实现逐字同形（verified 取真值性、category_id 空值归 ''） */
+function taskSigCell(r: { id: string; status: string; verified: number; updated_at: string; category_id: string | null; priority: string }): string {
+  return `${r.id}:${r.status}:${r.verified ? 1 : 0}:${r.updated_at}:${r.category_id ?? ''}:${r.priority}`;
+}
+
 /** T00462/T00451：批量反查项目计划关联（linked_task_id 命中即「计划联动任务」），值=来源计划标题。
  *  必须分批：SQLite 变量上限 999，而无 limit 的调用（移动端/归档/队列页）会传入全量任务 id，
  *  单条 IN (?,?,...) 在任务数 >999 时直接抛错（真实缺陷）；分批后同时把 SQL 文本长度控制住。 */
@@ -823,6 +876,20 @@ export const TaskService = {
     ).all(...args) as Array<{ id: string; task_no: string | null; task_id: string; project_id: string; project_name: string | null; kind: string; detail: string; title: string; created_at: string }>;
   },
 
+  /**
+   * L3 丁档（2026-11-06 裁定「丁」）：通知铃铛的未读数——口径必须与前端原实现逐字一致：
+   * 「最近 limit 条事件里 created_at > since 的条数」（先截断再计数，不是全库未读）。
+   * 存在的理由：铃铛每 30s 拉 30 行 × 9 列整行事件（实测 12,643B）只为算这一个数。
+   * since 为空串时与前端 `created_at > ''` 等价（全部计入）。
+   */
+  countUnreadEvents(opts: { since?: string; limit?: number } = {}): number {
+    const lim = Math.min(200, Math.max(1, opts.limit ?? 30));
+    const row = getDb().prepare(
+      'SELECT COUNT(*) AS n FROM (SELECT created_at FROM task_events ORDER BY created_at DESC LIMIT ?) WHERE created_at > ?',
+    ).get(lim, opts.since ?? '') as { n: number };
+    return row.n;
+  },
+
   /** T01064-FR1.5：单任务事件时间线（状态流转/回传/验证历史，正序） */
   listTaskEvents(taskId: string): Array<{ kind: string; detail: string; created_at: string }> {
     return getDb().prepare(
@@ -940,34 +1007,37 @@ export const TaskService = {
     // T00620：列表读取路径不再惰性过期 running（已移除，避免只读接口挂写锁）；超时兜底由 startStaleRunningGuard 定时收敛
     const db = getDb();
     const { where, values } = buildTaskFilter(opts);
-    // 排序映射：优先级按业务档位映射数值，保证 urgent>high>normal>low
-    const orderBy: Record<NonNullable<TaskListOptions['sort']>, string> = {
-      pinned: 'pinned DESC, created_at DESC',
-      created_desc: 'created_at DESC',
-      created_asc: 'created_at ASC',
-      priority_desc: "CASE priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'normal' THEN 2 ELSE 1 END DESC, created_at DESC",
-      priority_asc: "CASE priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'normal' THEN 2 ELSE 1 END ASC, created_at ASC",
-      // T00446：手动排序（拖拽结果）——pinned 优先，user_sort 空值排最后
-      manual: "pinned DESC, CASE WHEN user_sort IS NULL THEN 1 ELSE 0 END, user_sort, created_at DESC",
-    };
-    // T04181（甲・静默回落）：Record 只约束静态字面量键，运行时 opts.sort 来自 query 的裸断言，
-    // 任意非白名单值（含空串——?? 'pinned' 兜不住）查表 miss 会得到 undefined 并被拼成 ORDER BY undefined ⇒ 500。
-    let orderSql = orderBy[opts.sort ?? 'pinned'] ?? orderBy.pinned;
-    // T03232：字段排序接管排序主键（显式选择的排序意图优先于 pinned），参数追加在 WHERE 之后
-    if (opts.fieldSort?.fieldId && opts.projectId) {
-      const byField = fieldSortClause(opts.fieldSort, liveFieldsOf(opts.projectId));
-      if (byField) { orderSql = byField.sql; values.push(...byField.values); }
-    }
+    const orderSql = resolveListOrder(opts, values);
     let sql = `SELECT * FROM tasks WHERE ${where.join(' AND ')} ORDER BY ${orderSql}`;
-    if (opts.limit) {
-      sql += ' LIMIT ?';
-      values.push(opts.limit);
-      if (opts.offset) { sql += ' OFFSET ?'; values.push(opts.offset); }
-    }
+    sql += resolveListPage(opts, values);
     // T00792：SQL 文本由「过滤组合 × 6 种排序 × limit/offset」决定，变体数有限且高度重复
     //（前端固定几种视图来回切），缓存 Statement 避免每次请求重新编译（实测 3.48× 于编译环节）
     const rows = cachedPrepare(db, sql).all(...values) as TaskRow[];
     return decorateRows(db, rows);
+  },
+
+  /**
+   * M4-b：与 {@link list} **同一套过滤 + 同一套排序 + 同一套分页**，但只取签名所需的六列，
+   * 并把它们折成一个 SHA256 返回。存在的理由：TasksPage 每 10s 轮询一次整行列表
+   * （实测 200MB 快照上 limit=500 命中 500 行 = 402,501B，服务端单次 9–21ms），
+   * 只为读出六个标量列；本形态 0.4–2.0ms、响应 ~100B。
+   * 刻意不做 decorateRows：图片/计划关联/阻塞项/自定义字段值都进不了签名，取它们才是那 9–21ms 的大头。
+   *
+   * ⚠ 拼串前先按单元格排序再折哈希，而不是照抄 SQL 的返回顺序。这是等价探针实测出来的坑：
+   * 排序键存在并列时（如 sort=manual 下 user_sort 相同或同为 NULL 的一批行），`SELECT *` 与六列投影
+   * 可能给出**不同的并列次序**——行数与内容都相同、拼串却不同。照搬旧的顺序敏感拼法会让每 10s
+   * 的轮询都判定「外部改过了」，反而比原实现更贵。按单元格排序后取集合等价，才是「这六个标量有没有变过」
+   * 的真实语义；行顺序本身（拖拽 user_sort）旧实现同样不进签名，所以这不是新盲区。
+   */
+  listChangeSig(opts: TaskListOptions = {}): { sig: string; rows: number } {
+    const db = getDb();
+    const { where, values } = buildTaskFilter(opts);
+    const orderSql = resolveListOrder(opts, values);
+    const sql = `SELECT ${TASK_SIG_COLUMNS.join(', ')} FROM tasks WHERE ${where.join(' AND ')} ORDER BY ${orderSql}${resolveListPage(opts, values)}`;
+    const rows = cachedPrepare(db, sql).all(...values) as Array<{
+      id: string; status: string; verified: number; updated_at: string; category_id: string | null; priority: string;
+    }>;
+    return { sig: createHash('sha256').update(rows.map(taskSigCell).sort().join('|')).digest('hex'), rows: rows.length };
   },
 
   /**
