@@ -123,14 +123,15 @@ export function ExecSessionsPage() {
     const reschedule = () => {
       clearInterval(timer);
       timer = setInterval(() => void poll(), document.hidden ? HIDDEN_POLL_MS : ACTIVE_POLL_MS);
-      if (!document.hidden) void poll();
+      // 回前台立即整行刷新（沿用原口径：不等摘要比对，直接把当前数据拉齐）
+      if (!document.hidden) void load();
     };
     document.addEventListener('visibilitychange', reschedule);
     return () => {
       clearInterval(timer);
       document.removeEventListener('visibilitychange', reschedule);
     };
-  }, [poll]);
+  }, [poll, load]);
 
   const alive = rows.filter((r) => r.status === 'active').length;
   const stalled = rows.filter((r) => r.status === 'stalled').length;
