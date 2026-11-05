@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client';
-import { askConfirm } from '../ui/dialogs';
+import { askConfirm, askInput } from '../ui/dialogs';
 
 /**
  * T04152（PRD MEM-501/502）：设置 → 数据 →「记忆管理」页签。
@@ -22,6 +22,8 @@ interface PendingRow {
   id: string; title: string; content: string; type: MemoryType;
   pii_kind: string | null; created_at: string;
 }
+interface OrphanTag { productKey: string; memoryCount: number }
+interface SimpleProject { id: string; name: string }
 interface MemoryRow {
   id: string;
   product_key: string;
@@ -79,6 +81,10 @@ export function MemoryTab() {
   const [projects, setProjects] = useState<ProductProject[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState('');
   const [pending, setPending] = useState<PendingRow[]>([]);
+  // MEM-505/107/108：标签维护（重命名 / 孤儿标签清理与挂回）
+  const [orphans, setOrphans] = useState<OrphanTag[]>([]);
+  const [allProjects, setAllProjects] = useState<SimpleProject[]>([]);
+  const [reattachTarget, setReattachTarget] = useState<Record<string, string>>({});
   // 新增表单
   const [newTitle, setNewTitle] = useState('');
   const [newContent, setNewContent] = useState('');
@@ -132,10 +138,68 @@ export function MemoryTab() {
     } catch { /* 待确认队列失败不阻塞页面 */ }
   }, [productKey]);
 
+  /** 孤儿标签：已无项目引用但仍有记忆（MEM-108），可清理或挂回某项目 */
+  const loadOrphans = useCallback(async () => {
+    try {
+      const r = await api.get<{ orphans: OrphanTag[] }>('/memories/product-tags/orphans');
+      setOrphans(r.orphans ?? []);
+    } catch { /* 孤儿清单失败不阻塞主页 */ }
+  }, []);
+
+  const loadAllProjects = useCallback(async () => {
+    try {
+      const list = await api.get<SimpleProject[]>('/projects');
+      setAllProjects((list ?? []).map((p) => ({ id: p.id, name: p.name })));
+    } catch { /* 挂回下拉降级为空 */ }
+  }, []);
+
   useEffect(() => { void loadTags(); }, [loadTags]);
   useEffect(() => { void loadRows(); }, [loadRows]);
   useEffect(() => { void loadProjects(); }, [loadProjects]);
   useEffect(() => { void loadPending(); }, [loadPending]);
+  useEffect(() => { void loadOrphans(); }, [loadOrphans]);
+  useEffect(() => { void loadAllProjects(); }, [loadAllProjects]);
+
+  /** MEM-107/F10：重命名（同事务三表齐改；新名已存在时为合并，后端会回 mergedIntoExisting） */
+  async function renameTag(oldKey: string) {
+    const next = await askInput({
+      title: `重命名产品标签「${oldKey}」`,
+      placeholder: '新标签名（留空不可；重命名到已有标签＝合并）',
+      defaultValue: oldKey,
+    });
+    if (next === null) return;
+    try {
+      const r = await api.post<{ mergedIntoExisting: boolean; projectsUpdated: number; memoriesUpdated: number }>(
+        '/memories/product-tags/rename', { oldKey, newKey: next },
+      );
+      flash(r.mergedIntoExisting
+        ? `已合并到「${next.trim().toLowerCase()}」（项目 ${r.projectsUpdated} / 记忆 ${r.memoriesUpdated}）`
+        : `已重命名（项目 ${r.projectsUpdated} / 记忆 ${r.memoriesUpdated}）`);
+      if (productKey === oldKey) setProductKey(next.trim().toLowerCase());
+      await Promise.all([loadTags(), loadRows(), loadOrphans(), loadProjects(), loadPending()]);
+    } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
+  }
+
+  /** MEM-108：清理孤儿标签下的全部记忆（仅对确无项目引用的标签放行，后端二次校验） */
+  async function cleanupOrphan(key: string, count: number) {
+    if (!await askConfirm(`清理孤立标签「${key}」下的 ${count} 条记忆？此操作不可恢复。`)) return;
+    try {
+      const r = await api.del<{ deleted: number }>(`/memories/product-tags/${encodeURIComponent(key)}`);
+      flash(`已清理 ${r.deleted} 条记忆`);
+      await Promise.all([loadTags(), loadRows(), loadOrphans()]);
+    } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
+  }
+
+  /** MEM-108：把孤儿标签挂回某个项目（目标项目已绑其它标签时后端会拒绝） */
+  async function reattachOrphan(key: string) {
+    const pid = reattachTarget[key];
+    if (!pid) return flash('请选择要挂回的项目');
+    try {
+      await api.post(`/memories/product-tags/${encodeURIComponent(key)}/reattach`, { projectId: pid });
+      flash(`已挂回项目`);
+      await Promise.all([loadTags(), loadOrphans(), loadProjects()]);
+    } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
+  }
 
   /** MEM-504：项目级自动抽取开关（跨产品由后端 403 兜底，前端只列本产品项目） */
   async function toggleAutoExtract(proj: ProductProject) {
@@ -212,6 +276,7 @@ export function MemoryTab() {
             <option key={t.productKey} value={t.productKey}>{t.productKey}（记忆 {t.memoryCount}）</option>
           ))}
         </select>
+        {productKey && <button style={btnStyle} onClick={() => void renameTag(productKey)}>重命名标签</button>}
         <select aria-label="记忆类型筛选" value={type} onChange={(e) => setType(e.target.value as '' | MemoryType)} style={inputStyle}>
           <option value="">全部类型</option>
           {MEMORY_TYPES.map((k) => <option key={k} value={k}>{TYPE_LABELS[k]}</option>)}
@@ -360,6 +425,29 @@ export function MemoryTab() {
           </tbody>
         </table>
       )}
+
+      {/* MEM-505/108：孤立标签维护——已无项目引用但仍有记忆，可挂回项目或清理 */}
+      <div style={{ marginTop: 22, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+        <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600, marginBottom: 6 }}>孤立标签</div>
+        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
+          项目已删除或改绑后，仍留有记忆但没有项目引用的产品标签。挂回会让目标项目绑定该标签；清理会删除这些记忆且不可恢复。
+        </div>
+        {orphans.length === 0 ? (
+          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>无孤立标签</div>
+        ) : orphans.map((o) => (
+          <div key={o.productKey} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, fontSize: 'var(--fs-s)', flexWrap: 'wrap' }}>
+            <span style={{ minWidth: 170 }}>{o.productKey}（{o.memoryCount} 条记忆，无项目绑定）</span>
+            <select aria-label={`挂回 ${o.productKey} 的项目`} value={reattachTarget[o.productKey] ?? ''}
+              onChange={(e) => setReattachTarget({ ...reattachTarget, [o.productKey]: e.target.value })} style={inputStyle}>
+              <option value="">选择要挂回的项目</option>
+              {allProjects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+            <button style={btnStyle} onClick={() => void reattachOrphan(o.productKey)}>挂回</button>
+            <button style={{ ...btnStyle, color: 'var(--danger)' }}
+              onClick={() => void cleanupOrphan(o.productKey, o.memoryCount)}>清理</button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

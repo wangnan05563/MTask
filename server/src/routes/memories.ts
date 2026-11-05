@@ -3,6 +3,9 @@ import { getDb } from '../db/connection';
 import { resolveMemoryScope } from '../util/memoryScope';
 import { resolvePendingMemory } from '../util/memoryGuard';
 import {
+  deleteOrphanTagMemories, listOrphanProductTags, reattachOrphanTag, renameProductTag,
+} from '../services/ProductTagService'; // T04154（PRD MEM-505/107/108）：标签重命名与孤儿清理入口
+import {
   deleteMemory, listMemories, listPendingMemories, listProductTags,
   queryForContext, queryMemories, saveMemory, updateMemory,
 } from '../services/MemoryService';
@@ -42,6 +45,31 @@ function fail(res: import('express').Response, message: string, status = 400): v
 // ---------- 产品标签（管理页筛选/绑定弹窗数据源；必须早于 /:id 注册） ----------
 memoriesApi.get('/product-tags', (_req, res) => {
   res.json(listProductTags());
+});
+
+// ---------- 产品标签重命名 / 孤儿清理（MEM-505/107/108；DELETE 必须早于 /:id 注册） ----------
+memoriesApi.post('/product-tags/rename', (req, res) => {
+  const r = renameProductTag(req.body?.oldKey, req.body?.newKey);
+  if (!r.ok) return fail(res, r.error ?? '重命名失败');
+  // mergedIntoExisting=true 表示新标签已存在，本次是合并（不阻断，由前端提示）
+  res.json({ ...r, ok: true });
+});
+
+memoriesApi.get('/product-tags/orphans', (_req, res) => {
+  res.json({ ok: true, orphans: listOrphanProductTags() });
+});
+
+memoriesApi.delete('/product-tags/:key', (req, res) => {
+  const r = deleteOrphanTagMemories(req.params.key);
+  if (!r.ok) return fail(res, r.error ?? '清理失败');
+  res.json({ ok: true, deleted: r.deleted });
+});
+
+memoriesApi.post('/product-tags/:key/reattach', (req, res) => {
+  const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : '';
+  const r = reattachOrphanTag(req.params.key, projectId);
+  if (!r.ok) return fail(res, r.error ?? '挂回失败');
+  res.json({ ok: true });
 });
 
 // ---------- 产品下的项目与自动抽取开关（MEM-504；PATCH 必须早于 /:id 注册） ----------
