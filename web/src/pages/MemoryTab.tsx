@@ -159,6 +159,14 @@ export function MemoryTab() {
   useEffect(() => { void loadPending(); }, [loadPending]);
   useEffect(() => { void loadOrphans(); }, [loadOrphans]);
   useEffect(() => { void loadAllProjects(); }, [loadAllProjects]);
+  // T04171（F11）：订阅记忆变更——MCP/Agent 写入、容量淘汰、月度整理后管理页即时刷新
+  useEffect(() => api.openChangeStream((kind) => {
+    if (kind !== 'memories') return;
+    void loadRows();
+    void loadPending();
+    void loadTags();
+    void loadOrphans();
+  }), [loadRows, loadPending, loadTags, loadOrphans]);
 
   /** MEM-107/F10：重命名（同事务三表齐改；新名已存在时为合并，后端会回 mergedIntoExisting） */
   async function renameTag(oldKey: string) {

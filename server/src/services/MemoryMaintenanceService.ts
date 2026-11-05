@@ -1,6 +1,7 @@
 import { getDb } from '../db/connection';
 import { recordUsage } from '../util/aiUsageRecord';
 import { normalizeProductKey } from '../util/productKey';
+import { notifyChange } from './ChangeBus'; // T04171（F11）：淘汰/整理也是记忆变更，管理页需刷新
 
 /**
  * T04150（PRD MEM-306 / MEM-307，v1.2·F9）：记忆容量淘汰与月度整理。
@@ -46,6 +47,7 @@ export function enforceCapacity(productKey: string, now = new Date().toISOString
     for (const row of extra) invalidate.run(now, 'capacity-overflow', row.id);
   });
   tx();
+  notifyChange('memories');
   return extra.length;
 }
 
@@ -69,6 +71,7 @@ function invalidateMany(rows: { id: string }[], reason: string, now: string): nu
     for (const r of rows) stmt.run(now, reason, r.id);
   });
   tx();
+  notifyChange('memories');
   return rows.length;
 }
 
@@ -119,6 +122,7 @@ export function organizeMemories(now = new Date().toISOString()): OrganizeResult
       for (const r of losers) deduped += stmt.run(now, r.keep, r.id).changes;
     });
     tx();
+    notifyChange('memories');
   }
 
   const stale = invalidateMany(

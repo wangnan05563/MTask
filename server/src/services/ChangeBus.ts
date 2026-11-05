@@ -10,7 +10,10 @@ export const changeBus = new EventEmitter();
 changeBus.setMaxListeners(50);
 
 /** 变更类型：tasks=任务增改 | plans=项目计划增改 | queue=队列收敛 */
-export type ChangeKind = 'tasks' | 'plans' | 'queue' | 'projects'; // T00589 二轮：项目级变更（沉淀/恢复/归档）通知
+export type ChangeKind = 'tasks' | 'plans' | 'queue' | 'projects' | 'memories';
+// T00589 二轮：projects=项目级变更（沉淀/恢复/归档）通知
+// T04171（PRD v1.2·F11 / MEM-502）：memories=长期记忆增删改——管理页订阅后实时刷新，
+// 否则 MCP/Agent 写入的记忆要等用户切产品才可见。
 
 export function notifyChange(kind: ChangeKind): void {
   // T00657：任务/计划变更会改变项目下拉的计数（待办/未验证/计划完成等），

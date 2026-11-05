@@ -1,5 +1,6 @@
 import { getDb } from '../db/connection';
 import { normalizeProductKey } from './productKey';
+import { notifyChange } from '../services/ChangeBus'; // T04171（F11）：确认/驳回改变记忆与待确认队列
 import type { MemoryType } from './memoryTypes'; // T04140：四型分类单源，不再就地重复定义
 export type { MemoryType } from './memoryTypes';
 
@@ -86,5 +87,6 @@ export function resolvePendingMemory(
     db.prepare('DELETE FROM memory_review_queue WHERE id = ?').run(pendingId);
   });
   tx();
+  notifyChange('memories');
   return { ok: true };
 }

@@ -10,6 +10,7 @@ import { buildMemoryScopeWhere, type ActiveMemoryScope } from '../util/memorySco
 import { isMemoryType, type MemoryType } from '../util/memoryTypes';
 import { enforceCapacity } from './MemoryMaintenanceService'; // T04150（MEM-306/F9）：容量评估
 import { guardMemoryCandidate, type MemorySourceKind } from '../util/memoryGuard'; // T04151：手动保存的 PII 守卫
+import { notifyChange } from './ChangeBus'; // T04171（F11）：记忆写操作推 SSE，管理页实时刷新
 
 /**
  * T04143（PRD MEM-201 / MEM-204 / MEM-207，v1.2·F3）：记忆抽取的触发与隔离。
@@ -108,6 +109,7 @@ async function runExtract(taskId: string, resultText: string): Promise<void> {
       telemetry(taskId, `rules_ok:stored=${r.stored},queued=${r.queued},updated=${r.updated},invalidated=${r.invalidated},dropped=${r.dropped.length},rewrites=${r.rewrites}`);
       // T04150（MEM-306）：写入后立即做容量评估，避免超限记忆在两次整理之间被召回
       try { enforceCapacity(productKey); } catch { /* 淘汰失败不影响已落库结果 */ }
+      notifyChange('memories'); // T04171（F11）：抽取落库后管理页实时刷新
     } finally {
       runningKeys.delete(productKey);
     }
@@ -337,7 +339,10 @@ export function saveMemory(input: SaveMemoryInput): SaveMemoryResult {
     title, content, type: input.type, sourceTaskId: input.sourceTaskId ?? null,
     sourceKind, confidence: 1,
   });
-  if (guarded.action === 'queue') return { kind: 'queued', id, piiKind: guarded.piiKind };
+  if (guarded.action === 'queue') {
+    notifyChange('memories'); // 待确认队列也变了，管理页需要立刻出现该候选
+    return { kind: 'queued', id, piiKind: guarded.piiKind };
+  }
   const now = new Date().toISOString();
   getDb().prepare(`INSERT INTO memories
     (id,product_key,project_id,type,title,content,tags,source_task_id,source_kind,confidence,created_at,updated_at)
@@ -345,6 +350,7 @@ export function saveMemory(input: SaveMemoryInput): SaveMemoryResult {
     id, input.scope.productKey, input.scope.projectId ?? null, input.type, title, content, tags,
     input.sourceTaskId ?? null, sourceKind, 1, now, now,
   );
+  notifyChange('memories');
   return { kind: 'stored', id };
 }
 
@@ -392,6 +398,7 @@ export function updateMemory(
   params.push(new Date().toISOString());
   getDb().prepare(`UPDATE memories SET ${sets.join(', ')} WHERE id = ? AND product_key = ?`)
     .run(...params, id, scope.productKey);
+  notifyChange('memories');
   return { ok: true, id };
 }
 
@@ -399,6 +406,7 @@ export function updateMemory(
 export function deleteMemory(id: string, scope: ActiveMemoryScope): MemoryMutationResult {
   if (!findScopedMemory(id, scope)) return { ok: false, error: '记忆不存在或不属于该产品' };
   getDb().prepare('DELETE FROM memories WHERE id = ? AND product_key = ?').run(id, scope.productKey);
+  notifyChange('memories');
   return { ok: true, id };
 }
 
