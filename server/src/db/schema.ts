@@ -731,6 +731,30 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   db.exec("CREATE INDEX IF NOT EXISTS idx_ai_usage_card ON ai_usage(card_key, created_at)");
   // T04003：按 job 取回本任务全部模型调用（排障看分段耗时/失败分布）——同样必须在补列之后
   db.exec("CREATE INDEX IF NOT EXISTS idx_ai_usage_job ON ai_usage(job_id, created_at)");
+  // T04165（PRD Phase 2「语义判重」）：memories 的 FTS5 外部内容索引 + 三支同步触发器。
+  // 用 try/catch 包住：极端构建（未编译 FTS5）下创建虚拟表会抛错，不能让它拖垮整个 initSchema；
+  // 失败时 similarMemories 自动回退 LIKE 检索（功能降级但可用）。
+  try {
+    db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+        title, content, tags, content='memories', content_rowid='rowid', tokenize='unicode61'
+      );
+      CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN
+        INSERT INTO memories_fts(rowid,title,content,tags) VALUES (new.rowid,new.title,new.content,new.tags);
+      END;
+      CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
+        INSERT INTO memories_fts(memories_fts,rowid,title,content,tags) VALUES('delete',old.rowid,old.title,old.content,old.tags);
+      END;
+      CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN
+        INSERT INTO memories_fts(memories_fts,rowid,title,content,tags) VALUES('delete',old.rowid,old.title,old.content,old.tags);
+        INSERT INTO memories_fts(rowid,title,content,tags) VALUES (new.rowid,new.title,new.content,new.tags);
+      END;
+    `);
+    // 老库已有记忆行：启动时重建一次索引（外部内容表不会自动回填历史数据；数据量小、幂等）
+    db.exec("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')");
+  } catch (e) {
+    console.warn('[schema] FTS5 不可用，记忆语义判重将降级为 LIKE 检索：', (e as Error).message);
+  }
   // T03189（PRD G-1）：汇报材料准备时长样本——「打开卡片 → 成品下载」一次一条。
   // 不挂 FK：卡片/项目删了，历史样本仍要参与 P50/P90 基线（同 iteration_events 的口径）。
   db.exec(`

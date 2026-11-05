@@ -8,7 +8,7 @@ import {
 import { appendReviewLog, listReviewLog, ruleRejectStats, sampleMemoriesForReview } from '../services/MemoryReviewLogService'; // T04158/T04164（MEM-604/F8）：评审记录与抽样
 import {
   deleteMemory, listMemories, listPendingMemories, listProductTags,
-  queryForContext, queryMemories, saveMemory, updateMemory,
+  queryForContext, queryMemories, saveMemory, similarMemories, updateMemory,
 } from '../services/MemoryService';
 
 /**
@@ -73,6 +73,23 @@ memoriesApi.get('/review-log', (req, res) => {
 
 memoriesApi.get('/review-log/stats', (_req, res) => {
   res.json({ ok: true, stats: ruleRejectStats() });
+});
+
+// ---------- 语义判重候选检索（T04165）：FTS5 优先、LIKE 兜底 ----------
+memoriesApi.get('/similar', (req, res) => {
+  const scope = scopeOf({
+    productKey: req.query.productKey,
+    projectId: typeof req.query.projectId === 'string' ? req.query.projectId : undefined,
+  });
+  if (scope.kind === 'error') return fail(res, scope.error);
+  if (scope.kind === 'empty') return res.json({ ok: true, source: 'like', memories: [], hint: scope.hint });
+  const text = typeof req.query.text === 'string' ? req.query.text : '';
+  if (!text.trim()) return fail(res, 'text 必填');
+  const r = similarMemories(scope, text, {
+    limit: Number(req.query.limit) || undefined,
+    excludeId: typeof req.query.excludeId === 'string' ? req.query.excludeId : undefined,
+  });
+  res.json({ ok: true, source: r.source, memories: r.rows });
 });
 
 // T04164（MEM-604）：开一批随机抽样评审（只读，判定另行 POST /review-log 落库）

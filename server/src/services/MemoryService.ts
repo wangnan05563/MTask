@@ -298,6 +298,58 @@ export function queryForContext(
   return { block: `${head}\n${body}${tail}`, count, truncated };
 }
 
+/* ================= T04165（PRD Phase 2「语义判重」）：FTS5 相似记忆检索 ================= */
+
+export interface SimilarMemory {
+  id: string;
+  type: MemoryType;
+  title: string;
+  content: string;
+  tags: string | null;
+  source_kind: string;
+  updated_at: string;
+}
+
+/**
+ * 语义判重候选检索（FTS5 优先、LIKE 兜底）。
+ *
+ * 判定「是否重复/更优」仍由抽取模型（ADD/UPDATE/NOOP）决定——本函数只负责把同产品下
+ * 内容相近的记忆找出来，避免模型盲判；**不自动合并**（自动合并近重复由月度整理按标题归一执行）。
+ * 中文用 unicode61 分词较粗，故 FTS5 每词加 `*` 前缀通配，并在零命中时回退 LIKE 子串。
+ */
+export function similarMemories(
+  scope: ActiveMemoryScope,
+  text: string,
+  opts: { limit?: number; excludeId?: string } = {},
+): { source: 'fts' | 'like'; rows: SimilarMemory[] } {
+  const kw = (text ?? '').trim();
+  const limit = Math.min(Math.max(1, Math.floor(opts.limit ?? 5)), 20);
+  if (!kw) return { source: 'like', rows: [] };
+  const db = getDb();
+  const where = buildMemoryScopeWhere(scope);
+  const select = `SELECT id, type, title, content, tags, source_kind, updated_at FROM memories`;
+  const base = `${where.sql}${opts.excludeId ? ' AND id <> ?' : ''}`;
+  const tailParams: unknown[] = opts.excludeId ? [opts.excludeId] : [];
+
+  const terms = kw.split(/[\s,，。;；、()（）【】]+/).filter((t) => t.length >= 2).slice(0, 6);
+  if (terms.length) {
+    try {
+      // FTS5 外部内容表：按 rowid 与 memories 关联；MATCH 必须落在 memories_fts 上
+      const q = terms.map((t) => `"${t.replace(/"/g, '')}"*`).join(' OR ');
+      const rows = db.prepare(`${select} WHERE rowid IN (
+          SELECT rowid FROM memories_fts WHERE memories_fts MATCH ?
+        ) AND ${base} ORDER BY updated_at DESC LIMIT ?`)
+        .all(q, ...where.params, ...tailParams, limit) as SimilarMemory[];
+      if (rows.length) return { source: 'fts', rows };
+    } catch { /* FTS5 不可用/查询语法异常 → 回退 LIKE */ }
+  }
+  const like = `%${escapeLike(kw)}%`;
+  const rows = db.prepare(`${select} WHERE ${base} AND (title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\')
+    ORDER BY updated_at DESC LIMIT ?`)
+    .all(...where.params, ...tailParams, like, like, limit) as SimilarMemory[];
+  return { source: 'like', rows };
+}
+
 /* ================= T04151（PRD MEM-401/402/403）：管理类 CRUD（MCP/REST 共用） ================= */
 
 const MEMORY_SOURCE_KINDS: readonly MemorySourceKind[] = ['auto', 'manual', 'user_said', 'tool_output', 'inferred'];
