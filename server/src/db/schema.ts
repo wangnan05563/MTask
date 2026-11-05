@@ -686,6 +686,19 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
       created_at     TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_memory_review_queue_product ON memory_review_queue(product_key);
+
+    -- T04158（PRD MEM-604 / F8）：抽样评审记录。每批随机 20 条人工评审（规范 §10.2），
+    -- verdict=keep/reject 与命中判据留档作回归基线；无外键（样本可能已被软失效/清理）。
+    CREATE TABLE IF NOT EXISTS memory_review_log (
+      id          TEXT PRIMARY KEY,
+      batch_id    TEXT NOT NULL,
+      memory_id   TEXT NOT NULL,
+      verdict     TEXT NOT NULL CHECK(verdict IN ('keep','reject')),
+      hit_rule    TEXT,
+      reviewer    TEXT,
+      created_at  TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_memory_review_log_batch ON memory_review_log(batch_id, created_at);
   `);
 
   // 迁移兜底：老库缺列时补列（CREATE TABLE IF NOT EXISTS 对已存在表不生效）

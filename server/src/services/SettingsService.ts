@@ -51,11 +51,13 @@ interface ExportBundle {
 // T04130（PRD MEM-104）：memories 必须同时进三张顺序表——漏 EXPORT_TABLES 导出不含记忆、
 // 漏 INSERT_ORDER overwrite 清空后不恢复（记忆丢失）、漏 DELETE_ORDER 旧记忆残留+新记忆再插（记忆翻倍）。
 // 无外键 ⇒ 表内位置任意，统一放末尾。
-const DELETE_ORDER = ['queue_jobs', 'task_images', 'prompts', 'task_categories', 'app_settings', 'tasks', 'queues', 'ai_tools', 'prompt_categories', 'projects', 'memories'];
-const INSERT_ORDER = ['projects', 'prompt_categories', 'ai_tools', 'queues', 'task_categories', 'app_settings', 'tasks', 'prompts', 'task_images', 'queue_jobs', 'memories'];
+const DELETE_ORDER = ['queue_jobs', 'task_images', 'prompts', 'task_categories', 'app_settings', 'tasks', 'queues', 'ai_tools', 'prompt_categories', 'projects', 'memories', 'memory_review_log'];
+const INSERT_ORDER = ['projects', 'prompt_categories', 'ai_tools', 'queues', 'task_categories', 'app_settings', 'tasks', 'prompts', 'task_images', 'queue_jobs', 'memories', 'memory_review_log'];
 
+// T04158（MEM-604/F8）：评审记录随包往返——抽样评审是 Phase 1 发布判据的回归基线，换机不能丢。
+// memory_review_queue 的同类缺口由 T04485 跟踪，本表不与它混签。
 const EXPORT_TABLES: (keyof ExportBundle['data'])[] = [
-  'projects', 'prompt_categories', 'ai_tools', 'queues', 'task_categories', 'app_settings', 'tasks', 'prompts', 'task_images', 'queue_jobs', 'memories',
+  'projects', 'prompt_categories', 'ai_tools', 'queues', 'task_categories', 'app_settings', 'tasks', 'prompts', 'task_images', 'queue_jobs', 'memories', 'memory_review_log',
 ];
 
 /** ai_tools 导出行：api_key_enc(密文) → apiKey(明文)，供跨机后用目标机密钥重新加密 */
@@ -79,30 +81,100 @@ function aiToolImportRow(r: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
+ * 导出行的字段整形。一次性 bundle 与流式切片**必须共用这一份**：两条路径产出的行 JSON
+ * 若分叉（例如 base64 只在一边做），换机恢复时就会出现「同一张表按调用路径拿到不同字节」。
+ */
+function exportRow(table: string, r: Record<string, unknown>): Record<string, unknown> {
+  if (table === 'task_images') return { ...r, data: r.data instanceof Buffer ? r.data.toString('base64') : r.data };
+  if (table === 'ai_tools') return aiToolExportRow(r);
+  return r;
+}
+
+/**
  * 导出配置包。默认全量（与历史行为一致，供「导出配置」按钮使用）。
  *
  * 传入 tables 时只导出白名单内的子集——用于「只看/只迁移配置类表」等场景（显著减小体积：
  * 全量包中 task_images 的 base64 二进制往往是体积大头）。
  * ⚠️ 子集包**不满足 importBundle 的 CORE_TABLES 校验**，仅作查看/局部迁移用途，不能直接整体回导。
+ *
+ * 用途限定：这条一次性物化的路径留给 **MCP `mtask_export_data`**（调用方要的就是一个 JS 对象）。
+ * HTTP `GET /api/settings/export` 已改走 {@link exportBundleChunks}（M2-a），因为全量包在实测库上是
+ * 52.7MB 文本 / 24,507 行，整体物化 + `res.json` 一次 stringify 的冷堆峰值实测 +175MB。
  */
 export async function exportBundle(tables?: string[]): Promise<ExportBundle> {
   const db = getDb();
-  const requested = tables?.length
-    ? EXPORT_TABLES.filter((t) => tables.includes(t))
-    : EXPORT_TABLES;
   const data: ExportBundle['data'] = {} as ExportBundle['data'];
-  for (const table of requested) {
-    const rows = db.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
-    data[table] = rows.map((r) => {
-      if (table === 'task_images') return { ...r, data: r.data instanceof Buffer ? r.data.toString('base64') : r.data };
-      if (table === 'ai_tools') return aiToolExportRow(r);
-      return r;
-    });
+  for (const table of requestedExportTables(tables)) {
+    data[table] = (db.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[]).map((r) => exportRow(table, r));
     // T00789 建议②：每导完一表让出事件循环，把单次同步阻塞切成多段，
-    // 避免全量导出（实测 4.4MB / 122ms）长时间占住主线程拖慢无关请求。
+    // 避免全量导出长时间占住主线程拖慢无关请求。
     await new Promise<void>((r) => setImmediate(r));
   }
   return { app: 'mtask', version: 1, exportedAt: new Date().toISOString(), data };
+}
+
+/** 白名单交集（保持 EXPORT_TABLES 的顺序——bundle 的表序是导出文件版面的一部分，不能随入参顺序变） */
+function requestedExportTables(tables?: string[]): string[] {
+  return tables?.length ? EXPORT_TABLES.filter((t) => tables.includes(t)) : EXPORT_TABLES;
+}
+
+/**
+ * 流式切片的双阈值：行数上限管住「多而小的行」（tasks 10,322 行），字节上限管住「少而大的行」
+ * （task_images 只有 56 行，但 base64 单行 ~570KB——只按行数切会让整张 32MB 表挤成一片，
+ * 既不放行事件循环，也正好把体积大头变成一次性驻留）。
+ * 单个超阈值的行无法再切（那是一行 JSON），所以字节上限是「每片之间必让出」，不是「每片不超过」。
+ */
+const EXPORT_CHUNK_ROWS = 200;
+const EXPORT_CHUNK_BYTES = 256 * 1024;
+
+/**
+ * M2-a：逐行流式产出 bundle 的 JSON 切片。
+ *
+ * 拼接所有片段的字符串，与 `JSON.stringify(await exportBundle())` **逐字节相同**（除 exportedAt 时刻），
+ * 取证见 perf/m2/stream-proto.mts（三方 keep 趟 55,286,761B 全等）。契约不变 ⇒ 前端与既有门无需改。
+ *
+ * 为什么切片而不是整包：全量导出的成本大头不是 CPU（逐行 stringify 合计 271.8ms，反而比整体
+ * 一次 stringify 的 374.7ms 更省），而是**整对象图 + 整串文本同时驻留**。逐行 iterate 让峰值
+ * 从整库降为一行，同时首字节从「整个 bundle 造完」提前到第一个切片。
+ *
+ * 代价（要如实登记）：`iterate()` 在读完前持有 SQLite 读语句，WAL 下这会在导出期间推迟 checkpoint
+ * 完成；加上套接字背压（调用方等 drain），慢客户端会把这段拉长。导出受并发闸保护且是低频操作，
+ * 但导出时长与 WAL 增长是这条路径的新变量。
+ */
+export async function* exportBundleChunks(tables?: string[]): AsyncGenerator<string, void, unknown> {
+  const db = getDb();
+  const requested = requestedExportTables(tables);
+  yield `{"app":"mtask","version":1,"exportedAt":${JSON.stringify(new Date().toISOString())},"data":{`;
+  for (let ti = 0; ti < requested.length; ti++) {
+    const table = requested[ti];
+    // 表间分隔由本片的第一个字符承担：首表不带逗号，其后各表带
+    yield `${ti ? ',' : ''}${JSON.stringify(table)}:[`;
+    const it = db.prepare(`SELECT * FROM ${table}`).iterate() as unknown as IterableIterator<Record<string, unknown>>;
+    let firstChunk = true;
+    let buf: string[] = [];
+    let bufBytes = 0;
+    try {
+      for (const row of it) {
+        const json = JSON.stringify(exportRow(table, row));
+        buf.push(json);
+        bufBytes += json.length;
+        if (buf.length >= EXPORT_CHUNK_ROWS || bufBytes >= EXPORT_CHUNK_BYTES) {
+          yield `${firstChunk ? '' : ','}${buf.join(',')}`;
+          firstChunk = false;
+          buf = [];
+          bufBytes = 0;
+          // 每片让出一次事件循环：分表让出（T00789②）的粒度是 800ms 级的 tasks，
+          // 这里把它切成「200 行或 256KB」一段，才是并发下真正不独占主线程的形态
+          await new Promise<void>((r) => setImmediate(r));
+        }
+      }
+    } finally {
+      // 提前退出（调用方 break/抛错/客户端断开）必须显式收尾，否则读语句悬挂、WAL checkpoint 被无限推迟
+      it.return?.();
+    }
+    yield `${firstChunk ? '' : ','}${buf.join(',')}]`;
+  }
+  yield '}}';
 }
 
 /** 合法导出表名白名单（供路由校验 ?tables=，拒绝未知表名而非静默忽略） */

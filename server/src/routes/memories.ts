@@ -5,6 +5,7 @@ import { resolvePendingMemory } from '../util/memoryGuard';
 import {
   deleteOrphanTagMemories, listOrphanProductTags, reattachOrphanTag, renameProductTag,
 } from '../services/ProductTagService'; // T04154（PRD MEM-505/107/108）：标签重命名与孤儿清理入口
+import { appendReviewLog, listReviewLog, ruleRejectStats } from '../services/MemoryReviewLogService'; // T04158（MEM-604/F8）：抽样评审记录
 import {
   deleteMemory, listMemories, listPendingMemories, listProductTags,
   queryForContext, queryMemories, saveMemory, updateMemory,
@@ -45,6 +46,33 @@ function fail(res: import('express').Response, message: string, status = 400): v
 // ---------- 产品标签（管理页筛选/绑定弹窗数据源；必须早于 /:id 注册） ----------
 memoriesApi.get('/product-tags', (_req, res) => {
   res.json(listProductTags());
+});
+
+// ---------- 抽样评审记录（MEM-604/F8；T04158） ----------
+memoriesApi.post('/review-log', (req, res) => {
+  const r = appendReviewLog({
+    batchId: typeof req.body?.batchId === 'string' ? req.body.batchId : '',
+    memoryId: typeof req.body?.memoryId === 'string' ? req.body.memoryId : '',
+    verdict: req.body?.verdict,
+    hitRule: typeof req.body?.hitRule === 'string' ? req.body.hitRule : undefined,
+    reviewer: typeof req.body?.reviewer === 'string' ? req.body.reviewer : undefined,
+  });
+  if (!r.ok) return fail(res, r.error);
+  res.status(201).json({ ok: true, id: r.id });
+});
+
+memoriesApi.get('/review-log', (req, res) => {
+  res.json({
+    ok: true,
+    rows: listReviewLog({
+      batchId: typeof req.query.batchId === 'string' ? req.query.batchId : undefined,
+      limit: Number(req.query.limit) || undefined,
+    }),
+  });
+});
+
+memoriesApi.get('/review-log/stats', (_req, res) => {
+  res.json({ ok: true, stats: ruleRejectStats() });
 });
 
 // ---------- 产品标签重命名 / 孤儿清理（MEM-505/107/108；DELETE 必须早于 /:id 注册） ----------
