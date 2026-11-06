@@ -9,6 +9,24 @@ function isRetryable(err: unknown): boolean {
   const s = String((err as Error)?.message ?? err);
   return /IOERR|BUSY|locked|file is in use/i.test(s);
 }
+/** M1（2026-11-06 放行）：读路径的页生命周期参数。
+ *  为什么要改：`GET /tasks` 这类「大结果集全列读」的成本主要是页的拷贝与重复读取，
+ *  默认 `cache_size` 只有 16MB（better-sqlite3 运行时实测），186MB 的生产库装不下工作集，
+ *  每次请求都要把页从文件重新读回来。同一库文件、同一查询的对照实测（两轮同向）：
+ *  这两项并开使默认列表 200 行 −76.6%、todo 列表 500 行 −54.6%、事件 30 条 −37.0%。
+ *  为什么是 mmap + cache 两项：单项实测都不够——只开 mmap 对大结果集有效但小结果集无感，
+ *  只开 cache 在 todo 500 行上反而是负收益；两者并开才在三条查询上全部转正。
+ *  为什么不一起调 wal_autocheckpoint：读路径不产生 checkpoint，实测无独立收益，
+ *  却会把 WAL 变大、崩溃后的回放窗口变长，故不动它。
+ *  代价：常驻内存 +48MB 量级（cache 16MB→64MB）；mmap 是虚拟映射，驻留随实际访问页增长。 */
+const MMAP_SIZE_BYTES = 268435456; // 256MB：覆盖 186MB 生产库的两代副本余量
+const CACHE_SIZE_KB = -65536; // 负值 = KB 单位，即 64MB
+
+/** 两条打开路径（WAL 正常路径与 DELETE 兜底路径）都套用同一组读参数，避免兜底态悄悄退回慢形态 */
+function applyReadTuning(d: Database.Database): void {
+  d.pragma(`mmap_size = ${MMAP_SIZE_BYTES}`);
+  d.pragma(`cache_size = ${CACHE_SIZE_KB}`);
+}
 
 /**
  * 打开数据库连接。默认尝试 WAL：写入并发更好，且会自动回放上次遗留的 -wal 恢复数据。
@@ -31,6 +49,7 @@ function openDatabase(file: string): Database.Database {
       // （不损坏库，WAL 仍可回放）。桌面单用户场景「性能 vs 极端掉电丢最后几笔写」
       // 的权衡明确偏向性能，故显式设 NORMAL。
       d.pragma('synchronous = NORMAL');
+      applyReadTuning(d);
       return d;
     } catch (err) {
       if (!isRetryable(err) || i === 2) {
@@ -52,6 +71,7 @@ function fallbackOpen(file: string): Database.Database {
   // 且本路径本身已是「WAL 不可用」的降级形态，一致性诉求已让位于可用性。
   // 显式写出而非依赖默认值，避免未来 SQLite / better-sqlite3 升级改变默认行为时静默劣化。
   d.pragma('synchronous = NORMAL');
+  applyReadTuning(d);
   return d;
 }
 
