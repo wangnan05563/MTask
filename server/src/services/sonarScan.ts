@@ -33,7 +33,7 @@ import type { ExtractPlan } from './gitExtract';
 import { ConsoleJobService } from './ConsoleJobService';
 import { TaskService } from './TaskService';
 import {
-  normalizeSonarUrl, planScannerSpawn, probeJava, probeScanner,
+  looksLikeSonarToken, normalizeSonarUrl, planScannerSpawn, probeJava, probeScanner,
   projectKeyFor, readScanSettings, resolveScannerBin,
 } from './sonarSettings';
 import type { SonarProbe } from './sonarSettings';
@@ -777,14 +777,21 @@ export async function scanEnvState(projectIds?: string[]): Promise<ScanEnvState>
   const settings = readScanSettings();
   const [scanner, java] = await Promise.all([probeScanner(settings.scannerPath || undefined), probeJava()]);
   const ids = (projectIds ?? []).filter(Boolean);
+  // T04477：Token 形态的映射值「不算已配置」——否则面板说环境可用、点下去才在扫描入口被拒。
+  const keyOf = (p: string): string => projectKeyFor(p);
+  const usable = (key: string): boolean => !!key && !looksLikeSonarToken(key);
   const keysConfigured = ids.length
-    ? ids.filter((p) => projectKeyFor(p)).length
-    : Object.keys(readProjectKeyCount()).length;
+    ? ids.filter((p) => usable(keyOf(p))).length
+    : Object.values(readProjectKeyCount()).filter(usable).length;
+  const hasTokenShapedKey = ids.length
+    ? ids.some((p) => looksLikeSonarToken(keyOf(p)))
+    : Object.values(readProjectKeyCount()).some(looksLikeSonarToken);
   const reasons: string[] = [];
   if (!settings.serverUrl) reasons.push('未配置服务器地址：到「设置 → SonarQube」填写后点「连接测试」。');
   if (!scanner.available) reasons.push(`未探测到可用扫描器：${scanner.hint || '安装 sonar-scanner 并在设置页填路径，或留空按 PATH 探测。'}`);
   if (!java.available) reasons.push(`未探测到 Java：${java.hint || '需要 JDK 11+；本工具不代装。'}`);
-  if (!keysConfigured) reasons.push('未配置 projectKey：到「设置 → SonarQube → 默认 projectKey 映射」为所选项目配置。');
+  if (hasTokenShapedKey) reasons.push('「默认 projectKey 映射」里有 Token 形态的值（sqX_ 前缀）：它会被当作项目键外发，已在扫描入口拦截。到设置页改成 SonarQube 的项目 key。');
+  if (!keysConfigured && !hasTokenShapedKey) reasons.push('未配置 projectKey：到「设置 → SonarQube → 默认 projectKey 映射」为所选项目配置。');
   return {
     ok: reasons.length === 0,
     scanner,
@@ -908,7 +915,20 @@ function resolveScanProjectKey(input: ScanInput, plan: ExtractPlan, projectIds: 
     || projectKeyFor(projectIds[0] ?? '')
     || Object.values(readProjectKeyCount())[0]
     || '';
-  if (projectKey) return projectKey;
+  if (projectKey) {
+    // T04477：保存层与连接测试都拦过 Token 形态值，但**已落库的脏值**仍会走到这里——
+    // 它会被拼进 sonar-project.properties 的 key 并随扫描外发，等于把凭据当项目键送出去。
+    // 报错文案刻意不回显该值本身（否则等于把凭据再扩散一次）。
+    if (looksLikeSonarToken(projectKey)) {
+      const name = plan.projects[0]?.name ?? projectIds[0] ?? '';
+      throw new ScanError(
+        'bad-project-key',
+        `项目「${name}」配置的 projectKey 是 Token 形态（sqX_ 前缀），已拒绝启动扫描`,
+        '到「设置 → SonarQube → 默认 projectKey 映射」把该值改成 SonarQube 的项目 key（形如 MTask）；Token 只填「认证 Token」框。',
+      );
+    }
+    return projectKey;
+  }
   const name = plan.projects[0]?.name ?? projectIds[0] ?? '';
   throw new ScanError('no-project-key', `项目「${name}」未配置 projectKey`, '到「设置 → SonarQube → 默认 projectKey 映射」配置后重试。');
 }

@@ -120,7 +120,12 @@ export function normalizeSonarUrl(raw: string): string {
  * 等于把凭据扩散到两处非密文位置。只认「前缀 + 足够长的 hex」，`MTask` 这类正常 key 不会误判。
  */
 const SONAR_TOKEN_SHAPE = /^sq[a-z]_[0-9a-f]{24,}$/i;
-function looksLikeSonarToken(value: string): boolean {
+/**
+ * T04477：从 sonarSettings 导出，供扫描链路复用同一判据——
+ * 保存层拦住了新写入，但**已落库的脏值**仍会被扫描当项目键用；扫描侧必须独立再拦一次，
+ * 否则一次扫描就把凭据拼进 `-Dsonar.projectKey` 送给外部服务器。
+ */
+export function looksLikeSonarToken(value: string): boolean {
   return SONAR_TOKEN_SHAPE.test(value.trim());
 }
 
