@@ -14,6 +14,7 @@ import {
   SonarConfigError,
   getSonarConfigView,
   listRevealAudit,
+  listSonarProjects,
   revealSonarToken,
   saveSonarConfig,
   testSonarConnection,
@@ -62,6 +63,15 @@ sonarSettingsApi.get('/settings/sonar/audit', (req, res) => {
 sonarSettingsApi.post('/settings/sonar/test', async (req, res) => {
   try {
     res.json(await testSonarConnection(req.body ?? {}));
+  } catch (e) {
+    fail(res, e);
+  }
+});
+
+/** T04545：读取 SonarQube 项目键下拉候选；草稿 serverUrl/token 优先，不落库。 */
+sonarSettingsApi.post('/settings/sonar/projects', async (req, res) => {
+  try {
+    res.json(await listSonarProjects(req.body ?? {}));
   } catch (e) {
     fail(res, e);
   }

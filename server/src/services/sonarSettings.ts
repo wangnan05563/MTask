@@ -48,7 +48,8 @@ const PROBE_STALE_MAX_MS = 24 * 60 * 60_000;
 export type SonarTestKind = 'unreachable' | 'auth-failed' | 'no-scanner' | 'no-java' | 'project-not-found';
 
 export class SonarConfigError extends Error {
-  constructor(readonly kind: 'bad-url' | 'bad-limit' | 'bad-project-keys' | 'confirm-required' | 'no-token', message: string) {
+  constructor(readonly kind: 'bad-url' | 'bad-limit' | 'bad-project-keys' | 'confirm-required' | 'no-token'
+    | 'sonar-unreachable' | 'sonar-auth' | 'sonar-projects-response', message: string) {
     super(message);
     this.name = 'SonarConfigError';
   }
@@ -82,6 +83,43 @@ export interface SonarTestResult {
   java?: { ok: boolean };
   project?: { ok: boolean; projectKey?: string };
   errors: Array<{ kind: SonarTestKind; message: string; hint: string }>;
+}
+
+/** SonarQube 项目下拉项：key 是保存进映射的值，name 只用于展示 */
+export interface SonarProjectOption {
+  key: string;
+  name: string;
+}
+
+export interface SonarProjectsResult {
+  serverUrl: string;
+  projects: SonarProjectOption[];
+  /** SonarQube 报告的项目总数；超出单页时前端要能看到还有截断 */
+  total: number;
+}
+
+interface SonarProjectsResponse {
+  paging?: { total?: number };
+  components?: unknown;
+  projects?: unknown;
+}
+
+function projectOptionsFrom(json: SonarProjectsResponse): { projects: SonarProjectOption[]; total: number } {
+  const rows = Array.isArray(json.components) ? json.components : Array.isArray(json.projects) ? json.projects : [];
+  const projects: SonarProjectOption[] = [];
+  const seen = new Set<string>();
+  for (const row of rows as Array<Record<string, unknown>>) {
+    const key = typeof row?.key === 'string' ? row.key.trim() : '';
+    if (!key || seen.has(key)) continue;
+    // `/api/projects/search` 天然是项目；若换成 components 搜索，TRK 过滤也返回到这层
+    if (typeof row?.qualifier === 'string' && row.qualifier !== 'TRK') continue;
+    seen.add(key);
+    projects.push({ key, name: typeof row?.name === 'string' && row.name.trim() ? row.name.trim() : key });
+  }
+  const totalRaw = Number(json.paging?.total);
+  const total = Number.isInteger(totalRaw) && totalRaw >= projects.length ? totalRaw : projects.length;
+  projects.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN') || a.key.localeCompare(b.key));
+  return { projects, total };
 }
 
 /**
@@ -748,6 +786,58 @@ async function fetchComponentShow(showUrl: string, token: string | null): Promis
 function sonarErrorSuffix(json: unknown): string {
   const msg = (json as { errors?: Array<{ msg?: string }> } | null)?.errors?.[0]?.msg ?? '';
   return msg ? `（SonarQube：${msg}）` : '';
+}
+
+/**
+ * 读取 SonarQube 项目键列表（T04545）。
+ *
+ * 草稿地址/Token 优先，用于「还没保存就能选」；已存 Token 在服务端内部解密，不经前端。
+ * 拼接走 `/api/projects/search?ps=500&qualifiers=TRK`，仍用连接测试同源的归一地址规则，
+ * 避免 context path / 尾斜杠造成第二套 URL 口径。
+ */
+export async function listSonarProjects(input?: {
+  serverUrl?: string;
+  token?: string;
+  search?: string;
+}): Promise<SonarProjectsResult> {
+  const serverUrl = normalizeSonarUrl(input?.serverUrl ?? getSetting(SERVER_URL_KEY) ?? '');
+  if (!serverUrl) throw new SonarConfigError('bad-url', '未填写 SonarQube 服务器地址，无法读取项目列表');
+  const query = new URLSearchParams({ ps: '500', qualifiers: 'TRK' });
+  const search = (input?.search ?? '').trim();
+  if (search) query.set('q', search);
+  const url = `${serverUrl}/api/projects/search?${query.toString()}`;
+  const draftToken = (input?.token ?? '').trim();
+  const retryToken = draftToken || tokenPlain();
+
+  let response: Awaited<ReturnType<typeof getJson>>;
+  try {
+    response = await getJson(url, null);
+    if (response.res.status === 401 || response.res.status === 403) {
+      if (!retryToken) throw new SonarConfigError('no-token', `SonarQube 要求认证（HTTP ${response.res.status}）`);
+      response = await getJson(url, retryToken);
+      if (response.res.status === 401 || response.res.status === 403) {
+        throw new SonarConfigError('sonar-auth', `读取项目列表被拒绝（HTTP ${response.res.status}）`);
+      }
+    }
+    if (!response.res.ok) {
+      throw new SonarConfigError('sonar-unreachable', `读取项目列表失败（HTTP ${response.res.status}）${sonarErrorSuffix(response.json)}`);
+    }
+  } catch (e) {
+    if (e instanceof SonarConfigError) throw e;
+    const name = (e as Error)?.name;
+    const timedOut = name === 'TimeoutError' || name === 'AbortError';
+    throw new SonarConfigError(
+      'sonar-unreachable',
+      timedOut ? `读取项目列表超时（${Math.round(HTTP_TIMEOUT_MS / 1000)}s）` : `无法连接 SonarQube：${(e as Error)?.message ?? String(e)}`,
+    );
+  }
+
+  const body = (response.json ?? {}) as SonarProjectsResponse;
+  if (!body.components && !body.projects) {
+    throw new SonarConfigError('sonar-projects-response', 'SonarQube 项目列表响应格式不符合预期');
+  }
+  const { projects, total } = projectOptionsFrom(body);
+  return { serverUrl, projects, total };
 }
 
 /** 项目项：服务器不通或未配 projectKey 时直接给结论；否则按 HTTP 状态分别归因。 */

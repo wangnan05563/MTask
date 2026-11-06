@@ -13,7 +13,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { askConfirm } from '../ui/dialogs';
 import { ProjectListHint, useProjectList } from '../ui/projectList';
-import { Eye, Plus, RefreshCw, Save, ShieldCheck, Trash2 } from 'lucide-react';
+import { Eye, ListChecks, Plus, RefreshCw, Save, ShieldCheck, Trash2 } from 'lucide-react';
 
 interface ProbeView {
   available: boolean;
@@ -56,6 +56,11 @@ interface AuditRow {
   note: string;
 }
 
+interface SonarProjectOption {
+  key: string;
+  name: string;
+}
+
 const EMPTY_CFG: ConfigView = {
   serverUrl: '', tokenConfigured: false, tokenMasked: '', scannerPath: '',
   projectKeys: {}, scanLimit: 1, gateLimitEffective: 1,
@@ -96,6 +101,10 @@ export function SonarSettingsTab() {
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState<'' | 'save' | 'test' | 'reveal'>('');
+  const [projectOptions, setProjectOptions] = useState<SonarProjectOption[]>([]);
+  const [projectTotal, setProjectTotal] = useState(0);
+  const [projectSource, setProjectSource] = useState('');
+  const [projectsBusy, setProjectsBusy] = useState(false);
   const projectView = useProjectList({ excludeInbox: true });
 
   const applyCfg = (c: ConfigView) => {
@@ -166,6 +175,28 @@ export function SonarSettingsTab() {
     setRevealed('');
   }
 
+  /** T04545：从 SonarQube 读取 projectKey 候选；输入框保留自由手输，服务列表只作为下拉候选。 */
+  async function loadProjects() {
+    setProjectsBusy(true);
+    setError('');
+    try {
+      const body: Record<string, unknown> = { serverUrl: serverDraft };
+      if (tokenDraft.trim()) body.token = tokenDraft.trim();
+      const r = await api.post<{ serverUrl: string; projects: SonarProjectOption[]; total: number }>(
+        '/settings/sonar/projects',
+        body,
+      );
+      setProjectOptions(r.projects);
+      setProjectTotal(r.total);
+      setProjectSource(r.serverUrl);
+      setNotice(`已加载 ${r.projects.length} 个 Sonar projectKey`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setProjectsBusy(false);
+    }
+  }
+
   /** 三项连接测试：用当前草稿（未保存也能测），结果按项分别回显 */
   async function test() {
     setBusy('test');
@@ -222,7 +253,12 @@ export function SonarSettingsTab() {
           style={fieldStyle}
           value={serverDraft}
           placeholder="http://127.0.0.1:9000"
-          onChange={(e) => setServerDraft(e.target.value)}
+          onChange={(e) => {
+            setServerDraft(e.target.value);
+            setProjectOptions([]);
+            setProjectTotal(0);
+            setProjectSource('');
+          }}
         />
         <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4 }}>
           仅允许 http/https；保存时自动去掉结尾斜杠；地址里不能带账号口令（凭据请填下面的 Token）。
@@ -283,6 +319,22 @@ export function SonarSettingsTab() {
 
       <div>
         <div style={labelStyle}>默认 projectKey 映射</div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 6 }}>
+          <button
+            type="button"
+            style={btnStyle}
+            data-t04545="load-projects"
+            onClick={() => void loadProjects()}
+            disabled={projectsBusy}
+          >
+            <ListChecks size={14} /> {projectsBusy ? '读取项目…' : '从服务器读取 projectKey'}
+          </button>
+          <span data-t04545="projects-state" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+            {projectOptions.length
+              ? `已加载 ${projectOptions.length} 个${projectTotal > projectOptions.length ? `（服务器共 ${projectTotal} 个）` : ''}`
+              : '可选后仍可手动输入'}
+          </span>
+        </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {keys.map((k, i) => (
             <div key={`${k.projectId || 'new'}-${i}`} data-t03375="key-row" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
@@ -302,11 +354,15 @@ export function SonarSettingsTab() {
                 style={{ ...fieldStyle, flex: '1 1 200px' }}
                 value={k.projectKey}
                 placeholder="Sonar project key"
+                list="sonar-project-key-options"
                 onChange={(e) => setKeys(keys.map((x, j) => (j === i ? { ...x, projectKey: e.target.value } : x)))}
               />
               <button type="button" style={btnStyle} aria-label="删除该映射" onClick={() => setKeys(keys.filter((_, j) => j !== i))}><Trash2 size={14} /></button>
             </div>
           ))}
+          <datalist id="sonar-project-key-options">
+            {projectOptions.map((o) => <option key={o.key} value={o.key}>{o.name}</option>)}
+          </datalist>
           {keys.length === 0 && (
             <div data-t03375="key-empty" style={{ fontSize: 'var(--fs-xs)', color: 'var(--warn)' }}>
               尚未配置任何 projectKey —— 未配置的项目在扫描面板里会被要求先补上。
