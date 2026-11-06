@@ -211,6 +211,16 @@ export function readAndDeleteReport(token: string): Buffer | undefined {
   return buf;
 }
 
+/**
+ * 只读令牌内容（不删除）。给「面板内预览」用：用户看过 HTML 之后仍要能下载同一份文件，
+ * 所以预览不能吃掉令牌；下载端点仍走 `readAndDeleteReport`（下载即删，生命周期不变）。
+ * token 必须已过 `isReportToken` 白名单——本函数只拼路径，不做形态校验。
+ */
+export function readReportBuffer(token: string): Buffer | undefined {
+  const p = join(reportTmpDir(), token);
+  return existsSync(p) ? readFileSync(p) : undefined;
+}
+
 /** 放弃令牌（中止/无人接收 done）时立即回收落盘文件；失败不抛——清扫定时器仍是兜底 */
 export function discardReport(token: string): boolean {
   try {

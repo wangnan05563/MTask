@@ -18,6 +18,7 @@ import type { PlanTaskRow, RequirementRow } from './PlanService';
 import { TestCaseService } from './TestCaseService';
 import { AIService } from './AIService';
 import { estimatesSnapshot } from '../routes/estimates';
+import { PLACEHOLDER } from './deckDesign'; // 占位词与 HTML 适配器同源（避免为常量把数据库层拖进渲染门）
 import { saveReportBuffer, discardReport } from './ReportService'; // T02103：生成物落盘/下载令牌单源（纠偏 C3）；T02144：放弃即回收
 import { recordArtifact } from './aiArtifactService'; // T03262（AI-101④）：产物持久副本
 import { buildCardProvenance, recordCardProvenance, type CardProvenance } from './aiCardProvenance'; // T03262（AI-101①）：溯源行
@@ -315,7 +316,7 @@ export interface WorkloadStat {
 }
 
 /** 缺失数据的页面占位用词单源（FR-4.1：占位可见，但禁止据此编造人名/日期） */
-export const KICKOFF_PLACEHOLDER = '待补充';
+export const KICKOFF_PLACEHOLDER = PLACEHOLDER;
 
 export interface KickoffRisk {
   item: string;
@@ -1012,7 +1013,12 @@ export const OUTLINE_SYSTEM = `你是项目启动会 PPT 的大纲编排器。�
     加指代的方式是换掉句子里的废话，不是把句子加长（超长＝整页判废重来，比少一个指代严重得多）。
     「待补充」这类占位词**不计入指代配额**：只有空源页可以写它，其它页拿它凑数同样按套话处理。
     数据源为空时（【资料齐备性】标 warn/fail 的项，如未填承担人）照实写「待补充」并点名要补什么，
-    不得把「没填」写成「0 人 / 0 条」这类看着像结论的数；第 7 条不变——本条不授权你写统计数字，条数/占比一律走 dataKeys。`;
+    不得把「没填」写成「0 人 / 0 条」这类看着像结论的数；第 7 条不变——本条不授权你写统计数字，条数/占比一律走 dataKeys。
+13. 叙事职责（2026-11-06，汇报观感）：每页只承载**一个判断**，标题写成一句可被反驳的结论（如「三条需求未关联计划，开工前需定归属」），
+    不写「需求情况」「项目计划」这类没有观点的栏目名；每页的内容要为下一页制造理由（问题→证据→处置），
+    不允许两页讲同一件事。封面标题写项目名 + 「启动会」，不要写成口号；章节页只写章节名。
+14. 详略取舍：一页放不下的证据**不要硬塞**，把结论留在本页、明细交给后续页的数据块；
+    两条要点说的是同一件事时合并成一条，不要换词重复。`;
 
 const OUTLINE_SYSTEM_RETRY = `只输出 JSON 数组（${PAGE_MIN}~${PAGE_MAX} 个元素），元素：{section,title,bullets,dataKeys,layout}。
 section∈[${KICKOFF_SECTIONS.join('|')}] layout∈[${KICKOFF_LAYOUTS.join('|')}] dataKeys⊆[${KICKOFF_DATA_KEYS.join('|')}]
@@ -1021,7 +1027,8 @@ bullets 每条≤${BULLET_MAX_CHARS}字；必须至少一页 dataKeys 含 "timel
 第 1 页 cover、第 2 页 toc、末页 thanks；章节分隔用 section（dataKeys 空）；阶段链用 flow、人员标签用 chip（各至多一页）。
 每页至少 1 条 bullets 用「」照抄输入里出现过的具体名称，全稿带「」指代的 bullets ≥6 成；
 「」内只放 ≤12 字的名称本体（不放整段原文、路径、代码标识符），整条仍≤${BULLET_MAX_CHARS}字——放不下就删废话，别加长句子；「待补充」不计入指代配额；
-空源写「待补充」，不写「0 人」这类像结论的数。`;
+空源写「待补充」，不写「0 人」这类像结论的数。
+每页只讲一个判断：标题写成一句结论而不是栏目名；相邻两页不得重复同一件事。`;
 
 /** 齐备性摘要 + 真实计数：喂给模型的是口径与可用源，数字仍由装配层覆盖（FR-3.4） */
 export function outlineFacts(b: KickoffBundle): string {
@@ -1364,6 +1371,9 @@ export interface KickoffStreamResult {
   warnings: string[];
   /** T03262（AI-101①）：溯源行（面板与产物登记同源） */
   provenance: CardProvenance;
+  /** 2026-11-06：HTML 版下载令牌（单文件、离线可放映）；生成失败时为 undefined，不影响 PPTX 交付 */
+  htmlToken?: string;
+  htmlFileName?: string;
 }
 
 /**
@@ -1426,9 +1436,36 @@ export async function kickoffPptStream(
     discardReport(token);
     throw new Error(KICKOFF_ABORT_MSG);
   }
-  onStage('文件已生成，可在左侧下载。');
+
+  // 2026-11-06：同一份 bundle/outline 再产一份单文件 HTML（离线放映/网页分享）。
+  // 它不经过模型、不改 PPTX 任何字节，失败也只降级为「本次没有 HTML」，不让整份稿失败。
+  let htmlToken: string | undefined;
+  let htmlFileName: string | undefined;
+  let htmlWarnings: string[] = [];
+  try {
+    const { buildKickoffHtml } = await import('./kickoffHtml');
+    const { htmlFileNameOf } = await import('./deckHtml');
+    const html = buildKickoffHtml(bundleForBuild, built.outline);
+    htmlToken = saveReportBuffer(Buffer.from(html, 'utf8'));
+    const pptxName = kickoffFileName(bundle.project.name, bundle.dataAsOf);
+    htmlFileName = htmlFileNameOf(pptxName);
+    if (signal?.aborted) {
+      discardReport(htmlToken);
+      htmlToken = undefined;
+      htmlFileName = undefined;
+      throw new Error(KICKOFF_ABORT_MSG);
+    }
+  } catch (e) {
+    if (signal?.aborted) {
+      discardReport(token);
+      throw new Error(KICKOFF_ABORT_MSG);
+    }
+    htmlWarnings = [`HTML 版生成失败，本次仅提供 PPTX（原因：${e instanceof Error ? e.message : String(e)}）`];
+  }
+
+  onStage(htmlToken ? 'PPTX 与 HTML 均已生成，可在左侧下载或预览。' : '文件已生成，可在左侧下载。');
   const fileName = kickoffFileName(bundle.project.name, bundle.dataAsOf);
-  const allWarnings = [...warnings, ...assembled.warnings];
+  const allWarnings = [...warnings, ...assembled.warnings, ...htmlWarnings];
   // T03262（AI-101①）：来源=采集口径；降级/截断走 warnings（排不下的页、缺料降级都在里面）
   const provenance = buildCardProvenance({
     cardKey: 'ai.kickoff_ppt',
@@ -1449,5 +1486,7 @@ export async function kickoffPptStream(
     pageCount: assembled.pageCount,
     warnings: allWarnings,
     provenance,
+    htmlToken,
+    htmlFileName,
   };
 }

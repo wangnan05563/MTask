@@ -44,6 +44,7 @@ import {
   type DateRange,
   type LayoutFrames,
 } from './kickoff-layout';
+import { STATUS, statusToneOf } from './deckDesign'; // 2026-11-06：状态列语义色与 HTML 版同源（同一份 statusToneOf）
 import { KICKOFF_ABORT_MSG, KICKOFF_PLACEHOLDER, type KickoffBundle, type KickoffDataKey, type KickoffOutlineItem } from './kickoffService';
 
 /** 单页装配产物：一个块 = 一个原生对象 */
@@ -1423,10 +1424,21 @@ export function drawBlock(slide: any, block: Block): void {
     // 换行模型，实测行高 ≤ 估算行高，表格不再越出盒底与文字/页脚叠加。
     const colWs = tableColWs(block.table, geo.w);
     const fit = (cells: string[]) => cells.map((t, c) => fitCellText(t, colWs[c], TABLE_FONT_PT));
+    // 2026-11-06：状态列（表头含「状态/结论/结果」）按语义上色——绿=完成/正常、琥珀=进行中、红=阻塞/逾期。
+    // 只认这三类表头，避免把标题里恰好含「风险」的正文整列染红；色值与 HTML 版共用 statusToneOf/STATUS。
+    const statusCols = block.table.header.map((h) => /状态|结论|结果/.test(h));
+    const cellColor = (text: string, c: number): string => {
+      if (!statusCols[c]) return PALETTE.ink;
+      const tone = statusToneOf(text);
+      if (tone === 'ok') return STATUS.ok.fg;
+      if (tone === 'warn') return STATUS.warn.fg;
+      if (tone === 'bad') return STATUS.bad.fg;
+      return PALETTE.ink;
+    };
     const rows = [
       // T02156：表头改品牌深底白字（恒生模板表格头样式），与浅蓝页面背景成「卡片」层次
       block.table.header.map((t, c) => ({ text: fitCellText(t, colWs[c], TABLE_FONT_PT), options: { bold: true, color: PALETTE.onBrand, fill: { color: PALETTE.brandDeep } } })),
-      ...block.table.rows.map((r, i) => fit(r).map((t, c) => ({ text: t, options: { color: PALETTE.ink, fill: { color: i % 2 === 1 ? PALETTE.zebraFill : PALETTE.paper } } }))),
+      ...block.table.rows.map((r, i) => fit(r).map((t, c) => ({ text: t, options: { color: cellColor(t, c), fill: { color: i % 2 === 1 ? PALETTE.zebraFill : PALETTE.paper } } }))),
     ];
     const rowHs = [block.table.header, ...block.table.rows].map((cells) => estimateRowH(cells, colWs, TABLE_FONT_PT));
     slide.addTable(rows, { ...geo, fontSize: TABLE_FONT_PT, fontFace: FONT.face, border: { type: 'solid', pt: 0.5, color: PALETTE.border }, valign: 'middle', colW: colWs, rowH: rowHs });

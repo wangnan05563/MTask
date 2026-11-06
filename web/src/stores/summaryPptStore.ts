@@ -43,6 +43,9 @@ export interface SummaryStreamResult {
   degradedPages: number[];
   /** merged=单份稿；separate=分别独立版 zip */
   mode?: 'merged' | 'separate';
+  /** 2026-11-06：合并版的 HTML 令牌；separate 的 HTML 在 zip 内，无独立令牌 */
+  htmlToken?: string;
+  htmlFileName?: string;
 }
 
 export interface SummaryPptState {

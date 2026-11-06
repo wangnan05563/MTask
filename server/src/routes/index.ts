@@ -61,7 +61,7 @@ import { sonarSettingsApi } from './sonarSettings'; // 八期 §3.4.1：设置�
 import { sonarScanApi } from './sonarScan'; // 八期 §3.4.2：Sonar 质量扫描七阶段引擎（SSE/中止/环境预检）
 import { attachGitLinks } from '../services/taskGitLinks'; // T03361：GET /tasks 行内加性字段 gitLinks/gitLinkCount
 import { listArtifacts } from '../services/aiArtifactService';
-import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, discardReport, gatherReportData, validateProjectIds, aiReportPreflight, normalizeConfirmedEstimate, type ReportPeriod, type ReportFormat } from '../services/ReportService';
+import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, readReportBuffer, discardReport, gatherReportData, validateProjectIds, aiReportPreflight, normalizeConfirmedEstimate, type ReportPeriod, type ReportFormat } from '../services/ReportService';
 import { DOWNLOAD_NAME_RE } from '../util/export-name'; // T02104：下载文件名白名单单源（与生成侧清洗同源）
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
@@ -2432,11 +2432,31 @@ api.post('/report/ai-download', (req, res) => {
     zip: 'application/zip',
     // T02874（六期 3.3）：代码评审讲稿纯文本导出
     md: 'text/markdown;charset=utf-8',
+    // 2026-11-06：启动会/阶段总结的 HTML 版（单文件演示）
+    html: 'text/html;charset=utf-8',
   };
   const ext = (safe.split('.').pop() ?? '').toLowerCase();
   res.setHeader('Content-Type', MIME[ext] ?? 'application/octet-stream');
   // RFC5987：文件名含中文需编码，避免下载名乱码
   res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(safe)}`);
+  res.send(buf);
+});
+
+/**
+ * 2026-11-06：HTML 版演示稿的面板内预览。
+ * - **只读令牌**（`readReportBuffer` 不删文件）：预览之后用户还要能下载同一份；
+ * - 用 `sandbox allow-scripts` 而非 `allow-same-origin`：演示稿里的脚本只做翻页，
+ *   不需要访问本站存储/接口，隔离住就等于把「生成内容」的风险面压到最小；
+ * - 不允许被 iframe 嵌入到第三方站点（`frame-ancestors 'self'`），避免令牌被别人挂到外站。
+ */
+api.get('/report/ai-preview', (req, res) => {
+  const token = typeof req.query.token === 'string' ? req.query.token : '';
+  if (!isReportToken(token)) return res.status(400).json({ error: 'token 非法' });
+  const buf = readReportBuffer(token);
+  if (!buf) return res.status(404).json({ error: '文件已过期，请重新生成' });
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Content-Security-Policy', "sandbox allow-scripts; frame-ancestors 'self'");
   res.send(buf);
 });
 

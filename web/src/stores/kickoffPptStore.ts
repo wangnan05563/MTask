@@ -27,6 +27,9 @@ export interface KickoffStreamResult {
   fileName: string;
   pageCount: number;
   warnings: string[];
+  /** 2026-11-06：HTML 版令牌（单文件演示）；服务端生成失败时缺省 */
+  htmlToken?: string;
+  htmlFileName?: string;
 }
 
 export interface KickoffPptState {

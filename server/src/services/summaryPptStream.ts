@@ -83,6 +83,9 @@ export interface SummaryStreamResult {
   mode: SummaryStreamMode;
   /** T03262（AI-101①）：溯源行（面板与产物登记同源） */
   provenance: CardProvenance;
+  /** 2026-11-06：合并版的 HTML 令牌（单文件演示）；separate 模式打包进 zip，这里不设 */
+  htmlToken?: string;
+  htmlFileName?: string;
 }
 
 /** T03262（AI-101①）：总结 PPT 的溯源行——备料口径（项目/页数/数据截止）+ 降级与告警 */
@@ -220,9 +223,34 @@ export async function renderSummaryPptStream(
     discardReport(token);
     throw new Error(SUMMARY_ABORT_MSG);
   }
-  onStage('文件已生成，可在左侧下载。');
+
+  // 2026-11-06：同一份 deck/outline 再产一份单文件 HTML。失败只降级为「本次没有 HTML」，
+  // 不让整份稿失败；中止时两个令牌都回收，不留孤儿。
+  let htmlToken: string | undefined;
+  let htmlFileName: string | undefined;
+  const htmlWarnings: string[] = [];
+  try {
+    const { buildSummaryHtml } = await import('./summaryHtml');
+    const { htmlFileNameOf } = await import('./deckHtml');
+    htmlToken = saveReportBuffer(Buffer.from(buildSummaryHtml(prepared.deck, prepared.outline), 'utf8'));
+    htmlFileName = htmlFileNameOf(summaryPptFileName(prepared.deck));
+    if (signal?.aborted) {
+      discardReport(htmlToken);
+      htmlToken = undefined;
+      htmlFileName = undefined;
+      throw new Error(SUMMARY_ABORT_MSG);
+    }
+  } catch (e) {
+    if (signal?.aborted) {
+      discardReport(token);
+      throw new Error(SUMMARY_ABORT_MSG);
+    }
+    htmlWarnings.push(`HTML 版生成失败，本次仅提供 PPTX（原因：${e instanceof Error ? e.message : String(e)}）`);
+  }
+
+  onStage(htmlToken ? 'PPTX 与 HTML 均已生成，可在左侧下载或预览。' : '文件已生成，可在左侧下载。');
   const fileName = summaryPptFileName(prepared.deck);
-  const warnings = [...prepared.warnings, ...built.warnings];
+  const warnings = [...prepared.warnings, ...built.warnings, ...htmlWarnings];
   const provenance = summaryProvenance(prepared, built.pageCount, warnings, built.degradedPages);
   // T03262（AI-101④）：持久副本——令牌下载即删，刷新后靠它找回这一份
   try { recordArtifact({ cardKey: 'ai.summary_ppt', filename: fileName, buffer: built.buffer, provenance }); } catch { /* 登记失败不影响下载 */ }
@@ -236,6 +264,8 @@ export async function renderSummaryPptStream(
     degradedPages: built.degradedPages,
     mode: 'merged',
     provenance,
+    htmlToken,
+    htmlFileName,
   };
 }
 
@@ -277,7 +307,21 @@ async function renderSeparate(
       style: prepared.style,
     });
     if (signal?.aborted) throw new Error(abortMsg);
-    entries.push({ name: separateDeckName(g.project.name, prepared.deck.dataAsOf, taken), buffer: built.buffer });
+    const pptxName = separateDeckName(g.project.name, prepared.deck.dataAsOf, taken);
+    entries.push({ name: pptxName, buffer: built.buffer });
+    // 2026-11-06：每项目再带一份单文件 HTML（同 zip，不新增令牌/入口）；失败只少这一份，不影响 pptx
+    try {
+      const { buildSummaryHtml } = await import('./summaryHtml');
+      const base = pptxName.replace(/\.pptx$/i, '');
+      let htmlName = `${base}.html`;
+      let dup = 2;
+      while (taken.has(htmlName)) { htmlName = `${base}-${dup}.html`; dup += 1; }
+      taken.add(htmlName);
+      entries.push({ name: htmlName, buffer: Buffer.from(buildSummaryHtml(deck, g.items), 'utf8') });
+    } catch (e) {
+      if (signal?.aborted) throw new Error(abortMsg);
+      warnings.push(`[${g.project.name}] HTML 版生成失败，该项目的 zip 内仅有 PPTX（原因：${e instanceof Error ? e.message : String(e)}）`);
+    }
     warnings.push(...built.warnings.map((w) => `[${g.project.name}] ${w}`));
   }
 
@@ -290,8 +334,8 @@ async function renderSeparate(
     discardReport(token);
     throw new Error(abortMsg);
   }
-  onStage(`文件已生成，可在左侧下载（zip 内含 ${entries.length} 份 .pptx）。`);
-  const fileName = summaryPptZipFileName(prepared.deck, entries.length);
+  onStage(`文件已生成，可在左侧下载（zip 内含 ${entries.filter((e) => /\.pptx$/i.test(e.name)).length} 份 .pptx 与对应 .html）。`);
+  const fileName = summaryPptZipFileName(prepared.deck, groups.length);
   const provenance = summaryProvenance(prepared, total, warnings, []);
   try { recordArtifact({ cardKey: 'ai.summary_ppt', filename: fileName, buffer, provenance }); } catch { /* 登记失败不影响下载 */ }
   recordCardProvenance(provenance, prepared.deck.projects.length === 1 ? prepared.deck.projects[0].id : null);

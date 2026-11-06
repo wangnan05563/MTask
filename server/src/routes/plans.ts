@@ -513,6 +513,9 @@ planApi.post('/summary-ppt-stream', exportGate(REPORT_GATE, undefined, { defer: 
       degradedPages: r.degradedPages,
       mode: r.mode,
       provenance: r.provenance,
+      // 2026-11-06：合并版的 HTML 预览/下载令牌；separate 模式为 undefined（HTML 在 zip 内）
+      htmlToken: r.htmlToken,
+      htmlFileName: r.htmlFileName,
     });
     doneSent = true;
   } catch (e) {
@@ -594,7 +597,7 @@ planApi.post('/kickoff-ppt-stream', exportGate(REPORT_GATE, undefined, { defer: 
       jobId, cardKey: 'ai.kickoff_ppt', status: 'done', mode: 'ai',
       sectionsTotal: outlinePages, sectionsOk: outlinePages, startedAt: jobStartedAt,
     });
-    send('done', { token: r.token, fileName: r.fileName, pageCount: r.pageCount, warnings: r.warnings, provenance: r.provenance });
+    send('done', { token: r.token, fileName: r.fileName, pageCount: r.pageCount, warnings: r.warnings, provenance: r.provenance, htmlToken: r.htmlToken, htmlFileName: r.htmlFileName });
     doneSent = true;
   } catch (e) {
     reportAiJob({ jobId, cardKey: 'ai.kickoff_ppt', status: ac.signal.aborted ? 'aborted' : 'error', mode: 'ai', startedAt: jobStartedAt });

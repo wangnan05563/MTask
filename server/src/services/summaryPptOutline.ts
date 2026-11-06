@@ -248,7 +248,11 @@ export function buildOutlinePrompt(input: OutlinePromptInput): {
 9. ${separate ? '每个项目的第 1 页 layout=cover、第 2 页 layout=toc' : '第 1 页 layout=cover、第 2 页 layout=toc'}（封面与目录都是结构页，dataKeys 必须为空）；章节分隔可用 layout=section（dataKeys 置空）；
 10. bullets 必须引用【各项目摘要】里给过的具体名称（用「」包裹），不得写「相关工作有序推进」这类无指代套话；名称只能照抄，数字仍归 dataKeys；
 11. 「问题与风险」页左栏是需求待确认（PRD 问题）、右栏是执行风险（逾期/阻塞/高复杂度），两栏都不许自造条目；
-12. JSON 语法铁律：键名与字符串分隔符只能用英文双引号 "，「」只出现在 bullet 正文内部用于包裹名称，不得顶替双引号；数组/对象元素之间必须有逗号，不得写成 ["总 11""已完成"] 这种连写。`;
+12. JSON 语法铁律：键名与字符串分隔符只能用英文双引号 "，「」只出现在 bullet 正文内部用于包裹名称，不得顶替双引号；数组/对象元素之间必须有逗号，不得写成 ["总 11""已完成"] 这种连写。
+13. 叙事职责（2026-11-06，汇报观感）：每页只承载**一个判断**，标题写成一句可被反驳的结论（如「两条计划逾期，交付节奏需要重排」），
+    不写「总体进展」「问题与风险」之外再自造栏目名的空标题；正文按「结论 → 证据 → 处置」组织，
+    上一页的问题要在后续页给出处置或指向，不允许两页讲同一件事，也不允许只罗列数据不给判断。
+14. 详略取舍：一页放不下的证据**不要硬塞**，把结论留在本页、明细交给数据块；两条要点说的是同一件事时合并成一条。`;
 
   let scopeTag: string;
   if (separate) {
@@ -293,6 +297,7 @@ export function buildOutlinePrompt(input: OutlinePromptInput): {
 /** 重试轮的精简提示词（把首轮违规原因原样回喂，比静态提示更有效——同 kickoff T02314） */
 const OUTLINE_SYSTEM_RETRY = `只输出 JSON 数组，元素 {section,title,bullets,dataKeys,layout,projectId}。
 section∈[${SUMMARY_SECTIONS.join('|')}] layout∈[${SUMMARY_LAYOUTS.join('|')}] dataKeys⊆[${SUMMARY_DATA_KEYS.join('|')}]（每页≤${DATA_KEYS_MAX}；封面/目录/章节/致谢 cover/toc/section/thanks 为结构页，dataKeys 必须为空）
+每页只讲一个判断：标题写成一句结论而不是栏目名；相邻两页不得重复同一件事。
 每页 bullets≤${BULLET_MAX_LINES} 条、每条≤${BULLET_MAX_CHARS} 字；单项目必须覆盖 kpi/highlights/milestones/planRows/risks/workload/deliverables/nextSteps/appendix；
 合并版必须有 compare 与 horizontal 各一页，且每项目 4 页（kpi/milestones/risks/nextSteps）带 projectId；
 分别独立版每项目 12~16 页、每页带 projectId，且每项目 cover/toc 与上述 9 个数据块齐全；

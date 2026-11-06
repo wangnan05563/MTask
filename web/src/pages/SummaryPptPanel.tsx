@@ -32,7 +32,8 @@ import { useSessionState } from '../ui/session';
 import { CONSOLE_RESET_EVENT } from '../ui/consoleReset';
 import { finishMaterialTiming } from '../ui/materialTiming'; // T03189（G-1）：成品下载即收口本轮材料准备耗时
 import { AiProvenanceSection } from '../components/AiProvenance'; // T03262（AI-101①④）：溯源面板 + 产物找回
-import { ChevronDown, ChevronUp, CircleAlert, CircleCheck, CircleX, Download, FileChartColumn, Loader2, Plus, Sparkles, Trash2, X } from 'lucide-react';
+import { DeckHtmlPreview } from '../ui/DeckHtmlPreview'; // 2026-11-06：HTML 版演示稿面板内预览
+import { ChevronDown, ChevronUp, CircleAlert, CircleCheck, CircleX, Download, Eye, FileChartColumn, Loader2, Plus, Sparkles, Trash2, X } from 'lucide-react';
 
 /** 服务端 `SummaryPreflightItem` 的前端镜像（单源：`server/src/services/summaryPptService.ts`） */
 type PreflightStatus = 'ok' | 'warn' | 'fail';
@@ -522,7 +523,7 @@ function OutlinePageList({ rows, streaming, merged, separate, onPatch, onRemove,
 }
 
 /** ④ 生成与下载条 */
-function GenerateBar({ streaming, canGenerate, blockReason, result, downloading, onGenerate, onDownload }: {
+function GenerateBar({ streaming, canGenerate, blockReason, result, downloading, onGenerate, onDownload, onPreviewHtml, onDownloadHtml, htmlDownloading }: {
   readonly streaming: boolean;
   readonly canGenerate: boolean;
   readonly blockReason: string;
@@ -530,6 +531,9 @@ function GenerateBar({ streaming, canGenerate, blockReason, result, downloading,
   readonly downloading: boolean;
   readonly onGenerate: () => void;
   readonly onDownload: () => void;
+  readonly onPreviewHtml: () => void;
+  readonly onDownloadHtml: () => void;
+  readonly htmlDownloading: boolean;
 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -555,6 +559,19 @@ function GenerateBar({ streaming, canGenerate, blockReason, result, downloading,
           </button>
         );
       })()}
+      {result?.htmlToken && !streaming && (
+        <>
+          <button onClick={onPreviewHtml} className="tbtn-anim" title="在面板内放映 HTML 版（← → 翻页）" aria-label="预览 HTML 版"
+            style={{ ...opBtn, padding: '5px 12px' }}>
+            <Eye size={12} /> 预览 HTML
+          </button>
+          <button onClick={onDownloadHtml} disabled={htmlDownloading} className={`tbtn-anim${htmlDownloading ? ' task-breathe' : ''}`}
+            title={`下载 ${result.htmlFileName ?? 'HTML 版'}`} aria-label="下载 HTML 版"
+            style={{ ...opBtn, padding: '5px 12px' }}>
+            {htmlDownloading ? <Loader2 size={12} className="aispin" /> : <Download size={12} />} 下载 .html
+          </button>
+        </>
+      )}
     </div>
   );
 }
@@ -633,6 +650,8 @@ export function SummaryPptPanel({ projectIds: topIds, projects, toolId, onClose,
   const [pageTotal, setPageTotal] = useState(0);
   const [notice, setNotice] = useState('');
   const [downloading, setDownloading] = useState(false);
+  const [htmlDownloading, setHtmlDownloading] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   const flash = useCallback((m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3500); }, []);
 
@@ -835,6 +854,27 @@ export function SummaryPptPanel({ projectIds: topIds, projects, toolId, onClose,
     }
   }
 
+  /** HTML 版下载：令牌与文件名取服务端 done 原值（separate 模式无独立 HTML，按钮不渲染） */
+  async function downloadHtml(): Promise<void> {
+    if (!result?.htmlToken) return;
+    setHtmlDownloading(true);
+    try {
+      const { blob, filename } = await api.download('/report/ai-download', { token: result.htmlToken, filename: result.htmlFileName ?? '阶段性总结.html' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      flash(`已下载 ${filename}`);
+      await finishMaterialTiming('summary-ppt');
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    } finally {
+      setHtmlDownloading(false);
+    }
+  }
+
   async function clearOutline(): Promise<void> {
     if (rows.length === 0) return;
     if (!(await askConfirm('清空当前大纲稿？（不影响已生成的文件）'))) return;
@@ -917,7 +957,8 @@ export function SummaryPptPanel({ projectIds: topIds, projects, toolId, onClose,
 
       {/* ④ 生成与下载 */}
       <GenerateBar streaming={streaming} canGenerate={canGenerate} blockReason={generateBlockReason} result={result}
-        downloading={downloading} onGenerate={() => void generate()} onDownload={() => void download()} />
+        downloading={downloading} onGenerate={() => void generate()} onDownload={() => void download()}
+        onPreviewHtml={() => setPreviewOpen(true)} onDownloadHtml={() => void downloadHtml()} htmlDownloading={htmlDownloading} />
 
       <BuildProgressPanel streaming={streaming} pageDone={pageDone} pageTotal={pageTotal} result={result} />
 
@@ -925,6 +966,11 @@ export function SummaryPptPanel({ projectIds: topIds, projects, toolId, onClose,
         <AiProvenanceSection cardKey="ai.summary_ppt"
           projectId={activePre?.projectIds.length === 1 ? activePre.projectIds[0] : null}
           refreshKey={result?.fileName ?? ''} />
+      )}
+
+      {previewOpen && result?.htmlToken && (
+        <DeckHtmlPreview token={result.htmlToken} fileName={result.htmlFileName ?? '阶段性总结.html'}
+          onClose={() => setPreviewOpen(false)} onDownloaded={(f) => flash(`已下载 ${f}`)} />
       )}
 
       {notice && <output className="flash-toast">{notice}</output>}
