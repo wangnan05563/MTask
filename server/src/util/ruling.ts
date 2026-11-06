@@ -10,7 +10,8 @@
  *    对这些单永远不响，用户点名的 T02974 / T02963 / T02947 全在这一类里漏掉。
  *  - 结论文本：命中明确的裁决请求短语才算「需要裁决」，候选词本身不单独作数——
  *    历史结论里「按裁定 A 落地」「裁决：保留 X」是陈述，按候选词判会把已收口单误挂成待裁决。
- *  - 描述：只用来识别派生单（首行「来源：Txxxx」），不参与请求判定（描述里全是背景叙述）。
+ *  - 描述：普通描述仍是背景叙述；但 AI 回写派生单常把裁决请求写在描述里且 `handle_result` 为空。
+ *    因此仅裁决主体读描述中的显式请求/结论，避免普通任务被背景叙述误标。
  */
 
 /** 通用回落选项（语义贴合「AI 派生待办的结论如何处置」）：结论里抽不出候选时才用它 */
@@ -62,6 +63,11 @@ const ASK_PATTERNS: RegExp[] = [
   /[还尚]需[^，。；;]{0,12}(?:决策|裁决|拍板|定夺|确认)/,
   /供(?:你|用户|需求方)(?:裁决|选择|决策|定夺)/,
   /请(?:你)?明确(?:一句)?/,
+  // T04458/T04462/T04468/T04482/T04513 的现场写法：裁决对象是派生单时，标题常不带【】徽标，
+  // 请求又落在 Markdown 小标题或派生描述首句里。这里只补显式“定调/裁决”词，不把裸“裁决”当请求。
+  /需要(?:产品[/／]?设计|产品|设计|需求方|用户|人工)?(?:的)?(?:口径|设计)?(?:先)?(?:裁决|裁定|定夺|拍板|定调)/,
+  /需(?:要)?设计(?:口径)?(?:先)?定调/,
+  /留给(?:用户|产品|设计|需求方|人工)?(?:的)?(?:裁决|裁定|定夺|拍板|定调)/,
 ];
 
 /** 命中点前的否定/已然词：紧贴短语即视为「不是请求」 */
@@ -101,12 +107,24 @@ const BADGE_RE = /【([^】]{0,80}?(?:裁决|裁定|定夺|拍板)[^】]{0,80}?)
 /** 徽标里的候选：`【待裁决 A全量纳管/B改名+列清单/C先文案后拆单】` → A/B/C 三条 */
 const BADGE_LABEL_RE = /^[A-Za-z][\u4e00-\u9fa5A-Za-z0-9+＋\-_/（）()·、，,.\s]{1,24}$/;
 
+/**
+ * 描述专用显式请求：只认 Markdown 标题行，或行首直接以“需要…/请…”开头的裁决句。
+ * 之所以不走 askHit 的括号/冒号守卫，是因为“需要裁决：1/2/3”与
+ * “## 要做什么（二选一或组合，需设计口径先定调）”本身就是请求清单，不是已下结论。
+ */
+const DESC_REQUEST_RES: RegExp[] = [
+  /^#{1,6}\s*[^\n]{0,100}?(?:待裁决|请(?:你)?(?:产品|设计|需求方|用户|人工)?(?:的)?(?:裁决|裁定|定夺|拍板|定调)|需(?:要)?(?:产品[/／]?设计|产品|设计|需求方|用户|人工)?(?:的)?(?:口径|设计)?(?:先)?(?:裁决|裁定|定夺|拍板|定调)|留给(?:用户|产品|设计|需求方|人工)?(?:的)?(?:裁决|裁定|定夺|拍板|定调))/m,
+  /^[ \t]*(?:待裁决|请(?:你)?(?:产品|设计|需求方|用户|人工)?(?:的)?(?:裁决|裁定|定夺|拍板|定调)|需(?:要)?(?:产品[/／]?设计|产品|设计|需求方|用户|人工)?(?:的)?(?:口径|设计)?(?:先)?(?:裁决|裁定|定夺|拍板|定调)|留给(?:用户|产品|设计|需求方|人工)?(?:的)?(?:裁决|裁定|定夺|拍板|定调))/m,
+];
+
 export interface RulingDetection {
   needed: boolean;
   /** 命中的请求短语或判定依据（写进 task_events 供审计；needed=false 时为空） */
   reason: string;
   /** 候选选项；不足 2 条时调用方应回落到 `RULING_DEFAULT_OPTIONS` */
   options: string[];
+  /** 派生描述里已有的非空裁决结论；存在时 `needed=false`，由 TaskService 落为「已裁决」 */
+  conclusion?: string;
 }
 
 function toInput(input: string | RulingInput): { title: string; description: string; handleResult: string; derivedFrom: string } {
@@ -141,6 +159,29 @@ export function isRulingSubject(input: string | RulingInput): boolean {
     || /^来源[:：]\s*[Tt]\d+/.test(s.description.trim())
     || /【AI回写待审核】/.test(s.title)
     || Boolean(rulingBadge(s.title));
+}
+
+/**
+ * 用户/评审者把裁决结论直接写进派生单描述时的识别口径。
+ * 只认 `## 裁决结论/裁决结果` 这类显式小标题，不把正文里的“结论是……”当成结构化裁决；
+ * 标题行冒号后有内容，或紧随其后到下一个 Markdown 标题前的非空正文，都可作为裁决结果。
+ */
+export function rulingConclusionFromDescription(src: string): string {
+  const lines = String(src ?? '').split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const m = /^#{1,6}\s*(?:裁决结论|裁决结果)\s*[:：]?\s*(.*)$/.exec(lines[i].trim());
+    if (!m) continue;
+    const inline = m[1]?.trim() ?? '';
+    if (inline) return inline;
+    const body: string[] = [];
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const next = lines[j].trim();
+      if (/^#{1,6}\s/.test(next)) break;
+      if (next) body.push(next);
+    }
+    return body.join('\n').trim();
+  }
+  return '';
 }
 
 /** 从结论正文抽候选（保持出现顺序、去重、最多 4 个） */
@@ -193,6 +234,15 @@ function askHit(src: string): string {
   return '';
 }
 
+/** 描述面补兵：只认行首/标题里的显式请求，避免 askHit 的冒号/括号收口守卫挡掉裁决清单。 */
+function descriptionAskHit(src: string): string {
+  for (const re of DESC_REQUEST_RES) {
+    const m = re.exec(String(src ?? ''));
+    if (m?.[0]) return m[0].trim();
+  }
+  return '';
+}
+
 /**
  * `strict`：历史补标用。只认标题徽标与明确请求短语，不启用「多候选 + 动作词」这条较宽的规则——
  * 旧单的结论常叙述「方案 A/B 的取舍已定」，按宽规则补标会凭空制造待裁决。
@@ -200,7 +250,13 @@ function askHit(src: string): string {
 export function detectRuling(input: string | RulingInput, opts: { strict?: boolean } = {}): RulingDetection {
   const s = toInput(input);
   const badge = rulingBadge(s.title);
-  const hit = askHit(s.handleResult);
+  // 只有裁决主体才读描述；普通任务的描述里引用“需要产品裁决”等历史背景不应自动挂标。
+  const subject = isRulingSubject(s);
+  const conclusion = subject ? rulingConclusionFromDescription(s.description) : '';
+  if (conclusion) return { needed: false, reason: '', options: [], conclusion };
+  const resultHit = askHit(s.handleResult);
+  const descriptionHit = subject ? (askHit(s.description) || descriptionAskHit(s.description)) : '';
+  const hit = resultHit || descriptionHit;
   const options = badge ? candidatesFromBadge(badge) : [];
   const resultOptions = options.length ? [] : candidatesFromResult(s.handleResult);
   const picked = options.length ? options : resultOptions;

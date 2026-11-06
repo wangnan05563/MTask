@@ -10,7 +10,12 @@ import { parseReqIds, syncReqStatuses } from './reqStatusSync'; // T02087：需�
 import { recalcMilestonesOfChild } from './milestoneProgress'; // T02090：里程碑进度聚合（任务完成度是聚合输入）
 import { parsePlanDeps, depsSatisfied, topoOrder, type PlanDep } from '../util/planDeps'; // T01284：deps 判定统一实现（FR-3.7）
 import { normalizePlatform } from '../util/platform'; // T01288：平台标识归一化（拉取侧平台偏好匹配）
-import { detectRuling, isRulingSubject, RULING_DEFAULT_OPTIONS } from '../util/ruling'; // T02949：裁决自动识别（纯函数单源）
+import {
+  detectRuling,
+  isRulingSubject,
+  RULING_DEFAULT_OPTIONS,
+  rulingConclusionFromDescription,
+} from '../util/ruling'; // T02949：裁决自动识别（纯函数单源）
 import { WebhookService } from './WebhookService'; // T03196（PM-401）：任务事件外发
 import { alreadyMerged } from './derivedOrigin'; // T03637：派生单闭环判据（与 MCP/脚本归并共用一份标记口径）
 import { FieldService, type ProjectFieldView, type TaskFieldValueView } from './FieldService'; // T03231（PM-203②）：列表行带出项目自定义字段值；T03232 起筛选/排序共用字段定义
@@ -841,6 +846,9 @@ export const TaskService = {
     if (input.parentId) recalcParentProgress(input.parentId); // M-5：新增子任务后父进度同步重算（done/100% 下再添子任务不再失真）
     // T03196：创建事件单独埋点（create 路径不写 task_events）
     try { WebhookService.onTaskCreated(id); } catch { /* noop */ }
+    // T04458：AI 回写派生单走 create（裁决请求/结论常在 description，handle_result 为空），
+    // 不像 update 那样有统一副作用出口；这里补同一套 autoRuling，避免创建时漏标。
+    this.autoRuling(id);
     return this.getById(id)!;
   },
 
@@ -1483,6 +1491,15 @@ export const TaskService = {
     if (task.ruling_state === '已裁决') return;
     const detected = detectRuling(rulingInputOf(task));
     const db = getDb();
+    // T04458：用户可能直接在派生描述里手写「## 裁决结论」。这是已下裁决，不是待裁决；
+    // 将正文同步进独立列，避免 `ruling_result` 与用户看到的内容不一致。
+    if (detected.conclusion) {
+      const t = now();
+      db.prepare('UPDATE tasks SET ruling_state = ?, ruling_result = ?, ruling_at = ? WHERE id = ?')
+        .run('已裁决', detected.conclusion, t, id);
+      logEvent(db, id, 'ruling', `自动识别：描述已有裁决结论「${detected.conclusion.slice(0, 120)}」`);
+      return;
+    }
     if (detected.needed && task.ruling_state !== '待裁决') {
       db.prepare('UPDATE tasks SET ruling_state = ?, ruling_at = ? WHERE id = ?').run('待裁决', now(), id);
       logEvent(db, id, 'ruling', `自动识别：${detected.reason}`);
@@ -1514,6 +1531,14 @@ export const TaskService = {
       const input = rulingInputOf(row);
       if (!isRulingSubject(input)) continue;
       const detected = detectRuling(input, { strict: true });
+      if (detected.conclusion) {
+        const t = now();
+        db.prepare('UPDATE tasks SET ruling_state = ?, ruling_result = ?, ruling_at = ? WHERE id = ?')
+          .run('已裁决', detected.conclusion, t, row.id);
+        logEvent(db, row.id, 'ruling', `历史识别：描述已有裁决结论「${detected.conclusion.slice(0, 120)}」`);
+        marked += 1;
+        continue;
+      }
       if (!detected.needed) continue;
       db.prepare('UPDATE tasks SET ruling_state = ?, ruling_at = ? WHERE id = ?').run('待裁决', t, row.id);
       logEvent(db, row.id, 'ruling', `历史补标：${detected.reason}`);
