@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, ChevronRight, GitBranch, Loader2, RefreshCw, Search, Tag, X } from 'lucide-react'; // T03654：折叠箭头统一 lucide
+import { Check, ChevronDown, ChevronRight, FolderGit2, GitBranch, Loader2, RefreshCw, Search, Tag, X } from 'lucide-react'; // T03654：折叠箭头统一 lucide · T04527：仓库行用 FolderGit2
 import { api } from '../api/client';
 import type { Project } from '../api/client';
 import { fullTime, relTime } from '../ui/format';
 import { PILL } from './primitives'; // PM-302 ① 单源（与 CodeReviewLecturePanel 原为逐字节相同的两份定义）
 import { BranchPicker } from './GitScopeControls'; // T03590：head 输入框 → 可展开分支选择器
+import { useSessionState } from './session'; // T04527：分支组/仓库折叠态跨重开保持（方案 §5.2）
 import {
   GIT_TREE_PAGE_SIZE,
   MAX_SELECTED_COMMITS,
@@ -18,6 +19,27 @@ import {
   type GitTreeCommit,
   type LaneLayout,
 } from '../utils/gitTreeSelect';
+import {
+  REPO_SCAN_CONCURRENCY,
+  applyCommitCounts,
+  blockedRepoRows,
+  branchNameOf,
+  buildRepoBranchGroups,
+  defaultExpandedBranches,
+  defaultExpandedRepos,
+  mapSettledWithLimit,
+  mergePaneSelections,
+  paneKeyOf,
+  refNameForBranch,
+  repoInputFromScan,
+  resolveRepoConfirmation,
+  sharedBranchGroups,
+  refNameSet,
+  toggleKey,
+  type RepoBranchGroup,
+  type RepoBranchInput,
+  type RepoBranchRow,
+} from '../utils/gitRepoBranchGroups';
 
 /**
  * T03302：代码评审讲稿卡 · Git 树选范围弹窗（布局参照 JetBrains Git Log，点选按勾选式多选—T03326）。
@@ -30,6 +52,10 @@ import {
  *     列表空着但按钮禁用，避免用户以为「这仓没东西」；
  *  2. **跨页与搜索不丢选择**：已选 SHA 存在组件外的 `selectedByProject` 里，翻页/换分支只是改可视集；
  *  3. **上限由两端同口径把关**：前端截到 200 并说明被截条数，服务端 `normalizeSelectedCommits` 仍会拒。
+ *
+ * T04527 新增「分支聚合（跨仓库）」视图（方案 `docs/T04525-Git视图同一分支多仓库展示区分方案.md`）：
+ * 单仓库形态是缺省且逐字节不变——多一层折叠只在用户显式开启、或普查确认某分支真的跨了 ≥2 个仓库之后才出现；
+ * 判据（归一化/聚合/失败仓库保留/确认口径）全部在 `utils/gitRepoBranchGroups.ts`，本文件只做渲染。
  *
  * 折叠交互的取舍：分支行不做「伪树折叠」（一个提交可以同时属于两条分支，藏起来会撒谎），
  * 而是点分支 = 按该分支为起点重新取数（等价于 IDEA 的 branch filter），提交行自身可展开看 SHA/父/作者/提交者。
@@ -52,6 +78,24 @@ interface GitLogResponse {
 }
 
 const LANE_COLORS = ['var(--accent)', '#e0863a', '#3aa0e0', '#57b06a', '#b0579a', '#8a8f98'];
+
+/**
+ * T04527：分组视图里一个「仓库 × 分支」窗口的全部状态。
+ * 勾选也放在窗口上（而不是散成另一个 map），是因为点选/Shift 框选的锚点必须与这份可视集同生共死。
+ */
+interface RepoPane {
+  projectId: string;
+  branchName: string;
+  commits: GitTreeCommit[];
+  loading: boolean;
+  /** 至少成功取回过一次：决定分组头能不能显示提交数 */
+  loaded: boolean;
+  hasMore: boolean;
+  error: string;
+  selected: string[];
+}
+
+const emptyPane: RepoPane = { projectId: '', branchName: '', commits: [], loading: false, loaded: false, hasMore: false, error: '', selected: [] };
 
 const boxStyle: React.CSSProperties = {
   fontSize: 'var(--fs-s)', padding: '4px 6px', borderRadius: 6, border: '1px solid var(--border)',
@@ -105,15 +149,140 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   const [foldRefs, setFoldRefs] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
 
+  /* ---------- T04527：分支聚合（跨仓库）视图。缺省关闭，关闭时下面这些状态一概不参与渲染 ---------- */
+  const [repoView, setRepoView] = useState(false);
+  /** 引用普查结果（每个仓库一份 refs）；null = 还没普查过，此时不画任何分组层 */
+  const [census, setCensus] = useState<RepoBranchInput[] | null>(null);
+  const [scanning, setScanning] = useState(false);
+  /** 「仓库 × 分支」窗口：懒加载回来的提交、勾选、取数状态与错误 */
+  const [panes, setPanes] = useState<Record<string, RepoPane>>({});
+  const [paneAnchor, setPaneAnchor] = useState<Record<string, number | null>>({});
+  const [groupExpanded, setGroupExpanded] = useState<Set<string>>(new Set());
+  const [openBranches, setOpenBranches] = useSessionState<string[]>('git.tree.openBranches', []);
+  const [openRepos, setOpenRepos] = useSessionState<string[]>('git.tree.openRepos', []);
+
   const project = useMemo(() => projects.find((p) => p.id === projectId), [projects, projectId]);
-  const lanes = useMemo(() => assignLanes(commits), [commits]);
   const visibleRefs = useMemo(() => groupByRef(commits), [commits]);
+  /** 本仓库「见过的引用名」全集：`branchNameOf` 用它判「削掉首段后是否真有其名」（服务端把带斜杠的本地分支也标成 remote） */
+  const refNames = useMemo(() => refNameSet([...refs, ...visibleRefs]), [refs, visibleRefs]);
   const summary = useMemo(() => summarizeSelection(commits, selected), [commits, selected]);
+
+  /* ---------- T04527：分组视图的派生数据与动作 ---------- */
+  /** 已加载窗口的提交数（未加载的窗口不带计数，分组头显示「仓库数」而不谎报「提交数」） */
+  const countsByPane = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const [key, pane] of Object.entries(panes)) if (!pane.loading && !pane.error) out[key] = pane.commits.length;
+    return out;
+  }, [panes]);
+  const repoGroups = useMemo(
+    () => applyCommitCounts(census ? buildRepoBranchGroups(census, projectId) : [], countsByPane),
+    [census, projectId, countsByPane],
+  );
+  /** 未绑定/取数失败的仓库：没有 refs 可归组，但要单独成行（验收点 5） */
+  const blockedRows = useMemo(() => (census ? blockedRepoRows(census, projectId) : []), [census, projectId]);
+  /** 分支名 → 可用仓库数。普查前是空表，单仓库模式的分支 chip 因此与改造前逐字一致 */
+  const repoCountByBranch = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const g of repoGroups) out[g.branchName] = g.repoCount;
+    return out;
+  }, [repoGroups]);
+  /** 按仓库并好的勾选（跨分支同仓库已去重），确认口径与计数都以它为准 */
+  const selectionByRepo = useMemo(
+    () => mergePaneSelections(Object.values(panes).map((p) => ({ projectId: p.projectId, shas: p.selected }))),
+    [panes],
+  );
+  const pickedRepoCount = Object.values(selectionByRepo).filter((shas) => shas.length > 0).length;
+  const pickedRepoId = Object.keys(selectionByRepo).find((id) => (selectionByRepo[id]?.length ?? 0) > 0) ?? '';
+  const pickedRepoName = projects.find((p) => p.id === pickedRepoId)?.name ?? '';
+  const paneSelectedCount = Object.values(panes).reduce((n, p) => n + p.selected.length, 0);
+  const paneBusy = Object.values(panes).some((p) => p.loading);
+
+  /**
+   * 引用普查：逐仓库 `all=1&limit=1` 只为拿 refs。
+   * 未绑定工作空间的项目在本地直接判死（一条 git 都不该 fork），服务端拒绝与网络异常各留一句话原因。
+   */
+  async function runCensus(list: Project[]) {
+    setScanning(true);
+    setError('');
+    try {
+      const settled = await mapSettledWithLimit(list, async (p) => {
+        const path = (p.workspace_path ?? '').trim();
+        if (!path) throw new Error('该项目未绑定工作空间，无法取 Git 数据');
+        const qs = new URLSearchParams({ projectId: p.id, all: '1', skip: '0', limit: '1' }).toString();
+        const r = await api.get<GitLogResponse>(`/git/log?${qs}`);
+        if (!r.ok) throw new Error(r.error?.message ?? 'Git 取数失败');
+        return { refs: r.refs ?? [], workspacePath: r.workspacePath };
+      }, REPO_SCAN_CONCURRENCY);
+      const next = list.map((p, i) => repoInputFromScan({ id: p.id, name: p.name, workspacePath: p.workspace_path ?? '' }, settled[i]));
+      setCensus(next);
+      // 首屏折叠：只把「当前项目所在的那条分支」摊开，其余仓库要点一下才取数（方案 §3.3）
+      const groups = buildRepoBranchGroups(next, projectId);
+      setOpenBranches((prev) => (prev.length ? prev : defaultExpandedBranches(groups, projectId)));
+      setOpenRepos((prev) => (prev.length
+        ? prev
+        : sharedBranchGroups(groups).flatMap((g) => defaultExpandedRepos(g, projectId).map((pid) => paneKeyOf(pid, g.branchName)))));
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  /** 展开某个「仓库 × 分支」窗口时才按该仓库自己的原始引用名取数（归一化名可能是 origin/ 前缀被去掉后的产物） */
+  async function loadPane(target: { projectId: string; branchName: string }, append: boolean) {
+    const key = paneKeyOf(target.projectId, target.branchName);
+    const current = panes[key];
+    if (append ? (current?.loading ?? false) : current?.loading) return;
+    const input = (censusRef.current ?? []).find((i) => i.projectId === target.projectId);
+    const refName = input ? refNameForBranch(input.refs, target.branchName) : null;
+    setPanes((prev) => ({
+      ...prev,
+      [key]: { ...(prev[key] ?? emptyPane), projectId: target.projectId, branchName: target.branchName, commits: append ? (prev[key]?.commits ?? []) : [], loading: true, loaded: false, hasMore: false, error: '', selected: prev[key]?.selected ?? [] },
+    }));
+    try {
+      const qs = buildLogQuery(target.projectId, refName ?? target.branchName, false, '', append ? (current?.commits.length ?? 0) : 0);
+      const r = await api.get<GitLogResponse>(`/git/log?${qs}`);
+      setPanes((prev) => {
+        const pane = prev[key] ?? emptyPane;
+        if (!r.ok) {
+          return { ...prev, [key]: { ...pane, loading: false, loaded: false, hasMore: false, error: r.error?.message ?? 'Git 取数失败' } };
+        }
+        return { ...prev, [key]: { ...pane, commits: append ? dedupe([...pane.commits, ...r.commits]) : r.commits, loading: false, loaded: true, hasMore: r.hasMore, error: '' } };
+      });
+    } catch (e) {
+      setPanes((prev) => ({
+        ...prev,
+        [key]: { ...(prev[key] ?? emptyPane), loading: false, loaded: false, error: `取数失败：${e instanceof Error ? e.message : String(e)}` },
+      }));
+    }
+  }
+
+  function onPaneRowClick(key: string, index: number, e: React.MouseEvent) {
+    const pane = panes[key];
+    if (!pane) return;
+    const res = selectAt({
+      commits: pane.commits, selected: pane.selected, index, anchor: paneAnchor[key] ?? null,
+      mods: { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey },
+    });
+    setPanes((prev) => ({ ...prev, [key]: { ...prev[key], selected: res.selected } }));
+    setPaneAnchor((prev) => ({ ...prev, [key]: res.anchor }));
+    if (res.limited > 0) setError(`一次最多点选 ${MAX_SELECTED_COMMITS} 个提交，超出部分未加入（${res.limited} 条被忽略）`);
+  }
+
+  function toggleGroupRowExpand(key: string, sha: string) {
+    setGroupExpanded((prev) => {
+      const n = new Set(prev);
+      const rowKey = `${key}\n${sha}`;
+      if (n.has(rowKey)) n.delete(rowKey); else n.add(rowKey);
+      return n;
+    });
+  }
   /** 首屏/切条件取数用的最新闭包（要读当时的 commits/search），经 ref 交给 effect，避免整函数进依赖 */
   const loadRef = useRef<(append: boolean) => Promise<void>>(async () => undefined);
   /** 切项目时读的是「父层此刻的已选」，同样只取最新一份，不因父层重渲染而重置选择 */
   const selectedByProjectRef = useRef(selectedByProject);
   selectedByProjectRef.current = selectedByProject;
+  /** 懒加载窗口时要按「当时那份普查结果」找原始引用名，不能让异步函数闭包抓住旧的 census */
+  const censusRef = useRef(census);
+  censusRef.current = census;
 
   // Esc = 取消（不丢已选：确认后才会写回卡片，取消保持原样）
   useEffect(() => {
@@ -129,10 +298,32 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
     setExpanded(new Set());
   }, [projectId]);
 
-  useEffect(() => { void loadRef.current(false); }, [projectId, head, allBranches]);
+  useEffect(() => { void loadRef.current(false); }, [projectId, head, allBranches, repoView]);
+
+  // 打开聚合视图才普查一次（方案 §5.1「先保留单仓库体验」）；同一份弹窗生命周期内复用结果，不反复 fork git
+  useEffect(() => {
+    if (repoView && !census && !scanning && projects.length > 1) void runCensus(projects);
+  }, [repoView, census, scanning, projects]);
+
+  /**
+   * 默认展开的「仓库 × 分支」窗口没有经过任何点击，得在这里补一次取数。
+   * 少了它，普查结束后的第一屏就是「箭头是开的、列表是空的」——用户只能读成「这仓库这条分支没提交」。
+   * 判据只用 `panes[key]` 是否存在：`loadPane` 会立刻写入占位窗口，因此同一窗口不会被并发取两次。
+   */
+  useEffect(() => {
+    if (!repoView || !census || scanning) return;
+    for (const group of repoGroups) {
+      for (const row of group.repos) {
+        if (!row.available) continue;
+        const key = paneKeyOf(row.projectId, group.branchName);
+        if (!openRepos.includes(key) || panes[key]) continue;
+        void loadPane({ projectId: row.projectId, branchName: group.branchName }, false);
+      }
+    }
+  }, [repoView, census, scanning, repoGroups, openRepos, panes]);
 
   async function load(append: boolean) {
-    if (!projectId) return;
+    if (!projectId || repoView) return;
     setLoading(true);
     setError('');
     const nextSkip = append ? commits.length : 0;
@@ -182,12 +373,45 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
     });
   }
 
-  function confirm() {
-    if (selected.length === 0) return;
-    onConfirm(projectId, orderSelected(commits, selected));
+  /**
+   * 分支 chip 的落点（方案 §5.1）：普查确认这条分支跨了多个仓库 → 进聚合视图并展开该分支组；
+   * 只属于一个仓库 → 保持现状（按这条分支重新取数）。没有普查数据时 `repoCount` 恒为 0，行为与改造前一致。
+   */
+  function onChipClick(r: GitRefName) {
+    const branch = branchNameOf(r, refNames) ?? r.name;
+    const group = repoGroups.find((g) => g.branchName === branch);
+    if (group && group.repoCount > 1) {
+      setRepoView(true);
+      if (!openBranches.includes(group.branchKey)) setOpenBranches((prev) => toggleKey(prev, group.branchKey));
+      return;
+    }
+    setRepoView(false);
+    setAllBranches(false);
+    setHead(r.name);
   }
 
-  const canConfirm = selected.length > 0 && !loading && !error;
+  function confirm() {
+    if (!repoView) {
+      if (selected.length === 0) return;
+      onConfirm(projectId, orderSelected(commits, selected));
+      return;
+    }
+    // 分组视图：确认口径由 `resolveRepoConfirmation` 把关——多仓库有勾选就拒，不做假的跨仓库合并
+    const out = resolveRepoConfirmation(selectionByRepo);
+    if (!out.ok) {
+      setError(out.code === 'multi'
+        ? `已勾选 ${out.projectIds.length} 个仓库的提交：提取/扫描按单一工作空间逐仓库执行，一次确认只能回传一个仓库，请先清空其它仓库的勾选`
+        : '还没有勾选任何提交');
+      return;
+    }
+    setError('');
+    const paneCommits = Object.values(panes).filter((p) => p.projectId === out.projectId).flatMap((p) => p.commits);
+    onConfirm(out.projectId, orderSelected(dedupe(paneCommits), out.shas));
+  }
+
+  const canConfirm = repoView
+    ? pickedRepoCount === 1 && paneSelectedCount > 0 && !paneBusy && !scanning
+    : selected.length > 0 && !loading && !error;
 
   return (
     /* 原生 <dialog open>：显隐仍由本组件挂载/卸载控制（父层只在需要时渲染），Esc 仍由上面的监听负责 */
@@ -236,19 +460,37 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
           <button type="button" data-lck="git-tree-search-btn" onClick={() => void load(false)} disabled={loading} style={boxStyle}>
             <Search size={13} style={{ marginRight: 4 }} />搜索
           </button>
+          {/* T04527：跨仓库分支聚合视图开关。默认关——单仓库体验（含取数次数）与改造前一致；
+              打开后才会逐仓库做一次引用普查（并发上限 3），所以不替用户擅自多 fork git 子进程 */}
+          {projects.length > 1 && (
+            <button type="button" data-lck="git-tree-repo-view" aria-pressed={repoView} disabled={scanning}
+              onClick={() => { setError(''); setRepoView((v) => !v); }}
+              title="按「同一分支 → 多个仓库」聚合展示（取数仍逐仓库确认）"
+              style={{ ...boxStyle, cursor: 'pointer', background: repoView ? 'var(--accent)' : 'var(--surface)', color: repoView ? '#fff' : 'var(--text)' }}>
+              {scanning ? <Loader2 size={13} className="aispin" style={{ marginRight: 4, verticalAlign: '-2px' }} /> : <FolderGit2 size={13} style={{ marginRight: 4, verticalAlign: '-2px' }} />}
+              分支聚合（跨仓库）
+            </button>
+          )}
         </div>
 
         {!foldRefs && visibleRefs.length > 0 && (
           <div data-lck="git-tree-refs" style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 8 }}>
             <button type="button" onClick={() => setFoldRefs(true)} style={{ ...chipStyle, cursor: 'pointer', background: 'var(--surface)' }} aria-label="收起分支列表">收起分支</button>
             {refs.length > 0 && <button type="button" data-lck="git-tree-ref-all" onClick={() => { setAllBranches(true); setHead(''); }} style={{ ...chipStyle, cursor: 'pointer', background: 'var(--surface)' }}>全部分支</button>}
-            {visibleRefs.slice(0, 24).map((r) => (
-              <button key={`${r.type}:${r.name}`} type="button" data-lck="git-tree-ref" data-ref={r.name}
-                onClick={() => { setAllBranches(false); setHead(r.name); }}
-                style={{ ...chipStyle, cursor: 'pointer', background: head === r.name && !allBranches ? 'var(--accent)' : 'var(--surface)', color: head === r.name && !allBranches ? '#fff' : 'var(--text-secondary)' }}>
-                {r.type === 'tag' ? <Tag size={10} style={{ marginRight: 3, verticalAlign: '-1px' }} /> : null}{r.name}
-              </button>
-            ))}
+            {visibleRefs.slice(0, 24).map((r) => {
+              const branch = branchNameOf(r, refNames) ?? r.name;
+              const repoCount = repoCountByBranch[branch] ?? 0;
+              return (
+                <button key={`${r.type}:${r.name}`} type="button" data-lck="git-tree-ref" data-ref={r.name}
+                  data-repo-count={repoCount > 1 ? repoCount : undefined}
+                  onClick={() => onChipClick(r)}
+                  style={{ ...chipStyle, cursor: 'pointer', background: head === r.name && !allBranches && !repoView ? 'var(--accent)' : 'var(--surface)', color: head === r.name && !allBranches && !repoView ? '#fff' : 'var(--text-secondary)' }}>
+                  {r.type === 'tag' ? <Tag size={10} style={{ marginRight: 3, verticalAlign: '-1px' }} /> : null}{r.name}
+                  {/* T04527：普查后同名分支出现在 ≥2 个仓库时，chip 补一个仓库数——这就是「要多看一层」的信号 */}
+                  {repoCount > 1 ? <span style={{ marginLeft: 4, color: 'var(--accent)' }}>· {repoCount}</span> : null}
+                </button>
+              );
+            })}
           </div>
         )}
         {foldRefs && (
@@ -259,78 +501,65 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
 
         {error && <p data-lck="git-tree-error" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', margin: '2px 0 8px' }}>{error}</p>}
 
-        <div ref={listRef} tabIndex={-1} data-lck="git-tree-rows"
-          style={{ flex: '1 1 auto', minHeight: 180, maxHeight: '48vh', overflow: 'auto', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface)' }}>
-          {!loading && commits.length === 0 && !error && (
-            <p data-lck="git-tree-empty" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: 12, margin: 0 }}>
-              这个仓库在当前条件下没有可显示的提交：换个分支、放宽搜索，或改用区间/粘贴 patch。
-            </p>
-          )}
-          {commits.map((c, i) => {
-            const checked = selected.includes(c.sha);
-            const open = expanded.has(c.sha);
-            return (
-              /* 行本身只是布局容器；「点选这一条」落到行内的原生 <button> 上（Shift/Ctrl 框选语义不变） */
-              <div key={c.sha} data-lck="git-tree-row" data-sha={c.sha} data-selected={checked ? '1' : '0'}
-                style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '3px 8px', borderBottom: '1px solid var(--border)', background: checked ? 'var(--surface-2)' : 'transparent' }}>
-                {/* 复选框只是勾选态的视觉镜像（真正的控件是右侧按钮）；点它同样落到同一段点选逻辑上 */}
-                <input type="checkbox" checked={checked} readOnly tabIndex={-1} aria-label={`选择提交 ${c.short}`}
-                  onClick={(e) => onRowClick(i, e)} style={{ cursor: 'pointer' }} />
-                <button type="button" data-lck="git-tree-select" aria-pressed={checked}
-                  aria-label={`${checked ? '取消选择' : '选择'}提交 ${c.short}：${c.subject}`}
-                  onClick={(e) => onRowClick(i, e)}
-                  style={{
-                    display: 'flex', gap: 6, alignItems: 'center', flex: '1 1 auto', minWidth: 0,
-                    padding: 0, border: 'none', background: 'transparent', color: 'inherit',
-                    font: 'inherit', textAlign: 'left', cursor: 'pointer',
-                  }}>
-                  <span style={{ fontFamily: FONT_MONO, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'pre', minWidth: lanes.count * 10 }}>
-                    {Array.from({ length: lanes.count }, (_, l) => laneCell(lanes, i, l))}
-                  </span>
-                  <code style={{ fontFamily: FONT_MONO, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{c.short}</code>
-                  <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.subject}>{c.subject}</span>
-                  {c.refs.map((r) => <span key={`${r.type}:${r.name}`} style={chipStyle}>{r.name}</span>)}
-                  <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 90 }} title={fullTime(c.date)}>{relTime(c.date)}</span>
-                  <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 64 }} title={c.author}>{c.author}</span>
-                </button>
-                <button type="button" onClick={(e) => { e.stopPropagation(); toggleRowExpand(c.sha); }} aria-label={open ? '收起提交详情' : '展开提交详情'}
-                  aria-expanded={open} data-lck="git-tree-expand"
-                  style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 0, display: 'inline-flex', alignItems: 'center', height: 16 }}>
-                  {open ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
-                </button>
-              </div>
-            );
-          })}
-          {commits.map((c) => (expanded.has(c.sha) ? (
-            <div key={`d-${c.sha}`} data-lck="git-tree-detail" data-sha={c.sha}
-              style={{ padding: '4px 8px 6px 46px', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontFamily: FONT_MONO, borderBottom: '1px solid var(--border)' }}>
-              SHA {c.sha}<br />父 {c.parents.length === 0 ? '(根提交)' : c.parents.join(' ')}<br />
-              作者 {c.author} · {fullTime(c.date)} · 选中它等于采集「相对第一父」的增量
-            </div>
-          ) : null))}
-          {loading && <p style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: 8, margin: 0 }}>取数中…</p>}
-        </div>
+        {repoView ? (
+          <RepoBranchGroupList groups={repoGroups} blocked={blockedRows} activeProjectId={projectId}
+            panes={panes} openBranches={openBranches} openRepos={openRepos} groupExpanded={groupExpanded}
+            scanning={scanning} censusDone={!!census}
+            onToggleBranch={(key) => setOpenBranches((prev) => toggleKey(prev, key))}
+            onToggleRepo={(key) => setOpenRepos((prev) => toggleKey(prev, key))}
+            onLoadRepo={(projectIdArg, branchName, append) => void loadPane({ projectId: projectIdArg, branchName }, append)}
+            onRowClick={onPaneRowClick}
+            onToggleRowExpand={toggleGroupRowExpand}
+            onSelectAllVisible={(key, check) => setPanes((prev) => {
+              const pane = prev[key];
+              return pane ? { ...prev, [key]: { ...pane, selected: toggleVisible(pane.commits, pane.selected, check) } } : prev;
+            })} />
+        ) : (
+          <div ref={listRef} tabIndex={-1} data-lck="git-tree-rows"
+            style={{ flex: '1 1 auto', minHeight: 180, maxHeight: '48vh', overflow: 'auto', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface)' }}>
+            {!loading && commits.length === 0 && !error && (
+              <p data-lck="git-tree-empty" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: 12, margin: 0 }}>
+                这个仓库在当前条件下没有可显示的提交：换个分支、放宽搜索，或改用区间/粘贴 patch。
+              </p>
+            )}
+            <CommitRows commits={commits} selected={selected} expandedSet={expanded} keyPrefix=""
+              onRowClick={onRowClick} onToggleRowExpand={toggleRowExpand} />
+            {loading && <p style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: 8, margin: 0 }}>取数中…</p>}
+          </div>
+        )}
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 8 }}>
-          {hasMore && (
+          {!repoView && hasMore && (
             <button type="button" data-lck="git-tree-load-more" onClick={() => void load(true)} disabled={loading} style={boxStyle}>
               加载更多（已显示 {commits.length} 条）
             </button>
           )}
-          {scanTruncated && (
+          {!repoView && scanTruncated && (
             <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
               搜索只扫描了最近 {GIT_TREE_PAGE_SIZE > 0 ? commits.length : 0} 条以内的窗口，可能还有更早的命中——换分支或翻页后再搜更准
             </span>
           )}
-          <span data-lck="git-tree-selected" style={{ fontSize: 'var(--fs-s)', color: selected.length ? 'var(--text)' : 'var(--text-muted)' }}>
-            已选 {summary.count} 个提交{summary.count > 0 ? `（${summary.runs} 段）` : ''}
-            {project ? ` · 仓库 ${project.name}` : ''}
+          <span data-lck="git-tree-selected"
+            style={{ fontSize: 'var(--fs-s)', color: (repoView ? paneSelectedCount : selected.length) ? 'var(--text)' : 'var(--text-muted)' }}>
+            {repoView ? (
+              <>已选 {paneSelectedCount} 个提交 · {pickedRepoCount} 个仓库
+                {/* 执行按单一工作空间逐仓库跑：勾到第二个仓库时先说清「确认会被拒」，而不是让用户点了才知道 */}
+                {pickedRepoCount > 1 ? <span style={{ color: 'var(--danger)' }}>（一次只能确认一个仓库）</span> : null}
+                {pickedRepoCount === 1 ? `（仓库 ${pickedRepoName}）` : null}
+              </>
+            ) : (
+              <>已选 {summary.count} 个提交{summary.count > 0 ? `（${summary.runs} 段）` : ''}
+                {project ? ` · 仓库 ${project.name}` : ''}
+              </>
+            )}
           </span>
-          <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 'var(--fs-xs)', marginLeft: 'auto' }}>
-            <input type="checkbox" checked={commits.length > 0 && selected.length === commits.length}
-              onChange={(e) => setSelected(toggleVisible(commits, selected, e.target.checked))} />
-            {' '}全选本页
-          </label>
+          {!repoView && (
+            <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 'var(--fs-xs)', marginLeft: 'auto' }}>
+              <input type="checkbox" checked={commits.length > 0 && selected.length === commits.length}
+                onChange={(e) => setSelected(toggleVisible(commits, selected, e.target.checked))} />
+              {' '}全选本页
+            </label>
+          )}
           <button type="button" data-lck="git-tree-cancel" onClick={onClose} style={boxStyle}>取消</button>
           <button type="button" data-lck="git-tree-confirm" onClick={confirm} disabled={!canConfirm}
             style={{ ...boxStyle, background: canConfirm ? 'var(--accent)' : 'var(--surface-2)', color: canConfirm ? '#fff' : 'var(--text-muted)', cursor: canConfirm ? 'pointer' : 'not-allowed' }}>
@@ -351,4 +580,224 @@ function dedupe(list: GitTreeCommit[]): GitTreeCommit[] {
     out.push(c);
   }
   return out;
+}
+
+/**
+ * 提交行 + 详情行。单仓库列表和分组视图里每个仓库的列表共用这一段 JSX，
+ * 差别只在 `keyPrefix`（同一 SHA 可能在两个仓库的窗口里各出现一次，展开态不能串）。
+ *
+ * 车道按**各自那份 commits** 计算：方案 §9.3——跨仓库拼车道会画出根本不存在的父子连线。
+ */
+function CommitRows({ commits, selected, expandedSet, keyPrefix, onRowClick, onToggleRowExpand }: {
+  readonly commits: GitTreeCommit[];
+  readonly selected: readonly string[];
+  readonly expandedSet: Set<string>;
+  readonly keyPrefix: string;
+  readonly onRowClick: (index: number, e: React.MouseEvent) => void;
+  readonly onToggleRowExpand: (sha: string) => void;
+}) {
+  const lanes = assignLanes(commits);
+  return (
+    <>
+      {commits.map((c, i) => {
+        const checked = selected.includes(c.sha);
+        const open = expandedSet.has(`${keyPrefix}${c.sha}`);
+        return (
+          /* 行本身只是布局容器；「点选这一条」落到行内的原生 <button> 上（Shift/Ctrl 框选语义不变） */
+          <div key={`${keyPrefix}${c.sha}`} data-lck="git-tree-row" data-sha={c.sha} data-selected={checked ? '1' : '0'}
+            style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '3px 8px', borderBottom: '1px solid var(--border)', background: checked ? 'var(--surface-2)' : 'transparent' }}>
+            {/* 复选框只是勾选态的视觉镜像（真正的控件是右侧按钮）；点它同样落到同一段点选逻辑上 */}
+            <input type="checkbox" checked={checked} readOnly tabIndex={-1} aria-label={`选择提交 ${c.short}`}
+              onClick={(e) => onRowClick(i, e)} style={{ cursor: 'pointer' }} />
+            <button type="button" data-lck="git-tree-select" aria-pressed={checked}
+              aria-label={`${checked ? '取消选择' : '选择'}提交 ${c.short}：${c.subject}`}
+              onClick={(e) => onRowClick(i, e)}
+              style={{
+                display: 'flex', gap: 6, alignItems: 'center', flex: '1 1 auto', minWidth: 0,
+                padding: 0, border: 'none', background: 'transparent', color: 'inherit',
+                font: 'inherit', textAlign: 'left', cursor: 'pointer',
+              }}>
+              <span style={{ fontFamily: FONT_MONO, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'pre', minWidth: lanes.count * 10 }}>
+                {Array.from({ length: lanes.count }, (_, l) => laneCell(lanes, i, l))}
+              </span>
+              <code style={{ fontFamily: FONT_MONO, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{c.short}</code>
+              <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.subject}>{c.subject}</span>
+              {c.refs.map((r) => <span key={`${r.type}:${r.name}`} style={chipStyle}>{r.name}</span>)}
+              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 90 }} title={fullTime(c.date)}>{relTime(c.date)}</span>
+              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 64 }} title={c.author}>{c.author}</span>
+            </button>
+            <button type="button" onClick={(e) => { e.stopPropagation(); onToggleRowExpand(c.sha); }} aria-label={open ? '收起提交详情' : '展开提交详情'}
+              aria-expanded={open} data-lck="git-tree-expand"
+              style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 0, display: 'inline-flex', alignItems: 'center', height: 16 }}>
+              {open ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
+            </button>
+          </div>
+        );
+      })}
+      {commits.map((c) => (expandedSet.has(`${keyPrefix}${c.sha}`) ? (
+        <div key={`${keyPrefix}d-${c.sha}`} data-lck="git-tree-detail" data-sha={c.sha}
+          style={{ padding: '4px 8px 6px 46px', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontFamily: FONT_MONO, borderBottom: '1px solid var(--border)' }}>
+          SHA {c.sha}<br />父 {c.parents.length === 0 ? '(根提交)' : c.parents.join(' ')}<br />
+          作者 {c.author} · {fullTime(c.date)} · 选中它等于采集「相对第一父」的增量
+        </div>
+      ) : null))}
+    </>
+  );
+}
+
+/** 仓库行左侧状态徽标（方案 §4.3）：备用仓库不打徽标，避免多仓库场景满屏标签 */
+function repoStatusBadge(status: RepoBranchRow['status']): string {
+  if (status === 'current') return '当前';
+  if (status === 'unbound') return '未绑定';
+  if (status === 'unavailable') return '不可用';
+  return '';
+}
+
+const groupHeadStyle: React.CSSProperties = {
+  display: 'flex', gap: 6, alignItems: 'center', width: '100%', padding: '5px 8px',
+  border: 'none', borderBottom: '1px solid var(--border)', background: 'var(--surface-2)',
+  color: 'inherit', font: 'inherit', textAlign: 'left', cursor: 'pointer',
+};
+
+/**
+ * T04527：分支 → 仓库 → 提交 三层列表（只在「分支聚合」视图打开时渲染）。
+ *
+ * 这一层只画结构，不判据：分组/计数/状态/原因全部由 `utils/gitRepoBranchGroups.ts` 算好后传进来，
+ * 于是「失败仓库不许隐身」「一次只回传一个仓库」这些能撒谎的边界都有 node 门可钉，不必全靠浏览器实测。
+ */
+function RepoBranchGroupList({ groups, blocked, activeProjectId, panes, openBranches, openRepos, groupExpanded, scanning, censusDone,
+  onToggleBranch, onToggleRepo, onLoadRepo, onRowClick, onToggleRowExpand, onSelectAllVisible }: {
+  readonly groups: RepoBranchGroup[];
+  readonly blocked: RepoBranchRow[];
+  readonly activeProjectId: string;
+  readonly panes: Record<string, RepoPane>;
+  readonly openBranches: readonly string[];
+  readonly openRepos: readonly string[];
+  readonly groupExpanded: Set<string>;
+  readonly scanning: boolean;
+  readonly censusDone: boolean;
+  readonly onToggleBranch: (branchKey: string) => void;
+  readonly onToggleRepo: (paneKey: string) => void;
+  readonly onLoadRepo: (projectId: string, branchName: string, append: boolean) => void;
+  readonly onRowClick: (paneKey: string, index: number, e: React.MouseEvent) => void;
+  readonly onToggleRowExpand: (paneKey: string, sha: string) => void;
+  readonly onSelectAllVisible: (paneKey: string, check: boolean) => void;
+}) {
+  return (
+    <div data-lck="git-repo-groups"
+      style={{ flex: '1 1 auto', minHeight: 180, maxHeight: '48vh', overflow: 'auto', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface)' }}>
+      {!censusDone && scanning && (
+        <p data-lck="git-repo-scanning" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: 12, margin: 0 }}>
+          正在逐仓库读取分支清单（并发 {REPO_SCAN_CONCURRENCY}）…仓库多时会稍等。
+        </p>
+      )}
+      {censusDone && groups.length === 0 && blocked.length === 0 && (
+        <p data-lck="git-repo-empty" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: 12, margin: 0 }}>
+          这些仓库没有可比的分支清单：可能是只有一个项目绑定了工作空间，或全部分支都只存在于单个仓库——单仓库视图已经够用。
+        </p>
+      )}
+
+      {groups.map((group) => {
+        const branchOpen = openBranches.includes(group.branchKey);
+        return (
+          <div key={group.branchKey} data-lck="git-repo-group" data-branch={group.branchName}>
+            <button type="button" data-lck="git-repo-branch" aria-expanded={branchOpen} onClick={() => onToggleBranch(group.branchKey)} style={groupHeadStyle}>
+              {branchOpen ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
+              <GitBranch size={13} style={{ color: 'var(--accent)' }} />
+              <span style={{ fontWeight: 600 }}>{group.branchName}</span>
+              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+                {group.repos.length} 个仓库{group.repoCount < group.repos.length ? `（可用 ${group.repoCount}）` : ''}
+                {group.totalCommits != null ? ` · 已加载 ${group.totalCommits} 个提交` : ''}
+              </span>
+              {group.repos.length > 1 && (
+                <span style={{ ...chipStyle, marginLeft: 'auto' }}>同名分支</span>
+              )}
+            </button>
+
+            {branchOpen && group.repos.map((row) => {
+              const paneKey = paneKeyOf(row.projectId, group.branchName);
+              const pane = panes[paneKey];
+              const repoOpen = openRepos.includes(paneKey);
+              const badge = repoStatusBadge(row.status);
+              const isCurrent = row.projectId === activeProjectId;
+              return (
+                <div key={paneKey} data-lck="git-repo-repo" data-project={row.projectId} data-status={row.status}
+                  style={{ marginLeft: 12, paddingLeft: 8, borderLeft: '2px solid var(--border)', background: repoOpen ? 'var(--surface-2)' : 'transparent' }}>
+                  <button type="button" data-lck="git-repo-repo-toggle" aria-expanded={repoOpen} disabled={!row.available}
+                    onClick={() => {
+                      const nextOpen = !repoOpen;
+                      onToggleRepo(paneKey);
+                      if (nextOpen && row.available && !pane) onLoadRepo(row.projectId, group.branchName, false);
+                    }}
+                    style={{ ...groupHeadStyle, background: 'transparent', borderBottom: 'none', padding: '4px 4px', cursor: row.available ? 'pointer' : 'not-allowed', opacity: row.available ? 1 : 0.7 }}>
+                    {row.available ? (repoOpen ? <ChevronDown size={11} aria-hidden /> : <ChevronRight size={11} aria-hidden />) : <span style={{ width: 11 }} />}
+                    <FolderGit2 size={13} style={{ color: isCurrent ? 'var(--accent)' : 'var(--text-muted)' }} />
+                    <span style={{ fontSize: 'var(--fs-s)', color: isCurrent ? 'var(--text)' : 'var(--text-secondary)' }}>{row.repoLabel}</span>
+                    <code style={{ fontFamily: FONT_MONO, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }} title={row.workspacePath}>{row.workspacePath}</code>
+                    {badge && <span data-lck="git-repo-repo-badge" data-badge={badge} style={chipStyle}>{badge}</span>}
+                    {row.available && row.commitCount != null && (
+                      <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginLeft: 'auto' }}>{row.commitCount} 个提交</span>
+                    )}
+                  </button>
+                  {/* 取不到数的仓库：原因贴着它自己那一行，不藏进 tooltip——「为什么没有」正是用户此刻要读的 */}
+                  {!row.available && (
+                    <p data-lck="git-repo-repo-reason" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', margin: '0 0 6px 24px' }}>
+                      {row.unavailableReason}
+                    </p>
+                  )}
+                  {repoOpen && row.available && (
+                    <div style={{ paddingBottom: 6 }}>
+                      {pane?.loading && <p style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: 6, margin: 0 }}>取数中…</p>}
+                      {pane && !pane.loading && pane.error && (
+                        <p data-lck="git-repo-repo-error" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', padding: '2px 6px', margin: 0 }}>
+                          {pane.error}
+                          <button type="button" onClick={() => onLoadRepo(row.projectId, group.branchName, false)} style={{ ...boxStyle, marginLeft: 6 }}>重试</button>
+                        </p>
+                      )}
+                      {pane && !pane.loading && !pane.error && pane.commits.length === 0 && (
+                        <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', padding: '2px 6px', margin: 0 }}>这条分支在本仓库当前窗口内没有提交（同名不等于同源）。</p>
+                      )}
+                      {pane && !pane.loading && (
+                        <CommitRows commits={pane.commits} selected={pane.selected} expandedSet={groupExpanded} keyPrefix={`${paneKey}\n`}
+                          onRowClick={(index, e) => onRowClick(paneKey, index, e)}
+                          onToggleRowExpand={(sha) => onToggleRowExpand(paneKey, sha)} />
+                      )}
+                      {pane && pane.hasMore && (
+                        <button type="button" data-lck="git-repo-load-more" onClick={() => onLoadRepo(row.projectId, group.branchName, true)}
+                          disabled={pane.loading} style={{ ...boxStyle, marginLeft: 6 }}>
+                          加载更多（已显示 {pane.commits.length} 条）
+                        </button>
+                      )}
+                      {pane && pane.commits.length > 0 && (
+                        <label style={{ display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 'var(--fs-xs)', marginLeft: 6 }}>
+                          <input type="checkbox" data-lck="git-repo-select-all" checked={pane.selected.length === pane.commits.length}
+                            onChange={(e) => onSelectAllVisible(paneKey, e.target.checked)} />
+                          {' '}全选本页
+                        </label>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+
+      {blocked.length > 0 && (
+        <div data-lck="git-repo-blocked" style={{ borderTop: '1px solid var(--border)', padding: '6px 8px' }}>
+          <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', margin: '0 0 4px' }}>以下仓库没有可归组的分支清单，但保留在这里说明原因：</p>
+          {blocked.map((row) => (
+            <div key={row.projectId} data-lck="git-repo-blocked-row" data-project={row.projectId} data-status={row.status}
+              style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '2px 0' }}>
+              <FolderGit2 size={12} style={{ color: 'var(--text-muted)' }} />
+              <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>{row.repoLabel}</span>
+              <span data-lck="git-repo-repo-badge" data-badge={repoStatusBadge(row.status)} style={chipStyle}>{repoStatusBadge(row.status)}</span>
+              <span data-lck="git-repo-repo-reason" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{row.unavailableReason}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
