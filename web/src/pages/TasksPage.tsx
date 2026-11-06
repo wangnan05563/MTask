@@ -32,6 +32,7 @@ import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, togg
 import { useBusy, setBusy } from '../ui/busy';
 import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, CheckCheck, ChevronDown, ChevronUp, Circle, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, Download, FolderPlus, GitBranch, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, MoreHorizontal, PanelRightOpen, Pin, Plus, Save, ScanSearch, MessageSquareText, Sparkle, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
+import { CopyButton } from '../ui/CopyButton'; // T04544：项目下拉条右缘的项目名复制按钮（复用全站统一按钮，动画/交互一致）
 import { WorkspaceSelect } from '../ui/WorkspaceSelect'; // T00771：工作空间选择器（项目上下文根路径）
 import { WorkspaceSearchPanel } from '../ui/WorkspaceSearchPanel'; // T00786：工作空间全文检索面板（partial 提示）
 import { WorkspaceAskPanel } from '../ui/WorkspaceAskPanel'; // T03250：工作空间只读问答（引用可跳转）
@@ -4549,7 +4550,9 @@ export function TasksPage() {
           <button onClick={() => { setProjOpen((o) => { if (!o) { refreshProjCounts(); } return !o; }); }} aria-haspopup="listbox" aria-expanded={projOpen}
             title="切换项目 — 项目名后徽标：红=待办数、黄=未验证数（悬浮查看详情）"
             aria-label="切换项目"
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)', cursor: 'pointer', maxWidth: 220 }}>
+            /* T04544：右内边距 8→30——为叠加在控件右缘的复制按钮让位（按钮绝对定位，不参与 flex 压缩，
+               故只需让开箭头，T02167 的「名称省略、徽标不越界」min-content 口径不变） */
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 30px 6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)', cursor: 'pointer', maxWidth: 220 }}>
             {/* T02167：项目名改为可收缩的单行省略项（与 WorkspaceSelect 同口径）。
                 原来是裸文本节点——CJK 无空格可断，min-content 只有 1 字宽，工具条变窄时按钮被压到
                 比内容还小，右侧统计徽标溢出边框。徽标与箭头一律 flexShrink:0，只让名称让步。
@@ -4561,6 +4564,11 @@ export function TasksPage() {
             <ProjectButtonBadges activeProject={activeProject} curProj={curProj} allTodo={allTodo} allUnv={allUnv} />
             <ChevronDown size={12} style={{ flexShrink: 0 }} />
           </button>
+          {/* T04544：项目名复制按钮——HTML 不允许按钮套按钮（同 T02146 口径），故作为触发按钮的兄弟节点
+              绝对定位叠在控件右缘，视觉上仍在「下拉条内部右侧」；点击只复制，不会顺带展开下拉。
+              复制内容取当前显示的标签，与框内所见一致。 */}
+          <CopyButton getText={() => activeProjectLabel(activeProject, projects)} title="复制项目名称" ariaLabel="复制项目名称" size={12}
+            style={{ position: 'absolute', right: 4, top: '50%', transform: 'translateY(-50%)', background: 'transparent', border: 'none', color: 'var(--text-muted)' }} />
           {projOpen && (
             // T02167 二轮：右缘预算 24px→48px——面板左缩进约 26px，原「100vw−24px」公式按 0 缩进
             // 推算，380px 窗口下面板右缘越出窗口 2px；预留 48px 后右缘恒留 ~22px 余量

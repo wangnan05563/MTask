@@ -330,7 +330,10 @@ function Shell() {
         .prd-tilt-btn:active:not(:disabled) { transform: perspective(420px) scale(.9); }
         .abtn svg, .ghost svg { transition: transform .18s ease; }
         .abtn:hover:not(:disabled) svg, .ghost:hover:not(:disabled) svg { transform: scale(1.15) rotate(8deg); }
-        .abtn:active svg, .ghost:active svg { transform: scale(.88); }
+        /* T04544 复盘：原 active 规则特异性 (0,2,1) 低于 hover 规则 (0,3,1)——按下时元素同时处于
+           :hover 与 :active，hover 永远胜出，「点击缩放回弹」实际从未生效（全站 abtn/ghost 复制按钮皆然）。
+           补 :not(:disabled) 拉平特异性并保持在后，active 才真正接管。 */
+        .abtn:active:not(:disabled) svg, .ghost:active:not(:disabled) svg { transform: scale(.88); }
         .task-op button:hover:not(:disabled), .task-op .tbtn-anim:hover { transform: scale(1.15) rotate(8deg); }
         .task-op button:active:not(:disabled), .task-op .tbtn-anim:active { transform: scale(.88); }
         .task-op button, .task-op .tbtn-anim { transition: transform .18s ease; }
