@@ -48,8 +48,12 @@ function errorShape(e: unknown): { status: number; body: { error: string; kind: 
   return { status: 500, body: { error: e instanceof Error ? e.message : String(e), kind: 'failed' } };
 }
 
-function idsOf(raw: unknown): string[] {
-  if (!Array.isArray(raw)) throw new ScanError('bad-args', 'taskIds 需为数组');
+function idsOf(raw: unknown, label = 'taskIds', optional = false): string[] {
+  if (raw === undefined || raw === null) {
+    if (optional) return [];
+    throw new ScanError('bad-args', `${label} 需为数组`);
+  }
+  if (!Array.isArray(raw)) throw new ScanError('bad-args', `${label} 需为数组`);
   return raw.map((x) => String(x ?? '').trim()).filter(Boolean);
 }
 
@@ -113,6 +117,8 @@ sonarScanApi.get('/sonar/scan/job', (req, res) => {
 function scanInputOf(body: Record<string, unknown>): ScanInput {
   return {
     taskIds: idsOf(body.taskIds),
+    commitIds: idsOf(body.commitIds, 'commitIds', true),
+    projectIds: idsOf(body.projectIds, 'projectIds', true),
     // scalarText：projectKey 只可能是文本，非字符串（如对象）按未配置处理而不是拼成 "[object Object]"
     projectKey: body.projectKey ? (scalarText(body.projectKey).trim() || undefined) : undefined,
     autoWriteBack: body.autoWriteBack === undefined ? true : body.autoWriteBack === true,

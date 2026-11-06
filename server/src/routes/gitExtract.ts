@@ -54,15 +54,23 @@ function modeOf(raw: unknown): GitExtractMode {
   return m as GitExtractMode;
 }
 
-function idsOf(raw: unknown): string[] {
-  if (!Array.isArray(raw)) throw new ExtractError('bad-args', 'taskIds 需为数组');
+function idsOf(raw: unknown, label = 'taskIds', optional = false): string[] {
+  if (raw === undefined || raw === null) {
+    if (optional) return [];
+    throw new ExtractError('bad-args', `${label} 需为数组`);
+  }
+  if (!Array.isArray(raw)) throw new ExtractError('bad-args', `${label} 需为数组`);
   return raw.map((x) => String(x ?? '').trim()).filter(Boolean);
 }
 
 /** 范围摘要：面板每次勾选变化都调它重算计数（只读，不产生任何落盘） */
 gitExtractApi.post('/git-extract/plan', async (req, res) => {
   try {
-    const plan = await planExtract(idsOf(req.body?.taskIds));
+    const plan = await planExtract(
+      idsOf(req.body?.taskIds, 'taskIds', true),
+      idsOf(req.body?.commitIds, 'commitIds', true),
+      idsOf(req.body?.projectIds, 'projectIds', true),
+    );
     res.json({
       workspacePath: plan.workspacePath,
       projects: plan.projects.length,
@@ -85,7 +93,11 @@ gitExtractApi.post('/git-extract', exportGate('git-extract'), async (req, res) =
   let mode: GitExtractMode;
   try {
     mode = modeOf(req.body?.mode);
-    plan = await planExtract(idsOf(req.body?.taskIds));
+    plan = await planExtract(
+      idsOf(req.body?.taskIds, 'taskIds', true),
+      idsOf(req.body?.commitIds, 'commitIds', true),
+      idsOf(req.body?.projectIds, 'projectIds', true),
+    );
   } catch (e) {
     // 切 SSE 之前的问题一律 JSON，前端按 kind 走行内提示（不弹错误框）
     const { status, body } = errorShape(e);

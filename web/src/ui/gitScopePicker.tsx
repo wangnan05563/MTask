@@ -4,6 +4,7 @@ import { api, type Project, type Task, type TaskCategory } from '../api/client';
 import { FIELD_QUIET, PILL } from './primitives';
 import { wsBasename } from './WorkspaceSelect';
 import { useSessionState } from './session';
+import { GitTreePickerModal } from './GitTreePickerModal';
 
 /**
  * 八期 §3.3.1「Git 增量资产提取 / Sonar 质量扫描」共用的范围选择器（T03366 / T03377）。
@@ -32,9 +33,16 @@ export interface GitScope {
   status: '' | 'todo' | 'done';
   /** 分类筛选：'' = 不限 */
   categoryId: string;
+  /** T04526：默认关闭时只允许任务关联提交；打开后才暴露手动提交选择 */
+  allowUnlinkedCommits?: boolean;
+  /** 手动选择的未关联提交，按项目存放；打开开关时必须仍满足同一工作空间约束 */
+  commitIdsByProject?: Record<string, string[]>;
 }
 
-export const EMPTY_GIT_SCOPE: GitScope = { projectIds: [], taskIds: [], status: '', categoryId: '' };
+export const EMPTY_GIT_SCOPE: GitScope = {
+  projectIds: [], taskIds: [], status: '', categoryId: '',
+  allowUnlinkedCommits: false, commitIdsByProject: {},
+};
 
 /** 会话级共享范围（PRD「范围存会话级，与 Sonar 卡互相沿用上次范围」） */
 export function useGitScope(): [GitScope, Dispatch<SetStateAction<GitScope>>] {
@@ -49,6 +57,11 @@ export function isLinkedTask(t: Task): boolean {
 /** 内联关联条数（无关联=0） */
 export function linkedCountOf(t: Task): number {
   return t.gitLinkCount ?? t.gitLinks?.length ?? 0;
+}
+
+/** 手动提交集：跨项目去重后扁平化，发送前仍由服务端做长度与 SHA 合法性把关 */
+export function manualCommitIdsOf(scope: GitScope): string[] {
+  return [...new Set(Object.values(scope.commitIdsByProject ?? {}).flat())];
 }
 
 /**
@@ -116,6 +129,7 @@ export function GitScopePicker({ projects, value, onChange }: {
   const [loading, setLoading] = useState(false);
   const [truncated, setTruncated] = useState(false);
   const [cats, setCats] = useState<TaskCategory[]>([]);
+  const [commitPickerOpen, setCommitPickerOpen] = useState(false);
 
   const idsKey = value.projectIds.join(',');
   const statusFilter = value.status;
@@ -159,6 +173,8 @@ export function GitScopePicker({ projects, value, onChange }: {
   const visibleTasks = useMemo(() => groups.flatMap((g) => g.tasks), [groups]);
   const visibleLinked = useMemo(() => visibleTasks.filter(isLinkedTask), [visibleTasks]);
   const pickedSet = useMemo(() => new Set(value.taskIds), [value.taskIds]);
+  const commitIdsByProject = value.commitIdsByProject ?? {};
+  const manualCommits = manualCommitIdsOf(value);
   const hiddenPicked = value.taskIds.length - visibleTasks.filter((t) => pickedSet.has(t.id)).length;
   const ws = scopeWorkspace(projects, value.projectIds);
 
@@ -167,7 +183,9 @@ export function GitScopePicker({ projects, value, onChange }: {
       const rest = value.projectIds.filter((x) => x !== p.id);
       // 取消项目即移出它的任务勾选：留一组「看不见的已选任务」比丢勾选更难解释
       const removedTaskIds = new Set(groups.find((g) => g.projectId === p.id)?.tasks.map((t) => t.id) ?? []);
-      onChange({ ...value, projectIds: rest, taskIds: value.taskIds.filter((id) => !removedTaskIds.has(id)) });
+      const nextCommitIdsByProject = { ...commitIdsByProject };
+      delete nextCommitIdsByProject[p.id];
+      onChange({ ...value, projectIds: rest, taskIds: value.taskIds.filter((id) => !removedTaskIds.has(id)), commitIdsByProject: nextCommitIdsByProject });
       return;
     }
     if (!projectPickability(p, value.projectIds, projects).ok) return;
@@ -183,6 +201,11 @@ export function GitScopePicker({ projects, value, onChange }: {
     const merged = new Set(value.taskIds);
     for (const t of visibleLinked) merged.add(t.id);
     onChange({ ...value, taskIds: [...merged] });
+  }
+
+  function confirmManualCommits(projectId: string, shas: string[]) {
+    onChange({ ...value, commitIdsByProject: { ...commitIdsByProject, [projectId]: shas } });
+    setCommitPickerOpen(false);
   }
 
   return (
@@ -222,6 +245,40 @@ export function GitScopePicker({ projects, value, onChange }: {
         <div style={{ ...ROW, color: 'var(--warn)' }}>
           <AlertTriangle size={12} style={{ flexShrink: 0 }} />
           <span>以下已选项目未绑定工作空间，无法取数：{ws.unbound.join('、')}（在下方「去绑定工作空间」处理）</span>
+        </div>
+      )}
+
+      {/* T04526：未关联记录入口默认关闭；只有显式打开后才展示手动选择控件 */}
+      <label data-t04526="allow-unlinked" style={{ ...ROW, cursor: 'pointer' }}>
+        <input
+          type="checkbox"
+          checked={value.allowUnlinkedCommits === true}
+          onChange={(e) => onChange({
+            ...value,
+            allowUnlinkedCommits: e.target.checked,
+            commitIdsByProject: e.target.checked ? commitIdsByProject : {},
+          })}
+          aria-label="允许勾选未关联记录"
+          style={{ flexShrink: 0, cursor: 'inherit' }}
+        />
+        <span>允许勾选未关联记录</span>
+      </label>
+      {value.allowUnlinkedCommits === true && (
+        <div data-t04526="manual-commits" style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+          <button
+            type="button"
+            data-t04526="open-commit-picker"
+            onClick={() => setCommitPickerOpen(true)}
+            disabled={value.projectIds.length === 0 || ws.blocked}
+            title={value.projectIds.length === 0 ? '先选择一个项目仓库' : '手动选择 Git 提交，包括未关联任务的提交'}
+            style={{ ...PILL, cursor: ws.blocked || value.projectIds.length === 0 ? 'not-allowed' : 'pointer', opacity: ws.blocked || value.projectIds.length === 0 ? 0.5 : 1 }}
+          >
+            <GitCommitHorizontal size={12} /> 选择 Git 提交
+          </button>
+          <span>
+            手动 {manualCommits.length} 条
+            {manualCommits.length > 0 ? '；这些记录不写入任务关联表，仅参与本次提取/扫描' : '；可选择所有 Git 记录，不要求任务关联'}
+          </span>
         </div>
       )}
 
@@ -316,6 +373,16 @@ export function GitScopePicker({ projects, value, onChange }: {
           <span>共 {visibleTasks.length} 条任务在当前筛选内，其中 {visibleLinked.length} 条已回写 commit id 可勾选。</span>
         )}
       </div>
+      {commitPickerOpen && (
+        <GitTreePickerModal
+          projects={projects.filter((p) => value.projectIds.includes(p.id))}
+          activeProjectId={value.projectIds[0] ?? ''}
+          selectedByProject={commitIdsByProject}
+          onConfirm={confirmManualCommits}
+          onClose={() => setCommitPickerOpen(false)}
+          zIndex={1200}
+        />
+      )}
     </div>
   );
 }

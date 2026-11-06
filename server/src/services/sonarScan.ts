@@ -26,7 +26,7 @@ import { dirname, join, resolve as resolvePath, sep } from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { getDb } from '../db/connection';
-import { catFileBatch, collectCommitLog, resolveRevisionSha } from './gitCollect';
+import { catFileBatch, collectCommitLog, normalizeSelectedCommits, resolveRevisionSha } from './gitCollect';
 import type { BatchObject } from './gitCollect';
 import { assertWithinLimits, extractTmpRoot, finalPathMap, planExtract } from './gitExtract';
 import type { ExtractPlan } from './gitExtract';
@@ -122,6 +122,10 @@ export interface ScanResult {
 
 export interface ScanInput {
   taskIds: string[];
+  /** T04526：未关联任务的 Git 提交，与任务关联提交一起进快照，不写入 task_git_links */
+  commitIds?: string[];
+  /** 手动提交为主、taskIds 为空时，用于定位项目与 workspace_path */
+  projectIds?: string[];
   /** 不传则取映射里第一个已配置项目（与设置页连接测试同口径） */
   projectKey?: string;
   autoWriteBack?: boolean;
@@ -1054,17 +1058,18 @@ export async function runSonarScan(
 ): Promise<ScanResult> {
   const settings = readScanSettings();
   const taskIds = normalizeTaskIds(input.taskIds);
-  if (!taskIds.length) throw new ScanError('no-tasks', '未勾选任何任务');
+  const commitIds = input.commitIds?.length ? normalizeSelectedCommits(input.commitIds) : [];
+  if (!taskIds.length && !commitIds.length) throw new ScanError('no-tasks', '未选择任务关联记录或手动 Git 提交');
   if (!settings.serverUrl) throw new ScanError('no-server', '未配置 SonarQube 服务器地址', '到「设置 → SonarQube」填写地址并保存。');
 
   // 1 汇总（复用 §3.3 取数口径）
-  const plan = await planExtract(taskIds);
+  const plan = await planExtract(taskIds, commitIds, input.projectIds ?? []);
   const projectIds = plan.projects.map((p) => p.projectId);
   const projectKey = resolveScanProjectKey(input, plan, projectIds);
 
   const job = ConsoleJobService.create({
-    title: `[Sonar] 质量扫描 ${projectKey} · ${plan.tasks.length} 个任务`,
-    prompt: `任务范围：${taskIds.join(', ')}\nprojectKey：${projectKey}`,
+    title: `[Sonar] 质量扫描 ${projectKey} · ${plan.tasks.length} 个任务 / ${plan.manualCommits.length} 条手动提交`,
+    prompt: `任务范围：${taskIds.join(', ')}\n手动提交：${plan.manualCommits.join(', ')}\nprojectKey：${projectKey}`,
     category: 'sonar',
     period: null,
     projectIds,

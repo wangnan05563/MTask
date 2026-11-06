@@ -3,7 +3,7 @@ import { AlertTriangle, ChevronDown, ChevronRight, ExternalLink, Loader2, Refres
 import { api, type Project } from '../api/client';
 import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
 import { FIELD_QUIET, PILL } from '../ui/primitives';
-import { GitScopePicker, scopeWorkspace } from '../ui/gitScopePicker';
+import { GitScopePicker, manualCommitIdsOf, scopeWorkspace } from '../ui/gitScopePicker';
 import type { GitScope } from '../ui/gitScopePicker';
 import { FlowButton } from '../ui/FlowButton';
 import { FlowProgress } from '../ui/FlowProgress';
@@ -218,9 +218,9 @@ function stageMark(i: number, stageIdx: number): string {
 }
 
 /** 开始按钮的悬浮说明：环境未就绪优先，其次范围为空 */
-function startButtonTitle(envDown: boolean, taskCount: number): string {
+function startButtonTitle(envDown: boolean, taskCount: number, commitCount: number): string {
   if (envDown) return '环境未就绪：请先在设置页补全 SonarQube 配置';
-  if (taskCount === 0) return '请先勾选已回写 commit id 的任务';
+  if (taskCount === 0 && commitCount === 0) return '请先选择任务关联记录或手动 Git 提交';
   return '按当前范围开始扫描';
 }
 
@@ -289,6 +289,8 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
   }
 
   const taskIds = useMemo(() => [...new Set(scope.taskIds)], [scope.taskIds]);
+  const manualCommitIds = useMemo(() => manualCommitIdsOf(scope), [scope]);
+  const hasScanScope = taskIds.length > 0 || manualCommitIds.length > 0;
   const projectIdsKey = scope.projectIds.join(',');
   const ws = useMemo(() => scopeWorkspace(projects, scope.projectIds), [projects, scope.projectIds]);
   /** 环境不可用：服务端预检不通过（缺地址/scanner/Java/projectKey）或勾选跨了工作空间 */
@@ -389,7 +391,7 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
   }
 
   async function start() {
-    if (!taskIds.length) { flash?.('请先勾选至少一个已回写 commit id 的任务'); return; }
+    if (!hasScanScope) { flash?.('请先勾选任务关联记录，或打开“允许勾选未关联记录”后选择 Git 提交'); return; }
     setRunning(true);
     setResult(null); setRunError(''); setErrorKind(''); setAborted(false);
     // 新一轮开始就清掉上一轮终态：中途切走再回来时不至于把旧结论误当本轮结果
@@ -426,6 +428,8 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
     try {
       await streamEvents('/sonar/scan', {
         taskIds,
+        commitIds: manualCommitIds,
+        projectIds: scope.projectIds,
         projectKey: projectKey || undefined,
         autoWriteBack,
         severities: autoWriteBack && threshold.length ? threshold : undefined,
@@ -507,7 +511,7 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
       <section aria-label="扫描范围" data-t03377="section-scope" style={{ marginBottom: 12 }}>
         <GitScopePicker projects={projects} value={scope} onChange={onScopeChange} />
         <div data-t03377="scope-summary" style={{ ...PILL, display: 'inline-flex', gap: 6, marginTop: 6 }}>
-          已选 {scope.projectIds.length} 个项目 / {taskIds.length} 个任务{ws.path ? ` · 工作空间 ${ws.path.replace(/^.*[\\/]/, '')}` : ''}
+          已选 {scope.projectIds.length} 个项目 / {taskIds.length} 个任务 / 手动提交 {manualCommitIds.length} 条{ws.path ? ` · 工作空间 ${ws.path.replace(/^.*[\\/]/, '')}` : ''}
         </div>
         {keyOptions.length > 0 && (
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
@@ -604,8 +608,8 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
           <FlowButton
             loading={running}
             loadingText="扫描中…"
-            disabled={envDown || taskIds.length === 0}
-            title={startButtonTitle(envDown, taskIds.length)}
+            disabled={envDown || !hasScanScope}
+            title={startButtonTitle(envDown, taskIds.length, manualCommitIds.length)}
             aria-label="开始扫描"
             data-t03428="start"
             onClick={() => void start()}

@@ -3,7 +3,7 @@ import { AlertTriangle, Download, FileSpreadsheet, FileText, GitBranch, Loader2,
 import { api, type Project } from '../api/client';
 import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
 import { FIELD_QUIET, PILL } from '../ui/primitives';
-import { GitScopePicker, scopeWorkspace, type GitScope } from '../ui/gitScopePicker';
+import { GitScopePicker, manualCommitIdsOf, scopeWorkspace, type GitScope } from '../ui/gitScopePicker';
 import { WorkspaceSelect, wsBasename } from '../ui/WorkspaceSelect';
 import { patchProject } from '../ui/projectList';
 import { GIT_DEGRADED_HINT } from '../ui/gitBadge';
@@ -48,6 +48,7 @@ interface PlanView {
   workspacePath: string;
   projects: number;
   tasks: number;
+  manualCommits: number;
   commits: number;
   files: number;
   manifestRows: number;
@@ -125,6 +126,8 @@ export function GitExtractPanel({ projects, scope, onScopeChange, onClose, onEnv
   /** 交给后端的任务集：会话里存的是历史勾选，去重即可——「未回写」的任务由服务端按关联表判定并点名 */
   const taskIds = useMemo(() => [...new Set(scope.taskIds)], [scope.taskIds]);
   const taskIdsKey = taskIds.join(',');
+  const manualCommitIds = useMemo(() => manualCommitIdsOf(scope), [scope]);
+  const hasExtractScope = taskIds.length > 0 || manualCommitIds.length > 0;
   const ws = useMemo(() => scopeWorkspace(projects, scope.projectIds), [projects, scope.projectIds]);
   /** 环境不可用：勾了项目却没有可用的共同工作空间（未绑定 / 跨空间）——判据单源于 scopeWorkspace */
   const envBlocked = ws.blocked;
@@ -132,13 +135,17 @@ export function GitExtractPanel({ projects, scope, onScopeChange, onClose, onEnv
   const envDown = envBlocked || degraded !== '';
 
   const refreshPlan = useCallback(async () => {
-    if (!taskIds.length) {
+    if (!hasExtractScope) {
       setPlan(null); setPlanError(''); setDegraded(''); setPlanBusy(false);
       return;
     }
     setPlanBusy(true);
     try {
-      const body = await api.post<PlanView & ErrorPayload>('/git-extract/plan', { taskIds });
+      const body = await api.post<PlanView & ErrorPayload>('/git-extract/plan', {
+        taskIds,
+        commitIds: manualCommitIds,
+        projectIds: scope.projectIds,
+      });
       // 取数降级（非仓库 / 无 git / 超时）服务端按 **HTTP 200 + {error, kind}** 回（与 §3.1 徽标同一口径），
       // 不判这一层就会把错误负载当成摘要渲染成「已选 undefined 个项目」
       if (body && typeof body.error === 'string') {
@@ -158,7 +165,7 @@ export function GitExtractPanel({ projects, scope, onScopeChange, onClose, onEnv
     } finally {
       setPlanBusy(false);
     }
-  }, [taskIds]);
+  }, [hasExtractScope, manualCommitIds, scope.projectIds, taskIds]);
 
   // 勾选/筛选/项目变化即重算摘要，debounce 400ms（连点勾选不该打一串 plan 请求）
   useEffect(() => {
@@ -192,7 +199,7 @@ export function GitExtractPanel({ projects, scope, onScopeChange, onClose, onEnv
   }
 
   async function start() {
-    if (!taskIds.length) { flash?.('请先勾选至少一个已回写 commit id 的任务'); return; }
+    if (!hasExtractScope) { flash?.('请先勾选任务关联记录，或打开“允许勾选未关联记录”后选择 Git 提交'); return; }
     setRunning(true);
     setResult(null); setRunError(''); setAborted(false); setDownloaded([]); setStageIdx(-1); setJobId('');
     const controller = new AbortController();
@@ -210,7 +217,12 @@ export function GitExtractPanel({ projects, scope, onScopeChange, onClose, onEnv
       else if (name === 'error') setRunError(describeError(p as ErrorPayload));
     };
     try {
-      await streamEvents('/git-extract', { taskIds, mode }, onEvent, controller.signal);
+      await streamEvents('/git-extract', {
+        taskIds,
+        commitIds: manualCommitIds,
+        projectIds: scope.projectIds,
+        mode,
+      }, onEvent, controller.signal);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (controller.signal.aborted) setAborted(true);
@@ -254,7 +266,7 @@ export function GitExtractPanel({ projects, scope, onScopeChange, onClose, onEnv
   } else {
     envBlockedText = `项目「${bindTarget?.name ?? ''}」未绑定工作空间，Git 无法取数。绑定仓库目录后即可提取：`;
   }
-  const startRangeTitle = taskIds.length ? '按当前范围开始提取' : '请先勾选已回写 commit id 的任务';
+  const startRangeTitle = hasExtractScope ? '按当前范围开始提取' : '请先选择任务关联记录或手动 Git 提交';
   const startTitle = envDown ? '环境未就绪：请先绑定正确的仓库目录' : startRangeTitle;
 
   return (
@@ -282,8 +294,8 @@ export function GitExtractPanel({ projects, scope, onScopeChange, onClose, onEnv
           {planBusy && <Loader2 size={11} className="aispin" aria-hidden="true" />}
           <span>
             {plan
-              ? `已选 ${plan.projects} 个项目 / ${plan.tasks} 个任务 / 共 ${plan.files} 个文件`
-              : `已选 ${scope.projectIds.length} 个项目 / ${scope.taskIds.length} 个任务 / 共 — 个文件`}
+              ? `已选 ${plan.projects} 个项目 / ${plan.tasks} 个任务 / 手动提交 ${plan.manualCommits} 条 / 共 ${plan.files} 个文件`
+              : `已选 ${scope.projectIds.length} 个项目 / ${scope.taskIds.length} 个任务 / 手动提交 ${manualCommitIds.length} 条 / 共 — 个文件`}
           </span>
           {plan && <span style={{ color: 'var(--text-muted)' }}>· 提交 {plan.commits} 个 · 清单 {plan.manifestRows} 行 · 工作空间 {wsBasename(plan.workspacePath)}</span>}
         </div>
@@ -346,7 +358,7 @@ export function GitExtractPanel({ projects, scope, onScopeChange, onClose, onEnv
           <FlowButton
             loading={running}
             loadingText="提取中…"
-            disabled={envDown || taskIds.length === 0}
+            disabled={envDown || !hasExtractScope}
             title={startTitle}
             aria-label="开始提取"
             data-t03366="start"

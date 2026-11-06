@@ -16,11 +16,12 @@ import { dirname, join, resolve as resolvePath, sep } from 'node:path';
 import PizZip from 'pizzip';
 import ExcelJS from 'exceljs';
 import { getDb, dataDir } from '../db/connection';
-import { catFileBatch, collectCommitFiles, collectCommitSummaries } from './gitCollect';
+import { catFileBatch, collectCommitFiles, collectCommitSummaries, normalizeSelectedCommits } from './gitCollect';
 import type { BatchObject, CommitFileEntry, CommitSummaryRow } from './gitCollect';
 import { saveReportBuffer } from './ReportService';
 import { listLinks, resolveTask } from './taskGitLinks';
 import type { GitLinkRow, TaskRef } from './taskGitLinks';
+import { ACTIVE_PROJECT_WHERE } from '../util/projectRouting';
 
 /** Q9 甲裁定上限：文件数 ≤2000、总体积 ≤50MB，任务数不设限 */
 export const GIT_EXTRACT_MAX_FILES = 2000;
@@ -84,6 +85,8 @@ export interface ExtractPlan {
   workspacePath: string;
   projects: { projectId: string; name: string }[];
   tasks: ExtractTaskRef[];
+  /** T04526：未关联任务的 Git 提交；与任务关联提交合并后走同一条采集链路 */
+  manualCommits: string[];
   commits: CommitSummaryRow[];
   /** 逐提交逐行的清单行数（导出规模指示，非去重） */
   manifestRows: number;
@@ -110,9 +113,14 @@ function nameOf(projectId: string): string {
  *
  * 不做：不解析提交信息取 SHA（关联唯一来源是 task_git_links）、不 checkout、不写工作树。
  */
-export async function planExtract(taskIds: string[]): Promise<ExtractPlan> {
+export async function planExtract(
+  taskIds: string[],
+  manualCommits: readonly string[] = [],
+  manualProjectIds: readonly string[] = [],
+): Promise<ExtractPlan> {
   const ids = [...new Set((taskIds ?? []).map((s) => String(s ?? '').trim()).filter(Boolean))];
-  if (!ids.length) throw new ExtractError('no-tasks', '未勾选任何任务');
+  const commitIds = manualCommits?.length ? normalizeSelectedCommits(manualCommits) : [];
+  if (!ids.length && !commitIds.length) throw new ExtractError('no-tasks', '未选择任务关联记录或手动 Git 提交');
   const tasks: ExtractTaskRef[] = [];
   const workspaces = new Set<string>();
   const noWorkspace: string[] = [];
@@ -126,6 +134,16 @@ export async function planExtract(taskIds: string[]): Promise<ExtractPlan> {
       projectId: ref.projectId, links: listLinks(ref.id),
     });
   }
+  const projectIdSet = new Set([...(manualProjectIds ?? [])].map((s) => String(s ?? '').trim()).filter(Boolean));
+  for (const projectId of projectIdSet) {
+    const project = getDb().prepare(`SELECT id, name, workspace_path FROM projects WHERE id = ? AND ${ACTIVE_PROJECT_WHERE}`)
+      .get(projectId) as { id: string; name: string; workspace_path: string | null } | undefined;
+    if (!project) throw new ExtractError('task-not-found', `项目不存在或已归档（${projectId.slice(0, 12)}）`);
+    if (!project.workspace_path?.trim()) {
+      throw new ExtractError('no-workspace', `项目「${project.name}」未绑定工作空间，手动提交无法取数`);
+    }
+    workspaces.add(project.workspace_path.trim());
+  }
   if (noWorkspace.length) {
     throw new ExtractError('no-workspace', `以下任务所在项目未绑定工作空间，无法取数：${noWorkspace.join('、')}`);
   }
@@ -135,8 +153,8 @@ export async function planExtract(taskIds: string[]): Promise<ExtractPlan> {
   }
   const workspacePath = named[0];
   const linked = tasks.filter((t) => t.links.length > 0);
-  const shas = [...new Set(linked.flatMap((t) => t.links.map((l) => l.sha)))];
-  if (!shas.length) throw new ExtractError('no-links', '所选任务均未回写提交 ID，无可提取内容');
+  const shas = [...new Set([...linked.flatMap((t) => t.links.map((l) => l.sha)), ...commitIds])];
+  if (!shas.length) throw new ExtractError('no-links', '所选任务均未回写提交 ID，且未手动选择 Git 提交');
 
   const summaries = await collectCommitSummaries(workspacePath, shas);
   // 提交顺序就是「最终内容」的判定依据：清单按旧→新展开，同一文件后写覆盖前写。
@@ -160,8 +178,9 @@ export async function planExtract(taskIds: string[]): Promise<ExtractPlan> {
   return {
     jobId: randomUUID(),
     workspacePath,
-    projects: [...new Set(tasks.map((t) => t.projectId))].map((p) => ({ projectId: p, name: nameOf(p) })),
+    projects: [...new Set([...tasks.map((t) => t.projectId), ...projectIdSet])].map((p) => ({ projectId: p, name: nameOf(p) })),
     tasks,
+    manualCommits: commitIds,
     commits: commitsAsc,
     manifestRows: filesByCommit.reduce((n, f) => n + f.entries.length, 0),
     uniquePaths: finalPath.size,
