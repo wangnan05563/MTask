@@ -583,7 +583,10 @@ export async function probeScanner(scannerPathConfig?: string): Promise<SonarPro
   const resolution = resolveScannerBin(configured);
   const resolved = resolution.bin;
   if (!resolved) {
-    return { available: false, resolved: '', version: '', hint: SCANNER_MISSING_HINT };
+    // 配置了路径却一个都没探到：必须点名那条路径，否则用户只看到笼统的「未找到」，
+    // 分不清是自己填错还是机器上确实没装。
+    const deadPath = configured ? `「扫描器路径」配置的 ${configured} 不存在或不可执行；` : '';
+    return { available: false, resolved: '', version: '', hint: deadPath + SCANNER_MISSING_HINT };
   }
   return probeWithCache(`scanner:${resolved}`, async () => {
     const res = await execVersion(resolved, ['-v']);

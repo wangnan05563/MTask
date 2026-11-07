@@ -79,7 +79,9 @@ function projectKeyDetail(
 ): string {
   if (project?.ok) return `projectKey ${project.projectKey}`;
   if (project?.projectKey) return msgOf('project-not-found') || msgOf('unreachable');
-  return '未配置 projectKey';
+  // Token 形态的值会被服务端拒绝外发并回 projectKey=''——这时不能落回「未配置」，
+  // 否则用户照着提示去补 key，而真正的原因是贴错了框。
+  return msgOf('project-not-found') || '未配置 projectKey';
 }
 
 /** 审计行结果文案（成功 / 失败（原因））——原为模板里套三元，抽成纯函数避免嵌套 */
@@ -224,7 +226,7 @@ export function SonarSettingsTab() {
           hint: r.scanner?.ok ? '' : hintOf('no-scanner'),
         },
         {
-          label: '项目键可达性（/api/projects/show）',
+          label: '项目键可达性（/api/components/show）',
           ok: r.project?.ok === true,
           detail: projectKeyDetail(r.project, msgOf),
           hint: r.project?.ok ? '' : hintOf('project-not-found') || hintOf('unreachable') || hintOf('no-scanner'),
@@ -306,7 +308,7 @@ export function SonarSettingsTab() {
           onChange={(e) => setScannerDraft(e.target.value)}
         />
         <div data-t03375="scanner-probe" style={{ fontSize: 'var(--fs-xs)', marginTop: 4, color: cfg.scanner.available ? 'var(--text-muted)' : 'var(--warn)' }}>
-          {cfg.scanner.available ? `探测到：${cfg.scanner.resolved} · ${cfg.scanner.version}` : `未探测到可用扫描器 — ${cfg.scanner.hint}`}
+          {cfg.scanner.available ? `探测到：${cfg.scanner.resolved} · ${cfg.scanner.version}${cfg.scanner.hint ? ` — ${cfg.scanner.hint}` : ''}` : `未探测到可用扫描器 — ${cfg.scanner.hint}`}
         </div>
       </div>
 
