@@ -17,7 +17,7 @@ import {
   resolveTask,
   unlinkCommit,
 } from '../services/taskGitLinks';
-import { queryGitLog, type GitLogRequest } from '../services/lectureGitLog';
+import { queryGitLog, queryGitRepos, type GitLogRequest } from '../services/lectureGitLog';
 import { suggestGitLinks } from '../services/gitAiLink';
 import { cacheGet, cacheSet } from '../util/ttl-cache';
 import { createHash } from 'node:crypto';
@@ -154,10 +154,27 @@ gitLinksApi.get('/git/log', async (req, res) => {
     skip: q.skip === undefined ? undefined : Math.max(0, Math.floor(Number(q.skip) || 0)),
     limit: q.limit === undefined ? undefined : Math.min(500, Math.max(1, Math.floor(Number(q.limit) || 50))),
     search: q.search ? scalarText(q.search) : undefined,
+    /** T04525：工作空间目录内的哪一个仓库；几何包含校验在服务端 `resolveRepoSubPath` 单点做 */
+    repoSub: q.repoSub ? scalarText(q.repoSub) : undefined,
   };
   if (!body.projectId) return res.status(400).json({ error: '缺少 projectId' });
   try {
     res.json(await queryGitLog(body));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+/**
+ * T04525（需求修订）：列出**同一工作空间目录内**的多个仓库（根仓库 + 下一层/两层内含 `.git` 的子目录）。
+ * 旧口径下这些子仓库不可见：`rev-parse --is-inside-work-tree` 在子目录里也回 true，读起来像「只有一个仓库」。
+ * 只读清单，供分支聚合视图普查；不可用（未配工作空间/无仓库）回 200 + `ok:false` + 一句话。
+ */
+gitLinksApi.get('/git/repos', async (req, res) => {
+  const projectId = scalarText(req.query.projectId ?? '');
+  if (!projectId) return res.status(400).json({ error: '缺少 projectId' });
+  try {
+    res.json(await queryGitRepos({ projectId }));
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }

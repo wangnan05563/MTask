@@ -19,6 +19,7 @@ import {
   type GitGraphEntry,
   type GitRefName,
 } from './gitCollect';
+import { discoverNestedRepos, isRepositoryRoot, resolveRepoSubPath, type NestedRepo } from './nestedRepos';
 
 export interface GitLogRequest {
   projectId: string;
@@ -29,6 +30,11 @@ export interface GitLogRequest {
   skip?: number;
   limit?: number;
   search?: string;
+  /**
+   * T04525：同一工作空间目录内的**第几个仓库**（相对工作空间的 POSIX 路径，空 = 工作空间根仓库）。
+   * 只在读路径生效，且必须落在工作空间之内（`resolveRepoSubPath` 负责判几何包含）。
+   */
+  repoSub?: string;
 }
 
 export interface GitLogCommit {
@@ -55,6 +61,8 @@ export interface GitLogResult {
   scanTruncated: boolean;
   /** 分支/标签清单：仅在首页（skip=0 且无 search）回传，供弹窗顶部筛选与折叠 */
   refs?: GitRefName[];
+  /** T04525：本次取数实际使用的子仓库相对路径（回传入参，空串 = 工作空间根仓库） */
+  repoSub?: string;
   error?: { kind: string; message: string };
 }
 
@@ -102,6 +110,7 @@ function fail(project: ProjectRow | undefined, req: GitLogRequest, kind: string,
     limit: GIT_GRAPH_DEFAULT_PAGE,
     scanned: 0,
     scanTruncated: false,
+    repoSub: (req.repoSub ?? '').trim(),
     error: { kind, message },
   };
 }
@@ -157,11 +166,32 @@ export async function queryGitLog(req: GitLogRequest): Promise<GitLogResult> {
   const workspacePath = (project.workspace_path ?? '').trim();
   if (!workspacePath) return fail(project, req, 'no-workspace', '未配置工作空间路径（请在项目管理中补配后再用 Git 树选范围）');
 
-  const probe = await probeRepository(workspacePath);
-  if (!probe.available) return fail(project, req, probe.kind ?? 'no-git', probe.detail ?? '未找到 git 命令：请安装 Git，或改用区间/粘贴 patch 模式');
-  if (!probe.isRepo) return fail(project, req, probe.kind ?? 'not-a-repo', probe.detail ?? '工作空间不是 Git 仓库：请初始化仓库，或改用区间/粘贴 patch 模式');
+  // T04525：`repoSub` 决定「工作空间目录里的哪一个仓库」。越界与解析失败在这里收口成一句话，
+  // 不回落根仓库——回落会把子仓库的提交读成「没有这些提交」，比报错更难查。
+  const repoSub = (req.repoSub ?? '').trim();
+  let repoPath = workspacePath;
+  try {
+    repoPath = resolveRepoSubPath(workspacePath, repoSub);
+  } catch (e) {
+    return fail(project, req, 'bad-repo', e instanceof Error ? e.message : String(e));
+  }
 
-  const page = await collectGitGraph(workspacePath, {
+  // T04525（D-06 实测补的一刀）：`repoSub` 是非空断言「这里是一个独立仓库」，必须按 `.git` 实体核。
+  // 只靠 `--is-inside-work-tree` 不够——根仓库工作树内的 `docs/` 也回 true，
+  // 于是「子仓库」会静默返回根仓库的历史：视图上多了一行，读到的却是同一份提交。
+  if (repoSub && !(await isRepositoryRoot(repoPath))) {
+    return fail(project, req, 'not-a-repo', `${repoSub} 不是一个 Git 仓库（该目录下没有 .git）`);
+  }
+
+  const probe = await probeRepository(repoPath);
+  if (!probe.available) return fail(project, req, probe.kind ?? 'no-git', probe.detail ?? '未找到 git 命令：请安装 Git，或改用区间/粘贴 patch 模式');
+  if (!probe.isRepo) {
+    return fail(project, req, probe.kind ?? 'not-a-repo', repoSub
+      ? `${repoSub} 不是一个 Git 仓库（该目录下没有 .git）`
+      : (probe.detail ?? '工作空间不是 Git 仓库：请初始化仓库，或改用区间/粘贴 patch 模式'));
+  }
+
+  const page = await collectGitGraph(repoPath, {
     head: req.head,
     all: req.all === true,
     skip: req.skip,
@@ -172,7 +202,7 @@ export async function queryGitLog(req: GitLogRequest): Promise<GitLogResult> {
   let refs: GitRefName[] | undefined;
   if (firstPage) {
     // 引用清单一次独立取数：只看当前分支的话，别的热分支根本不会出现在装饰里
-    const all = await collectGitGraph(workspacePath, { all: true, limit: GIT_GRAPH_MAX_PAGE });
+    const all = await collectGitGraph(repoPath, { all: true, limit: GIT_GRAPH_MAX_PAGE });
     refs = collectRefNames(all.commits);
   }
   return {
@@ -187,5 +217,53 @@ export async function queryGitLog(req: GitLogRequest): Promise<GitLogResult> {
     scanned: page.scanned,
     scanTruncated: page.scanTruncated,
     ...(refs ? { refs } : {}),
+    repoSub,
   };
+}
+
+/** T04525：仓库清单请求/响应——「同一工作空间目录下的多个仓库」的数据源，只读 */
+export interface GitReposRequest {
+  projectId: string;
+}
+
+export interface GitReposResult {
+  ok: boolean;
+  projectId: string;
+  projectName: string;
+  workspacePath: string;
+  repos: NestedRepo[];
+  /** 因深度/条数上限被截断：前端要显式说出来，不能让清单看起来是全集 */
+  truncated: boolean;
+  scannedDirs: number;
+  error?: { kind: string; message: string };
+}
+
+/**
+ * T04525：把工作空间目录展开成「里面有哪些仓库」。
+ *
+ * 判定顺序与 git-log 一致（未配工作空间 / 没装 git 各给一句话），差别在最后一关：
+ * 工作空间**根**不是仓库时不再直接判死——`D:\code\xx` 这种「只是装仓库的目录」正是本需求要支持的形状，
+ * 里面发现不了仓库才回 `not-a-repo`。
+ */
+export async function queryGitRepos(req: GitReposRequest): Promise<GitReposResult> {
+  const projectId = typeof req.projectId === 'string' ? req.projectId.trim() : '';
+  const base = { projectId, projectName: projectId, workspacePath: '', repos: [] as NestedRepo[], truncated: false, scannedDirs: 0 };
+  if (!projectId) return { ok: false, ...base, error: { kind: 'denied', message: 'projectId 必填' } };
+  const project = getDb()
+    .prepare(`SELECT id, name, workspace_path FROM projects WHERE id = ? AND ${ACTIVE_PROJECT_WHERE}`)
+    .get(projectId) as ProjectRow | undefined;
+  if (!project) return { ok: false, ...base, error: { kind: 'denied', message: '项目不存在或已归档（请刷新项目列表）' } };
+  const named = { ...base, projectName: project.name };
+  const workspacePath = (project.workspace_path ?? '').trim();
+  if (!workspacePath) return { ok: false, ...named, error: { kind: 'no-workspace', message: '未配置工作空间路径（请在项目管理中补配）' } };
+  try {
+    const found = await discoverNestedRepos(workspacePath);
+    if (!found.repos.length) {
+      return { ok: false, ...named, workspacePath, truncated: found.truncated, scannedDirs: found.scannedDirs,
+        error: { kind: 'not-a-repo', message: '该工作空间目录及其下一层子目录内没有 Git 仓库' } };
+    }
+    return { ok: true, ...named, workspacePath, repos: found.repos, truncated: found.truncated, scannedDirs: found.scannedDirs };
+  } catch (e) {
+    return { ok: false, ...named, workspacePath, error: { kind: 'failed', message: e instanceof Error ? e.message : String(e) } };
+  }
 }

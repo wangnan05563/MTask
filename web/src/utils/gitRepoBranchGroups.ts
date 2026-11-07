@@ -53,11 +53,17 @@ export function refNameSet(refs: readonly GitRefName[]): Set<string> {
   return new Set(refs.map((r) => r.name));
 }
 
-/** 一个仓库（= 一个 MTask 项目工作空间）在该分支视图里的归属行输入 */
+/** 一个仓库（= 一个 git 工作树）在该分支视图里的归属行输入 */
 export interface RepoBranchInput {
   projectId: string;
   projectName: string;
   workspacePath: string;
+  /**
+   * T04525：仓库相对工作空间目录的路径（POSIX，'' = 工作空间根仓库）。
+   * 「一个项目 = 一个仓库」是本需求修订前的隐含假设；同一目录里装着 7 个子仓库时，
+   * 只靠 projectId 会让 8 份引用清单互相覆盖，所以每一行都必须带这个坐标。
+   */
+  repoSub?: string;
   /** 该仓库 `/git/log?all=1` 首页回传的引用清单；取数失败时传空数组 */
   refs: GitRefName[];
   /** `/git/log` 回包 ok 且未抛异常 */
@@ -68,13 +74,34 @@ export interface RepoBranchInput {
 
 export type RepoRowStatus = 'current' | 'spare' | 'unbound' | 'unavailable';
 
+/**
+ * 仓库一行的稳定身份：`项目 + 目录内相对路径`。
+ *
+ * 单独成函数的原因：paneKey、勾选、折叠状态、确认回传全都要按仓库算，
+ * 任何一处漏掉 `repoSub` 就会把根仓库的窗口当成子仓库的（同名分支下必然撞上）。
+ */
+export function repoKeyOf(projectId: string, repoSub?: string): string {
+  return `${projectId}\u0000${(repoSub ?? '').trim()}`;
+}
+
+/** 仓库展示路径：工作空间根原样，子仓库补相对段（只用于显示，取数仍用两段字段） */
+export function repoPathOf(workspacePath: string, repoSub?: string): string {
+  const sub = (repoSub ?? '').trim();
+  if (!sub) return workspacePath;
+  return `${workspacePath.replace(/[\\/]+$/, '')}/${sub}`;
+}
+
 /** 引用普查的并发上限（方案 §3.2 建议 3）：一次普查每仓要 fork 两条 git 命令，不该同时全开 */
 export const REPO_SCAN_CONCURRENCY = 3;
 
 export interface RepoBranchRow {
+  /** 仓库身份（`repoKeyOf`）：跨分支组、勾选、折叠状态一律按它算 */
+  repoKey: string;
   projectId: string;
   projectName: string;
-  /** 展示用仓库名：默认项目名，同名项目补工作空间末段目录名 */
+  /** T04525：仓库相对工作空间目录的路径；'' = 根仓库 */
+  repoSub: string;
+  /** 展示用仓库名：默认项目名，同名项目或子仓库补路径段 */
   repoLabel: string;
   workspacePath: string;
   status: RepoRowStatus;
@@ -102,11 +129,14 @@ function lastSegmentOf(workspacePath: string): string {
 }
 
 /**
- * 仓库展示名：默认 `Project.name`；项目名重复（同名项目指向不同工作空间）时补工作空间末段目录名，
- * 保证「一眼能判断这一行是哪个仓库」——这正是本方案要解决的问题本身。
+ * 仓库展示名：根仓库取 `Project.name`（同名项目再补工作空间末段目录名）；
+ * 同一目录里的子仓库一律带上相对路径（`项目名 · served`）——否则 8 行同名的「项目 A」
+ * 正是这次验收失败要消灭的东西。
  */
 export function repoLabelOf(input: RepoBranchInput, nameCounts: Map<string, number>): string {
   const base = input.projectName || input.projectId;
+  const sub = (input.repoSub ?? '').trim();
+  if (sub) return `${base} · ${sub}`;
   const duplicated = (nameCounts.get(base) ?? 0) > 1;
   const tail = lastSegmentOf(input.workspacePath);
   if (!duplicated || !tail || tail === base) return base;
@@ -128,11 +158,7 @@ function rowStatusOf(input: RepoBranchInput, activeProjectId: string): RepoRowSt
  * 但同一组内的不可用仓库仍然保留成行——两件事不冲突，判据见 `## 边界 2`。
  */
 export function buildRepoBranchGroups(inputs: RepoBranchInput[], activeProjectId = ''): RepoBranchGroup[] {
-  const nameCounts = new Map<string, number>();
-  for (const input of inputs) {
-    const key = input.projectName || input.projectId;
-    nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1);
-  }
+  const nameCounts = projectNameCounts(inputs);
   const byBranch = new Map<string, RepoBranchGroup>();
   for (const input of inputs) {
     const branches = new Set<string>();
@@ -143,14 +169,17 @@ export function buildRepoBranchGroups(inputs: RepoBranchInput[], activeProjectId
     }
     const status = rowStatusOf(input, activeProjectId);
     const available = status === 'current' || status === 'spare';
+    const repoKey = repoKeyOf(input.projectId, input.repoSub);
     for (const branchName of branches) {
       const group = byBranch.get(branchName) ?? {
         branchKey: branchName, branchName, repos: [], repoCount: 0, totalCommits: null,
       };
-      if (group.repos.some((r) => r.projectId === input.projectId)) continue;
+      if (group.repos.some((r) => r.repoKey === repoKey)) continue;
       group.repos.push({
+        repoKey,
         projectId: input.projectId,
         projectName: input.projectName,
+        repoSub: (input.repoSub ?? '').trim(),
         repoLabel: repoLabelOf(input, nameCounts),
         workspacePath: input.workspacePath,
         status,
@@ -176,6 +205,24 @@ export function buildRepoBranchGroups(inputs: RepoBranchInput[], activeProjectId
   return groups;
 }
 
+/**
+ * 项目名出现次数——**按项目去重后**统计，不是按仓库行统计。
+ *
+ * 一个装着 8 个子仓库的项目如果按行算，`nameCounts` 会把它判成「同名项目」，
+ * 于是根仓库莫名其妙多出「· 目录名」后缀，真正需要同名区分的场景反而被淹没。
+ */
+function projectNameCounts(inputs: readonly RepoBranchInput[]): Map<string, number> {
+  const seenProject = new Map<string, string>();
+  const counts = new Map<string, number>();
+  for (const input of inputs) {
+    if (seenProject.has(input.projectId)) continue;
+    seenProject.set(input.projectId, input.projectName);
+    const key = input.projectName || input.projectId;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
 /** 真正的「同一分支多仓库」组：至少 2 个可用仓库，才值得在视图上多一层折叠 */
 export function sharedBranchGroups(groups: RepoBranchGroup[]): RepoBranchGroup[] {
   return groups.filter((g) => g.repoCount > 1);
@@ -186,18 +233,16 @@ export function sharedBranchGroups(groups: RepoBranchGroup[]): RepoBranchGroup[]
  * 返回的顺序与入参一致，便于用户按项目下拉的顺序对上号。
  */
 export function blockedRepoRows(inputs: RepoBranchInput[], activeProjectId = ''): RepoBranchRow[] {
-  const nameCounts = new Map<string, number>();
-  for (const input of inputs) {
-    const key = input.projectName || input.projectId;
-    nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1);
-  }
+  const nameCounts = projectNameCounts(inputs);
   return inputs
     .filter((input) => !input.available || !input.workspacePath.trim())
     .map((input) => {
       const status = rowStatusOf(input, activeProjectId);
       return {
+        repoKey: repoKeyOf(input.projectId, input.repoSub),
         projectId: input.projectId,
         projectName: input.projectName,
+        repoSub: (input.repoSub ?? '').trim(),
         repoLabel: repoLabelOf(input, nameCounts),
         workspacePath: input.workspacePath,
         status,
@@ -213,9 +258,12 @@ export function blockedRepoRows(inputs: RepoBranchInput[], activeProjectId = '')
 /**
  * 一个「仓库 × 分支」窗口的键：同一个仓库会出现在多个分支组里，各组的提交集合互不相干，
  * 所以懒加载结果不能只按 projectId 存（那样切分支组时会把上一个分支的提交数当成这个分支的）。
+ *
+ * 入参是 `repoKeyOf` 产出的仓库身份而不是裸 projectId：T04525 之后同一项目的根仓库与子仓库
+ * 是两个独立窗口，用裸 projectId 会让它们共用一份提交数。
  */
-export function paneKeyOf(projectId: string, branchName: string): string {
-  return `${branchName}\n${projectId}`;
+export function paneKeyOf(repoKey: string, branchName: string): string {
+  return `${branchName}\n${repoKey}`;
 }
 
 /** 把懒加载回来的提交数写回分组（不改分组结构，只补 `commitCount` 与 `totalCommits`） */
@@ -223,7 +271,7 @@ export function applyCommitCounts(groups: RepoBranchGroup[], countsByPane: Recor
   return groups.map((group) => {
     let total: number | null = null;
     const repos = group.repos.map((row) => {
-      const count = countsByPane[paneKeyOf(row.projectId, group.branchName)];
+      const count = countsByPane[paneKeyOf(row.repoKey, group.branchName)];
       if (count == null) return row;
       total = (total ?? 0) + count;
       return { ...row, commitCount: count };
@@ -232,17 +280,34 @@ export function applyCommitCounts(groups: RepoBranchGroup[], countsByPane: Recor
   });
 }
 
-/** 分支组默认展开：同名分支组里含当前项目的那些（承接用户在范围层选的上下文），其余折叠 */
+/**
+ * 默认展开的分支组上限。
+ *
+ * T04525 实测打回点在「展开组数」而不是「组内仓库数」：一个工作空间目录里 8 个仓库 × 全部分支组
+ * 会一次性铺出 200 多个待取数窗口（每个窗口一次 git 取数），弹窗卡死、门也等不到结果。
+ * 分组按「同名仓库数」降序，所以前几组正是最需要横向对比的那几条分支；其余组保持折叠，
+ * 用户点开时才取数。
+ */
+export const DEFAULT_OPEN_BRANCH_GROUPS = 3;
+
+/** 分支组默认展开：同名分支组里含当前项目的那些（承接用户在范围层选的上下文），其余折叠，最多 `DEFAULT_OPEN_BRANCH_GROUPS` 组 */
 export function defaultExpandedBranches(groups: RepoBranchGroup[], activeProjectId: string): string[] {
   return sharedBranchGroups(groups)
     .filter((g) => g.repos.some((r) => r.projectId === activeProjectId && r.available))
+    .slice(0, DEFAULT_OPEN_BRANCH_GROUPS)
     .map((g) => g.branchKey);
 }
 
-/** 仓库行默认展开：一个分支组里只默认展开当前项目对应的仓库，其余仓库点击才懒加载 */
+/**
+ * 仓库行默认展开：一个分支组里默认展开**当前项目的全部仓库**（根仓库 + 它工作空间目录里的子仓库）。
+ *
+ * T04525 的需求原话就是「`D:\code\QJ\BEMP5.0DEV` 下有 master 与 feature/hnnxbank/dev，
+ * 还有 adapter/banks/deploy/served… 多个仓库」——只默认展开根仓库的话，
+ * 用户第一屏看到的仍是「一个仓库」，与验收失败前没有区别。
+ * 返回值是 `repoKeyOf` 口径（调用方直接拿去填 `openRepos`）。
+ */
 export function defaultExpandedRepos(group: RepoBranchGroup, activeProjectId: string): string[] {
-  const current = group.repos.find((r) => r.projectId === activeProjectId && r.available);
-  return current ? [current.projectId] : [];
+  return group.repos.filter((r) => r.projectId === activeProjectId && r.available).map((r) => r.repoKey);
 }
 
 /**
@@ -304,24 +369,83 @@ export async function mapSettledWithLimit<T, R>(
  * 抽成纯函数的原因：这三句区别是验收点 5 的全部内容，写在 `await` 旁边就只能靠真浏览器才能验证。
  */
 export function repoInputFromScan(
-  project: { id: string; name: string; workspacePath?: string | null },
+  project: { id: string; name: string; workspacePath?: string | null; repoSub?: string },
   settled: PromiseSettledResult<{ refs?: GitRefName[]; workspacePath?: string }>,
 ): RepoBranchInput {
   const workspacePath = (project.workspacePath ?? '').trim();
+  const repoSub = (project.repoSub ?? '').trim();
   if (!workspacePath) {
-    return { projectId: project.id, projectName: project.name, workspacePath: '', refs: [], available: false, unavailableReason: '该项目未绑定工作空间，无法取 Git 数据' };
+    return { projectId: project.id, projectName: project.name, workspacePath: '', repoSub, refs: [], available: false, unavailableReason: '该项目未绑定工作空间，无法取 Git 数据' };
   }
   if (settled.status === 'rejected') {
-    return { projectId: project.id, projectName: project.name, workspacePath, refs: [], available: false, unavailableReason: String(settled.reason ?? '') || 'Git 取数失败' };
+    return { projectId: project.id, projectName: project.name, workspacePath, repoSub, refs: [], available: false, unavailableReason: String(settled.reason ?? '') || 'Git 取数失败' };
   }
   const value = settled.value ?? {};
   return {
     projectId: project.id,
     projectName: project.name,
     workspacePath: value.workspacePath ?? workspacePath,
+    repoSub,
     refs: value.refs ?? [],
     available: true,
   };
+}
+
+/** 普查要扫描的一个仓库（一个项目展开成它工作空间目录里的 N 个仓库） */
+export interface RepoScanTarget {
+  projectId: string;
+  projectName: string;
+  workspacePath: string;
+  repoSub: string;
+}
+
+/** `/git/repos` 回包形状（只取普查要用的字段） */
+export interface RepoListResult {
+  ok: boolean;
+  repos?: { subPath?: string }[];
+  workspacePath?: string;
+  error?: { kind?: string; message?: string };
+}
+
+/**
+ * 把「逐项目的 `/git/repos` 结果」折算成普查扫描目标。
+ *
+ * 三条判据都有人踩过：
+ *  1. 未绑定工作空间的项目**不 fork 任何请求**（直接给一条 `repoSub=''` 的死行，由 `repoInputFromScan` 判原因）；
+ *  2. `/git/repos` 失败或返回空清单 → 回落到「根仓库一条」，让下游 `/git/log` 去给那句真正的错误，
+ *     不在这里发明第二套错误文案；
+ *  3. 成功时**根仓库也在清单里**（服务端已把 `subPath:''` 排第一），前端不再自行补一条，
+ *     否则根仓库会在分组里出现两行。
+ */
+export function censusTargetsFromRepoLists(
+  projects: readonly { id: string; name: string; workspacePath?: string | null }[],
+  repoLists: readonly (PromiseSettledResult<RepoListResult> | undefined)[],
+): RepoScanTarget[] {
+  const out: RepoScanTarget[] = [];
+  projects.forEach((project, index) => {
+    const workspacePath = (project.workspacePath ?? '').trim();
+    if (!workspacePath) {
+      out.push({ projectId: project.id, projectName: project.name, workspacePath: '', repoSub: '' });
+      return;
+    }
+    const settled = repoLists[index];
+    const list = settled?.status === 'fulfilled' ? settled.value : undefined;
+    const subs = list?.ok && list.repos?.length
+      ? list.repos.map((r) => (r.subPath ?? '').trim())
+      : [''];
+    for (const repoSub of subs) {
+      out.push({ projectId: project.id, projectName: project.name, workspacePath, repoSub });
+    }
+  });
+  return out;
+}
+
+/** 一份「仓库维度」的勾选：确认阶段要按仓库回传，所以身份、归属项目、相对路径三者必须一起带 */
+export interface RepoSelection {
+  repoKey: string;
+  projectId: string;
+  repoSub: string;
+  shas: string[];
 }
 
 /**
@@ -329,35 +453,39 @@ export function repoInputFromScan(
  * 同一个 SHA 会被两个窗口各勾选一次，不去重就会数两遍（范围层拿到的条数与界面显示的「已选」不一致）。
  * 顺序按首次出现保留，便于用户看到自己勾选的先后。
  */
-export function mergePaneSelections(panes: readonly { projectId: string; shas: readonly string[] }[]): Record<string, string[]> {
-  const out: Record<string, string[]> = {};
+export function mergePaneSelections(
+  panes: readonly { repoKey: string; projectId: string; repoSub?: string; shas: readonly string[] }[],
+): Record<string, RepoSelection> {
+  const out: Record<string, RepoSelection> = {};
   const seen: Record<string, Set<string>> = {};
   for (const pane of panes) {
-    if (!pane.projectId) continue;
-    const bucket = out[pane.projectId] ??= [];
-    const done = seen[pane.projectId] ??= new Set<string>();
+    if (!pane.repoKey) continue;
+    const entry = out[pane.repoKey] ??= { repoKey: pane.repoKey, projectId: pane.projectId, repoSub: (pane.repoSub ?? '').trim(), shas: [] };
+    const done = seen[pane.repoKey] ??= new Set<string>();
     for (const sha of pane.shas) {
       if (!sha || done.has(sha)) continue;
       done.add(sha);
-      bucket.push(sha);
+      entry.shas.push(sha);
     }
   }
   return out;
 }
 
 export type ConfirmOutcome =
-  | { ok: true; projectId: string; shas: string[] }
-  | { ok: false; code: 'empty'; projectIds: string[] }
-  /** 多个仓库都有勾选：现有执行链路按单一工作空间跑，前端不许伪合并 */
-  | { ok: false; code: 'multi'; projectIds: string[] };
+  | { ok: true; projectId: string; repoSub: string; shas: string[] }
+  | { ok: false; code: 'empty'; repoKeys: string[] }
+  /** 多个仓库都有勾选：现有执行链路按单一仓库跑，前端不许伪合并 */
+  | { ok: false; code: 'multi'; repoKeys: string[] };
 
 /**
- * 确认阶段的唯一口径：一次只回传**一个**仓库的 SHA 集合。
- * 只有一份勾选时原样回传；多份勾选直接拒——「让用户挑一个仓库再确认」比「静默丢掉其他仓库的选择」诚实。
+ * 确认阶段的唯一口径：一次只回传**一个仓库**的 SHA 集合。
+ * 只有一份勾选时原样回传（含该仓库的 `repoSub`，否则子仓库的选择会在下游被当成根仓库的）；
+ * 多份勾选直接拒——「让用户挑一个仓库再确认」比「静默丢掉其他仓库的选择」诚实。
  */
-export function resolveRepoConfirmation(selectionByRepo: Record<string, string[]>): ConfirmOutcome {
-  const filled = Object.keys(selectionByRepo).filter((id) => (selectionByRepo[id]?.length ?? 0) > 0);
-  if (filled.length === 0) return { ok: false, code: 'empty', projectIds: [] };
-  if (filled.length > 1) return { ok: false, code: 'multi', projectIds: filled };
-  return { ok: true, projectId: filled[0], shas: [...selectionByRepo[filled[0]]] };
+export function resolveRepoConfirmation(selectionByRepo: Record<string, RepoSelection>): ConfirmOutcome {
+  const filled = Object.keys(selectionByRepo).filter((key) => (selectionByRepo[key]?.shas.length ?? 0) > 0);
+  if (filled.length === 0) return { ok: false, code: 'empty', repoKeys: [] };
+  if (filled.length > 1) return { ok: false, code: 'multi', repoKeys: filled };
+  const picked = selectionByRepo[filled[0]];
+  return { ok: true, projectId: picked.projectId, repoSub: picked.repoSub, shas: [...picked.shas] };
 }
