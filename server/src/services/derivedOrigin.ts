@@ -76,12 +76,130 @@ export function resolveCreateOrigin(input: {
 /**
  * 归并幂等判据：两条写回通道各有标记形态（MCP 自动归并写 `【派生单 Txxxx 处理结果 日期】`，
  * 脚本补录写 `派生单回填 Txxxx`），任一命中即视为已归并。
+ *
+ * 这里只回答「母单有没有本单的归并记录」，供归档门（T03637）判断闭环是否走完；
+ * 要不要再写一次由下面的**内容等价判据**决定（T04546）。
  */
 export function alreadyMerged(handleResult: string | null | undefined, taskNo: string | null | undefined): boolean {
   const no = (taskNo ?? '').trim();
   if (!no) return false;
   const text = handleResult ?? '';
   return text.includes(`【派生单 ${no} 处理结果`) || text.includes(`派生单回填 ${no}`);
+}
+
+/** 归并节标题：自动通道 `【派生单 Txxxx 处理结果 2026-01-01】` / 补录通道 `## 派生单回填 Txxxx（2026-01-01）`。
+ *  两个形态各把「前缀」和「日期槽」分成一组：日期为空也能定位槽位——
+ *  早先用 `indexOf(日期串)` 反查，空串会命中行首，把日期写到标题最前面。 */
+const MERGED_HEADINGS = (no: string) => {
+  const esc = no.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(
+    `^(?:(【派生单 ${esc} 处理结果 )([^】]*)】|(##\\s*派生单回填 ${esc}（)([^）]*)）)[ \\t]*$`,
+    'gm',
+  );
+};
+
+/** 母单里属于某子单的一节归并快照：标题整行 + 正文（正文不含下一节的分隔线/标题） */
+export interface MergedSection {
+  headingStart: number;
+  headingEnd: number;
+  headingLine: string;
+  bodyStart: number;
+  bodyEnd: number;
+  /** 标题里的日期槽位（两种形态都用它写最后同步日） */
+  dateStart: number;
+  dateEnd: number;
+}
+
+/**
+ * 定位母单内该子单的**全部**归并节（历史叠加时可能不止一节）。
+ * 正文终止于：下一节的标题行、`---` 分隔线，或文本结尾。
+ */
+export function findMergedSections(handleResult: string | null | undefined, taskNo: string | null | undefined): MergedSection[] {
+  const text = handleResult ?? '';
+  const no = (taskNo ?? '').trim();
+  if (!no || !text) return [];
+  const heads: Array<{ start: number; end: number; line: string; dateStart: number; dateEnd: number }> = [];
+  const re = MERGED_HEADINGS(no);
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const prefixLen = (m[1] ?? m[3] ?? '').length;
+    const dateStr = m[2] ?? m[4] ?? '';
+    const dateStart = m.index + prefixLen;
+    heads.push({
+      start: m.index,
+      end: m.index + m[0].length,
+      line: m[0],
+      dateStart,
+      dateEnd: dateStart + dateStr.length,
+    });
+  }
+  if (!heads.length) return [];
+  // 正文边界：本标题行末 → 下一个「分节起点」（任何单的归并标题或 `---` 分隔线），否则文本末尾
+  const boundaries: number[] = [];
+  const anyHeading = /^【派生单 T\d+ 处理结果[^】]*】$|^##\s*派生单回填 T\d+（[^）]*）$|^---$/gm;
+  const marks: number[] = [];
+  let b: RegExpExecArray | null;
+  while ((b = anyHeading.exec(text)) !== null) marks.push(b.index);
+  for (let i = 0; i < heads.length; i += 1) {
+    const from = heads[i].end;
+    let to = text.length;
+    for (const pos of marks) if (pos > from && pos < to) { to = pos; break; }
+    boundaries.push(to);
+  }
+  return heads.map((h, i) => ({
+    headingStart: h.start,
+    headingEnd: h.end,
+    headingLine: h.line,
+    bodyStart: h.end,
+    bodyEnd: boundaries[i],
+    dateStart: h.dateStart,
+    dateEnd: h.dateEnd,
+  }));
+}
+
+/** 比较用的归一化：行尾统一 LF、去掉节正文首尾空行与行末空白 */
+const normalizeBody = (s: string): string =>
+  s.replace(/\r\n/g, '\n').split('\n').map((l) => l.replace(/[ \t]+$/, '')).join('\n').trim();
+
+/**
+ * 内容等价判据（T04546 的核心）：母单最新那节快照的正文是否与本次结论一致。
+ * 找不到可比对的节 ⇒ 视为不一致（该写就写，别拿「有标记」当「内容对得上」）。
+ */
+export function mergedContentMatches(handleResult: string | null | undefined, taskNo: string | null | undefined, result: string): boolean {
+  const sections = findMergedSections(handleResult, taskNo);
+  if (!sections.length) return false;
+  const last = sections[sections.length - 1];
+  const text = handleResult ?? '';
+  return normalizeBody(text.slice(last.bodyStart, last.bodyEnd)) === normalizeBody(result ?? '');
+}
+
+/**
+ * 就地刷新母单里该子单的快照正文（保留母单其余内容逐字不动，含别的单归并节）。
+ * 标题形态沿用命中的那一节，只把日期槽位写成本次同步日——不新造第三种标记，
+ * 避免与脚本 `merge` 的 `## 派生单回填` 形态在母单里并存（T04546 期望处置 3）。
+ * 无命中节时按补录通道的标题形态追加一节，与 `mcp-direct-call.py merge` 对齐。
+ */
+export function refreshMergedBody(
+  handleResult: string | null | undefined,
+  taskNo: string | null | undefined,
+  result: string,
+  stamp: string,
+): string {
+  const text = handleResult ?? '';
+  const no = (taskNo ?? '').trim();
+  const sections = findMergedSections(text, no);
+  if (!sections.length) {
+    const prev = text.trim();
+    const block = `## 派生单回填 ${no}（${stamp}）\n${result}`;
+    return prev ? `${prev}\n\n${block}` : block;
+  }
+  // 只刷新最后一节：更早的节是历史留痕，留着便于对照
+  const last = sections[sections.length - 1];
+  const heading = text.slice(last.headingStart, last.headingEnd);
+  const dated = heading.slice(0, last.dateStart - last.headingStart) + stamp + heading.slice(last.dateEnd - last.headingStart);
+  // 标题行与正文之间的换行由这里补；正文与下一节之间原本靠空行分隔，替换正文后要把空行还回去
+  const tail = text.slice(last.bodyEnd);
+  return text.slice(0, last.headingStart) + dated + '\n' + result + (tail ? `\n\n${tail}` : '');
 }
 
 export interface ReconcileResult {

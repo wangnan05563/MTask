@@ -12,7 +12,7 @@ import { getDb } from '../db/connection';
 import { getDefaultNoteProjectId } from '../services/AppSettings';
 import { readPoolStatus, poolFullHint } from '../services/ConcurrencyPool'; // T01066 后续：MCP 领取路径池满提示
 import { TaskService } from '../services/TaskService';
-import { resolveCreateOrigin, alreadyMerged } from '../services/derivedOrigin'; // T02320：溯源兜底 + 归并幂等（与 REST 建单共用同一判据）
+import { resolveCreateOrigin, alreadyMerged, mergedContentMatches, refreshMergedBody } from '../services/derivedOrigin'; // T02320：溯源兜底 + 归并幂等（与 REST 建单共用同一判据）；T04546：修订回灌
 import { AIService } from '../services/AIService'; // T02168：mtask_summarize_task 直接复用页面/REST 同一条摘要链
 import { TaskImageService } from '../services/TaskImageService'; // T00610：截图读取（供 AI 识别验证失败反馈截图）
 import { PlanService } from '../services/PlanService';
@@ -1076,9 +1076,21 @@ export async function createMCPServer(): Promise<McpServer> {
           // T02320：编号查无（历史脏值/母单已被物理删除）⇒ 如实回告，不猜目标、不静默
           merged = `；⚠ 溯源母单 ${originNo} 在库中查无，结论未归并（请补正 derived_from 或按脚本 merge 手工补录）`;
         } else if (alreadyMerged(origin.handle_result, task.task_no)) {
-          // T02320 归并幂等：母单已含本单号的标记（自动归并节或脚本补录节）⇒ 跳过，
-          // 否则重复提交会把同一段结论在母单里叠加两遍
-          merged = `；母单 ${originNo} 已含本单归并记录，未重复追加`;
+          // T02320 归并幂等：母单已含本单号的标记（自动归并节或脚本补录节）⇒ 不重复叠加同一段结论。
+          // T04546：旧判据只看「编号标记在不在」，于是子单**二次修订**永远不回灌——
+          // 母单被钉在首次整合快照上（实测 T04186 修订 3 行、母单 85 秒即冻结）。
+          // 现在比内容：一致才真幂等跳过，不一致就把母单那一节就地刷新（母单其余内容逐字保留）。
+          if (mergedContentMatches(origin.handle_result, task.task_no, a.result)) {
+            merged = `；母单 ${originNo} 已含本单归并记录且内容一致，未重复追加`;
+          } else {
+            const stamp = new Date().toISOString().slice(0, 10);
+            TaskService.update(origin.id, {
+              handle_result: refreshMergedBody(origin.handle_result, task.task_no, a.result, stamp),
+            });
+            // 与首次归并同口径：回灌了就要让用户看得见（原单置 unread）
+            TaskService.setAiState(origin.id, 'unread');
+            merged = `；母单 ${originNo} 的归并快照已按本次修订刷新（旧版只按编号判幂等，修订不回灌）`;
+          }
         } else {
           const stamp = new Date().toISOString().slice(0, 10);
           const originText = (origin.handle_result ?? '').trim();
