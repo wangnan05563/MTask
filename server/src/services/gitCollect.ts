@@ -10,7 +10,7 @@
  */
 import { execFile, spawn, type ExecFileException } from 'node:child_process';
 
-export const GIT_READONLY_SUBCOMMANDS = ['rev-parse', 'log', 'diff', 'show', 'remote', 'cat-file'] as const;
+export const GIT_READONLY_SUBCOMMANDS = ['rev-parse', 'log', 'diff', 'show', 'remote', 'cat-file', 'for-each-ref'] as const;
 export type GitReadonlySubcommand = (typeof GIT_READONLY_SUBCOMMANDS)[number];
 
 export const GIT_TIMEOUT_MS = 30_000;
@@ -52,6 +52,8 @@ const ALLOWED_FLAGS: Record<GitReadonlySubcommand, RegExp[]> = {
   // cat-file 只允许 --batch（对象名走 stdin，不接受 --batch-command/--batch-all-objects/-e/-t 等形态）
   remote: [],
   'cat-file': [/^--batch$/],
+  // T04552：只为拿 refname 与指向对象（`%(*objectname)` 用于剥注解标签），无任何写/配置开关
+  'for-each-ref': [/^--format=[\w%().:*+-]+$/],
 };
 
 /**
@@ -62,6 +64,8 @@ const POSITIONAL_HEAD: Partial<Record<GitReadonlySubcommand, RegExp[]>> = {
   remote: [/^get-url$/],
   // cat-file 的对象名一律走 stdin，位置参数必须为空（空表 = 任何首段都拒绝）
   'cat-file': [],
+  // T04552：三个命名空间前缀即全部合法位置参数，`--`/通配/单段 refs 一律拒绝
+  'for-each-ref': [/^refs\/(?:heads|remotes|tags)(?:\/[\w.-]+)*$/],
 };
 
 /**
@@ -1668,21 +1672,55 @@ export interface GitGraphEntry {
 /** `%D` 只有装饰名；这里额外带 %cn，让并集采集能直接产出 GitCommitEntry */
 const GRAPH_FORMAT = '--format=%H%x09%P%x09%D%x09%an%x09%cn%x09%aI%x09%s';
 
-function parseRefDecorate(raw: string): { refs: GitRefName[]; head: boolean } {
-  const refs: GitRefName[] = [];
-  let head = false;
-  for (const token of raw.split(',').map((s) => s.trim()).filter(Boolean)) {
-    const tag = /^tag:\s*(.+)$/.exec(token);
-    if (tag) { refs.push({ type: 'tag', name: tag[1] }); continue; }
-    if (token.startsWith('HEAD')) {
-      head = true;
-      const arrow = token.split('->')[1]?.trim();
-      if (arrow) refs.push({ type: 'branch', name: arrow });
-      continue;
-    }
-    refs.push({ type: token.includes('/') ? 'remote' : 'branch', name: token });
+/**
+ * T04552：`%D` 只用来判断「这个提交是不是 HEAD 所指」。
+ *
+ * 旧实现按「名字里有没有斜杠」猜类型，把本地分支 `release/2.3` 标成 remote，前端只能靠
+ * 「削掉首段后是否真有其名」反推。类型改由 `collectRefTypes` 按真实 refname 前缀定性，
+ * 这里不再从装饰文本产出任何 ref。
+ */
+function decorateHasHead(raw: string): boolean {
+  return raw.split(',').some((token) => token.trim().startsWith('HEAD'));
+}
+
+/** for-each-ref 三列：完整 refname、指向对象、剥壳对象（注解标签剥壳后才落在提交上） */
+const REF_LIST_FORMAT = '--format=%(refname)%09%(objectname)%09%(*objectname)';
+
+/**
+ * T04552：把 `refs/heads|remotes|tags` 的真实类型按**指向的提交 SHA** 索引。
+ *
+ * 按 SHA 而不是按名字索引，是因为「同名但不同命名空间」正是这一单的病根：
+ * 本地 `release/2.3`（`refs/heads/`）与远端跟踪引用 `origin/release/2.3`（`refs/remotes/`）
+ * 同时存在时，两个 ref 必须各自保留、类型分别为 branch / remote；而一条**字面名叫 `origin/x`**
+ * 的本地分支（`refs/heads/origin/x`）也只能由前缀定性，名字本身绝不参与推断。
+ *
+ * 注解标签的 `%(objectname)` 是标签对象，`%(*objectname)` 才是它指向的对象；轻量标签剥壳列为空。
+ */
+export function parseRefNameList(stdout: string): Map<string, GitRefName[]> {
+  const bySha = new Map<string, GitRefName[]>();
+  for (const line of stdout.split('\n')) {
+    if (!line) continue;
+    const [refname, objectname = '', peeled = ''] = line.split('\t');
+    const sha = (peeled || objectname).trim().toLowerCase();
+    if (!/^[0-9a-f]{40}$/.test(sha)) continue;
+    let type: GitRefName['type'];
+    let name: string;
+    if (refname.startsWith('refs/heads/')) { type = 'branch'; name = refname.slice(11); }
+    else if (refname.startsWith('refs/remotes/')) { type = 'remote'; name = refname.slice(13); }
+    else if (refname.startsWith('refs/tags/')) { type = 'tag'; name = refname.slice(10); }
+    else continue;
+    if (!name) continue;
+    const list = bySha.get(sha);
+    if (list) list.push({ type, name });
+    else bySha.set(sha, [{ type, name }]);
   }
-  return { refs, head };
+  return bySha;
+}
+
+/** 一次 `for-each-ref` 取齐三类引用；只扫这三个命名空间，refs/notes 之类不参与展示 */
+async function collectRefTypes(cwd: string, opts: GitCollectOptions): Promise<Map<string, GitRefName[]>> {
+  const r = await runGitReadonly('for-each-ref', [REF_LIST_FORMAT], ['refs/heads', 'refs/remotes', 'refs/tags'], cwd, opts);
+  return parseRefNameList(r.stdout);
 }
 
 function parseGraphLog(stdout: string): GitGraphEntry[] {
@@ -1691,8 +1729,7 @@ function parseGraphLog(stdout: string): GitGraphEntry[] {
     if (!line) continue;
     const [sha, parents = '', decorate = '', author = '', committer = '', date = '', ...rest] = line.split('\t');
     if (!/^[0-9a-f]{40}$/.test(sha) || !date) continue;
-    const { refs, head } = parseRefDecorate(decorate);
-    out.push({ sha, parents: parents.trim().split(' ').filter(Boolean), refs, head, author, committer, date, subject: rest.join('\t') });
+    out.push({ sha, parents: parents.trim().split(' ').filter(Boolean), refs: [], head: decorateHasHead(decorate), author, committer, date, subject: rest.join('\t') });
   }
   return out;
 }
@@ -1746,7 +1783,9 @@ export async function collectGitGraph(cwd: string, q: GitGraphQuery = {}, opts: 
   ];
   const positional = all ? ['--'] : [assertSafeRevision((q.head ?? '').trim() || 'HEAD'), '--'];
   const r = await runGitReadonly('log', flags, positional, cwd, opts);
+  const refsBySha = await collectRefTypes(cwd, opts);
   const allCommits = parseGraphLog(r.stdout);
+  for (const e of allCommits) e.refs = refsBySha.get(e.sha) ?? [];
   if (needle) {
     const hits = allCommits.filter((e) => matchesSearch(e, needle));
     return {

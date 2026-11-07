@@ -37,7 +37,6 @@ import {
   repoPathOf,
   resolveRepoConfirmation,
   sharedBranchGroups,
-  refNameSet,
   toggleKey,
   type RepoBranchGroup,
   type RepoBranchInput,
@@ -179,8 +178,6 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
 
   const project = useMemo(() => projects.find((p) => p.id === projectId), [projects, projectId]);
   const visibleRefs = useMemo(() => groupByRef(commits), [commits]);
-  /** 本仓库「见过的引用名」全集：`branchNameOf` 用它判「削掉首段后是否真有其名」（服务端把带斜杠的本地分支也标成 remote） */
-  const refNames = useMemo(() => refNameSet([...refs, ...visibleRefs]), [refs, visibleRefs]);
   const summary = useMemo(() => summarizeSelection(commits, selected), [commits, selected]);
 
   /* ---------- T04527：分组视图的派生数据与动作 ---------- */
@@ -419,7 +416,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
    * 只属于一个仓库 → 保持现状（按这条分支重新取数）。没有普查数据时 `repoCount` 恒为 0，行为与改造前一致。
    */
   function onChipClick(r: GitRefName) {
-    const branch = branchNameOf(r, refNames) ?? r.name;
+    const branch = branchNameOf(r) ?? r.name;
     const group = repoGroups.find((g) => g.branchName === branch);
     if (group && group.repoCount > 1) {
       setRepoView(true);
@@ -524,7 +521,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
             <button type="button" onClick={() => setFoldRefs(true)} style={{ ...chipStyle, cursor: 'pointer', background: 'var(--surface)' }} aria-label="收起分支列表">收起分支</button>
             {refs.length > 0 && <button type="button" data-lck="git-tree-ref-all" onClick={() => { setAllBranches(true); setHead(''); }} style={{ ...chipStyle, cursor: 'pointer', background: 'var(--surface)' }}>全部分支</button>}
             {visibleRefs.slice(0, 24).map((r) => {
-              const branch = branchNameOf(r, refNames) ?? r.name;
+              const branch = branchNameOf(r) ?? r.name;
               const repoCount = repoCountByBranch[branch] ?? 0;
               return (
                 <button key={`${r.type}:${r.name}`} type="button" data-lck="git-tree-ref" data-ref={r.name}

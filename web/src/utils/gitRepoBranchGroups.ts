@@ -15,42 +15,24 @@
 import type { GitRefName } from './gitTreeSelect';
 
 /**
- * 归一化分支名（同名聚合的键）：tag 不参与；`<remote>/<branch>` 去掉最前面的远端段。
+ * 归一化分支名（同名聚合的键）：tag 不参与；远端跟踪引用去掉最前面的远端名一段。
  *
- * 「是不是远端段」不能只看 `ref.type`：服务端 `parseRefDecorate`（`gitCollect.ts:1683`）把 `%D` 里
- * **一切带斜杠的名字**都标成 `remote`，于是本地分支 `release/2.3`、`solo/only-in-alpha` 也被标成远端。
- * 照段数削会把它们变成 `2.3`、`only-in-alpha`——既读不懂，也可能把两条根本不同的分支并进同一组。
- * 因此用两条判据认定「这一段是远端名」，命中才削：
- *  1. 削完剩下的名字在本仓库的引用里**真有其名**（`origin/main` ←→ 本地 `main`，最常见）；
- *  2. 前一段是本仓库某个 `<前缀>/HEAD` 的前缀（clone/fetch 会为真远端建 `origin/HEAD` 符号引用），
- *     或属于 git 约定的远端名 `origin`/`upstream`——这条兜管住「只 fetch 没 checkout」的仓库：
- *     它只有 `origin/release/2.3`，若按判据 1 会被当成一条名叫 `origin/release/2.3` 的分支，
- *     于是明明同名的两个仓库聚不到一组。
- * 已知残余误差（都只剩「本地分支名恰好以 origin/ 或 upstream/ 开头」这一种形状）：会被当成远端跟踪引用削段。
+ * T04552 起服务端按真实 refname 前缀定性（`refs/heads/` / `refs/remotes/` / `refs/tags/`），
+ * `ref.type` 就是可信来源，这里不再按「削完是否真有其名」反推：
+ *  - `branch` 原样返回，包括字面名叫 `origin/x` 的本地分支（`refs/heads/origin/x`）；
+ *  - `remote` 只削首段（`origin/release/2.3` → `release/2.3`）；
+ *  - `origin/HEAD` 是符号引用、不是一条真分支，不成组。
  * 视图层只按名字聚合，**不判断同源**，组内始终带工作空间路径可核对（方案 §9 风险 1）。
  */
-export function branchNameOf(ref: GitRefName, siblingRefNames?: ReadonlySet<string>): string | null {
+export function branchNameOf(ref: GitRefName): string | null {
   if (ref.type === 'tag') return null;
   const name = ref.name;
   if (!name) return null;
+  if (ref.type === 'branch') return name;
   const slash = name.indexOf('/');
   if (slash < 0) return name;
   const stripped = name.slice(slash + 1);
-  // origin/HEAD 是符号引用，不是一条真分支，不参与聚合
-  if (!stripped || stripped === 'HEAD') return null;
-  if (!siblingRefNames) return name;
-  if (siblingRefNames.has(stripped)) return stripped;
-  const prefix = name.slice(0, slash);
-  if (KNOWN_REMOTE_NAMES.has(prefix) || siblingRefNames.has(`${prefix}/HEAD`)) return stripped;
-  return name;
-}
-
-/** git 初始化远端时的默认名（`git clone` 只有 `origin`，`git remote add upstream` 是社区约定） */
-const KNOWN_REMOTE_NAMES = new Set(['origin', 'upstream']);
-
-/** 该仓库全部引用名（供 `branchNameOf` 判「削段后是否真有其名」） */
-export function refNameSet(refs: readonly GitRefName[]): Set<string> {
-  return new Set(refs.map((r) => r.name));
+  return !stripped || stripped === 'HEAD' ? null : stripped;
 }
 
 /** 一个仓库（= 一个 git 工作树）在该分支视图里的归属行输入 */
@@ -162,9 +144,8 @@ export function buildRepoBranchGroups(inputs: RepoBranchInput[], activeProjectId
   const byBranch = new Map<string, RepoBranchGroup>();
   for (const input of inputs) {
     const branches = new Set<string>();
-    const names = refNameSet(input.refs);
     for (const ref of input.refs) {
-      const name = branchNameOf(ref, names);
+      const name = branchNameOf(ref);
       if (name) branches.add(name);
     }
     const status = rowStatusOf(input, activeProjectId);
@@ -325,8 +306,7 @@ export function toggleKey(keys: readonly string[], key: string): string[] {
  * 优先级：本地分支 > 远端引用（本地分支是可直接取数的稳定入口）。
  */
 export function refNameForBranch(refs: GitRefName[], branchName: string): string | null {
-  const names = refNameSet(refs);
-  const matches = refs.filter((r) => branchNameOf(r, names) === branchName);
+  const matches = refs.filter((r) => branchNameOf(r) === branchName);
   // 本地分支优先：它是可直接取数的稳定入口；`origin/main` 只在本仓库没有本地同名分支时才用
   return matches.find((r) => r.type === 'branch')?.name ?? matches[0]?.name ?? null;
 }
