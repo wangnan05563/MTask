@@ -138,11 +138,13 @@ function laneCell(lanes: LaneLayout, row: number, lane: number) {
   return <span key={lane}> </span>;
 }
 
-export function GitTreePickerModal({ projects, activeProjectId, selectedByProject, onConfirm, onClose, zIndex = 1000 }: {
+export function GitTreePickerModal({ projects, activeProjectId, selectedByProject, initialRepoView = false, onConfirm, onClose, zIndex = 1000 }: {
   readonly projects: Project[];
   readonly activeProjectId: string;
   /** 各项目已选 SHA（确认后由卡片写回；弹窗内改的是当前项目的这一份） */
   readonly selectedByProject: Record<string, string[]>;
+  /** T04553：独立的多仓库入口直接落在聚合视图，省略时保持单仓库列表的既有默认 */
+  readonly initialRepoView?: boolean;
   /** T04576：第三个参数是确认来自工作空间目录内的哪个仓库（空串 = 项目根仓库） */
   readonly onConfirm: (projectId: string, shas: string[], repoSub: string) => void;
   readonly onClose: () => void;
@@ -166,7 +168,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   const listRef = useRef<HTMLDivElement>(null);
 
   /* ---------- T04527：分支聚合（多仓库）视图。缺省关闭，关闭时下面这些状态一概不参与渲染 ---------- */
-  const [repoView, setRepoView] = useState(false);
+  const [repoView, setRepoView] = useState(initialRepoView === true);
   /** 引用普查结果（每个仓库一份 refs）；null = 还没普查过，此时不画任何分组层 */
   const [census, setCensus] = useState<RepoBranchInput[] | null>(null);
   const [scanning, setScanning] = useState(false);

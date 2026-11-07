@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties, type Dispatch, type SetStateAction } from 'react';
-import { AlertTriangle, CheckSquare, FolderOpen, GitCommitHorizontal, Loader2, Square } from 'lucide-react';
+import { AlertTriangle, CheckSquare, FolderGit2, FolderOpen, GitCommitHorizontal, Loader2, Square } from 'lucide-react';
 import { api, type Project, type Task, type TaskCategory } from '../api/client';
 import { FIELD_QUIET, PILL } from './primitives';
 import { wsBasename } from './WorkspaceSelect';
@@ -141,7 +141,8 @@ export function GitScopePicker({ projects, value, onChange }: {
   const [loading, setLoading] = useState(false);
   const [truncated, setTruncated] = useState(false);
   const [cats, setCats] = useState<TaskCategory[]>([]);
-  const [commitPickerOpen, setCommitPickerOpen] = useState(false);
+  /** T04553：手动提交弹窗的两种入口——单仓库列表（'single'）与分支聚合（'multi'） */
+  const [commitPickerMode, setCommitPickerMode] = useState<'single' | 'multi' | null>(null);
 
   const idsKey = value.projectIds.join(',');
   const statusFilter = value.status;
@@ -220,10 +221,12 @@ export function GitScopePicker({ projects, value, onChange }: {
   function confirmManualCommits(projectId: string, shas: string[], repoSub: string) {
     onChange({
       ...value,
+      // 两条入口都只在「要手动选提交」时打开；显式置真，避免走多仓库入口后开关仍显示关闭
+      allowUnlinkedCommits: true,
       commitIdsByProject: { ...commitIdsByProject, [projectId]: shas },
       repoSubByProject: { ...(value.repoSubByProject ?? {}), [projectId]: repoSub },
     });
-    setCommitPickerOpen(false);
+    setCommitPickerMode(null);
   }
 
   return (
@@ -266,6 +269,27 @@ export function GitScopePicker({ projects, value, onChange }: {
         </div>
       )}
 
+      {/* T04553（裁决 C）：多仓库选范围独立入口。Git 提取卡与 Sonar 卡共用本组件，两处都指向这里；
+          聚合视图只是「浏览 + 逐仓库确认」，不产生执行，因此不随 ws.blocked 灰化——
+          跨空间/未绑定时仍可打开预选，执行侧的同一工作空间约束由各面板的 ws.blocked 继续把关。 */}
+      <div data-t04553="multi-repo-entry" style={{ ...ROW, flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          data-t04553="open"
+          onClick={() => setCommitPickerMode('multi')}
+          disabled={value.projectIds.length === 0}
+          title={value.projectIds.length === 0 ? '先在上方勾选项目' : '按「同一分支 → 多个仓库」聚合选提交，含工作空间目录内的子仓库'}
+          style={{ ...PILL, cursor: value.projectIds.length ? 'pointer' : 'not-allowed', opacity: value.projectIds.length ? 1 : 0.5 }}
+        >
+          <FolderGit2 size={12} /> 多仓库选范围
+        </button>
+        <span style={{ flex: '1 1 auto', minWidth: 0, color: ws.blocked ? 'var(--warn)' : 'var(--text-muted)' }}>
+          {ws.blocked
+            ? '当前范围跨工作空间或未绑定：可打开浏览与预选，提取/扫描仍需同一工作空间'
+            : '同一分支跨多个仓库时从这里选提交，一次确认回传一个仓库'}
+        </span>
+      </div>
+
       {/* T04526：未关联记录入口默认关闭；只有显式打开后才展示手动选择控件 */}
       <label data-t04526="allow-unlinked" style={{ ...ROW, cursor: 'pointer' }}>
         <input
@@ -287,7 +311,7 @@ export function GitScopePicker({ projects, value, onChange }: {
           <button
             type="button"
             data-t04526="open-commit-picker"
-            onClick={() => setCommitPickerOpen(true)}
+            onClick={() => setCommitPickerMode('single')}
             disabled={value.projectIds.length === 0 || ws.blocked}
             title={value.projectIds.length === 0 ? '先选择一个项目仓库' : '手动选择 Git 提交，包括未关联任务的提交'}
             style={{ ...PILL, cursor: ws.blocked || value.projectIds.length === 0 ? 'not-allowed' : 'pointer', opacity: ws.blocked || value.projectIds.length === 0 ? 0.5 : 1 }}
@@ -392,13 +416,14 @@ export function GitScopePicker({ projects, value, onChange }: {
           <span>共 {visibleTasks.length} 条任务在当前筛选内，其中 {visibleLinked.length} 条已回写 commit id 可勾选。</span>
         )}
       </div>
-      {commitPickerOpen && (
+      {commitPickerMode && (
         <GitTreePickerModal
           projects={projects.filter((p) => value.projectIds.includes(p.id))}
           activeProjectId={value.projectIds[0] ?? ''}
           selectedByProject={commitIdsByProject}
+          initialRepoView={commitPickerMode === 'multi'}
           onConfirm={confirmManualCommits}
-          onClose={() => setCommitPickerOpen(false)}
+          onClose={() => setCommitPickerMode(null)}
           zIndex={1200}
         />
       )}
