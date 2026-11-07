@@ -440,19 +440,20 @@ const sites: Site[] = [
       // 触发键是 toggle（setAnchor(anchor ? null : …)）：真点击若在关闭态上多走一次会把浮层再关掉，故按现状补一次
       if ((await page.locator(dlg).count()) === 0) await clickPrep('[data-t03343="git-more"]');
       await page.waitForSelector(dlg, { state: 'attached', timeout: 15000 });
-      const txt = await page.locator(dlg).first().innerText().catch(() => '');
-      if (!/复制提交/.test(txt)) throw new Error(`清单浮层已开但行未出（接口回显）：${txt.replace(/\s*\r?\n\s*/g, ' | ').slice(0, 180)}`);
+      // 行判据看 DOM：复制按钮是图标按钮，innerText 里不会出现「复制提交」（那只在 aria-label）
       await page.waitForSelector('[data-t03343="git-popover-row"]', { timeout: 15000 });
+      const rowCount = await page.locator('[data-t03343="git-popover-row"]').count();
+      if (!rowCount) {
+        const txt = await page.locator(dlg).first().innerText().catch(() => '');
+        throw new Error(`清单浮层已开但行未出（接口回显）：${txt.replace(/\s*\r?\n\s*/g, ' | ').slice(0, 180)}`);
+      }
     },
     /*
-     * 本调用点当前恒为 BLOCKED，原因不是夹具不到位，而是应用缺陷（已取证，派生单 T04577）：
-     * gitBadge.tsx:243-249 在徽标 span 上挂了原生冒泡阶段的 click→stopPropagation，
-     * 而 React 18 的委托监听在更外侧的 root 容器（main.tsx:7 createRoot(#root)），
-     * 于是「+N」触发键的 React onClick 永不派发——真鼠标、dispatchEvent、DOM click 三条通道实测都开不了浮层
-     * （D:/tmp/t04547/probe4b.log 全 false/0 行；probe5b.log 把按钮临时移出徽标 span 后同一通道立刻 popRows=2）。
-     * 该拦截出自 commit 847a703。修复后本站点自动转 PASS，门应回到 BLOCKED=0。
+     * T04577 已修复：徽标整块拦截从原生 addEventListener 迁到 React onClick（fiber 树自内向外），
+     * 「+N」触发键的 React onClick 正常派发，本调用点转为可实测（专属门 scripts/verify/T04577-git-badge-click.mts）。
+     * 若再次退回原生无条件 stopPropagation，本调用点会重新 BLOCKED。
      */
-    blockedWhy: '应用缺陷 T04577：gitBadge 徽标 span 的原生 click→stopPropagation 抢在 React 委托（#root）之前，内层按钮 onClick 永不派发（探针 probe4b/probe5b.log 实证），修复后本调用点转可测',
+    blockedWhy: 'gitBadge 徽标内层按钮的真实点击被整块拦截抢走（原生 click→stopPropagation 抢在 React 委托之前）——若复现，先查 web/src/ui/gitBadge.tsx 的拦截位置',
   },
   {
     label: 'A06 GitCommitTab 抽屉复制', file: 'web/src/components/GitCommitTab.tsx', nav: 'tasks',

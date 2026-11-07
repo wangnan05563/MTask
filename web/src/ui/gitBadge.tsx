@@ -234,19 +234,6 @@ export interface GitBadgeProps {
 /** 元信息行徽标（§3.1.1 展示规则五行） */
 export function GitBadge({ task, summaries, gitOn, onOpenGit, flash }: GitBadgeProps) {
   const [anchor, setAnchor] = useState<{ top: number; left: number } | null>(null);
-  const badgeRef = useRef<HTMLSpanElement>(null);
-  /*
-   * 徽标整块吞掉点击：里面的外链 / 复制 / 展开清单各有自己的行为，
-   * 不能再连带触发任务行的「打开抽屉」。拦截挂在 DOM 上——徽标本身不是控件，真正的控件是里面的 `<a>` / `<button>`。
-   * 不写依赖数组：徽标会随「未回写 / 降级 / 解析中 / 就绪」四态切换节点，每次渲染都按当前节点重新挂一次。
-   */
-  useEffect(() => {
-    const el = badgeRef.current;
-    if (!el) return;
-    const stop = (e: MouseEvent) => e.stopPropagation();
-    el.addEventListener('click', stop);
-    return () => el.removeEventListener('click', stop);
-  });
   if (!gitOn) return null;
 
   const link = (task.gitLinks ?? [])[0];
@@ -301,7 +288,12 @@ export function GitBadge({ task, summaries, gitOn, onOpenGit, flash }: GitBadgeP
   const aria = `${summary.author} ${relTime(summary.date)}：${summary.subject}；来源${SOURCE_LABEL[link.source] ?? link.source}；提交 ${link.sha}`;
 
   return (
-    <span ref={badgeRef} data-t03343="git-badge" data-ttask-git-sha={link.sha} style={{ display: 'inline-flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
+    /* T04577：拦截必须留在 React 合成事件层。原生 addEventListener 挂在徽标上会抢在
+       React 18 的 #root 委托之前 stopPropagation，内层按钮的 onClick 永远不派发；
+       挂 onClick 则按 fiber 树自内向外：内层控件先执行，任务行的「打开抽屉」再被止住。 */
+    <span data-t03343="git-badge" data-ttask-git-sha={link.sha}
+      onClick={(e) => e.stopPropagation()}
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
       {/* Q14（REQ-071）：列表内的悬浮详情从多行 title 升级成 HoverCard——原生提示放不下外链与整 SHA。
           title 因此摘掉（同一元素上两套提示会互相打架），读屏通道仍走 aria-label。 */}
       <HoverCard ariaLabel={`提交 ${link.sha} 摘要`} cardW={360} cardH={176}
