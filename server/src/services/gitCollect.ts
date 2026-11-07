@@ -1069,6 +1069,11 @@ export interface GitRangeInput {
   authorFilter?: string;
   /** T03302：`commits` 形态——Git 树里点选的提交 SHA（连续段自动并成区间，非连续按提交并集） */
   commits?: string[];
+  /**
+   * T04576：`commits` 形态来自工作空间目录内的哪个仓库（相对 POSIX 路径；空/缺省 = 项目根仓库）。
+   * 采集 cwd 由调用方按此解析——子仓库的 SHA 在根仓库里不存在，按根口径采会整批判 missing。
+   */
+  repoSub?: string;
 }
 
 export interface ResolvedGitRange {

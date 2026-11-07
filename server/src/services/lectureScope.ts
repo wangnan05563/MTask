@@ -17,6 +17,7 @@
 import { getDb } from '../db/connection';
 import { ACTIVE_PROJECT_WHERE } from '../util/projectRouting';
 import { DEFAULT_IGNORE_DIRS, DEFAULT_IGNORE_FILES } from './WorkspaceService';
+import { isRepositoryRoot, resolveRepoSubPath } from './nestedRepos';
 import {
   GIT_DIFF_TEXT_LIMIT,
   GitCollectError,
@@ -243,6 +244,13 @@ function parseCommitsRange(r: Record<string, unknown>, index: number, range: Git
   } catch (e) {
     throw new LectureScopeError(`projects[${index}].range.commits 非法：${e instanceof Error ? e.message : String(e)}`);
   }
+  // T04576：仓库维度（'.' 与空串同义）。几何包含校验在真正拼 cwd 时做（`resolveRepoSubPath`），
+  // 这里只做形状校验——把对象/数组拼进 cwd 会在 git 层炸出一句无法定位的错。
+  const repoSub = rangeStr(r.repoSub);
+  if (r.repoSub !== undefined && repoSub === undefined) {
+    throw new LectureScopeError(`projects[${index}].range.repoSub 必须是非空字符串或省略`);
+  }
+  if (repoSub && repoSub !== '.') range.repoSub = repoSub;
   // T03302：Git 树点选形态——选择本身就是一份提交清单，不接受 base/head/since，也不再叠提交人过滤
   if (rangeStr(r.authorFilter)) throw new LectureScopeError(`projects[${index}].range：Git 树点选已按提交为准，不要再叠加提交人过滤（请清空后重试）`);
   return range;
@@ -329,7 +337,10 @@ export function parseLectureScopeRequest(body: unknown): { projects: LectureProj
 }
 
 function rangeLabelOf(range: GitRangeInput): string {
-  if (range.shape === 'commits') return `已选 ${range.commits?.length ?? 0} 个提交（Git 树点选）`;
+  if (range.shape === 'commits') {
+    const repoNote = range.repoSub ? ` · 仓库 ${range.repoSub}` : '';
+    return `已选 ${range.commits?.length ?? 0} 个提交（Git 树点选${repoNote}）`;
+  }
   if (range.shape === 'since') return range.until ? `${range.since ?? ''} ~ ${range.until}` : `自 ${range.since ?? ''}`;
   if (range.shape === 'first-last') return `${range.base ?? ''}..${range.head ?? ''}`;
   return `${range.base ?? ''}..${range.head ?? 'HEAD'}`;
@@ -480,7 +491,21 @@ async function scanGitProject(
   rules: readonly ExcludeRule[],
   resolveRevision: boolean,
 ): Promise<LectureCollectedProject> {
-  const decision = await resolveCollectionMode(workspacePath);
+  // T04576：`range.repoSub` 决定在哪个仓库采集——空 = 项目根仓库，与改造前逐字节一致。
+  // 非空必须按 `.git` 实体核（与 `/git/log` 同口径），否则根仓库工作树内的普通目录会静默读成根仓库历史。
+  const repoSub = (item.range?.repoSub ?? '').trim();
+  let repoPath = workspacePath;
+  if (repoSub) {
+    try {
+      repoPath = resolveRepoSubPath(workspacePath, repoSub);
+    } catch (e) {
+      return { ...base, files: [], commits: [], blocked: e instanceof Error ? e.message : String(e) };
+    }
+    if (!(await isRepositoryRoot(repoPath))) {
+      return { ...base, files: [], commits: [], blocked: `${repoSub} 不是一个 Git 仓库（该目录下没有 .git）` };
+    }
+  }
+  const decision = await resolveCollectionMode(repoPath);
   base.git = {
     available: decision.probe.available,
     isRepo: decision.probe.isRepo,
@@ -492,9 +517,9 @@ async function scanGitProject(
   }
   try {
     // 先拿全量变更再过滤：若先套 2MB 预算，低优先级文件会被提前丢弃，排除命中数就失真
-    const collected = await collectGitRange(workspacePath, item.range!, { diffLimit: Number.MAX_SAFE_INTEGER });
+    const collected = await collectGitRange(repoPath, item.range!, { diffLimit: Number.MAX_SAFE_INTEGER });
     const { preview, files } = summarizeCollection(base, collected, rules);
-    const revision = await resolveHeadRevision(workspacePath, collected.range.head, resolveRevision);
+    const revision = await resolveHeadRevision(repoPath, collected.range.head, resolveRevision);
     return { ...preview, files, commits: collected.commits, ...(revision ? { revision } : {}) };
   } catch (e) {
     if (e instanceof GitCollectError) return { ...base, files: [], commits: [], blocked: `${e.message}（${e.kind}）` };

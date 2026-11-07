@@ -34,6 +34,11 @@ const FILE_STATUS: Record<string, { color: string; label: string }> = {
 
 const PLATFORM_LABEL: Record<string, string> = { github: 'GitHub', gitlab: 'GitLab', gitee: 'Gitee' };
 
+/** T04576：同一 SHA 可能同时出现在根仓库与子仓库——卡片/文件缓存的键必须带仓库维度，否则互相顶掉 */
+function cardKeyOf(card: { sha: string; repoSub?: string }): string {
+  return `${card.repoSub ?? ''}\u0000${card.sha}`;
+}
+
 /** 外链仅允许 http/https（与服务端 `isSafeExternalUrl` 同口径的渲染层二次校验） */
 function safeHref(url?: string): string | undefined {
   if (!url) return undefined;
@@ -58,6 +63,7 @@ export function GitCommitTab({ task, projectId, projects, onBindChange, onBindWo
   const [view, setView] = useState<GitTaskView | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  /** 选中态存卡片键（repoSub + sha），不是裸 SHA——同 SHA 跨仓库时两张卡各自独立 */
   const [selected, setSelected] = useState<string | null>(null);
   const [filesBySha, setFilesBySha] = useState<Record<string, GitFilesResult>>({});
   const [filesBusy, setFilesBusy] = useState<string>('');
@@ -79,7 +85,7 @@ export function GitCommitTab({ task, projectId, projects, onBindChange, onBindWo
       const next = await api.get<GitTaskView>(`/tasks/${task.id}/git`);
       setView(next);
       // 选中态跟随：首屏默认选中第一张卡（主提交）；刷新后若原选中提交还在则保持
-      setSelected((prev) => (prev && next.commits.some((c) => c.sha === prev) ? prev : next.commits[0]?.sha ?? null));
+      setSelected((prev) => (prev && next.commits.some((c) => cardKeyOf(c) === prev) ? prev : next.commits[0] ? cardKeyOf(next.commits[0]) : null));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -104,28 +110,34 @@ export function GitCommitTab({ task, projectId, projects, onBindChange, onBindWo
     return () => ac.abort();
   }, [projectId, task.id]);
 
-  /** 文件清单 + diff 懒加载：只在选中提交时打一次，切走再回来复用已取到的结果 */
-  const loadFiles = useCallback(async (sha: string) => {
-    if (filesBySha[sha]) return;
-    setFilesBusy(sha);
+  /** 文件清单 + diff 懒加载：只在选中提交时打一次，切走再回来复用已取到的结果（键含 repoSub） */
+  const loadFiles = useCallback(async (key: string, sha: string, repoSub: string) => {
+    if (filesBySha[key]) return;
+    setFilesBusy(key);
     try {
-      const res = await api.get<GitFilesResult>(`/tasks/${task.id}/git/${sha}/files?diff=1`);
-      setFilesBySha((prev) => ({ ...prev, [sha]: res }));
+      const qs = new URLSearchParams({ diff: '1' });
+      if (repoSub) qs.set('repoSub', repoSub);
+      const res = await api.get<GitFilesResult>(`/tasks/${task.id}/git/${sha}/files?${qs.toString()}`);
+      setFilesBySha((prev) => ({ ...prev, [key]: res }));
     } catch (e) {
-      setFilesBySha((prev) => ({ ...prev, [sha]: { files: [], degraded: { kind: 'failed', message: e instanceof Error ? e.message : String(e) } } }));
+      setFilesBySha((prev) => ({ ...prev, [key]: { files: [], degraded: { kind: 'failed', message: e instanceof Error ? e.message : String(e) } } }));
     } finally {
       setFilesBusy('');
     }
   }, [task.id, filesBySha]);
 
-  useEffect(() => { if (selected) void loadFiles(selected); }, [selected, loadFiles]);
+  const selectedCard = useMemo(() => (view?.commits ?? []).find((c) => cardKeyOf(c) === selected), [view, selected]);
 
-  async function bindShas(shas: string[]) {
+  useEffect(() => {
+    if (selectedCard) void loadFiles(cardKeyOf(selectedCard), selectedCard.sha, selectedCard.repoSub ?? '');
+  }, [selectedCard, loadFiles]);
+
+  async function bindShas(shas: string[], repoSub: string) {
     let ok = 0;
     const failed: string[] = [];
     for (const sha of shas) {
       try {
-        await api.post(`/tasks/${task.id}/git/links`, { sha });
+        await api.post(`/tasks/${task.id}/git/links`, repoSub ? { sha, repoSub } : { sha });
         ok += 1;
       } catch (e) {
         failed.push(`${sha.slice(0, 7)}：${e instanceof Error ? e.message : String(e)}`);
@@ -134,26 +146,29 @@ export function GitCommitTab({ task, projectId, projects, onBindChange, onBindWo
     setPickerOpen(false);
     if (ok) {
       const failNote = failed.length ? `，${failed.length} 条失败` : '';
-      flash(`已关联 ${ok} 条提交${failNote}`);
+      flash(`已关联 ${ok} 条提交${repoSub ? `（仓库 ${repoSub}）` : ''}${failNote}`);
       onBindChange();
       await load();
     }
     if (failed.length) flash(`绑定失败：${failed.join('；')}`);
   }
 
-  async function unlink(sha: string) {
+  async function unlink(card: GitCommitCard) {
     setUnlinkError('');
     // zIndex 1200：本组件在任务详情抽屉（SlideOver，z-index 1100）内，默认 1000 的确认面板会被抽屉盖住——
     // 「确定」点不着，且面板外 mousedown 即取消，解绑永远走不完二次确认（八期 §3.2.4，真机 UI-26 打回后修复）
     const sure = await askConfirm('解除该手动绑定？AI 回写的关联不受影响', { zIndex: 1200 });
     if (!sure) return;
     try {
-      await api.del(`/tasks/${task.id}/git/links/${sha}`);
+      const qs = new URLSearchParams();
+      if (card.repoSub) qs.set('repoSub', card.repoSub);
+      const suffix = qs.toString() ? `?${qs.toString()}` : '';
+      await api.del(`/tasks/${task.id}/git/links/${card.sha}${suffix}`);
       flash('已解绑');
       onBindChange();
       await load();
     } catch (e) {
-      // 409（agent 来源）/ 404 等原因如实点名，不静默
+      // 409（agent 来源 / 跨仓库歧义）/ 404 等原因如实点名，不静默
       const msg = e instanceof Error ? e.message : String(e);
       setUnlinkError(msg);
       flash(msg);
@@ -232,14 +247,14 @@ export function GitCommitTab({ task, projectId, projects, onBindChange, onBindWo
         </div>
       )}
 
-      {/* 提交卡（时间倒序；首张为主提交） */}
+      {/* 提交卡（时间倒序；首张为主提交）；同一 SHA 可能来自不同仓库，key 带 repoSub */}
       {cards.map((c, i) => (
-        <CommitCard key={c.sha} card={c} primary={i === 0} platformLabel={platformLabel}
-          selected={selected === c.sha} onSelect={() => setSelected(c.sha)} onUnlink={() => void unlink(c.sha)} />
+        <CommitCard key={cardKeyOf(c)} card={c} primary={i === 0} platformLabel={platformLabel}
+          selected={selected === cardKeyOf(c)} onSelect={() => setSelected(cardKeyOf(c))} onUnlink={() => void unlink(c)} />
       ))}
 
       {/* 选中提交的文件清单（懒加载） */}
-      {selected && (
+      {selectedCard && (
         <div data-t03362="files" style={{ marginLeft: 10, marginTop: 8 }}>
           {filesBusy === selected && <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>文件清单取数中…</p>}
           {renderFileList()}
@@ -265,7 +280,7 @@ export function GitCommitTab({ task, projectId, projects, onBindChange, onBindWo
 
       {pickerOpen && (
         <GitTreePickerModal projects={project ? [project] : []} activeProjectId={projectId}
-          selectedByProject={{}} onConfirm={(_pid, shas) => void bindShas(shas)} onClose={() => setPickerOpen(false)}
+          selectedByProject={{}} onConfirm={(_pid, shas, repoSub) => void bindShas(shas, repoSub)} onClose={() => setPickerOpen(false)}
           zIndex={1200} />
       )}
     </div>
@@ -284,9 +299,9 @@ export function GitCommitTab({ task, projectId, projects, onBindChange, onBindWo
       <>
         {res.truncated && <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--warn)' }}>文件清单过大，已截断显示。</p>}
         {res.files.map((f) => {
-          const key = `${selected}|${f.path}`;
+          const key = selected ? `${selected}|${f.path}` : f.path;
           const open = openFiles.has(key);
-          const d = selected ? res.diffs?.[f.path] : undefined;
+          const d = res.diffs?.[f.path];
           const tone = FILE_STATUS[f.status] ?? { color: 'var(--text-muted)', label: f.status };
           return (
             <div key={f.path} style={{ marginTop: 2 }}>
@@ -356,6 +371,7 @@ function CommitCard({ card, primary, platformLabel, selected, onSelect, onUnlink
         <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 4 }}>
           {primary && <span data-t03362="primary" style={{ ...PILL, background: 'var(--accent-soft)', color: 'var(--accent-ink)' }}>主提交</span>}
           <span data-t03362={`source-${card.source}`} style={PILL}>{sourceLabel}</span>
+          {card.repoSub && <span data-t03362="repo" style={PILL} title="该提交来自工作空间目录内的子仓库（非项目根仓库）">仓库 {card.repoSub}</span>}
           {card.isInitial && <span data-t03362="initial" style={PILL}>初始提交</span>}
           {card.laterThanTask && <span data-t03362="later" style={{ ...PILL, color: 'var(--warn)' }} title="提交时间晚于任务更新时间——任务可能尚未记录本次改动">提交晚于任务更新时间</span>}
           {card.workspaceDrift && <span data-t03362="drift" style={{ ...PILL, color: 'var(--warn)' }} title="关联记录的工作空间与项目当前绑定不一致（换绑）">工作空间已换绑</span>}

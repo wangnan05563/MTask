@@ -1206,20 +1206,23 @@ ${a.result}`;
     description:
       '外部 AI Agent 提交代码后回写 commit ID（任务↔提交关联的**主通道**，落库 source=agent）。'
       + '入参 commits 支持 1 个或多个（7–40 位十六进制，短 SHA 由服务端在当前工作空间解析为 40 位）。'
-      + '幂等：同任务同 SHA 重复回写只记 skipped，不产生重复行；解析不出或仓库不存在时逐条点名进 errors（不静默失败）。'
+      + 'repoSub 指定工作空间目录内的子仓库（相对路径，如 `served`；省略/空 = 项目根仓库）——'
+      + '子仓库的提交若不传 repoSub，会按根仓库解析并判 missing。'
+      + '幂等：同任务同 SHA 同仓库重复回写只记 skipped，不产生重复行；解析不出或仓库不存在时逐条点名进 errors（不静默失败）。'
       + '不做任何提交信息解析——关联只由显式写入产生。',
     inputSchema: {
       taskNo: z.string().optional().describe('任务编号（如 T03325，与 id 二选一）'),
       id: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
       commits: z.union([z.string(), z.array(z.string())]).describe('commit ID：单个字符串或数组，支持多个'),
+      repoSub: z.string().optional().describe('工作空间目录内的子仓库相对路径（空/省略 = 项目根仓库）'),
     },
   }, async (a) => {
     try {
       if (!a.taskNo && !a.id) return err(taskLocateError());
-      const res = await TaskGit.linkCommits({ taskNo: a.taskNo, id: a.id }, a.commits, 'agent');
+      const res = await TaskGit.linkCommits({ taskNo: a.taskNo, id: a.id }, a.commits, 'agent', a.repoSub ?? '');
       const lines = [
-        `linked=${res.linked} skipped=${res.skipped} resolved=${res.resolved.length}`,
-        ...res.resolved.map((r) => `  ${r.input} -> ${r.sha}`),
+        `linked=${res.linked} skipped=${res.skipped} resolved=${res.resolved.length} repoSub=${res.repoSub || '.'}`,
+        ...res.resolved.map((r) => `  ${r.input} -> ${r.sha}${r.repoSub ? ` @ ${r.repoSub}` : ''}`),
         ...res.errors.map((e) => `  错误：${e}`),
       ];
       // T03350：一条都没写进去时必须置 isError——否则 Agent 看到的是「成功态」结果，

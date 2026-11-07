@@ -143,7 +143,8 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   readonly activeProjectId: string;
   /** 各项目已选 SHA（确认后由卡片写回；弹窗内改的是当前项目的这一份） */
   readonly selectedByProject: Record<string, string[]>;
-  readonly onConfirm: (projectId: string, shas: string[]) => void;
+  /** T04576：第三个参数是确认来自工作空间目录内的哪个仓库（空串 = 项目根仓库） */
+  readonly onConfirm: (projectId: string, shas: string[], repoSub: string) => void;
   readonly onClose: () => void;
   /** 抽屉内打开时须高于 SlideOver（1100），否则弹窗被抽屉遮住（八期 §3.2.3） */
   readonly zIndex?: number;
@@ -431,7 +432,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   function confirm() {
     if (!repoView) {
       if (selected.length === 0) return;
-      onConfirm(projectId, orderSelected(commits, selected));
+      onConfirm(projectId, orderSelected(commits, selected), '');
       return;
     }
     // 分组视图：确认口径由 `resolveRepoConfirmation` 把关——多仓库有勾选就拒，不做假的跨仓库合并
@@ -445,7 +446,8 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
     setError('');
     const pickedKey = repoKeyOf(out.projectId, out.repoSub);
     const paneCommits = Object.values(panes).filter((p) => p.repoKey === pickedKey).flatMap((p) => p.commits);
-    onConfirm(out.projectId, orderSelected(dedupe(paneCommits), out.shas));
+    // T04576：把仓库维度一起交出去——只回 SHA 的话，子仓库的提交会在回写/提取时按根仓库解析并判 missing
+    onConfirm(out.projectId, orderSelected(dedupe(paneCommits), out.shas), out.repoSub);
   }
 
   // 分组视图：勾选跨多个仓库时按钮保持**可点**——拒绝由 `confirm()` 给明原因（-disabled 只会让人对着

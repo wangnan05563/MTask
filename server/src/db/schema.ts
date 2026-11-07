@@ -910,12 +910,14 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
       id             TEXT PRIMARY KEY,
       task_id        TEXT NOT NULL,
       sha            TEXT NOT NULL,
+      /* T04576：工作空间目录内的哪一个仓库（相对 POSIX 路径，空串 = 项目根仓库）。 */
+      repo_sub       TEXT NOT NULL DEFAULT '',
       workspace_path TEXT NOT NULL,
       source         TEXT NOT NULL DEFAULT 'agent',
       created_at     TEXT NOT NULL,
       FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
     );
-    CREATE UNIQUE INDEX IF NOT EXISTS ux_task_git_links ON task_git_links(task_id, sha);
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_task_git_links ON task_git_links(task_id, sha, repo_sub);
     CREATE INDEX IF NOT EXISTS ix_task_git_links_sha ON task_git_links(sha);
 
     CREATE TABLE IF NOT EXISTS sonar_issue_fps (
@@ -943,6 +945,10 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
     CREATE INDEX IF NOT EXISTS ix_sonar_reveal_at ON sonar_reveal_audit(revealed_at);
   `);
   ensureColumn('tasks', 'verified', 'verified INTEGER NOT NULL DEFAULT 0');
+  // T04576：提交关联补仓库维度——同一工作空间目录里的子仓库 SHA 不能在根仓库口径下被判 missing。
+  // 老库行默认 ''，语义与改造前逐字一致（'' = 项目根仓库）。
+  ensureColumn('task_git_links', 'repo_sub', "repo_sub TEXT NOT NULL DEFAULT ''");
+  ensureTaskGitLinkRepoSubIndex();
   ensureColumn('queues', 'paused', 'paused INTEGER NOT NULL DEFAULT 0'); // T01434：队列级暂停/继续
   // T00490：记录字体颜色（Excel 风格颜色按钮）——空串=默认色
   ensureColumn('tasks', 'color', "color TEXT DEFAULT ''");
@@ -1155,6 +1161,24 @@ function ensureColumn(table: string, column: string, ddl: string): void {
   if (!cols.some((c) => c.name === column)) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
   }
+}
+
+/**
+ * T04576：`ux_task_git_links` 的唯一键从 `(task_id, sha)` 扩到 `(task_id, sha, repo_sub)`。
+ *
+ * 不扩会让「同一 SHA 出现在两个仓库」互相顶掉：第二个仓库回写时被判幂等跳过，
+ * 该任务在子仓库口径下的 `missing` 永远补不上。SQLite 不能 ALTER 索引定义，
+ * 只能 DROP 后重建；旧索引名相同，按定义里是否含 `repo_sub` 判定是否要迁移。
+ */
+function ensureTaskGitLinkRepoSubIndex(): void {
+  const db = getDb();
+  const table = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'task_git_links'").get();
+  if (!table) return;
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'ux_task_git_links'").get() as
+    | { sql: string | null }
+    | undefined;
+  if (row && !/repo_sub/i.test(row.sql ?? '')) db.exec('DROP INDEX ux_task_git_links');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS ux_task_git_links ON task_git_links(task_id, sha, repo_sub)');
 }
 
 /**

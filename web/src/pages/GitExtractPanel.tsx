@@ -3,7 +3,7 @@ import { AlertTriangle, Download, FileSpreadsheet, FileText, GitBranch, Loader2,
 import { api, type Project } from '../api/client';
 import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
 import { FIELD_QUIET, PILL } from '../ui/primitives';
-import { GitScopePicker, manualCommitIdsOf, scopeWorkspace, type GitScope } from '../ui/gitScopePicker';
+import { GitScopePicker, manualCommitIdsOf, manualCommitRepoHintsOf, scopeWorkspace, type GitScope } from '../ui/gitScopePicker';
 import { WorkspaceSelect, wsBasename } from '../ui/WorkspaceSelect';
 import { patchProject } from '../ui/projectList';
 import { GIT_DEGRADED_HINT } from '../ui/gitBadge';
@@ -127,6 +127,8 @@ export function GitExtractPanel({ projects, scope, onScopeChange, onClose, onEnv
   const taskIds = useMemo(() => [...new Set(scope.taskIds)], [scope.taskIds]);
   const taskIdsKey = taskIds.join(',');
   const manualCommitIds = useMemo(() => manualCommitIdsOf(scope), [scope]);
+  /** T04576：手动提交的来源仓库（SHA → repoSub）——子仓库 SHA 不能按工作空间根取数 */
+  const manualCommitRepos = useMemo(() => manualCommitRepoHintsOf(scope), [scope]);
   const hasExtractScope = taskIds.length > 0 || manualCommitIds.length > 0;
   const ws = useMemo(() => scopeWorkspace(projects, scope.projectIds), [projects, scope.projectIds]);
   /** 环境不可用：勾了项目却没有可用的共同工作空间（未绑定 / 跨空间）——判据单源于 scopeWorkspace */
@@ -144,6 +146,7 @@ export function GitExtractPanel({ projects, scope, onScopeChange, onClose, onEnv
       const body = await api.post<PlanView & ErrorPayload>('/git-extract/plan', {
         taskIds,
         commitIds: manualCommitIds,
+        commitRepos: manualCommitRepos,
         projectIds: scope.projectIds,
       });
       // 取数降级（非仓库 / 无 git / 超时）服务端按 **HTTP 200 + {error, kind}** 回（与 §3.1 徽标同一口径），
@@ -165,7 +168,7 @@ export function GitExtractPanel({ projects, scope, onScopeChange, onClose, onEnv
     } finally {
       setPlanBusy(false);
     }
-  }, [hasExtractScope, manualCommitIds, scope.projectIds, taskIds]);
+  }, [hasExtractScope, manualCommitIds, manualCommitRepos, scope.projectIds, taskIds]);
 
   // 勾选/筛选/项目变化即重算摘要，debounce 400ms（连点勾选不该打一串 plan 请求）
   useEffect(() => {
@@ -220,6 +223,7 @@ export function GitExtractPanel({ projects, scope, onScopeChange, onClose, onEnv
       await streamEvents('/git-extract', {
         taskIds,
         commitIds: manualCommitIds,
+        commitRepos: manualCommitRepos,
         projectIds: scope.projectIds,
         mode,
       }, onEvent, controller.signal);

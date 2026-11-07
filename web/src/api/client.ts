@@ -281,6 +281,8 @@ export interface GitInlineLink {
   shortSha: string;
   source: GitLinkSource;
   createdAt: string;
+  /** T04576：关联来自工作空间目录内的哪个仓库（空/缺省 = 项目根仓库） */
+  repoSub?: string;
 }
 
 /** 外链信息：`commitBase` 由服务端算好（凭据已剥离），前端只拼 SHA */
@@ -312,6 +314,8 @@ export interface GitCommitSummary {
 export interface GitCommitCard extends GitCommitSummary {
   source: GitLinkSource;
   linkedAt: string;
+  /** T04576：该关联来自工作空间目录内的哪个仓库（空 = 项目根仓库） */
+  repoSub?: string;
   stats: { files: number; additions: number | null; deletions: number | null };
   isInitial: boolean;
   /** 提交时刻晚于任务 updated_at（§3.2.2，仅提示不改状态） */
@@ -355,9 +359,11 @@ export interface GitDiffHunk {
   lines: string[];
 }
 
-/** `POST /git/commit-summaries` 的分组回执（同 workspace 一组，页内零逐行请求） */
+/** `POST /git/commit-summaries` 的分组回执（同「workspace + 仓库」一组，页内零逐行请求） */
 export interface GitSummaryGroup {
   workspacePath: string;
+  /** T04576：该组来自工作空间目录内的哪个仓库（空串 = 项目根仓库） */
+  repoSub?: string;
   available: boolean;
   kind?: string;
   message?: string;

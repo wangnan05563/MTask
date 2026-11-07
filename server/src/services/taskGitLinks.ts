@@ -36,6 +36,7 @@ import {
 } from './gitCollect';
 import { shortShaOf, stripUrlCredentials, commitBaseOf, buildCommitLink, type GitPlatform } from '../util/gitRemote';
 import { scalarText } from '../util/scalarText';
+import { isRepositoryRoot, resolveRepoSubPath } from './nestedRepos';
 
 /** §3.1.3 外链信息：服务端算好前缀再下发，凭据剥离不交给渲染层（token 进了 DOM 就等于泄露） */
 export interface GitRemoteInfo {
@@ -70,6 +71,8 @@ export interface GitLinkRow {
   taskId: string;
   sha: string;
   shortSha: string;
+  /** T04576：工作空间目录内的仓库（相对 POSIX 路径；空串 = 项目根仓库） */
+  repoSub: string;
   workspacePath: string;
   source: GitLinkSource;
   createdAt: string;
@@ -92,6 +95,37 @@ export function normalizeShaInput(raw: unknown): string | null {
   const s = scalarText(raw).trim().toLowerCase();
   if (!/^[0-9a-f]{7,40}$/.test(s)) return null;
   return s;
+}
+
+/** T04576：仓库相对路径归一——`.` 与空串都表示项目根仓库（既有行的语义） */
+export function normalizeRepoSub(raw: unknown): string {
+  const s = scalarText(raw).trim();
+  return s === '.' ? '' : s;
+}
+
+/** 仓库维度的展示名（错误文案与清单标注共用同一口径） */
+export function repoLabelOf(repoSub: string): string {
+  return repoSub ? `仓库 ${repoSub}` : '项目根仓库';
+}
+
+/**
+ * 关联行解析 SHA 的 cwd：空 = 项目根；非空 = 工作空间目录内的独立仓库。
+ *
+ * 非空 `repoSub` 必须按 `.git` 实体核（与 `GET /git/log` 同口径）：只靠
+ * `--is-inside-work-tree` 会让根仓库工作树内的普通目录（如 `docs/`）冒充子仓库，
+ * 于是子仓库的 SHA 被静默解析成根仓库的提交——这比 missing 更难查。
+ */
+export async function resolveLinkCwd(task: TaskRef, repoSubInput: unknown): Promise<{ cwd: string; repoSub: string } | { error: string; repoSub: string }> {
+  const repoSub = normalizeRepoSub(repoSubInput);
+  if (!repoSub) return { cwd: task.workspacePath, repoSub };
+  let cwd: string;
+  try {
+    cwd = resolveRepoSubPath(task.workspacePath, repoSub);
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e), repoSub };
+  }
+  if (!(await isRepositoryRoot(cwd))) return { error: `${repoSub} 不是一个 Git 仓库（该目录下没有 .git）`, repoSub };
+  return { cwd, repoSub };
 }
 
 /** 按 taskNo 或 id 定位任务（未归档）；找不到返回 null */
@@ -179,12 +213,17 @@ function writeGitLinkEvent(task: TaskRef, op: 'link' | 'unlink', sha: string, so
 export interface LinkCommitsResult {
   linked: number;
   skipped: number;
-  resolved: { input: string; sha: string }[];
+  /** 本次写入的仓库维度（空串 = 项目根仓库） */
+  repoSub: string;
+  resolved: { input: string; sha: string; repoSub: string }[];
   errors: string[];
 }
 
 /**
  * 写入关联（AI 回写与手动绑定共用同一实现，只有 `source` 不同）。
+ *
+ * `repoSub`（T04576）：同一工作空间目录里的哪一个仓库；空串 = 项目根仓库，与改造前语义一致。
+ * 关联的唯一键随之为 `(task_id, sha, repo_sub)`——同一 SHA 在两个仓库里是两条独立的事实记录。
  *
  * 降级不是失败而是结果的一部分：任务不存在/未绑定工作空间/非仓库都进 `errors` 并点名原因，
  * 调用方（MCP 工具与 REST）据此给可操作提示，而不是抛一个 500。
@@ -193,8 +232,9 @@ export async function linkCommits(
   ref: { taskNo?: string; id?: string },
   commits: string | string[],
   source: GitLinkSource,
+  repoSubInput: unknown = '',
 ): Promise<LinkCommitsResult> {
-  const out: LinkCommitsResult = { linked: 0, skipped: 0, resolved: [], errors: [] };
+  const out: LinkCommitsResult = { linked: 0, skipped: 0, repoSub: normalizeRepoSub(repoSubInput), resolved: [], errors: [] };
   const task = resolveTask(ref);
   if (!task) {
     out.errors.push(`任务不存在或已归档：${ref.taskNo ?? ref.id ?? '(空引用)'}`);
@@ -204,6 +244,12 @@ export async function linkCommits(
     out.errors.push(`项目未绑定工作空间，无法解析提交：请先在项目上绑定仓库目录（任务 ${task.taskNo ?? task.id}）`);
     return out;
   }
+  const target = await resolveLinkCwd(task, out.repoSub);
+  if ('error' in target) {
+    out.errors.push(`${repoLabelOf(out.repoSub)}不可用：${target.error}（任务 ${task.taskNo ?? task.id}）`);
+    return out;
+  }
+  out.repoSub = target.repoSub;
   const list = (Array.isArray(commits) ? commits : [commits]).filter((c) => String(c ?? '').trim() !== '');
   if (!list.length) {
     out.errors.push('commits 为空：请传 1 个或多个 commit ID（7–40 位十六进制）');
@@ -217,19 +263,19 @@ export async function linkCommits(
       out.errors.push(`非法 commit ID「${String(raw).slice(0, 60)}」（需 7–40 位十六进制）`);
       continue;
     }
-    const sha = await resolveCommitSha(task.workspacePath, input);
+    const sha = await resolveCommitSha(target.cwd, input);
     if (!sha) {
-      out.errors.push(`提交 ${input} 不在当前仓库（工作空间 ${task.workspacePath}）：项目换绑或未 fetch 时请在正确仓库中重新回写`);
+      out.errors.push(`提交 ${input} 不在${repoLabelOf(target.repoSub)}（${target.cwd}）：项目换绑、未 fetch 或选错仓库时请在正确仓库中重新回写`);
       continue;
     }
-    out.resolved.push({ input: String(raw), sha });
-    const exists = db.prepare('SELECT id, source FROM task_git_links WHERE task_id = ? AND sha = ?').get(task.id, sha) as { id: string; source: string } | undefined;
+    out.resolved.push({ input: String(raw), sha, repoSub: target.repoSub });
+    const exists = db.prepare('SELECT id, source FROM task_git_links WHERE task_id = ? AND sha = ? AND repo_sub = ?').get(task.id, sha, target.repoSub) as { id: string; source: string } | undefined;
     if (exists) {
       out.skipped += 1;
       continue;
     }
-    db.prepare('INSERT INTO task_git_links (id, task_id, sha, workspace_path, source, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(randomUUID(), task.id, sha, task.workspacePath, source, now());
+    db.prepare('INSERT INTO task_git_links (id, task_id, sha, repo_sub, workspace_path, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(randomUUID(), task.id, sha, target.repoSub, task.workspacePath, source, now());
     writeGitLinkEvent(task, 'link', sha, source);
     out.linked += 1;
   }
@@ -239,13 +285,14 @@ export async function linkCommits(
 
 export function listLinks(taskId: string): GitLinkRow[] {
   const rows = getDb()
-    .prepare('SELECT id, task_id, sha, workspace_path, source, created_at FROM task_git_links WHERE task_id = ? ORDER BY created_at DESC')
-    .all(taskId) as { id: string; task_id: string; sha: string; workspace_path: string; source: string; created_at: string }[];
+    .prepare('SELECT id, task_id, sha, repo_sub, workspace_path, source, created_at FROM task_git_links WHERE task_id = ? ORDER BY created_at DESC')
+    .all(taskId) as { id: string; task_id: string; sha: string; repo_sub: string; workspace_path: string; source: string; created_at: string }[];
   return rows.map((r) => ({
     id: r.id,
     taskId: r.task_id,
     sha: r.sha,
     shortSha: shortShaOf(r.sha),
+    repoSub: r.repo_sub ?? '',
     workspacePath: r.workspace_path,
     source: (r.source as GitLinkSource) ?? 'agent',
     createdAt: r.created_at,
@@ -263,14 +310,15 @@ export function listLatestLinksByTask(taskIds: string[]): Map<string, { link: Gi
   const db = getDb();
   const marks = taskIds.map(() => '?').join(',');
   const rows = db
-    .prepare(`SELECT id, task_id, sha, workspace_path, source, created_at FROM task_git_links WHERE task_id IN (${marks}) ORDER BY created_at DESC, rowid DESC`)
-    .all(...taskIds) as { id: string; task_id: string; sha: string; workspace_path: string; source: string; created_at: string }[];
+    .prepare(`SELECT id, task_id, sha, repo_sub, workspace_path, source, created_at FROM task_git_links WHERE task_id IN (${marks}) ORDER BY created_at DESC, rowid DESC`)
+    .all(...taskIds) as { id: string; task_id: string; sha: string; repo_sub: string; workspace_path: string; source: string; created_at: string }[];
   for (const r of rows) {
     const link: GitLinkRow = {
       id: r.id,
       taskId: r.task_id,
       sha: r.sha,
       shortSha: shortShaOf(r.sha),
+      repoSub: r.repo_sub ?? '',
       workspacePath: r.workspace_path,
       source: (r.source as GitLinkSource) ?? 'agent',
       createdAt: r.created_at,
@@ -294,15 +342,28 @@ export class GitLinkError extends Error {
   }
 }
 
-/** 解绑：仅 `manual` 可解（AI 回写是主通道事实记录，不允许在 UI 上抹掉） */
-export function unlinkCommit(taskRef: { taskNo?: string; id?: string }, shaInput: string): { ok: true } {
+/**
+ * 解绑：仅 `manual` 可解（AI 回写是主通道事实记录，不允许在 UI 上抹掉）。
+ *
+ * T04576：可按 `repoSub` 精确定位。未传时沿用既有口径（按 SHA 找），但如果同一 SHA 在
+ * 多个仓库都有 manual 关联，拒绝猜——删错仓库的关联比多问一句更糟。
+ */
+export function unlinkCommit(taskRef: { taskNo?: string; id?: string }, shaInput: string, repoSubInput?: unknown): { ok: true } {
   const task = resolveTask(taskRef);
   if (!task) throw new GitLinkError(404, `任务不存在或已归档：${taskRef.taskNo ?? taskRef.id ?? ''}`);
   const sha = normalizeShaInput(shaInput);
   if (!sha) throw new GitLinkError(400, '非法 commit ID（需 7–40 位十六进制）');
   const db = getDb();
-  const row = db.prepare('SELECT id, sha, source FROM task_git_links WHERE task_id = ? AND (sha = ? OR sha LIKE ?)').get(task.id, sha, `${sha}%`) as { id: string; sha: string; source: string } | undefined;
-  if (!row) throw new GitLinkError(404, `该任务没有关联提交 ${sha}`);
+  const scope = repoSubInput === undefined ? '' : ' AND repo_sub = ?';
+  const args = repoSubInput === undefined ? [task.id, sha, `${sha}%`] : [task.id, sha, `${sha}%`, normalizeRepoSub(repoSubInput)];
+  const rows = db.prepare(`SELECT id, sha, repo_sub, source FROM task_git_links WHERE task_id = ? AND (sha = ? OR sha LIKE ?)${scope}`)
+    .all(...args) as { id: string; sha: string; repo_sub: string; source: string }[];
+  if (!rows.length) throw new GitLinkError(404, `该任务没有关联提交 ${sha}`);
+  if (rows.length > 1) {
+    const repos = [...new Set(rows.map((r) => r.repo_sub || '.'))].join('、');
+    throw new GitLinkError(409, `提交 ${sha.slice(0, 7)} 在多个仓库有关联（${repos}），请指定 repoSub 后再解绑`);
+  }
+  const row = rows[0];
   if (row.source !== 'manual') {
     throw new GitLinkError(409, `提交 ${row.sha.slice(0, 7)} 来源为 ${row.source}，仅手动绑定（manual）可解绑；AI 回写的关联请在提交侧修正后重新回写`);
   }
@@ -315,6 +376,8 @@ export function unlinkCommit(taskRef: { taskNo?: string; id?: string }, shaInput
 export interface GitCommitCard extends CommitSummaryRow {
   source: GitLinkSource;
   linkedAt: string;
+  /** T04576：该关联来自工作空间目录内的哪个仓库（空串 = 项目根仓库） */
+  repoSub: string;
   /** 「已更改 N 个文件, N 行插入(+) / N 行删除(-)」的原料 */
   stats: { files: number; additions: number | null; deletions: number | null };
   isInitial: boolean;
@@ -329,7 +392,7 @@ export interface GitCommitCard extends CommitSummaryRow {
 export interface GitTaskView {
   commits: GitCommitCard[];
   degraded?: { kind: GitErrorKind | 'no-workspace'; message: string };
-  /** 请求的 SHA 里在当前仓库解析不出来的（换绑后的旧链接） */
+  /** 请求的 SHA 里在**各自仓库**解析不出来的（换绑后的旧链接 / 子仓库已移除） */
   missing: string[];
   remote?: GitRemoteInfo;
 }
@@ -349,44 +412,71 @@ export async function buildTaskGitView(taskRef: { taskNo?: string; id?: string }
   if (!task.workspacePath) {
     return { commits: [], missing: [], degraded: { kind: 'no-workspace', message: '项目未绑定工作空间，请先绑定仓库目录' } };
   }
-  try {
-    // T03642：摘要与 origin 远端互不依赖，必须并发——单次 git 调用要付 0.3–1.5s 进程启动成本，
-    // 串行 await 会让抽屉首屏白等两轮。文件统计按上限并发（git 进程数同样有代价，不无限铺开）。
-    const [{ commits, missing }, remoteUrl] = await Promise.all([
-      collectCommitSummaries(task.workspacePath, links.map((l) => l.sha), opts),
-      safeRemoteUrl(task.workspacePath, opts),
-    ]);
-    const bySha = new Map(commits.map((c) => [c.sha, c]));
-    // 外链前缀按 workspace 取一次 remote（§3.1.3：凭据在服务端剥离，前端只拼 SHA）
-    const remote = remoteInfoOf(remoteUrl);
-    const cards: GitCommitCard[] = [];
-    const filesByIdx = await collectLinkedCommitFiles(task.workspacePath, links, bySha, opts);
-    links.forEach((l, i) => {
-      const c = bySha.get(l.sha);
-      if (!c) return;
-      const files = filesByIdx[i] ?? [];
-      cards.push({
-        ...c,
-        source: l.source,
-        linkedAt: l.createdAt,
-        stats: {
-          files: files.length,
-          additions: files.reduce((n, f) => n + (f.additions ?? 0), 0),
-          deletions: files.reduce((n, f) => n + (f.deletions ?? 0), 0),
-        },
-        isInitial: c.parents.length === 0,
-        laterThanTask: !!c.date && !!task.updatedAt && new Date(c.date).getTime() > new Date(task.updatedAt).getTime(),
-        workspaceDrift: !!l.workspacePath && l.workspacePath !== task.workspacePath,
-        commitUrl: remoteUrl ? buildCommitLink(remoteUrl, l.sha)?.url : undefined,
-      });
-    });
-    return { commits: cards, missing, remote };
-  } catch (e) {
-    if (e instanceof GitCollectError) {
-      return { commits: [], missing: links.map((l) => l.sha), degraded: { kind: e.kind, message: e.message } };
-    }
-    throw e;
+  // T04576：逐仓库分组取数——子仓库的 SHA 只在它自己的仓库里解析，不能被根仓库口径误判 missing。
+  const byRepo = new Map<string, GitLinkRow[]>();
+  for (const l of links) {
+    const arr = byRepo.get(l.repoSub) ?? [];
+    arr.push(l);
+    byRepo.set(l.repoSub, arr);
   }
+  const repos = [...byRepo.keys()].sort((a, b) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b)));
+  const cards: GitCommitCard[] = [];
+  const missing: string[] = [];
+  const addMissing = (sha: string) => { if (!missing.includes(sha)) missing.push(sha); };
+  let degraded: GitTaskView['degraded'];
+  let remote: GitRemoteInfo | undefined;
+  for (const repoSub of repos) {
+    const groupLinks = byRepo.get(repoSub)!;
+    const target = await resolveLinkCwd(task, repoSub);
+    if ('error' in target) {
+      groupLinks.forEach((l) => addMissing(l.sha));
+      if (repoSub === '') degraded ??= { kind: 'not-a-repo', message: target.error };
+      continue;
+    }
+    try {
+      // 摘要与 origin 远端互不依赖，必须并发（单次 git 调用要付 0.3–1.5s 进程启动成本）
+      const [{ commits, missing: groupMissing }, remoteUrl] = await Promise.all([
+        collectCommitSummaries(target.cwd, groupLinks.map((l) => l.sha), opts),
+        safeRemoteUrl(target.cwd, opts),
+      ]);
+      // 顶层 remote 沿用根仓库口径；没有根仓库链接时退到第一个可用仓库
+      if (!remote) remote = remoteInfoOf(remoteUrl);
+      const bySha = new Map(commits.map((c) => [c.sha, c]));
+      const filesByIdx = await collectLinkedCommitFiles(target.cwd, groupLinks, bySha, opts);
+      groupMissing.forEach(addMissing);
+      groupLinks.forEach((l, i) => {
+        const c = bySha.get(l.sha);
+        if (!c) {
+          addMissing(l.sha);
+          return;
+        }
+        const files = filesByIdx[i] ?? [];
+        cards.push({
+          ...c,
+          source: l.source,
+          linkedAt: l.createdAt,
+          repoSub,
+          stats: {
+            files: files.length,
+            additions: files.reduce((n, f) => n + (f.additions ?? 0), 0),
+            deletions: files.reduce((n, f) => n + (f.deletions ?? 0), 0),
+          },
+          isInitial: c.parents.length === 0,
+          laterThanTask: !!c.date && !!task.updatedAt && new Date(c.date).getTime() > new Date(task.updatedAt).getTime(),
+          workspaceDrift: !!l.workspacePath && l.workspacePath !== task.workspacePath,
+          commitUrl: remoteUrl ? buildCommitLink(remoteUrl, l.sha)?.url : undefined,
+        });
+      });
+    } catch (e) {
+      if (!(e instanceof GitCollectError)) throw e;
+      // 根仓库整体失败维持既有降级口径；子仓库失败只把该组记为 missing，不牵连同任务其它仓库的卡片
+      if (repoSub === '') degraded ??= { kind: e.kind, message: e.message };
+      groupLinks.forEach((l) => addMissing(l.sha));
+    }
+  }
+  // 链接表按 created_at DESC 取；分组后仍按关联时间倒序，与改造前卡片顺序一致
+  cards.sort((a, b) => (a.linkedAt < b.linkedAt ? 1 : a.linkedAt > b.linkedAt ? -1 : 0));
+  return { commits: cards, missing, remote, ...(degraded ? { degraded } : {}) };
 }
 
 /** 首屏整体失败的三种归因：仓库根本取不了数，逐条重试也一样，直接向上转 degraded */
@@ -625,23 +715,35 @@ export async function buildTaskGitFiles(
   shaInput: string,
   withDiff: boolean,
   opts: GitCollectOptions = {},
+  repoSubInput?: unknown,
 ): Promise<GitFilesResult> {
   const task = resolveTask(taskRef);
   if (!task) throw new GitLinkError(404, `任务不存在或已归档：${taskRef.taskNo ?? taskRef.id ?? ''}`);
   if (!task.workspacePath) return { files: [], degraded: { kind: 'no-workspace', message: '项目未绑定工作空间，请先绑定仓库目录' } };
   const sha = normalizeShaInput(shaInput);
   if (!sha) throw new GitLinkError(400, '非法 commit ID（需 7–40 位十六进制）');
-  const full = await resolveCommitSha(task.workspacePath, sha, opts);
-  if (!full) return { files: [], missing: [sha], degraded: { kind: 'failed', message: `提交 ${sha} 已不在当前仓库（工作空间换绑或未 fetch）` } };
-  const link = getDb().prepare('SELECT id FROM task_git_links WHERE task_id = ? AND sha = ?').get(task.id, full);
-  if (!link) throw new GitLinkError(404, `该任务没有关联提交 ${sha.slice(0, 7)}`);
+  // T04576：先按关联行定位仓库，再去该仓库解析 SHA。同一 SHA 在两个仓库有关联时必须问清楚，
+  // 默认取根仓库会把子仓库的文件清单读成「该提交没有改动」。
+  const db = getDb();
+  const scoped = repoSubInput !== undefined;
+  const rows = db.prepare(`SELECT sha, repo_sub FROM task_git_links WHERE task_id = ? AND (sha = ? OR sha LIKE ?)${scoped ? ' AND repo_sub = ?' : ''}`)
+    .all(...(scoped ? [task.id, sha, `${sha}%`, normalizeRepoSub(repoSubInput)] : [task.id, sha, `${sha}%`])) as { sha: string; repo_sub: string }[];
+  if (!rows.length) throw new GitLinkError(404, `该任务没有关联提交 ${sha.slice(0, 7)}`);
+  if (rows.length > 1) {
+    const repos = [...new Set(rows.map((r) => r.repo_sub || '.'))].join('、');
+    throw new GitLinkError(409, `提交 ${sha.slice(0, 7)} 在多个仓库有关联（${repos}），请指定 repoSub 后再取文件清单`);
+  }
+  const target = await resolveLinkCwd(task, rows[0].repo_sub);
+  if ('error' in target) return { files: [], degraded: { kind: 'not-a-repo', message: target.error } };
+  const full = await resolveCommitSha(target.cwd, sha, opts);
+  if (!full) return { files: [], missing: [sha], degraded: { kind: 'failed', message: `提交 ${sha} 已不在${repoLabelOf(target.repoSub)}（工作空间换绑或未 fetch）` } };
   try {
-    const { commits } = await collectCommitSummaries(task.workspacePath, [full], opts);
+    const { commits } = await collectCommitSummaries(target.cwd, [full], opts);
     const head = commits[0];
     const parents = head?.parents ?? [];
-    const files = await collectCommitFilesCached(task.workspacePath, full, parents, opts);
+    const files = await collectCommitFilesCached(target.cwd, full, parents, opts);
     const out: GitFilesResult = { files };
-    if (withDiff) out.diffs = await buildFileDiffs(task.workspacePath, full, files, parents, opts);
+    if (withDiff) out.diffs = await buildFileDiffs(target.cwd, full, files, parents, opts);
     return out;
   } catch (e) {
     if (e instanceof GitCollectError) return { files: [], degraded: { kind: e.kind, message: e.message } };
@@ -758,89 +860,107 @@ export async function collectSummaryPage(
 
 export interface SummaryGroup {
   workspacePath: string;
+  /** T04576：该组来自工作空间目录内的哪个仓库（空串 = 项目根仓库） */
+  repoSub: string;
   available: boolean;
   kind?: GitErrorKind | 'no-workspace';
   message?: string;
   commits: CommitSummaryRow[];
   missing: string[];
   truncated: boolean;
-  /** 该 workspace 的外链信息（每 workspace 只取一次 remote，页内零逐行请求） */
+  /** 该仓库的外链信息（每仓库只取一次 remote，页内零逐行请求） */
   remote?: GitRemoteInfo;
 }
 
-/** 按项目当前工作空间分组（未绑定归到空串组），组内 SHA 去重保序 */
-function groupShasByWorkspace(links: readonly { taskId?: string; sha: string }[]): Map<string, string[]> {
-  const byWorkspace = new Map<string, string[]>();
+/**
+ * 按「项目当前工作空间 + 仓库」分组（未绑定归到空 workspace 组），组内 SHA 去重保序。
+ *
+ * 仓库维度不能省：同一 SHA 同时关联在根仓库与子仓库时，只按 workspace 分组会把它合进一组，
+ * 另一份关联就被解析成「不在仓库」——`missing` 永远消不掉。
+ */
+function groupShasByRepo(links: readonly { taskId?: string; sha: string; repoSub?: unknown }[]): Map<string, { workspacePath: string; repoSub: string; shas: string[] }> {
+  const groups = new Map<string, { workspacePath: string; repoSub: string; shas: string[] }>();
   for (const l of links) {
     const sha = normalizeShaInput(l.sha);
     if (!sha) continue;
     const task = l.taskId ? resolveTask({ id: l.taskId }) : null;
-    const ws = task?.workspacePath || '';
-    const arr = byWorkspace.get(ws) ?? [];
-    if (!arr.includes(sha)) arr.push(sha);
-    byWorkspace.set(ws, arr);
+    const workspacePath = task?.workspacePath || '';
+    const repoSub = normalizeRepoSub(l.repoSub);
+    const key = `${workspacePath}\u0000${repoSub}`;
+    const group = groups.get(key) ?? { workspacePath, repoSub, shas: [] };
+    if (!group.shas.includes(sha)) group.shas.push(sha);
+    groups.set(key, group);
   }
-  return byWorkspace;
+  return groups;
 }
 
-/** 单个 workspace 的摘要组：未绑定直接标 no-workspace，取数失败也降级成该组不可用，不牵连同页其它组 */
-async function buildSummaryGroup(ws: string, shas: string[], opts: GitCollectOptions): Promise<SummaryGroup> {
-  if (!ws) {
-    return { workspacePath: '', available: false, kind: 'no-workspace', commits: [], missing: shas, truncated: false };
+/** 单个「工作空间 + 仓库」的摘要组：未绑定直接标 no-workspace，取数失败也降级成该组不可用，不牵连同页其它组 */
+async function buildSummaryGroup(workspacePath: string, repoSub: string, shas: string[], opts: GitCollectOptions): Promise<SummaryGroup> {
+  if (!workspacePath) {
+    return { workspacePath: '', repoSub, available: false, kind: 'no-workspace', commits: [], missing: shas, truncated: false };
+  }
+  let cwd: string;
+  try {
+    cwd = repoSub ? resolveRepoSubPath(workspacePath, repoSub) : workspacePath;
+    if (repoSub && !(await isRepositoryRoot(cwd))) throw new Error(`${repoSub} 不是一个 Git 仓库（该目录下没有 .git）`);
+  } catch (e) {
+    return { workspacePath, repoSub, available: false, kind: 'not-a-repo', message: e instanceof Error ? e.message : String(e), commits: [], missing: shas, truncated: false };
   }
   try {
-    const page = await collectSummaryPage(ws, shas, opts);
+    const page = await collectSummaryPage(cwd, shas, opts);
     return {
-      workspacePath: ws,
+      workspacePath,
+      repoSub,
       available: true,
       commits: page.commits,
       // 被截断掉的 SHA 不发起解析，直接计入 missing（前端页脚据此提示「本页部分提交摘要未解析」）
       missing: [...page.missing, ...shas.slice(page.capped.length)],
       truncated: page.capped.length < shas.length,
-      remote: remoteInfoOf(await safeRemoteUrl(ws, opts)),
+      remote: remoteInfoOf(await safeRemoteUrl(cwd, opts)),
     };
   } catch (e) {
     const kind = e instanceof GitCollectError ? e.kind : 'failed';
     const message = e instanceof GitCollectError ? e.message : String(e);
-    return { workspacePath: ws, available: false, kind, message, commits: [], missing: shas, truncated: false };
+    return { workspacePath, repoSub, available: false, kind, message, commits: [], missing: shas, truncated: false };
   }
 }
 
 /**
- * 本页提交摘要批量解析（§3.1.6）：按 workspace 分组，每组**一次** `git log --no-walk`。
+ * 本页提交摘要批量解析（§3.1.6）：按「工作空间 + 仓库」分组，每组**一次** `git log --no-walk`。
  * 前端传「本页唯一 SHA 集合」，这里保证页内零逐行请求。
  */
 export async function buildSummaryGroups(
-  links: { taskId?: string; sha: string }[],
+  links: { taskId?: string; sha: string; repoSub?: unknown }[],
   opts: GitCollectOptions = {},
 ): Promise<{ groups: SummaryGroup[] }> {
   const groups: SummaryGroup[] = [];
-  for (const [ws, shas] of groupShasByWorkspace(links)) groups.push(await buildSummaryGroup(ws, shas, opts));
+  for (const g of groupShasByRepo(links).values()) groups.push(await buildSummaryGroup(g.workspacePath, g.repoSub, g.shas, opts));
   return { groups };
 }
 
 /** 列表页内联（T03361）：给一页任务附加 gitLinks（最新一条）与 gitLinkCount（「+N」角标） */
 export function attachGitLinks<T extends { id: string }>(
   items: T[],
-): (T & { gitLinks: { sha: string; shortSha: string; source: GitLinkSource; createdAt: string }[]; gitLinkCount: number })[] {
+): (T & { gitLinks: { sha: string; shortSha: string; source: GitLinkSource; createdAt: string; repoSub: string }[]; gitLinkCount: number })[] {
   const byTask = listLatestLinksByTask(items.map((i) => i.id));
   return items.map((i) => {
     const hit = byTask.get(i.id);
     return {
       ...i,
-      gitLinks: hit ? [{ sha: hit.link.sha, shortSha: hit.link.shortSha, source: hit.link.source, createdAt: hit.link.createdAt }] : [],
+      gitLinks: hit ? [{ sha: hit.link.sha, shortSha: hit.link.shortSha, source: hit.link.source, createdAt: hit.link.createdAt, repoSub: hit.link.repoSub }] : [],
       gitLinkCount: hit?.count ?? 0,
     };
   });
 }
 
 /** 关联写入的 REST 入口（手动绑定）：与 MCP 同一实现，仅 source 不同 */
-export async function manualLink(taskRef: { taskNo?: string; id?: string }, sha: string): Promise<{ ok: true; link: GitLinkRow }> {
-  const res = await linkCommits(taskRef, [sha], 'manual');
+export async function manualLink(taskRef: { taskNo?: string; id?: string }, sha: string, repoSubInput: unknown = ''): Promise<{ ok: true; link: GitLinkRow }> {
+  const res = await linkCommits(taskRef, [sha], 'manual', repoSubInput);
   if (res.errors.length && !res.linked && !res.skipped) throw new GitLinkError(400, res.errors.join('；'));
   const task = resolveTask(taskRef);
   const normalized = normalizeShaInput(sha);
-  const found = task && normalized ? listLinks(task.id).find((l) => l.sha.startsWith(normalized)) : undefined;
-  if (!found) throw new GitLinkError(404, `未能定位到关联记录：${sha}`);
+  const repoSub = normalizeRepoSub(repoSubInput);
+  const found = task && normalized ? listLinks(task.id).find((l) => l.sha.startsWith(normalized) && l.repoSub === repoSub) : undefined;
+  if (!found) throw new GitLinkError(404, `未能定位到关联记录：${sha}${repoSub ? ` @ ${repoSub}` : ''}`);
   return { ok: true, link: found };
 }

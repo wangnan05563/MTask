@@ -202,6 +202,8 @@ interface ScopeInput {
   readonly head: string;
   readonly authorFilter: string;
   readonly selectedCommits: Readonly<Record<string, string[]>>;
+  /** T04576：每个项目这批提交来自工作空间目录内的哪个仓库（缺省 = 项目根仓库） */
+  readonly selectedRepoSubs: Readonly<Record<string, string>>;
 }
 
 /** patch 模式（E-1 降级通道）：一次只支持单项目 */
@@ -249,7 +251,10 @@ function buildScopeBody(input: ScopeInput): { body?: Record<string, unknown>; er
   if (built.error) return { error: built.error };
   const projects = input.selectedIds.map((projectId) => {
     const picked = input.selectedCommits[projectId] ?? [];
-    return picked.length > 0 ? { projectId, range: { shape: 'commits', commits: picked } } : { projectId, range: built.range };
+    if (picked.length === 0) return { projectId, range: built.range };
+    // T04576：`shape='commits'` 带上仓库维度——子仓库的 SHA 若按根仓库下发，服务端会整批判 missing
+    const repoSub = (input.selectedRepoSubs[projectId] ?? '').trim();
+    return { projectId, range: { shape: 'commits', commits: picked, ...(repoSub ? { repoSub } : {}) } };
   });
   return { body: { projects } };
 }
@@ -388,6 +393,8 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
   const authorsRequested = useRef(false);
   /** T03302：Git 树点选的提交（按项目分别存）——非空即该项目走 `shape='commits'`，优先于手填区间 */
   const [selectedCommits, setSelectedCommits] = useSessionState<Record<string, string[]>>('lecture.selectedCommits', {});
+  /** T04576：Git 树确认时一并记住仓库维度（与 selectedCommits 同生命周期；空串 = 项目根仓库） */
+  const [selectedRepoSubs, setSelectedRepoSubs] = useSessionState<Record<string, string>>('lecture.selectedRepoSubs', {});
   const [gitTreeOpen, setGitTreeOpen] = useState(false);
   const [patchMode, setPatchMode] = useSessionState('lecture.patchMode', false);
   const [patchText, setPatchText] = useState('');
@@ -471,16 +478,23 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
     .map((projectId) => ({ projectId, projectName: projects.find((p) => p.id === projectId)?.name ?? projectId, shas: selectedCommits[projectId] ?? [] }))
     .filter((p) => p.shas.length > 0), [selectedIds, selectedCommits, projects]);
 
-  const clearPicked = (projectId: string) => setSelectedCommits((prev) => {
-    const next = { ...prev };
-    delete next[projectId];
-    return next;
-  });
+  const clearPicked = (projectId: string) => {
+    setSelectedCommits((prev) => {
+      const next = { ...prev };
+      delete next[projectId];
+      return next;
+    });
+    setSelectedRepoSubs((prev) => {
+      const next = { ...prev };
+      delete next[projectId];
+      return next;
+    });
+  };
 
   /** 采集入参：一次评审共用一份区间；patch 模式单项目（E-1 降级通道） */
   const scopeBody = useMemo(
-    () => buildScopeBody({ patchMode, selectedIds, patchText, shape, since, until, base, head, authorFilter, selectedCommits }),
-    [patchMode, patchText, selectedIds, shape, since, until, base, head, authorFilter, selectedCommits],
+    () => buildScopeBody({ patchMode, selectedIds, patchText, shape, since, until, base, head, authorFilter, selectedCommits, selectedRepoSubs }),
+    [patchMode, patchText, selectedIds, shape, since, until, base, head, authorFilter, selectedCommits, selectedRepoSubs],
   );
 
   useEffect(() => () => {
@@ -779,10 +793,12 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
       {gitTreeOpen && (
         <GitTreePickerModal projects={projects.filter((p) => selectedIds.includes(p.id))} activeProjectId={selectedIds[0] ?? ''}
           selectedByProject={selectedCommits}
-          onConfirm={(projectId, shas) => {
+          onConfirm={(projectId, shas, repoSub) => {
             setSelectedCommits((prev) => ({ ...prev, [projectId]: shas }));
+            setSelectedRepoSubs((prev) => ({ ...prev, [projectId]: repoSub }));
             setGitTreeOpen(false);
-            flash(`Git 树已选 ${shas.length} 个提交（${projects.find((p) => p.id === projectId)?.name ?? projectId}）`);
+            const repoNote = repoSub ? ` · 仓库 ${repoSub}` : '';
+            flash(`Git 树已选 ${shas.length} 个提交（${projects.find((p) => p.id === projectId)?.name ?? projectId}${repoNote}）`);
           }}
           onClose={() => setGitTreeOpen(false)} />
       )}

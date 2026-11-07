@@ -28,7 +28,7 @@ import type { ChildProcess } from 'node:child_process';
 import { getDb } from '../db/connection';
 import { catFileBatch, collectCommitLog, normalizeSelectedCommits, resolveRevisionSha } from './gitCollect';
 import type { BatchObject } from './gitCollect';
-import { assertWithinLimits, extractTmpRoot, finalPathMap, planExtract } from './gitExtract';
+import { assertWithinLimits, extractTmpRoot, finalPathByRepo, finalPathKey, finalPathMap, planExtract } from './gitExtract';
 import type { ExtractPlan } from './gitExtract';
 import { ConsoleJobService } from './ConsoleJobService';
 import { TaskService } from './TaskService';
@@ -124,6 +124,8 @@ export interface ScanInput {
   taskIds: string[];
   /** T04526：未关联任务的 Git 提交，与任务关联提交一起进快照，不写入 task_git_links */
   commitIds?: string[];
+  /** T04576：手动提交的来源仓库（SHA → repoSub，空串=项目根仓库）；缺省则由服务端逐仓库判定 */
+  commitRepos?: Record<string, string>;
   /** 手动提交为主、taskIds 为空时，用于定位项目与 workspace_path */
   projectIds?: string[];
   /** 不传则取映射里第一个已配置项目（与设置页连接测试同口径） */
@@ -412,19 +414,21 @@ interface Ownership {
  * 再按 task_git_links 反查任务。同一提交被多任务关联时取第一个并在描述里标注（§3.4.3 归属行）。
  */
 function buildOwnerIndex(plan: ExtractPlan): Map<string, Ownership> {
-  const bySha = new Map<string, { taskId: string; taskNo: string | null; title: string; count: number }[]>();
+  const byLink = new Map<string, { taskId: string; taskNo: string | null; title: string; count: number }[]>();
   for (const t of plan.tasks) {
     for (const l of t.links) {
-      const list = bySha.get(l.sha) ?? [];
+      const key = finalPathKey(l.repoSub, l.sha);
+      const list = byLink.get(key) ?? [];
       list.push({ taskId: t.taskId, taskNo: t.taskNo, title: t.title, count: list.length + 1 });
-      bySha.set(l.sha, list);
+      byLink.set(key, list);
     }
   }
   const out = new Map<string, Ownership>();
-  for (const [path, { sha }] of finalPathMap(plan.filesByCommit)) {
-    const owners = bySha.get(sha) ?? [];
+  // 键用产物路径（子仓库带前缀），与 sonar inclusions / 磁盘布局逐字一致
+  for (const v of finalPathMap(plan.filesByCommit).values()) {
+    const owners = byLink.get(finalPathKey(v.repoSub, v.sha)) ?? [];
     const first = owners[0];
-    out.set(path, first
+    out.set(v.outPath, first
       ? { taskId: first.taskId, taskNo: first.taskNo, taskTitle: first.title, shared: owners.length > 1 }
       : { taskId: null, taskNo: null, taskTitle: null, shared: false });
   }
@@ -438,10 +442,9 @@ async function exportSnapshot(
   dir: string,
   onStage: (stage: ScanStage, detail?: Record<string, unknown>) => void,
   signal?: AbortSignal,
-): Promise<{ files: number; bytes: number; snapshotHeadSha: string }> {
+): Promise<{ files: number; bytes: number; snapshotHeadSha: string; snapshotRepoPath: string }> {
   const finalPath = finalPathMap(plan.filesByCommit);
-  const specs = [...finalPath.values()].map(({ sha, path }) => `${sha}:${path}`);
-  assertWithinLimits(specs.length, 0);
+  assertWithinLimits(finalPath.size, 0);
   await mkdir(dir, { recursive: true });
   const inner = new AbortController();
   let bytes = 0;
@@ -453,24 +456,30 @@ async function exportSnapshot(
     else signal.addEventListener('abort', () => { abortHit ??= new ScanError('aborted', '已中止'); inner.abort(); }, { once: true });
   }
   try {
-    await catFileBatch(plan.workspacePath, specs, (o: BatchObject) => {
-      if (inner.signal.aborted || limitHit || abortHit) return;
-      if (o.missing || o.content === null) return;
-      const spec = o.spec;
-      const entry = [...finalPath.values()].find((v) => `${v.sha}:${v.path}` === spec);
-      const rel = entry?.path ?? spec.split(':').slice(1).join(':');
-      const abs = safeJoin(dir, rel);
-      bytes += o.content.length;
-      try {
-        assertWithinLimits(finalPath.size, bytes);
-      } catch (e) {
-        limitHit ??= new ScanError('too-large', (e as Error).message);
-        inner.abort();
-        return;
-      }
-      // cat-file 回调是同步的：落盘排队，阶段结束前统一 await（否则配置文件会读到半个快照）
-      pendingWrites.push(writeFileIn(abs, o.content));
-    }, { signal: inner.signal });
+    // T04576：逐仓库 cat-file——子仓库的提交只在它自己的仓库里能读到
+    for (const [repoSub, entries] of finalPathByRepo(finalPath)) {
+      if (inner.signal.aborted || limitHit || abortHit) break;
+      const cwd = plan.repos.find((r) => r.repoSub === repoSub)?.path;
+      if (!cwd) throw new ScanError('bad-state', `仓库 ${repoSub || '项目根仓库'} 不在计划清单里`);
+      const entryBySpec = new Map(entries.map((v) => [`${v.sha}:${v.path}`, v]));
+      await catFileBatch(cwd, [...entryBySpec.keys()], (o: BatchObject) => {
+        if (inner.signal.aborted || limitHit || abortHit) return;
+        if (o.missing || o.content === null) return;
+        const entry = entryBySpec.get(o.spec);
+        if (!entry) return;
+        const abs = safeJoin(dir, entry.outPath);
+        bytes += o.content.length;
+        try {
+          assertWithinLimits(finalPath.size, bytes);
+        } catch (e) {
+          limitHit ??= new ScanError('too-large', (e as Error).message);
+          inner.abort();
+          return;
+        }
+        // cat-file 回调是同步的：落盘排队，阶段结束前统一 await（否则配置文件会读到半个快照）
+        pendingWrites.push(writeFileIn(abs, o.content));
+      }, { signal: inner.signal });
+    }
   } catch (e) {
     if (limitHit) throw limitHit;
     if (abortHit) throw abortHit;
@@ -479,10 +488,14 @@ async function exportSnapshot(
   if (limitHit) throw limitHit;
   if (abortHit) throw abortHit;
   await Promise.all(pendingWrites);
-  // 拓扑序（父在子前）的最后一个提交 = 这批快照里最新的 SHA
-  const snapshotHeadSha = plan.commits.at(-1)?.sha ?? '';
+  // 多仓库时「最新提交」按提交时间取（跨仓库没有共同拓扑），head 对比用它所属仓库的 cwd
+  const latest = plan.repos
+    .flatMap((r) => r.commits.map((c) => ({ c, path: r.path })))
+    .sort((a, b) => Date.parse(b.c.date) - Date.parse(a.c.date))[0];
+  const snapshotHeadSha = latest?.c.sha ?? '';
+  const snapshotRepoPath = latest?.path ?? plan.workspacePath;
   onStage('snapshot', { files: finalPath.size, bytes, snapshotHeadSha });
-  return { files: finalPath.size, bytes, snapshotHeadSha };
+  return { files: finalPath.size, bytes, snapshotHeadSha, snapshotRepoPath };
 }
 
 /** 建目录再写文件（快照保留相对路径，深层目录不会凭空存在） */
@@ -1063,7 +1076,7 @@ export async function runSonarScan(
   if (!settings.serverUrl) throw new ScanError('no-server', '未配置 SonarQube 服务器地址', '到「设置 → SonarQube」填写地址并保存。');
 
   // 1 汇总（复用 §3.3 取数口径）
-  const plan = await planExtract(taskIds, commitIds, input.projectIds ?? []);
+  const plan = await planExtract(taskIds, commitIds, input.projectIds ?? [], input.commitRepos ?? {});
   const projectIds = plan.projects.map((p) => p.projectId);
   const projectKey = resolveScanProjectKey(input, plan, projectIds);
 
@@ -1124,7 +1137,7 @@ export async function runSonarScan(
     const grouped = Object.fromEntries(SEVERITY_ORDER.map((s) => [s, issues.filter((i) => i.severity === s)])) as Record<ScanSeverity, ScanIssue[]>;
 
     // 时效声明：快照基于 SHA x，当前 HEAD 为 y，相差 n 个提交
-    const { currentHeadSha, headLag } = await resolveHeadLag(plan.workspacePath, snap.snapshotHeadSha, signal);
+    const { currentHeadSha, headLag } = await resolveHeadLag(snap.snapshotRepoPath, snap.snapshotHeadSha, signal);
 
     // 7 回写（可关闭）
     const receipts = performWriteBack({

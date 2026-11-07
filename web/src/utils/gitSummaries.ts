@@ -51,23 +51,28 @@ export function useGitSummaries(tasks: Task[], enabled: boolean, workspaceOf: (t
   const [nonce, setNonce] = useState(0);
   /** 任务 id → workspace，分组归属在本地判定（不依赖服务端回传 taskId） */
   const wsByTask = useRef(new Map<string, string>());
+  /** T04576：任务 id → 内联最新关联的仓库（空串 = 项目根仓库），用于在同 workspace 的多仓库组里选对组 */
+  const repoByTask = useRef(new Map<string, string>());
 
-  // 本页唯一 SHA 集合 + 每个 SHA 归属的 workspace（分组归属在本地判定）
+  // 本页唯一 SHA 集合 + 每个 SHA 归属的 workspace/仓库（分组归属在本地判定）
   const page = useMemo(() => {
     const shas = new Set<string>();
     /** 服务端按 taskId 反查 workspace，故 links 必须逐条带 taskId（省略会全部落进 no-workspace 分组） */
-    const links: { taskId: string; sha: string }[] = [];
+    const links: { taskId: string; sha: string; repoSub: string }[] = [];
     const ws = new Map<string, string>();
+    const repos = new Map<string, string>();
     if (enabled) {
       for (const t of tasks) {
         ws.set(t.id, workspaceOf(t));
+        repos.set(t.id, t.gitLinks?.[0]?.repoSub ?? '');
         for (const l of t.gitLinks ?? []) {
           if (!shas.has(l.sha)) shas.add(l.sha);
-          links.push({ taskId: t.id, sha: l.sha });
+          links.push({ taskId: t.id, sha: l.sha, repoSub: l.repoSub ?? '' });
         }
       }
     }
     wsByTask.current = ws;
+    repoByTask.current = repos;
     return { shas: [...shas].sort((a, b) => a.localeCompare(b)), links, empty: shas.size === 0 };
     // workspaceOf 每次渲染都是新闭包，但它只读 projects 数组——以 tasks 与 enabled 作依赖即可
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -113,10 +118,13 @@ export function useGitSummaries(tasks: Task[], enabled: boolean, workspaceOf: (t
 
   const bySha = useMemo(() => new Map(groups.flatMap((g) => g.commits).map((c) => [c.sha, c])), [groups]);
 
-  /** 找到某任务对应的分组：先按 workspace 精确匹配；跨项目视图下 workspace 为空时回退到 no-workspace 分组 */
+  /** 找到某任务对应的分组：先按「workspace + 仓库」精确匹配，再退到同 workspace，最后是 no-workspace 分组 */
   const groupOfTask = useCallback((taskId: string): GitSummaryGroup | undefined => {
     const ws = wsByTask.current.get(taskId) ?? '';
-    return groups.find((g) => g.workspacePath === ws) ?? (ws === '' ? groups.find((g) => g.kind === 'no-workspace') : undefined);
+    const repo = repoByTask.current.get(taskId) ?? '';
+    return groups.find((g) => g.workspacePath === ws && (g.repoSub ?? '') === repo)
+      ?? groups.find((g) => g.workspacePath === ws)
+      ?? (ws === '' ? groups.find((g) => g.kind === 'no-workspace') : undefined);
   }, [groups]);
 
   return useMemo(() => ({

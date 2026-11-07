@@ -13,6 +13,7 @@ import {
   buildTaskGitView,
   listLinks,
   manualLink,
+  normalizeRepoSub,
   normalizeShaInput,
   resolveTask,
   unlinkCommit,
@@ -45,12 +46,12 @@ gitLinksApi.post('/git/commit-summaries', async (req, res) => {
   // （空数组是合法的「本页没有关联」，仍回 groups: []）
   if (req.body?.links === undefined) return res.status(400).json({ error: 'links 必填（数组 [{taskId, sha}]）' });
   if (!Array.isArray(req.body.links)) return res.status(400).json({ error: 'links 需为数组：[{taskId, sha}]' });
-  const links = req.body.links as { taskId?: string; sha?: string }[];
+  const links = req.body.links as { taskId?: string; sha?: string; repoSub?: unknown }[];
   const clean = links
-    .map((l) => ({ taskId: typeof l.taskId === 'string' ? l.taskId : undefined, sha: normalizeShaInput(l.sha ?? '') ?? '' }))
+    .map((l) => ({ taskId: typeof l.taskId === 'string' ? l.taskId : undefined, sha: normalizeShaInput(l.sha ?? '') ?? '', repoSub: normalizeRepoSub(l.repoSub) }))
     .filter((l) => l.sha);
   if (!clean.length) return res.json({ groups: [], echoed: links.length });
-  // 缓存键里带上「任务当前工作空间」：只按 taskId:sha 组键时，项目换绑后 60s 内仍会命中旧仓库的摘要组，
+  // 缓存键里带上「任务当前工作空间 + 仓库」：只按 taskId:sha 组键时，项目换绑后 60s 内仍会命中旧仓库的摘要组，
   // 列表徽标于是继续显示已经解绑仓库的提交——§3.1.1 的「不可用」态被 stale 缓存压掉。翻页/筛选照常复用。
   const wsOf = new Map<string, string>();
   const workspaceOf = (taskId?: string): string => {
@@ -62,7 +63,7 @@ gitLinksApi.post('/git/commit-summaries', async (req, res) => {
     return ws;
   };
   const key = createHash('sha1')
-    .update(clean.map((l) => `${l.taskId ?? ''}:${workspaceOf(l.taskId)}:${l.sha}`).sort((a, b) => a.localeCompare(b)).join('|'))
+    .update(clean.map((l) => `${l.taskId ?? ''}:${workspaceOf(l.taskId)}:${l.repoSub}:${l.sha}`).sort((a, b) => a.localeCompare(b)).join('|'))
     .digest('hex');
   const hit = cacheGet<{ groups: unknown[] }>(`git-summaries:${key}`);
   if (hit) return res.json(hit);
@@ -105,10 +106,16 @@ gitLinksApi.get('/tasks/:id/git', async (req, res) => {
   }
 });
 
-/** 变更文件清单（`?diff=1` 时附 hunks）——单提交懒加载 */
+/** 变更文件清单（`?diff=1` 时附 hunks）——单提交懒加载；`?repoSub=` 定位工作空间目录内的仓库 */
 gitLinksApi.get('/tasks/:id/git/:sha/files', async (req, res) => {
   try {
-    res.json(await buildTaskGitFiles({ id: req.params.id }, req.params.sha, req.query.diff === '1'));
+    res.json(await buildTaskGitFiles(
+      { id: req.params.id },
+      req.params.sha,
+      req.query.diff === '1',
+      {},
+      req.query.repoSub === undefined ? undefined : scalarText(req.query.repoSub),
+    ));
   } catch (e) {
     httpError(res, e);
   }
@@ -120,21 +127,21 @@ gitLinksApi.get('/tasks/:id/git/links', (req, res) => {
   res.json({ links: listLinks(req.params.id) });
 });
 
-/** 手动绑定（Git 树弹窗确认）：body `{ sha }` */
+/** 手动绑定（Git 树弹窗确认）：body `{ sha, repoSub? }`（repoSub 空/省略 = 项目根仓库） */
 gitLinksApi.post('/tasks/:id/git/links', async (req, res) => {
   try {
     const sha = String(req.body?.sha ?? '');
     if (!normalizeShaInput(sha)) return res.status(400).json({ error: '非法 commit ID（需 7–40 位十六进制）' });
-    res.json(await manualLink({ id: req.params.id }, sha));
+    res.json(await manualLink({ id: req.params.id }, sha, req.body?.repoSub));
   } catch (e) {
     httpError(res, e);
   }
 });
 
-/** 解绑：仅 source='manual'；AI 回写返回 409 + 原因 */
+/** 解绑：仅 source='manual'；AI 回写返回 409 + 原因。`?repoSub=` 用于区分同一 SHA 的多仓库关联 */
 gitLinksApi.delete('/tasks/:id/git/links/:sha', (req, res) => {
   try {
-    res.json(unlinkCommit({ id: req.params.id }, req.params.sha));
+    res.json(unlinkCommit({ id: req.params.id }, req.params.sha, req.query.repoSub === undefined ? undefined : scalarText(req.query.repoSub)));
   } catch (e) {
     httpError(res, e);
   }

@@ -57,6 +57,19 @@ function idsOf(raw: unknown, label = 'taskIds', optional = false): string[] {
   return raw.map((x) => String(x ?? '').trim()).filter(Boolean);
 }
 
+/** T04576：手动提交的来源仓库表（SHA → repoSub；缺省/空串=项目根仓库） */
+function commitReposOf(raw: unknown): Record<string, string> | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'object' || Array.isArray(raw)) throw new ScanError('bad-args', 'commitRepos 需为 { SHA: repoSub } 对象');
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const sha = String(k ?? '').trim().toLowerCase();
+    if (!/^[0-9a-f]{7,40}$/.test(sha)) throw new ScanError('bad-args', `commitRepos 的键必须是提交 SHA（收到「${String(k).slice(0, 40)}」）`);
+    out[sha] = scalarText(v ?? '').trim();
+  }
+  return out;
+}
+
 function severitiesOf(raw: unknown): ScanSeverity[] | undefined {
   if (raw === undefined || raw === null) return undefined;
   if (!Array.isArray(raw) || !raw.length) throw new ScanError('bad-severities', '回写阈值需为非空数组（可选：' + SEVERITY_ORDER.join(' / ') + '）');
@@ -118,6 +131,7 @@ function scanInputOf(body: Record<string, unknown>): ScanInput {
   return {
     taskIds: idsOf(body.taskIds),
     commitIds: idsOf(body.commitIds, 'commitIds', true),
+    commitRepos: commitReposOf(body.commitRepos),
     projectIds: idsOf(body.projectIds, 'projectIds', true),
     // scalarText：projectKey 只可能是文本，非字符串（如对象）按未配置处理而不是拼成 "[object Object]"
     projectKey: body.projectKey ? (scalarText(body.projectKey).trim() || undefined) : undefined,

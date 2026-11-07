@@ -1197,21 +1197,21 @@ export function TasksPage() {
     setGitLinkQueue(unlinkedDone);
   }
 
-  async function confirmManualGitLink(projectId: string, shas: string[]) {
+  async function confirmManualGitLink(projectId: string, shas: string[], repoSub: string) {
     const head = gitLinkQueue[0];
     if (!head) return;
     setGitLinkBusy(true);
     const failed: string[] = [];
     for (const sha of shas) {
       try {
-        await api.post(`/tasks/${head.id}/git/links`, { sha });
+        await api.post(`/tasks/${head.id}/git/links`, repoSub ? { sha, repoSub } : { sha });
       } catch (e) {
         failed.push(`${head.task_no ?? head.id} ← ${sha.slice(0, 7)}：${e instanceof Error ? e.message : String(e)}`);
       }
     }
     setGitLinkBusy(false);
     if (failed.length) flash(`部分关联失败：${failed.join('；')}`, 'error');
-    else flash(`已为 ${head.task_no ?? head.id} 手动关联 ${shas.length} 个提交`);
+    else flash(`已为 ${head.task_no ?? head.id} 手动关联 ${shas.length} 个提交${repoSub ? `（仓库 ${repoSub}）` : ''}`);
     const last = gitLinkQueue.length <= 1;
     setGitLinkQueue(last ? [] : gitLinkQueue.slice(1));
     if (last) {
@@ -5543,7 +5543,7 @@ export function TasksPage() {
         projects={projects.filter((p) => p.id === activeProject)}
         activeProjectId={activeProject}
         selectedByProject={{}}
-        onConfirm={(projectId, shas) => void confirmManualGitLink(projectId, shas)}
+        onConfirm={(projectId, shas, repoSub) => void confirmManualGitLink(projectId, shas, repoSub)}
         onClose={() => {
           const left = gitLinkQueue.length - 1;
           setGitLinkQueue([]);

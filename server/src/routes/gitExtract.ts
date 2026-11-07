@@ -63,6 +63,19 @@ function idsOf(raw: unknown, label = 'taskIds', optional = false): string[] {
   return raw.map((x) => String(x ?? '').trim()).filter(Boolean);
 }
 
+/** T04576：手动提交的来源仓库表（SHA → repoSub；空串=项目根仓库）；缺省则由服务端逐仓库判定 */
+function commitReposOf(raw: unknown): Record<string, string> {
+  if (raw === undefined || raw === null) return {};
+  if (typeof raw !== 'object' || Array.isArray(raw)) throw new ExtractError('bad-args', 'commitRepos 需为 { SHA: repoSub } 对象');
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const sha = String(k ?? '').trim().toLowerCase();
+    if (!/^[0-9a-f]{7,40}$/.test(sha)) throw new ExtractError('bad-args', `commitRepos 的键必须是提交 SHA（收到「${String(k).slice(0, 40)}」）`);
+    out[sha] = scalarText(v ?? '').trim();
+  }
+  return out;
+}
+
 /** 范围摘要：面板每次勾选变化都调它重算计数（只读，不产生任何落盘） */
 gitExtractApi.post('/git-extract/plan', async (req, res) => {
   try {
@@ -70,6 +83,7 @@ gitExtractApi.post('/git-extract/plan', async (req, res) => {
       idsOf(req.body?.taskIds, 'taskIds', true),
       idsOf(req.body?.commitIds, 'commitIds', true),
       idsOf(req.body?.projectIds, 'projectIds', true),
+      commitReposOf(req.body?.commitRepos),
     );
     res.json({
       workspacePath: plan.workspacePath,
@@ -97,6 +111,7 @@ gitExtractApi.post('/git-extract', exportGate('git-extract'), async (req, res) =
       idsOf(req.body?.taskIds, 'taskIds', true),
       idsOf(req.body?.commitIds, 'commitIds', true),
       idsOf(req.body?.projectIds, 'projectIds', true),
+      commitReposOf(req.body?.commitRepos),
     );
   } catch (e) {
     // 切 SSE 之前的问题一律 JSON，前端按 kind 走行内提示（不弹错误框）

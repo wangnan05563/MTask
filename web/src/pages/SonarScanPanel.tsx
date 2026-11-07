@@ -3,7 +3,7 @@ import { AlertTriangle, ChevronDown, ChevronRight, ExternalLink, Loader2, Refres
 import { api, type Project } from '../api/client';
 import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
 import { FIELD_QUIET, PILL } from '../ui/primitives';
-import { GitScopePicker, manualCommitIdsOf, scopeWorkspace } from '../ui/gitScopePicker';
+import { GitScopePicker, manualCommitIdsOf, manualCommitRepoHintsOf, scopeWorkspace } from '../ui/gitScopePicker';
 import type { GitScope } from '../ui/gitScopePicker';
 import { FlowButton } from '../ui/FlowButton';
 import { FlowProgress } from '../ui/FlowProgress';
@@ -290,6 +290,8 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
 
   const taskIds = useMemo(() => [...new Set(scope.taskIds)], [scope.taskIds]);
   const manualCommitIds = useMemo(() => manualCommitIdsOf(scope), [scope]);
+  /** T04576：手动提交的来源仓库（SHA → repoSub） */
+  const manualCommitRepos = useMemo(() => manualCommitRepoHintsOf(scope), [scope]);
   const hasScanScope = taskIds.length > 0 || manualCommitIds.length > 0;
   const projectIdsKey = scope.projectIds.join(',');
   const ws = useMemo(() => scopeWorkspace(projects, scope.projectIds), [projects, scope.projectIds]);
@@ -429,6 +431,7 @@ export function SonarScanPanel({ projects, scope, onScopeChange, onClose, onEnvS
       await streamEvents('/sonar/scan', {
         taskIds,
         commitIds: manualCommitIds,
+        commitRepos: manualCommitRepos,
         projectIds: scope.projectIds,
         projectKey: projectKey || undefined,
         autoWriteBack,

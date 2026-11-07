@@ -37,11 +37,13 @@ export interface GitScope {
   allowUnlinkedCommits?: boolean;
   /** 手动选择的未关联提交，按项目存放；打开开关时必须仍满足同一工作空间约束 */
   commitIdsByProject?: Record<string, string[]>;
+  /** T04576：手动提交所在仓库（项目 → repoSub，空串=项目根仓库）——子仓库 SHA 不能按根仓库下发 */
+  repoSubByProject?: Record<string, string>;
 }
 
 export const EMPTY_GIT_SCOPE: GitScope = {
   projectIds: [], taskIds: [], status: '', categoryId: '',
-  allowUnlinkedCommits: false, commitIdsByProject: {},
+  allowUnlinkedCommits: false, commitIdsByProject: {}, repoSubByProject: {},
 };
 
 /** 会话级共享范围（PRD「范围存会话级，与 Sonar 卡互相沿用上次范围」） */
@@ -62,6 +64,16 @@ export function linkedCountOf(t: Task): number {
 /** 手动提交集：跨项目去重后扁平化，发送前仍由服务端做长度与 SHA 合法性把关 */
 export function manualCommitIdsOf(scope: GitScope): string[] {
   return [...new Set(Object.values(scope.commitIdsByProject ?? {}).flat())];
+}
+
+/** T04576：手动提交的来源仓库提示（SHA → repoSub）；显式下发后服务端不必逐仓库猜 */
+export function manualCommitRepoHintsOf(scope: GitScope): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [projectId, shas] of Object.entries(scope.commitIdsByProject ?? {})) {
+    const repoSub = (scope.repoSubByProject?.[projectId] ?? '').trim();
+    for (const sha of shas) out[sha] = repoSub;
+  }
+  return out;
 }
 
 /**
@@ -185,7 +197,9 @@ export function GitScopePicker({ projects, value, onChange }: {
       const removedTaskIds = new Set(groups.find((g) => g.projectId === p.id)?.tasks.map((t) => t.id) ?? []);
       const nextCommitIdsByProject = { ...commitIdsByProject };
       delete nextCommitIdsByProject[p.id];
-      onChange({ ...value, projectIds: rest, taskIds: value.taskIds.filter((id) => !removedTaskIds.has(id)), commitIdsByProject: nextCommitIdsByProject });
+      const nextRepoSubs = { ...(value.repoSubByProject ?? {}) };
+      delete nextRepoSubs[p.id];
+      onChange({ ...value, projectIds: rest, taskIds: value.taskIds.filter((id) => !removedTaskIds.has(id)), commitIdsByProject: nextCommitIdsByProject, repoSubByProject: nextRepoSubs });
       return;
     }
     if (!projectPickability(p, value.projectIds, projects).ok) return;
@@ -203,8 +217,12 @@ export function GitScopePicker({ projects, value, onChange }: {
     onChange({ ...value, taskIds: [...merged] });
   }
 
-  function confirmManualCommits(projectId: string, shas: string[]) {
-    onChange({ ...value, commitIdsByProject: { ...commitIdsByProject, [projectId]: shas } });
+  function confirmManualCommits(projectId: string, shas: string[], repoSub: string) {
+    onChange({
+      ...value,
+      commitIdsByProject: { ...commitIdsByProject, [projectId]: shas },
+      repoSubByProject: { ...(value.repoSubByProject ?? {}), [projectId]: repoSub },
+    });
     setCommitPickerOpen(false);
   }
 
@@ -257,6 +275,7 @@ export function GitScopePicker({ projects, value, onChange }: {
             ...value,
             allowUnlinkedCommits: e.target.checked,
             commitIdsByProject: e.target.checked ? commitIdsByProject : {},
+            repoSubByProject: e.target.checked ? (value.repoSubByProject ?? {}) : {},
           })}
           aria-label="允许勾选未关联记录"
           style={{ flexShrink: 0, cursor: 'inherit' }}

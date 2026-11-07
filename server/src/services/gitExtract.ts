@@ -18,8 +18,9 @@ import ExcelJS from 'exceljs';
 import { getDb, dataDir } from '../db/connection';
 import { catFileBatch, collectCommitFiles, collectCommitSummaries, normalizeSelectedCommits } from './gitCollect';
 import type { BatchObject, CommitFileEntry, CommitSummaryRow } from './gitCollect';
+import { discoverNestedRepos, isRepositoryRoot, resolveRepoSubPath } from './nestedRepos';
 import { saveReportBuffer } from './ReportService';
-import { listLinks, resolveTask } from './taskGitLinks';
+import { listLinks, normalizeRepoSub, resolveTask } from './taskGitLinks';
 import type { GitLinkRow, TaskRef } from './taskGitLinks';
 import { ACTIVE_PROJECT_WHERE } from '../util/projectRouting';
 
@@ -67,6 +68,7 @@ export interface ExtractTaskRef {
 
 export interface ManifestRow {
   commit: string;
+  /** 产物内路径（子仓库带仓库前缀，与解压后的目录树逐字一致） */
   path: string;
   status: string;
   additions: number | null;
@@ -78,6 +80,16 @@ export interface ManifestRow {
   binary: boolean;
   /** 二进制文件的字节大小（§3.3.2「清单标二进制 + 字节大小」） */
   binarySize?: number;
+  /** 内部字段（不进清单列）：来源仓库与完整 SHA，回执按 (仓库, SHA) 对账 */
+  repoSub: string;
+  sha: string;
+}
+
+/** 一个仓库在本批提取里涉及的提交（父在子前）；`repoSub` 为空串表示项目根仓库 */
+export interface ExtractRepo {
+  repoSub: string;
+  path: string;
+  commits: CommitSummaryRow[];
 }
 
 export interface ExtractPlan {
@@ -87,6 +99,8 @@ export interface ExtractPlan {
   tasks: ExtractTaskRef[];
   /** T04526：未关联任务的 Git 提交；与任务关联提交合并后走同一条采集链路 */
   manualCommits: string[];
+  /** 逐仓库分组（根仓库在前）——cat-file 必须按仓库 cwd 执行，不能一律用工作空间根 */
+  repos: ExtractRepo[];
   commits: CommitSummaryRow[];
   /** 逐提交逐行的清单行数（导出规模指示，非去重） */
   manifestRows: number;
@@ -94,9 +108,11 @@ export interface ExtractPlan {
   uniquePaths: number;
   /** 未回写 commit id 的任务（面板置灰并说明原因，不算失败） */
   unlinked: { taskNo: string | null; title: string }[];
-  /** 关联记录已不在当前仓库的提交（换绑/未 fetch） */
+  /** 关联记录已不在所属仓库的提交（换绑/未 fetch）；跨仓库扁平去重，供既有面板展示 */
   missingShas: string[];
-  filesByCommit: { sha: string; shortSha: string; entries: CommitFileEntry[] }[];
+  /** 缺失明细：同一 SHA 在 A 仓存在、B 仓缺失时，不能把 A 仓的关联也判成缺失 */
+  missingLinks: { repoSub: string; sha: string }[];
+  filesByCommit: { sha: string; shortSha: string; repoSub: string; entries: CommitFileEntry[] }[];
 }
 
 function titleOf(taskId: string): string {
@@ -108,8 +124,64 @@ function nameOf(projectId: string): string {
   return r?.name ?? projectId;
 }
 
+/** 子仓库在产物里的顶层前缀（POSIX 形式）；根仓库不加前缀，既有包结构保持不变 */
+export function repoOutPrefix(repoSub: string): string {
+  const rel = (repoSub ?? '').split(/[\\/]+/).filter((s) => s && s !== '.').join('/');
+  return rel ? `${rel}/` : '';
+}
+
+/** 仓库目录解析：非空 repoSub 必须是工作空间内的**独立仓库根**（普通子目录会读到根仓库历史） */
+async function resolvePlanRepo(workspacePath: string, repoSub: string): Promise<{ path: string } | { error: string }> {
+  if (!repoSub) return { path: workspacePath };
+  try {
+    const p = resolveRepoSubPath(workspacePath, repoSub);
+    if (!(await isRepositoryRoot(p))) return { error: `${repoSub} 不是一个 Git 仓库（该目录下没有 .git）` };
+    return { path: p };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * 手动提交缺仓库维度时的归属判定（旧前端 / MCP 直传 commitIds）。
+ *
+ * 根仓库优先，再按发现顺序逐个子仓库；同一 SHA 在多个仓库都存在时**不做猜测**——
+ * 猜错会把 A 仓的改动标成 B 仓的来源，直接点名要求按仓库重新点选。
+ * 所有候选仓库都没命中时不在这里判死：按根仓库归属，沿用「missing 由根仓库点名」的旧口径。
+ */
+async function locateManualRepos(workspacePath: string, shas: readonly string[]): Promise<Map<string, string>> {
+  const assignment = new Map<string, string>();
+  if (!shas.length) return assignment;
+  const candidates: { repoSub: string; cwd: string }[] = [];
+  if (await isRepositoryRoot(workspacePath)) candidates.push({ repoSub: '', cwd: workspacePath });
+  try {
+    const found = await discoverNestedRepos(workspacePath);
+    for (const r of found.repos) if (!r.isRoot) candidates.push({ repoSub: r.subPath, cwd: r.absPath });
+  } catch { /* 发现失败就当没有子仓库；根仓库仍按旧口径判 missing */ }
+  const hits = new Map<string, string[]>();
+  for (const c of candidates) {
+    try {
+      const r = await collectCommitSummaries(c.cwd, [...shas]);
+      for (const row of r.commits) hits.set(row.sha, [...(hits.get(row.sha) ?? []), c.repoSub]);
+    } catch { /* 单个仓库取数失败不改变其余仓库的判定 */ }
+  }
+  const ambiguous = [...hits].filter(([, repos]) => repos.length > 1);
+  if (ambiguous.length) {
+    const shown = ambiguous.slice(0, 3)
+      .map(([sha, repos]) => `${sha.slice(0, 7)}（${repos.map((r) => r || '项目根仓库').join(' / ')}）`)
+      .join('、');
+    throw new ExtractError('ambiguous-repo',
+      `手动提交同时存在于多个仓库，无法判定来源：${shown}${ambiguous.length > 3 ? ` 等 ${ambiguous.length} 个` : ''}。请在 Git 树里按仓库重新点选`);
+  }
+  for (const [sha, repos] of hits) assignment.set(sha, repos[0]);
+  return assignment;
+}
+
 /**
  * 范围校验 + 清单汇总（§3.3.1「范围」段 / stage 1）。
+ *
+ * T04576：提交按仓库分组取数——同一工作空间目录里的子仓库 SHA 若拿根仓库 cwd 去解析，
+ * 会被判 missing（目录内根本不是同一份提交图）。分组后逐仓库 collect，缺失也按仓库记。
  *
  * 不做：不解析提交信息取 SHA（关联唯一来源是 task_git_links）、不 checkout、不写工作树。
  */
@@ -117,6 +189,7 @@ export async function planExtract(
   taskIds: string[],
   manualCommits: readonly string[] = [],
   manualProjectIds: readonly string[] = [],
+  commitRepoHints: Readonly<Record<string, string>> = {},
 ): Promise<ExtractPlan> {
   const ids = [...new Set((taskIds ?? []).map((s) => String(s ?? '').trim()).filter(Boolean))];
   const commitIds = manualCommits?.length ? normalizeSelectedCommits(manualCommits) : [];
@@ -156,23 +229,76 @@ export async function planExtract(
   const shas = [...new Set([...linked.flatMap((t) => t.links.map((l) => l.sha)), ...commitIds])];
   if (!shas.length) throw new ExtractError('no-links', '所选任务均未回写提交 ID，且未手动选择 Git 提交');
 
-  const summaries = await collectCommitSummaries(workspacePath, shas);
-  // 提交顺序就是「最终内容」的判定依据：清单按旧→新展开，同一文件后写覆盖前写。
-  // 不能只按提交日期排——`git log --no-walk` 返回的是新→旧，而同一秒内的相邻提交日期完全相同
-  // （脚本建仓 / rebase / 批量导入极常见），平局会原样保留这个反序：前一个提交把后一个提交
-  // 删掉的文件重新写回包里、把改动过的文件导出成最早版本。故按已采集的父提交边做拓扑排序。
-  const commitsAsc = topoOrderCommits(summaries.commits);
+  // 按仓库分组：关联行自带 repoSub；手动提交若有显式提示直接用，没有才去各仓库里找
+  const groups = new Map<string, Set<string>>();
+  const addGroupSha = (repoSub: string, sha: string) => {
+    const set = groups.get(repoSub) ?? new Set<string>();
+    set.add(sha);
+    groups.set(repoSub, set);
+  };
+  for (const t of tasks) for (const l of t.links) addGroupSha(normalizeRepoSub(l.repoSub), l.sha);
+  const hinted = new Map(Object.entries(commitRepoHints ?? {})
+    .map(([k, v]) => [String(k).trim().toLowerCase(), normalizeRepoSub(v)] as const));
+  const unresolvedManual: string[] = [];
+  for (const sha of commitIds) {
+    const hint = hinted.get(sha);
+    if (hint !== undefined) addGroupSha(hint, sha);
+    else unresolvedManual.push(sha);
+  }
+  const manualRepos = await locateManualRepos(workspacePath, unresolvedManual);
+  for (const sha of unresolvedManual) addGroupSha(manualRepos.get(sha) ?? '', sha);
+
+  // 根仓库在前、子仓库按相对路径字典序：产物的目录顺序稳定，回执可复现
+  const sortedGroups = [...groups.entries()].sort(([a], [b]) => Number(!!a) - Number(!!b) || a.localeCompare(b));
+  const repos: ExtractRepo[] = [];
   const filesByCommit: ExtractPlan['filesByCommit'] = [];
-  for (const c of commitsAsc) {
-    filesByCommit.push({ sha: c.sha, shortSha: c.shortSha, entries: await collectCommitFiles(workspacePath, c.sha, c.parents) });
+  const missingLinks: ExtractPlan['missingLinks'] = [];
+  const repoErrors: string[] = [];
+  let rootError: unknown = null;
+  for (const [repoSub, set] of sortedGroups) {
+    const groupShas = [...set];
+    const label = repoSub || '项目根仓库';
+    const target = await resolvePlanRepo(workspacePath, repoSub);
+    if ('error' in target) {
+      for (const sha of groupShas) missingLinks.push({ repoSub, sha });
+      repoErrors.push(`${label}：${target.error}`);
+      continue;
+    }
+    let summaries;
+    try {
+      summaries = await collectCommitSummaries(target.path, groupShas);
+    } catch (e) {
+      if (!repoSub) rootError = e; // 根仓库取数失败的降级口径与改造前一致（not-a-repo / no-git 等原样抛）
+      for (const sha of groupShas) missingLinks.push({ repoSub, sha });
+      repoErrors.push(`${label}：${e instanceof Error ? e.message : String(e)}`);
+      continue;
+    }
+    // 提交顺序就是「最终内容」的判定依据：清单按旧→新展开，同一文件后写覆盖前写。
+    // 不能只按提交日期排——`git log --no-walk` 返回的是新→旧，而同一秒内的相邻提交日期完全相同
+    // （脚本建仓 / rebase / 批量导入极常见），平局会原样保留这个反序：前一个提交把后一个提交
+    // 删掉的文件重新写回包里、把改动过的文件导出成最早版本。故按已采集的父提交边做拓扑排序。
+    const commitsAsc = topoOrderCommits(summaries.commits);
+    const groupFiles: ExtractPlan['filesByCommit'] = [];
+    for (const c of commitsAsc) {
+      groupFiles.push({ sha: c.sha, shortSha: c.shortSha, repoSub, entries: await collectCommitFiles(target.path, c.sha, c.parents) });
+    }
+    // 歧义只在同一仓库内成立：跨仓库的同秒提交改动的是两套文件，不存在「谁覆盖谁」
+    const ambiguous = findOrderAmbiguities(commitsAsc, groupFiles);
+    if (ambiguous.length) {
+      const where = repoSub ? `（仓库 ${repoSub}）` : '';
+      throw new ExtractError('ambiguous-order', ambiguityMessage(ambiguous) + `${where}这些提交同一秒且没有父子关系，请拆分勾选后分两次导出`);
+    }
+    filesByCommit.push(...groupFiles);
+    for (const sha of summaries.missing) if (!missingLinks.some((m) => m.repoSub === repoSub && m.sha === sha)) missingLinks.push({ repoSub, sha });
+    repos.push({ repoSub, path: target.path, commits: commitsAsc });
+  }
+  if (!repos.some((r) => r.commits.length) && repoErrors.length) {
+    if (rootError) throw rootError;
+    throw new ExtractError('not-a-repo', `所选仓库均无法取数：${repoErrors.join('；')}`);
   }
   // 源文件包口径：同一文件被多个提交改动只保留「最终内容」一份；删除的既不留在包里也不该留在目录树里
   // T03609 裁定：同秒且集合内无父子边、又改了同一文件的提交之间，git 没有先后语义（并发 authored），
   // 「最终内容」只能靠 sha 兜底——可复现但反直觉。在 plan 阶段显式拒绝比默默产出一个说不清来源的包更负责。
-  const ambiguous = findOrderAmbiguities(commitsAsc, filesByCommit);
-  if (ambiguous.length) {
-    throw new ExtractError('ambiguous-order', ambiguityMessage(ambiguous) + '这些提交同一秒且没有父子关系，请拆分勾选后分两次导出');
-  }
   const finalPath = finalPathMap(filesByCommit);
   assertWithinLimits(finalPath.size, 0);
   return {
@@ -181,11 +307,13 @@ export async function planExtract(
     projects: [...new Set([...tasks.map((t) => t.projectId), ...projectIdSet])].map((p) => ({ projectId: p, name: nameOf(p) })),
     tasks,
     manualCommits: commitIds,
-    commits: commitsAsc,
+    repos,
+    commits: repos.flatMap((r) => r.commits),
     manifestRows: filesByCommit.reduce((n, f) => n + f.entries.length, 0),
     uniquePaths: finalPath.size,
     unlinked: tasks.filter((t) => t.links.length === 0).map((t) => ({ taskNo: t.taskNo, title: t.title })),
-    missingShas: summaries.missing,
+    missingShas: [...new Set(missingLinks.map((m) => m.sha))],
+    missingLinks,
     filesByCommit,
   };
 }
@@ -282,21 +410,57 @@ function topoOrderCommits(commits: CommitSummaryRow[]): CommitSummaryRow[] {
   return out;
 }
 
+/** 产物内的一格：仓库内路径用于 cat-file，产物路径用于落盘/打包（子仓库带仓库前缀） */
+export interface FinalPathEntry {
+  sha: string;
+  repoSub: string;
+  path: string;
+  outPath: string;
+}
+
+/** 最终内容映射的键：**必须带仓库维度**，否则根仓库与子仓库的同名路径会互相顶掉 */
+export function finalPathKey(repoSub: string, path: string): string {
+  return `${normalizeRepoSub(repoSub)}\u0000${path}`;
+}
+
 /** 文件 → 最后一次改动它的提交（决定导出内容；D 结尾的不导出） */
 // 导出给 Sonar 快照（§3.4.2 stage 2）复用：删除/重命名的「最终内容」判定是同一套口径，
 // 两处各写一遍迟早漂移（八期 T03424 修的就是这套语义）。
-export function finalPathMap(filesByCommit: ExtractPlan['filesByCommit']): Map<string, { sha: string; path: string }> {
-  const out = new Map<string, { sha: string; path: string }>();
+export function finalPathMap(filesByCommit: ExtractPlan['filesByCommit']): Map<string, FinalPathEntry> {
+  const out = new Map<string, FinalPathEntry>();
   // 入参按「父在子前」排序，所以「后写覆盖前写」= 「取最终内容」。乱序会让包里装的是最早版本。
   for (const f of filesByCommit) {
+    const repoSub = normalizeRepoSub(f.repoSub);
+    const prefix = repoOutPrefix(repoSub);
     for (const e of f.entries) {
+      const key = finalPathKey(repoSub, e.path);
       // 重命名：旧路径在这一步已不存在，前面提交落进映射的旧名必须撤掉，否则包里同时出现新旧两份
-      if (e.status === 'R' && e.oldPath) out.delete(e.oldPath);
-      if (e.status === 'D') { out.delete(e.path); continue; }
-      out.set(e.path, { sha: f.sha, path: e.path });
+      if (e.status === 'R' && e.oldPath) out.delete(finalPathKey(repoSub, e.oldPath));
+      if (e.status === 'D') { out.delete(key); continue; }
+      out.set(key, { sha: f.sha, repoSub, path: e.path, outPath: `${prefix}${e.path}` });
+    }
+  }
+  // 子仓库前缀可能与根仓库的同名路径撞车（根仓库真有 `sub/a.txt`）：只为撞车的子仓库加一层固定层
+  const counts = new Map<string, number>();
+  for (const v of out.values()) counts.set(v.outPath, (counts.get(v.outPath) ?? 0) + 1);
+  if ([...counts.values()].some((n) => n > 1)) {
+    for (const [key, v] of out) {
+      if (!v.repoSub || (counts.get(v.outPath) ?? 0) < 2) continue;
+      out.set(key, { ...v, outPath: `${repoOutPrefix(v.repoSub)}__repo__/${v.path}` });
     }
   }
   return out;
+}
+
+/** 最终内容按仓库分组（根仓库在前）：cat-file / 落盘都必须逐仓库执行 */
+export function finalPathByRepo(finalPath: Map<string, FinalPathEntry>): [string, FinalPathEntry[]][] {
+  const groups = new Map<string, FinalPathEntry[]>();
+  for (const v of finalPath.values()) {
+    const list = groups.get(v.repoSub) ?? [];
+    list.push(v);
+    groups.set(v.repoSub, list);
+  }
+  return [...groups.entries()].sort(([a], [b]) => Number(!!a) - Number(!!b) || a.localeCompare(b));
 }
 
 export function extractTmpRoot(): string {
@@ -404,32 +568,40 @@ export async function runExtract(
       }
     }
     try {
-      await catFileBatch(plan.workspacePath, specs, (o: BatchObject) => {
-        if (inner.signal.aborted || limitHit || abortHit) return;
-        if (o.missing || o.content === null) return;
-        const content = o.content;
-        bytes += content.length;
-        binarySizes.set(o.spec, content.length);
-        try {
-          assertWithinLimits(written.size + 1, bytes);
-        } catch (e) {
-          bail(e);
-          return;
-        }
-        if (mode === 'files') {
-          const rel = o.spec.slice(o.spec.indexOf(':') + 1);
-          let abs: string;
+      // T04576：按仓库分组 cat-file——子仓库的提交只能用它自己的 cwd 读对象
+      for (const [repoSub, entries] of finalPathByRepo(finalPath)) {
+        if (inner.signal.aborted || limitHit || abortHit) break;
+        const cwd = plan.repos.find((r) => r.repoSub === repoSub)?.path;
+        if (!cwd) throw new ExtractError('bad-state', `仓库 ${repoSub || '项目根仓库'} 不在计划清单里`);
+        const entryBySpec = new Map(entries.map((v) => [`${v.sha}:${v.path}`, v]));
+        await catFileBatch(cwd, [...entryBySpec.keys()], (o: BatchObject) => {
+          if (inner.signal.aborted || limitHit || abortHit) return;
+          if (o.missing || o.content === null) return;
+          const entry = entryBySpec.get(o.spec);
+          if (!entry) return;
+          const content = o.content;
+          bytes += content.length;
+          binarySizes.set(`${repoSub}\u0000${o.spec}`, content.length);
           try {
-            abs = safeJoin(dir, rel);
+            assertWithinLimits(written.size + 1, bytes);
           } catch (e) {
             bail(e);
             return;
           }
-          // 仓库相对路径是多层目录，落盘前按层级建目录（保留原始目录结构是 §3.3 的硬要求）
-          pendingWrites.push(mkdir(dirname(abs), { recursive: true }).then(() => writeFile(abs, content)));
-          written.set(o.spec, content.length);
-        }
-      }, { signal: inner.signal });
+          if (mode === 'files') {
+            let abs: string;
+            try {
+              abs = safeJoin(dir, entry.outPath);
+            } catch (e) {
+              bail(e);
+              return;
+            }
+            // 仓库相对路径是多层目录，落盘前按层级建目录（保留原始目录结构是 §3.3 的硬要求）
+            pendingWrites.push(mkdir(dirname(abs), { recursive: true }).then(() => writeFile(abs, content)));
+            written.set(`${repoSub}\u0000${o.spec}`, content.length);
+          }
+        }, { signal: inner.signal });
+      }
     } catch (e) {
       if (limitHit) throw limitHit;
       if (abortHit || inner.signal.aborted) throw abortHit ?? new ExtractError('aborted', '已中止');
@@ -464,16 +636,22 @@ export async function runExtract(
 
 /** 逐提交逐行展开（与源文件包「按最终内容去重」是两套口径，§3.3.2 重复文件行） */
 function buildManifest(plan: ExtractPlan, binarySizes: Map<string, number>): ManifestRow[] {
-  const ownerBySha = new Map<string, ExtractTaskRef>();
-  for (const t of plan.tasks) for (const l of t.links) if (!ownerBySha.has(l.sha)) ownerBySha.set(l.sha, t);
+  const ownerByLink = new Map<string, ExtractTaskRef>();
+  for (const t of plan.tasks) for (const l of t.links) {
+    const key = finalPathKey(l.repoSub, l.sha);
+    if (!ownerByLink.has(key)) ownerByLink.set(key, t);
+  }
+  const finalPath = finalPathMap(plan.filesByCommit);
   const rows: ManifestRow[] = [];
   for (const f of plan.filesByCommit) {
+    const repoSub = normalizeRepoSub(f.repoSub);
     const c = plan.commits.find((x) => x.sha === f.sha);
-    const owner = ownerBySha.get(f.sha);
+    const owner = ownerByLink.get(finalPathKey(repoSub, f.sha));
     for (const e of f.entries) {
+      const outPath = finalPath.get(finalPathKey(repoSub, e.path))?.outPath ?? `${repoOutPrefix(repoSub)}${e.path}`;
       rows.push({
         commit: f.shortSha,
-        path: e.path,
+        path: outPath,
         status: e.status,
         additions: e.additions,
         deletions: e.deletions,
@@ -482,7 +660,9 @@ function buildManifest(plan: ExtractPlan, binarySizes: Map<string, number>): Man
         author: c?.author ?? '',
         date: c?.date ?? '',
         binary: e.binary,
-        ...(e.binary ? { binarySize: binarySizes.get(`${f.sha}:${e.path}`) } : {}),
+        ...(e.binary ? { binarySize: binarySizes.get(`${repoSub}\u0000${f.sha}:${e.path}`) } : {}),
+        repoSub,
+        sha: f.sha,
       });
     }
   }
@@ -497,11 +677,11 @@ function receiptNote(files: number, gone: readonly string[]): string {
 }
 
 function buildReceipts(plan: ExtractPlan, manifest: ManifestRow[]): TaskReceipt[] {
-  const shortToSha = new Map(plan.commits.map((c) => [c.shortSha, c.sha]));
+  const goneKeys = new Set(plan.missingLinks.map((m) => finalPathKey(m.repoSub, m.sha)));
   return plan.tasks.map((t) => {
-    const shas = new Set(t.links.map((l) => l.sha));
-    const files = manifest.filter((r) => shas.has(shortToSha.get(r.commit) ?? r.commit)).length;
-    const gone = [...shas].filter((s) => plan.missingShas.includes(s));
+    const linkKeys = new Set(t.links.map((l) => finalPathKey(l.repoSub, l.sha)));
+    const files = manifest.filter((r) => linkKeys.has(finalPathKey(r.repoSub, r.sha))).length;
+    const gone = [...new Set(t.links.filter((l) => goneKeys.has(finalPathKey(l.repoSub, l.sha))).map((l) => l.sha))];
     return {
       taskNo: t.taskNo,
       title: t.title,
@@ -531,11 +711,11 @@ export function shouldSealVolume(curBytes: number, nextBytes: number): boolean {
 async function packZipVolumes(
   dir: string,
   jobId: string,
-  finalPath: Map<string, { sha: string; path: string }>,
+  finalPath: Map<string, FinalPathEntry>,
   total: number,
 ): Promise<ExtractVolume[]> {
   const volumes: ExtractVolume[] = [];
-  const paths = [...finalPath.values()].map((v) => v.path).sort((a, b) => a.localeCompare(b));
+  const paths = [...finalPath.values()].map((v) => v.outPath).sort((a, b) => a.localeCompare(b));
   if (paths.length !== total) throw new ExtractError('bad-state', `落盘文件数与规格数不一致（${paths.length}/${total}）`);
   let zip = new PizZip();
   let curBytes = 0;
