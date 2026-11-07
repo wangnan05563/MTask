@@ -901,10 +901,10 @@ export function PromptsPage() {
         .arena-row.item-pressing { transform: scale(.985); } /* T00489：仅按住行触发 */
         .arena-row:hover { background: var(--surface-2); }
         .abtn { opacity: 0; visibility: hidden; transition: opacity .15s ease, visibility 0s linear .15s; }
-        /* T00469：操作图标按钮 hover 动效（lucide 图标微缩放反馈） */
+        /* T00469 的 hover/active 两档曾在本页原样再抄一遍：页面级样式在文档里更靠后且特异性更高，
+           会把 App.tsx 修正过特异性后的「按下回弹」盖成 0.9 档。T04547 收回单源，
+           本页只保留自己独有的「行悬浮才显形」规则。 */
         .abtn svg { transition: transform .15s ease; }
-        .abtn:hover svg { transform: scale(1.15); }
-        .abtn:active svg { transform: scale(.9); }
         .arena-row:hover .abtn, .arena-row:focus-within .abtn { opacity: 1; visibility: visible; transition: opacity .15s ease, visibility 0s; }
         @keyframes rowflush { 0% { background: var(--accent-soft); } 100% { background: transparent; } }
         .arena-row.flush { animation: rowflush 1.4s ease; }
