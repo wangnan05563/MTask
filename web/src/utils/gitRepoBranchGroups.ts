@@ -186,6 +186,19 @@ export function buildRepoBranchGroups(inputs: RepoBranchInput[], activeProjectId
   return groups;
 }
 
+/** T04583：分支聚合按「当前项目工作空间」收窄普查输入。buildRepoBranchGroups 的 activeProjectId
+ *  只改状态/排序/展开、从不剔除别的项目的分支，跨工作空间时过滤形同虚设（返回所有项目的所有分支）。
+ *  这里先按工作空间路径过滤再归组：同一目录的根仓库+子仓库（repoSub）照旧保留，别的工作空间不误召回。
+ *  路径归一化分隔符/尾斜杠/大小写（Windows 不区分大小写）；当前项目未绑定则仅留自身行，找不到则原样返回。 */
+export function inputsForActiveWorkspace(inputs: readonly RepoBranchInput[], activeProjectId: string): RepoBranchInput[] {
+  const active = inputs.find((i) => i.projectId === activeProjectId);
+  if (!active) return [...inputs];
+  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const ws = norm(active.workspacePath ?? '');
+  if (!ws) return inputs.filter((i) => i.projectId === activeProjectId);
+  return inputs.filter((i) => norm(i.workspacePath ?? '') === ws);
+}
+
 /**
  * 项目名出现次数——**按项目去重后**统计，不是按仓库行统计。
  *

@@ -28,6 +28,7 @@ import {
   censusTargetsFromRepoLists,
   defaultExpandedBranches,
   defaultExpandedRepos,
+  inputsForActiveWorkspace,
   mapSettledWithLimit,
   mergePaneSelections,
   paneKeyOf,
@@ -190,12 +191,15 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
     for (const [key, pane] of Object.entries(panes)) if (!pane.loading && !pane.error) out[key] = pane.commits.length;
     return out;
   }, [panes]);
+  /** T04583：先把普查输入收窄到当前项目的工作空间，再归组/列不可用行——否则跨工作空间的所选项目
+   *  会把别的工作空间的分支一并显示，项目下拉切换只改排序不改成员（过滤失效）。同目录子仓库照旧保留。 */
+  const scopedCensus = useMemo(() => (census ? inputsForActiveWorkspace(census, projectId) : []), [census, projectId]);
   const repoGroups = useMemo(
-    () => applyCommitCounts(census ? buildRepoBranchGroups(census, projectId) : [], countsByPane),
-    [census, projectId, countsByPane],
+    () => applyCommitCounts(buildRepoBranchGroups(scopedCensus, projectId), countsByPane),
+    [scopedCensus, projectId, countsByPane],
   );
   /** 未绑定/取数失败的仓库：没有 refs 可归组，但要单独成行（验收点 5） */
-  const blockedRows = useMemo(() => (census ? blockedRepoRows(census, projectId) : []), [census, projectId]);
+  const blockedRows = useMemo(() => blockedRepoRows(scopedCensus, projectId), [scopedCensus, projectId]);
   /** 分支名 → 可用仓库数。普查前是空表，单仓库模式的分支 chip 因此与改造前逐字一致 */
   const repoCountByBranch = useMemo(() => {
     const out: Record<string, number> = {};
@@ -245,7 +249,8 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
         { id: t.projectId, name: t.projectName, workspacePath: t.workspacePath, repoSub: t.repoSub }, settled[i]));
       setCensus(next);
       // 首屏折叠：只把「当前项目所在的那条分支」摊开，其余仓库要点一下才取数（方案 §3.3）
-      const groups = buildRepoBranchGroups(next, projectId);
+      // T04583：默认展开按「收窄到当前工作空间后」的分组算，与视图显示成员一致
+      const groups = buildRepoBranchGroups(inputsForActiveWorkspace(next, projectId), projectId);
       setOpenBranches((prev) => (prev.length ? prev : defaultExpandedBranches(groups, projectId)));
       setOpenRepos((prev) => (prev.length
         ? prev
