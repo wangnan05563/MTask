@@ -74,7 +74,10 @@ const POSITIONAL_HEAD: Partial<Record<GitReadonlySubcommand, RegExp[]>> = {
  */
 const NO_REMOTE_RE = /no such remote|does not have a url configured|no remote (?:named|configured)/i;
 
-export type GitErrorKind = 'no-git' | 'not-a-repo' | 'no-remote' | 'timeout' | 'too-large' | 'denied' | 'invalid-patch' | 'failed';
+/** T04581：`git log <rev>` 在版本号不存在时的两种原生报错（bad revision / unknown revision） */
+const BAD_REVISION_RE = /bad revision|unknown revision/i;
+
+export type GitErrorKind = 'no-git' | 'not-a-repo' | 'no-remote' | 'bad-revision' | 'timeout' | 'too-large' | 'denied' | 'invalid-patch' | 'failed';
 
 export class GitCollectError extends Error {
   readonly kind: GitErrorKind;
@@ -199,6 +202,15 @@ function classifyExecError(e: ExecFileException): GitCollectError {
   // T03391：无 origin 远端时 `remote get-url` 非零退出，必须与通用 failed 区分（否则降级文案只剩 git 原生报错）
   if (NO_REMOTE_RE.test(hay)) {
     return new GitCollectError('no-remote', `该仓库未配置 origin 远端：${(stderr || e.message).trim().slice(0, 200)}`);
+  }
+  // T04581：分支/SHA 在当前仓库不存在（多仓库工作空间里该分支只在子仓库、或尚未 fetch）。
+  // 与通用 failed 区分：这不是「连不上服务」，而是「这个版本号在这个仓库里没有」，要给用户可处置的指引。
+  if (BAD_REVISION_RE.test(hay)) {
+    const m = /bad revision '([^']+)'/.exec(stderr) ?? /bad revision '([^']+)'/.exec(e.message ?? '');
+    const rev = m?.[1] ?? '';
+    return new GitCollectError('bad-revision', rev
+      ? `分支/版本「${rev}」在当前仓库不存在：它可能只在工作空间内的子仓库（用「多仓库选范围」按子仓库查询），或本地尚未 fetch（先 git fetch 再查）`
+      : `分支/版本在当前仓库不存在：可能只在子仓库（用「多仓库选范围」），或本地尚未 fetch`);
   }
   if (e.killed || e.signal === 'SIGTERM' || e.code === 'ETIMEDOUT') return new GitCollectError('timeout', 'Git 采集超时（30s），请收窄范围后重试');
   return new GitCollectError('failed', `Git 采集失败：${(stderr || e.message).trim().slice(0, 300)}`);

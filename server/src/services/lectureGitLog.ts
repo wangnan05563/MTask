@@ -13,6 +13,7 @@ import { ACTIVE_PROJECT_WHERE } from '../util/projectRouting';
 import {
   GIT_GRAPH_DEFAULT_PAGE,
   GIT_GRAPH_MAX_PAGE,
+  GitCollectError,
   collectAuthorNames,
   collectGitGraph,
   probeRepository,
@@ -191,19 +192,28 @@ export async function queryGitLog(req: GitLogRequest): Promise<GitLogResult> {
       : (probe.detail ?? '工作空间不是 Git 仓库：请初始化仓库，或改用区间/粘贴 patch 模式'));
   }
 
-  const page = await collectGitGraph(repoPath, {
-    head: req.head,
-    all: req.all === true,
-    skip: req.skip,
-    limit: req.limit,
-    search: req.search,
-  });
-  const firstPage = (req.skip ?? 0) === 0 && !(req.search ?? '').trim();
+  // T04581：取数失败（典型如分支只在子仓库、根仓库 bad revision）回结构化 ok:false，不抛裸错。
+  // 抛出会让路由回 HTTP 400，前端 catch 把它误读成「无法连接到本机服务或取数被拒绝」；
+  // 结构化 error 让前端走 r.ok=false 分支，把「这个分支在这个仓库不存在」原样显示给用户。
+  let page: Awaited<ReturnType<typeof collectGitGraph>>;
   let refs: GitRefName[] | undefined;
-  if (firstPage) {
-    // 引用清单一次独立取数：只看当前分支的话，别的热分支根本不会出现在装饰里
-    const all = await collectGitGraph(repoPath, { all: true, limit: GIT_GRAPH_MAX_PAGE });
-    refs = collectRefNames(all.commits);
+  try {
+    page = await collectGitGraph(repoPath, {
+      head: req.head,
+      all: req.all === true,
+      skip: req.skip,
+      limit: req.limit,
+      search: req.search,
+    });
+    const firstPage = (req.skip ?? 0) === 0 && !(req.search ?? '').trim();
+    if (firstPage) {
+      // 引用清单一次独立取数：只看当前分支的话，别的热分支根本不会出现在装饰里
+      const all = await collectGitGraph(repoPath, { all: true, limit: GIT_GRAPH_MAX_PAGE });
+      refs = collectRefNames(all.commits);
+    }
+  } catch (e) {
+    const kind = e instanceof GitCollectError ? e.kind : 'failed';
+    return fail(project, req, kind, e instanceof Error ? e.message : String(e));
   }
   return {
     ok: true,
