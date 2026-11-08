@@ -12,6 +12,7 @@ import { PinToggle } from '../ui/PinToggle';
 import { FavoriteToggle } from '../ui/FavoriteToggle'; // T03683：收藏切换（与置顶正交，两页共用同一组件）
 import { OPTIMIZE_SCOPE_PROMPTS, busyScope, runOptimize, useOptimizeStore } from '../stores/optimizeStore'; // T03684：提示词优化运行态切页保持
 import { relTime } from '../ui/format';
+import { OPTIMIZE_EMPTY_MESSAGE, resolveOptimizeInput } from '../ui/optimizeInput'; // T04808：与通用需求菜单共用输入源判定
 import { comparePrompts, type PromptSortKey } from '../ui/promptSort'; // T03248（AI-104④）：排序单源（含使用次数）
 import { missingPromptVars, parsePromptVars } from '../ui/promptTemplate'; // T03247（AI-104①②）：{{变量}} 解析（与服务端同口径）
 
@@ -522,8 +523,9 @@ export function PromptsPage() {
     }
   }
 
-  /** T00636：提示词优化——把标题/内容交给 AI 改写为结构化提示词，结果回写草稿供确认后保存。
-   *  与任务页「提示词优化」同款：内容为空时回退用标题作输入；结果剥离代码围栏。
+  /** T00636 / T04808：提示词优化——把标题/内容交给 AI 改写为结构化提示词，结果回写草稿供确认后保存。
+   *  内容为空时回退用标题作为唯一输入（判定单源见 ui/optimizeInput，与通用需求菜单同口径）；
+   *  标题与内容都为空时提示「请输入标题或描述」；结果剥离代码围栏。
    *  T03684：运行态与结果交给 optimizeStore，回填由本页挂载时的 drain 完成（切页也能落地）。 */
   async function optimizeContent(key: string, title: string, content: string) {
     if (optimizing[key]) return;
@@ -531,20 +533,18 @@ export function PromptsPage() {
     if (!organizeToolId) {
       return flash(toolsView.phase === 'error' ? 'AI 整理工具列表加载失败，请先用工具条的「重试」再优化' : '请先在「模型菜单」添加并选择工具');
     }
-    let text = content.trim();
-    const source = text ? '内容' : '标题';
-    if (!text) text = title.trim();
-    if (!text) return flash('请先填写标题或内容再优化');
+    const input = resolveOptimizeInput(title, content);
+    if (!input) return flash(OPTIMIZE_EMPTY_MESSAGE);
     // 后端以 ok:false + error 返回业务失败（不抛异常），原文案优先于 store 的兜底文案
     let serverError = '';
     const r = await runOptimize(
       `${OPTIMIZE_SCOPE_PROMPTS}${key}`,
       (signal) => api.post<{ ok: boolean; content?: string; error?: string }>('/ai/optimize', {
-        toolId: organizeToolId, title, description: text,
+        toolId: organizeToolId, title: input.title, description: input.description,
       }, signal),
       (result) => {
         if (!result.ok) { serverError = result.error ?? '优化失败'; return null; }
-        return { text: stripFence(result.content ?? ''), source };
+        return { text: stripFence(result.content ?? ''), source: input.source };
       },
     );
     if (r.ok) return; // 成功文案由 drain 回填草稿时给出

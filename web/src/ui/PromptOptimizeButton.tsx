@@ -3,6 +3,7 @@ import { Loader2, Wand2 } from 'lucide-react';
 import { api, type AITool } from '../api/client';
 import { aiBlocked, aiBlockedTitle, useAiReadiness } from './aiReadiness';
 import { OPTIMIZE_SCOPE_REQ, runOptimize, useOptimizeStore } from '../stores/optimizeStore'; // T03684：优化运行态切页保持
+import { OPTIMIZE_EMPTY_MESSAGE, resolveOptimizeInput } from './optimizeInput'; // T04808：输入源判定单源
 
 /**
  * 「提示词优化」按钮（T00842 二轮）：把一段正文改写为结构化提示词。
@@ -10,6 +11,8 @@ import { OPTIMIZE_SCOPE_REQ, runOptimize, useOptimizeStore } from '../stores/opt
  * 语义对齐任务页菜单的同名操作：调 POST /api/ai/optimize，输入为「标题 + 正文」，
  * 用整理工具生成可复用、要素清晰的结构化提示词。与前缀 AiPolishButton（/ai/polish 润色
  * 而非改写结构）是两个不同诉求，故单独抽出而非混用。
+ * T04808：正文为空时改用标题作为唯一输入（与提示词菜单共用同一判定单源）；
+ * 标题与正文都为空时点击给出「请输入标题或描述」，不再静默禁用按钮。
  *
  * 与 AiPolishButton 一致的约定：
  * - toolId 为空时自动取「模型管理」里第一个已配置模型的工具（模块级缓存）；
@@ -44,7 +47,7 @@ function stripCodeFence(text: string): string {
 export function PromptOptimizeButton({ title, content, onClick, onOptimized, disabled, flash, storeKey }: {
   /** 条目/标题，作为优化输入的辅助信息（用于生成结构上下文） */
   readonly title: string;
-  /** 待优化的正文（空则按钮禁用） */
+  /** 待优化的正文；为空时回退用标题作为输入（T04808） */
   readonly content: string;
   /** 自定义执行钩子；不传时用内置逻辑调 /ai/optimize */
   readonly onClick?: () => void;
@@ -71,12 +74,13 @@ export function PromptOptimizeButton({ title, content, onClick, onOptimized, dis
     void resolveToolId().then(setAutoToolId);
   }, []);
 
-  const text = content.trim();
+  // T04808：内容/标题的输入源判定与提示词页同口径；null 表示两者皆空
+  const input = resolveOptimizeInput(title, content);
   const active = readiness?.toolId || autoToolId;
 
   async function run() {
     if (onClick) { onClick(); return; }
-    if (!text) { flash?.('请先填写内容，再点击提示词优化'); return; }
+    if (!input) { flash?.(OPTIMIZE_EMPTY_MESSAGE); return; }
     if (!active) { flash?.('请先在「模型管理」页添加并选择 AI 工具'); return; }
     if (storeKey) {
       // 走 store：busy 由 store 记账（切页回来仍在），成功结果 park 后由页面 drain 落草稿
@@ -84,12 +88,12 @@ export function PromptOptimizeButton({ title, content, onClick, onOptimized, dis
       const r = await runOptimize(
         `${OPTIMIZE_SCOPE_REQ}${storeKey}`,
         (signal) => api.post<{ ok: boolean; content?: string; error?: string }>('/ai/optimize', {
-          toolId: active, title, description: text,
+          toolId: active, title: input.title, description: input.description,
         }, signal),
         (result) => {
           if (!result.ok) { failMsg = result.error ?? '提示词优化失败'; return null; }
           if (!result.content?.trim()) { failMsg = 'AI 未返回优化结果'; return null; }
-          return { text: stripCodeFence(result.content.trim()), source: '内容' };
+          return { text: stripCodeFence(result.content.trim()), source: input.source };
         },
       );
       // 成功文案由页面 drain 给出（切页期间完成也能看到），这里只报失败
@@ -99,7 +103,7 @@ export function PromptOptimizeButton({ title, content, onClick, onOptimized, dis
     setBusyLocal(true);
     try {
       const r = await api.post<{ ok: boolean; content?: string; error?: string }>('/ai/optimize', {
-        toolId: active, title, description: text,
+        toolId: active, title: input.title, description: input.description,
       });
       if (!r.ok) { flash?.(r.error ?? '提示词优化失败'); return; }
       if (!r.content?.trim()) { flash?.('AI 未返回优化结果'); return; }
@@ -112,16 +116,19 @@ export function PromptOptimizeButton({ title, content, onClick, onOptimized, dis
     }
   }
 
-  const idle = !busy && !disabled && !!text && !blocked;
+  // T04808：内容为空不再禁用按钮（仅标题可优化）；两者皆空时保留可点击，由 run() 给出明确提示
+  const idle = !busy && !disabled && !!input && !blocked;
   const label = busy ? '提示词优化进行中…' : '提示词优化 — 用选中工具把内容改写为结构化提示词';
+  const tip = !input ? `${label}（${OPTIMIZE_EMPTY_MESSAGE}）`
+    : input.source === '标题' ? `${label}（内容为空，将基于标题优化）` : label;
   let color = 'var(--text-muted)';
   if (idle) color = 'var(--text)';
   if (busy) color = 'var(--accent-text)';
   return (
     <button
       onClick={() => void run()}
-      disabled={busy || disabled || !text || blocked}
-      title={aiBlockedTitle(readiness, text ? label : `${label}（请先填写内容）`)}
+      disabled={busy || disabled || blocked}
+      title={aiBlockedTitle(readiness, tip)}
       aria-label={busy ? '提示词优化进行中' : '提示词优化：把内容改写为结构化提示词'}
       className={`task-op tbtn-anim${busy ? ' task-breathe' : ''}`}
       style={{

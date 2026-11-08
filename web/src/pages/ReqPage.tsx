@@ -132,7 +132,8 @@ export function ReqPage() {
     // 编辑态已关闭（草稿不在）时不凭空造一条空标题草稿——那会把行渲染成「标题空着」的编辑态
     if (!draft) { flash('提示词优化已完成，但该条的编辑态已关闭，请重新进入编辑后再优化'); return; }
     setDrafts((prev) => ({ ...prev, [id]: { ...(prev[id] ?? draft), content: result.text } }));
-    flash('已生成结构化提示词，请核对后保存');
+    // T04808：完成文案标明本次输入来源（内容 / 标题），与提示词菜单口径一致
+    flash(`提示词优化完成（输入来源：${result.source}），请核对后保存`);
   });
   // 记录高亮：保存/新增成功后对目标行打标记，flashAt 值变化触发行动画重放
   const [flashAt, setFlashAt] = useState<Record<string, number>>({});

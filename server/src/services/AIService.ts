@@ -13,6 +13,7 @@ import { stripThinking } from '../util/thinking'; // T00814：思考块剥离上
 import { isRateLimitError, sleepMs } from '../util/rateLimit'; // T03700：限流识别与退避等待单源
 import { recordUsage } from '../util/aiUsageRecord'; // T03296：写入单源下沉 util，直连适配器的卡可复用同一口径
 import { classifyItems, type BatchCategory, type BatchItem, type BatchPriority, type ClassifyItemsResult } from './classifyBatch'; // T03297：批量分类分批调用与结果合并
+import { buildOptimizePrompt } from './optimizePrompt'; // T04808：提示词构造单源（含「仅标题」分支）
 
 /** 模型未配置时的统一提示，保持与产品语境一致的表达 */
 const MODEL_UNCONFIGURED = '所选模型未配置，请先在「模型管理」为该工具填写默认模型';
@@ -392,25 +393,9 @@ export const AIService = {
     // 记录 AI 使用日志（供日志菜单按 source=ai 筛选排错）：记录工具/模型/启始，便于对应用时与结果
     const startedAt = Date.now();
     logService.log('INFO', 'ai', `[提示词优化] tool=${toolId} type=${type} model=${config.model ?? ''}`);
-    const system = [
-      '你是 MTask 的提示词优化专家。给定一个任务的标题与描述，将其优化为一则清晰、具体、结构化、可直接交由大模型或他人执行的任务提示词。',
-      '要求：',
-      '1. 保留原意与全部关键信息，不虚构不删改事实',
-      '2. 明确定义目标、输入、约束、期望输出，缺失的地方基于上下文给出合理推断',
-      '3. 使用 Markdown 分节组织，语言贴合原文语境',
-      // 显式锁定输出语言：LLM 默认跟随输入语言输出，输入含繁体时会连带输出繁体，必须在指令层面强制简体
-      '4. 无论输入是繁体还是简体，最终输出必须统一使用简体中文（简体字），严禁出现任何繁体字',
-      '5. 只输出优化后的提示词文本，不要任何前置说明或寒暄',
-      '6. 不要输出“任务提示词 / 任务描述 / 任务标题”这类文档级标题作为开头，直接从具体内容小节开始（如“目标”“步骤”“约束”），避免被误识别为提示词优化任务',
-      // 归属信息只用于贴合语境，显式禁止扩写，避免模型把项目/分类当成任务内容的一部分
-      '7. 【所属项目】【任务分类】仅用于贴合项目语境与用词，不是任务内容，不得据此虚构需求或扩写范围',
-    ].join('\n');
-    const user = [
-      scope?.projectName ? `【所属项目】${scope.projectName}` : '',
-      scope?.categoryName ? `【任务分类】${scope.categoryName}` : '',
-      title ? `【任务标题】${title}` : '',
-      description ? `【任务描述】${description}` : '',
-    ].filter(Boolean).join('\n');
+    // T04808：提示词构造抽到 optimizePrompt.ts —— 常规输入逐字保持原 7 条要求与 user 结构；
+    // description 为空且 title 非空时进入「仅标题」分支，标题作为唯一输入源并追加第 8 条要求。
+    const { system, user } = buildOptimizePrompt(title, description, scope);
     const res = await adapter.chat(system, user, config);
     // 兜底剥离文档级标题，确保回填为任务描述后不会被误判成提示词任务
     if (res.ok && res.content) res.content = stripPromptHeading(res.content);
