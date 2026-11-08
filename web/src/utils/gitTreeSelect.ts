@@ -37,6 +37,52 @@ export const MAX_SELECTED_COMMITS = 200;
 /** 一页取多少条（懒加载步长） */
 export const GIT_TREE_PAGE_SIZE = 100;
 
+/** T04585：聚合视图单提交 decorate 可见上限，超出折叠为 +K（hover/详情可看全量，不丢信息）。 */
+export const COMMIT_REF_VISIBLE_LIMIT = 3;
+
+export interface SimplifiedCommitRefs {
+  visible: GitRefName[];
+  hidden: GitRefName[];
+}
+
+/**
+ * T04585：把一条提交的 decorate 引用简化成「可见 + 折叠」两段，降低行内信息密度。
+ * 不丢信息：visible ∪ hidden = 去掉完全重复后的原始集合。
+ *  1. 去掉完全重复（type:name）的引用；
+ *  2. 远端孪生折叠：`origin/X` 若已有本地分支 `X`，视为冗余镜像折进 hidden（展开仍可见）；
+ *  3. 稳定排序：非孪生优先，再按 本地分支 > 远端 > 标签（同级保持原序），让关键分支先露出；
+ *  4. 前 limit 条非孪生可见，其余折进 hidden（渲染成 +K，title/详情列全量）。
+ */
+export function simplifyCommitRefs(refs: readonly GitRefName[], limit = COMMIT_REF_VISIBLE_LIMIT): SimplifiedCommitRefs {
+  const seen = new Set<string>();
+  const uniq: GitRefName[] = [];
+  for (const r of refs) {
+    const k = `${r.type}:${r.name}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    uniq.push(r);
+  }
+  const localBranches = new Set(uniq.filter((r) => r.type === 'branch').map((r) => r.name));
+  const isTwin = (r: GitRefName): boolean => {
+    if (r.type !== 'remote') return false;
+    const slash = r.name.indexOf('/');
+    const stripped = slash < 0 ? r.name : r.name.slice(slash + 1);
+    return !!stripped && stripped !== 'HEAD' && localBranches.has(stripped);
+  };
+  const weight = (r: GitRefName): number => (r.type === 'branch' ? 0 : r.type === 'remote' ? 1 : 2);
+  const ordered = uniq
+    .map((r, i) => ({ r, i, twin: isTwin(r) }))
+    .sort((a, b) => (a.twin ? 1 : 0) - (b.twin ? 1 : 0) || weight(a.r) - weight(b.r) || a.i - b.i)
+    .map((x) => x.r);
+  const visible: GitRefName[] = [];
+  const hidden: GitRefName[] = [];
+  for (const r of ordered) {
+    if (visible.length < limit && !isTwin(r)) visible.push(r);
+    else hidden.push(r);
+  }
+  return { visible, hidden };
+}
+
 export interface LaneLayout {
   /** 与 commits 一一对应的车道号（0 起） */
   lanes: number[];

@@ -13,6 +13,7 @@ import {
   groupByRef,
   orderSelected,
   selectAt,
+  simplifyCommitRefs,
   summarizeSelection,
   toggleVisible,
   type GitRefName,
@@ -657,18 +658,44 @@ function dedupe(list: GitTreeCommit[]): GitTreeCommit[] {
 }
 
 /**
+ * T04585：单提交的 decorate 引用 pills。
+ * 非聚合（compact=false）逐字保持改造前：全部引用平铺成 pill。
+ * 聚合（compact=true）走 simplifyCommitRefs：可见上限 + 远端孪生/标签折叠成「+K」，
+ * 「+K」是纯展示 span（不嵌套交互控件），title 悬浮列全量折叠名；全量亦可在提交详情行查看，不丢信息。
+ */
+function CommitRefPills({ refs, compact }: { readonly refs: GitRefName[]; readonly compact: boolean }) {
+  if (!compact) {
+    return <>{refs.map((r) => <span key={`${r.type}:${r.name}`} style={chipStyle}>{r.name}</span>)}</>;
+  }
+  const { visible, hidden } = simplifyCommitRefs(refs);
+  return (
+    <>
+      {visible.map((r) => <span key={`${r.type}:${r.name}`} style={chipStyle} title={r.name}>{r.name}</span>)}
+      {hidden.length > 0 && (
+        <span data-lck="git-tree-refs-more" style={{ ...chipStyle, cursor: 'help' }}
+          title={`另有 ${hidden.length} 个分支/标签：${hidden.map((r) => r.name).join('、')}`}>
+          +{hidden.length}
+        </span>
+      )}
+    </>
+  );
+}
+
+/**
  * 提交行 + 详情行。单仓库列表和分组视图里每个仓库的列表共用这一段 JSX，
  * 差别只在 `keyPrefix`（同一 SHA 可能在两个仓库的窗口里各出现一次，展开态不能串）。
  *
  * 车道按**各自那份 commits** 计算：方案 §9.3——跨仓库拼车道会画出根本不存在的父子连线。
  */
-function CommitRows({ commits, selected, expandedSet, keyPrefix, onRowClick, onToggleRowExpand }: {
+function CommitRows({ commits, selected, expandedSet, keyPrefix, onRowClick, onToggleRowExpand, compactRefs = false }: {
   readonly commits: GitTreeCommit[];
   readonly selected: readonly string[];
   readonly expandedSet: Set<string>;
   readonly keyPrefix: string;
   readonly onRowClick: (index: number, e: React.MouseEvent) => void;
   readonly onToggleRowExpand: (sha: string) => void;
+  /** T04585：仅聚合视图置真，简化 decorate；平铺视图缺省 false 保持原展示 */
+  readonly compactRefs?: boolean;
 }) {
   const lanes = assignLanes(commits);
   return (
@@ -696,7 +723,7 @@ function CommitRows({ commits, selected, expandedSet, keyPrefix, onRowClick, onT
               </span>
               <code style={{ fontFamily: FONT_MONO, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{c.short}</code>
               <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.subject}>{c.subject}</span>
-              {c.refs.map((r) => <span key={`${r.type}:${r.name}`} style={chipStyle}>{r.name}</span>)}
+              <CommitRefPills refs={c.refs} compact={compactRefs} />
               <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 90 }} title={fullTime(c.date)}>{relTime(c.date)}</span>
               <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 64 }} title={c.author}>{c.author}</span>
             </button>
@@ -713,6 +740,9 @@ function CommitRows({ commits, selected, expandedSet, keyPrefix, onRowClick, onT
           style={{ padding: '4px 8px 6px 46px', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontFamily: FONT_MONO, borderBottom: '1px solid var(--border)' }}>
           SHA {c.sha}<br />父 {c.parents.length === 0 ? '(根提交)' : c.parents.join(' ')}<br />
           作者 {c.author} · {fullTime(c.date)} · 选中它等于采集「相对第一父」的增量
+          {compactRefs && c.refs.length > 0 && (
+            <><br /><span data-lck="git-tree-detail-refs">分支/标签（{c.refs.length}）：{c.refs.map((r) => r.name).join('、')}</span></>
+          )}
         </div>
       ) : null))}
     </>
@@ -838,7 +868,7 @@ function RepoBranchGroupList({ groups, blocked, activeProjectId, panes, openBran
                       {pane && !pane.loading && (
                         <CommitRows commits={pane.commits} selected={pane.selected} expandedSet={groupExpanded} keyPrefix={`${paneKey}\n`}
                           onRowClick={(index, e) => onRowClick(paneKey, index, e)}
-                          onToggleRowExpand={(sha) => onToggleRowExpand(paneKey, sha)} />
+                          onToggleRowExpand={(sha) => onToggleRowExpand(paneKey, sha)} compactRefs />
                       )}
                       {pane && pane.hasMore && (
                         <button type="button" data-lck="git-repo-load-more" onClick={() => onLoadRepo(row, group.branchName, true)}
