@@ -8,12 +8,33 @@
  *
  * 为什么不用 8 位日期(如 20260827)充当单个版本段：Windows 应用文件版本号的每一段
  * 取值 0–65535，8 位日期会溢出/读写错乱，因此把「日期」与「序号」拆成两个合法版本段。
+ *
+ * 事务化（T03731）：三份文件写入前先按字节备份，因此打包失败不会留下「版本 +1 但没产物」。
+ *  - `node scripts/bump-version.js`            递增（先备份）
+ *  - `node scripts/bump-version.js --restore`  失败后回滚到打包前字节；无备份时幂等退出 0
+ *  - `node scripts/bump-version.js --discard`  安装包已产出，丢弃备份
  */
 const fs = require('node:fs');
 const path = require('node:path');
+const { backupVersionFiles, restoreVersionFiles, discardVersionBackup } = require('./lib/version-backup.js');
 
-const root = path.resolve(__dirname, '..', 'package.json');
-const electronPkg = path.resolve(__dirname, '..', 'electron', 'package.json');
+const ROOT = path.resolve(__dirname, '..');
+const root = path.join(ROOT, 'package.json');
+const electronPkg = path.join(ROOT, 'electron', 'package.json');
+
+// T03731：递增前先把三份版本文件按字节备份，构建失败可整体还原（见 lib/version-backup.js）。
+// --restore：任一步失败后回滚；--discard：打包成功、确认产物已产出后丢弃备份。
+if (process.argv.includes('--restore')) {
+  const r = restoreVersionFiles(ROOT);
+  if (!r.restored) { console.log('[bump-version] 无可还原的备份（幂等）'); process.exit(0); }
+  console.log(`[bump-version] 已回滚到打包前版本 ${r.version ?? '(未知)'}`);
+  process.exit(0);
+}
+if (process.argv.includes('--discard')) {
+  discardVersionBackup(ROOT);
+  console.log('[bump-version] 已丢弃版本回滚备份');
+  process.exit(0);
+}
 
 function readVer(p) {
   return JSON.parse(fs.readFileSync(p, 'utf8')).version || '0.0.0';
@@ -36,6 +57,7 @@ const mmdd = `${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate
 // 序号沿用上次值 +1，保证多个版本段都为同一日期时版本号仍唯一
 const seq = (parts.length >= 4 ? parts[3] : 0) + 1;
 const next = `${parts[0]}.${parts[1]}.${mmdd}.${seq}`;
+backupVersionFiles(ROOT);
 setVer(root, next);
 setVer(electronPkg, next);
 

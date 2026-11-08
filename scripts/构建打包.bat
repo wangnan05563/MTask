@@ -142,9 +142,25 @@ if errorlevel 1 (
 popd
 
 REM [7/7] package electron exe.
+REM T03731: check the native module BEFORE bumping the version. The old order bumped first and only
+REM then aborted on a "locked" probe, so every failed run left package.json / electron\package.json /
+REM package-lock.json bumped with no artifact behind them - noise that later reads like someone's WIP.
+REM The old probe was also unsound: it opened the file with FileShare.None and passed the verdict
+REM through a shared %TEMP% file read with "set /p". Any PowerShell hiccup, or a concurrent build
+REM touching the same temp file, left the variable empty and the empty value was judged LOCKED.
+REM The check now lives in scripts\lib\abi-cli.mjs: real write open, bounded retries, holder PIDs.
+echo [7/7] Preflight native module...
+node "scripts\lib\abi-cli.mjs" probe
+if errorlevel 1 (
+    echo [ERROR] native module preflight failed - nothing was built and the version is unchanged.
+    pause
+    exit /b 1
+)
+
 REM Bump version first so each build gets a distinct version.
 REM bump-version.js writes <major>.<minor>.<MMDD>.<seq>; both segments stay
 REM within Windows' 0..65535 per-segment limit (a raw 8-digit date would overflow).
+REM It also snapshots the three version files first, so a failed run can put them back byte for byte.
 echo [7/7] Package electron exe...
 node "scripts\bump-version.js"
 if errorlevel 1 (
@@ -153,27 +169,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM Backup the dev-state (Node ABI) native binary first, then force a rebuild
-REM for the Electron ABI. npmRebuild is off, so the rebuild must happen here.
-REM Guard: abort early if better_sqlite3.node is locked by a running dev process.
-REM A loaded native DLL cannot be deleted by electron-rebuild (EPERM on unlink).
-set "BSQLITE_CHECK=node_modules\better-sqlite3\build\Release\better_sqlite3.node"
-powershell -NoProfile -Command "if(Test-Path '%BSQLITE_CHECK%'){try{[IO.File]::Open('%BSQLITE_CHECK%','Open','ReadWrite','None').Close();'UNLOCKED'}catch{'LOCKED'}}else{'UNLOCKED'}" > "%TEMP%\mtask_bslock.txt" 2>nul
-set /p "BSLOCK=" < "%TEMP%\mtask_bslock.txt"
-del "%TEMP%\mtask_bslock.txt" >nul 2>nul
-if /i not "%BSLOCK%"=="UNLOCKED" (
-    echo [ERROR] better_sqlite3.node is locked by a running dev process.
-    echo   Close the dev server and any running MTask app first, then rerun.
-    echo   [WARN] version was bumped already but no artifact was produced this run.
-    pause
-    exit /b 1
-)
 REM Put the Electron-state binary in place BEFORE electron-builder packages node_modules.
-REM The cached build\native\electron binary guarantees the Electron ABI (130) without a
-REM C++ toolchain and without depending on an earlier build's win-unpacked output.
-call scripts\native-switch.bat electron
+REM The cached build\native\electron binary guarantees the Electron ABI without a C++ toolchain.
+REM abi-cli switch snapshots the workspace binary and falls back to a rename takeover when another
+REM process holds it, so a running dev server no longer has to be closed by hand.
+node "scripts\lib\abi-cli.mjs" switch electron
 if errorlevel 1 (
-    echo [ERROR] failed to switch better-sqlite3 to Electron ABI.
+    echo [ERROR] failed to switch better_sqlite3 to Electron ABI.
+    node "scripts\bump-version.js" --restore
     echo   Make sure build\native\electron\better_sqlite3.node exists. Recreate the
     echo   cache with:  scripts\native-switch.bat dev  then a prebuild-install download.
     pause
@@ -198,7 +201,7 @@ REM T00528: stop any MTask.exe instances running from this project's release
 REM dirs first - their open app.asar handle makes the cleanup below fail and
 REM pushes every build into fallback dirs. Only project-release instances are
 REM killed (installed copies are left alone).
-powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='MTask.exe'\" | Where-Object { $_.ExecutablePath -like '*\26_MTask\release*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+powershell -NoProfile -Command "$root=[IO.Path]::GetFullPath('%~dp0..'); Get-CimInstance Win32_Process -Filter \"Name='MTask.exe'\" | Where-Object { $_.ExecutablePath -like ($root + '\release*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
 set "OUTDIR=release"
 if exist "release\win-unpacked" (
     powershell -NoProfile -Command "try{[IO.Directory]::Delete('%CD%\release\win-unpacked',$true);exit 0}catch{exit 1}" >nul 2>&1
@@ -213,23 +216,48 @@ if exist "release\win-unpacked" (
     )
 )
 if not "%OUTDIR%"=="release" echo   [WARN] release\win-unpacked still in use, packaging into %OUTDIR% to bypass the lock.
+REM T03731: inject the version the same way the two Node entries (scriptsdist.js and the
+REM mjs entry under scripts) already do.
+REM The version scheme is <major>.<minor>.<MMDD>.<seq> - 4 segments, because each Windows
+REM file-version segment must stay <= 65535 - so it is NOT valid semver. Left to itself,
+REM electron-builder normalizes package.json through semver and the installer comes out named
+REM "MTask Setup 0.1.110-1.235.exe" for version 0.1.1101.235. That is not cosmetic:
+REM scriptspublish-oneclick.ps1 step [3] derives the published version FROM THE FILENAME, so
+REM the release tag stops matching the version the installed app reports. buildVersion is
+REM injected from package.json at runtime, so it cannot drift from what bump-version.js wrote.
+set "APPVER="
+for /f "usebackq delims=" %%V in (`node -p "require('./package.json').version"`) do set "APPVER=%%V"
+if not defined APPVER (
+    echo [ERROR] could not read the version from package.json - aborting before packaging.
+    node "scripts\lib\abi-cli.mjs" restore
+    node "scripts\bump-version.js" --restore
+    pause
+    exit /b 1
+)
 REM disable publish so CI-detected electron-builder does not try to push to GitHub
 REM (would otherwise fail with "GH_TOKEN is not set" after the artifact is fully built)
-call npx electron-builder --win --config.directories.output=%OUTDIR% --publish=never
+call npx electron-builder --win -c.buildVersion=%APPVER% --config.directories.output=%OUTDIR% --publish=never
 if errorlevel 1 (
     echo [ERROR] electron-builder failed
+    node "scripts\lib\abi-cli.mjs" restore
+    node "scripts\bump-version.js" --restore
     pause
     exit /b 1
 )
 
 REM After packaging, restore the dev-state binary so the workspace stays dev-ready.
-call scripts\native-switch.bat dev
+REM abi-cli restore replays the snapshot byte for byte and verifies the sha256; a failed build
+REM therefore cannot leave the workspace on the Electron ABI (which breaks node server\dist).
+node "scripts\lib\abi-cli.mjs" restore
 if errorlevel 1 (
     echo [ERROR] failed to restore dev-state better-sqlite3.
+    node "scripts\bump-version.js" --restore
     echo   Run:  scripts\native-switch.bat dev
     pause
     exit /b 1
 )
+REM Installer produced and ABI restored: this bump is final, drop the rollback snapshot.
+node "scripts\bump-version.js" --discard
 
 echo.
 REM T00528: after packaging, remove the win-unpacked tree so the release dir

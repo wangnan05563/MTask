@@ -34,7 +34,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
-import { switchAbi, snapshotWorkspaceAbi, restoreWorkspaceAbi } from './lib/abi-switch.mjs';
+import {
+  cachePath, describeHolders, restoreWorkspaceAbi, snapshotWorkspaceAbi, switchAbi,
+  waitForWritable, workspaceNodePath,
+} from './lib/abi-switch.mjs';
+import versionBackup from './lib/version-backup.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const NODE = process.execPath;
@@ -50,6 +54,33 @@ const runCapture = (cmd, args) => {
   return r.stdout.trim();
 };
 const log = (msg) => console.log(`[${++step}/7] ${msg}`);
+
+// T03731：打包是个事务——版本号递增与 ABI 切换都要能整体撤销。
+// 任一分支 exit（含 fail / 异常）都会走这里：先把工作区原生二进制还原，再把三份版本文件恢复原字节，
+// 避免「版本 bumped 了、包没出来」把无意义的 +1 留在工作区里（还会和并发会话的 WIP 混在一起）。
+let versionBumped = false;
+let abiRestored = true;
+let buildOk = false;
+let abiSidecar = null;
+let prevAbiSnapshot = null;
+process.on('exit', () => {
+  if (buildOk) return;
+  if (!abiRestored) {
+    try {
+      restoreWorkspaceAbi(ROOT, prevAbiSnapshot, {
+        fail: (m) => console.error(`[ERROR] ${m}`),
+        log: (m) => console.log(m),
+        sidecar: abiSidecar,
+      });
+    } catch (e) {
+      console.error(`[ERROR] 中断后还原原生二进制失败：${e.message}（可执行 scripts/native-switch.bat dev）`);
+    }
+  }
+  if (versionBumped) {
+    const r = versionBackup.restoreVersionFiles(ROOT);
+    if (r.restored) console.error(`[WARN] 本次没有产出安装包：版本号已回滚到 ${r.version ?? '(未知)'}，三份版本文件按字节恢复`);
+  }
+});
 
 // T02692：本入口此前没接 abi-hint，日志里缺「build interpreter / ABI 现场」两行，
 // 出现「装了包却不知道用哪个解释器打的」时就无从追溯（三枚 .bat 入口在第 53 行同一位置都打了）。
@@ -113,8 +144,27 @@ run(NODE, [path.join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js'), 'build'], 
 });
 
 // [7] 版本递增 + ABI 切换 + electron-builder
+// T03731：预检（缓存齐全 + 工作区二进制可写）放在**递增版本号之前**。旧 .bat 把锁判定排在 bump 之后，
+// 一锁定就退出，版本号已 +1 却没有产物（旧脚本那句 "version was bumped already but no artifact was
+// produced this run" 就是这个副作用的残留）。这里先验后 bump，并给失败分支挂回滚。
+log('原生依赖预检（递增版本号之前）…');
+for (const mode of ['dev', 'electron']) {
+  if (!fs.existsSync(cachePath(ROOT, mode))) fail(`ABI 缓存缺失：${cachePath(ROOT, mode)}（可用 scripts/native-switch.bat dev 重建）`);
+}
+const deployedNative = workspaceNodePath(ROOT);
+if (fs.existsSync(deployedNative)) {
+  const w = waitForWritable(deployedNative);
+  if (!w.writable) {
+    const holders = describeHolders(ROOT);
+    console.warn(`[WARN] 工作区 better_sqlite3.node 暂不可写（${w.code}），切换阶段将用改名旁路接管；`
+      + '若下方有 dev server / 桌面壳，建议先停掉，避免打包窗口期内它重启加载到 Electron ABI。');
+    if (holders.length) console.warn(`  可能的占用进程：\n   - ${holders.join('\n   - ')}`);
+  }
+}
+
 log('版本号递增…');
 run(NODE, [path.join(ROOT, 'scripts', 'bump-version.js')]);
+versionBumped = true;
 const appVer = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
 
 // T02069：ABI 切换抽到 scripts/lib/abi-switch.mjs，与 scripts/dist.js 共用同一实现
@@ -123,7 +173,10 @@ const abiOpts = { fail, log: (m) => console.log(m) };
 log('切换 Electron ABI 并打包…');
 // 打包前记录工作区当前的原生二进制，打包后原样还原（见下方恢复段）。
 const prevAbi = snapshotWorkspaceAbi(ROOT);
-switchAbi(ROOT, 'electron', abiOpts);
+prevAbiSnapshot = prevAbi;
+const switched = switchAbi(ROOT, 'electron', abiOpts);
+abiSidecar = switched.sidecar;
+abiRestored = false;
 
 // T02079：输出目录兜底 + 安全删除开关抽到 scripts/lib/abi-switch.mjs，与 scripts/dist.js 共用
 const { resolveOutputDir, buildChildEnv } = await import('./lib/abi-switch.mjs');
@@ -136,7 +189,8 @@ run(NODE, [path.join(ROOT, 'node_modules', 'electron-builder', 'out', 'cli', 'cl
 
 // 恢复打包前的 ABI：build/native/dev 是针对旧 Node 运行时缓存的，本地 Node 升级后直接覆盖会让
 // server/dist 直跑报 ERR_DLOPEN_FAILED（实测 Node24/ABI137 环境 require 失败），故按字节原样还原。
-restoreWorkspaceAbi(ROOT, prevAbi, abiOpts);
+restoreWorkspaceAbi(ROOT, prevAbi, { ...abiOpts, sidecar: abiSidecar });
+abiRestored = true;
 
 // 清理 win-unpacked（非致命）
 try {
@@ -145,6 +199,10 @@ try {
 } catch {
   console.warn(`[WARN] 未能删除 ${outDir}\\win-unpacked（被进程占用），下次打包前请手动清理。`);
 }
+
+// 安装包已产出、ABI 已还原：这次递增定稿，丢弃回滚备份（否则下次失败会还原成更旧的版本）
+versionBackup.discardVersionBackup(ROOT);
+buildOk = true;
 
 console.log('\n============================================');
 console.log(' Build done');

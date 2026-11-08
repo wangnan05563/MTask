@@ -9,142 +9,8 @@ import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-BUILD_BAT = r"""@echo off
-chcp 936 >nul 2>&1
-REM MTask 构建打包脚本：依赖检查 + 类型检查 + 后端构建 + 前端构建 + Electron 打包 exe
-REM 脚本位于 scripts/ 目录，cd 回到项目根目录
-cd /d "%~dp0.."
-
-REM 优先使用 WorkBuddy managed Node
-REM T02616: no version dir is pinned by name any more - the two pinned directories this used
-REM to write are gone, "if exist" judged false and the PATH override silently stopped happening.
-REM Resolution is by availability via scripts\lib\resolve-managed-node.ps1; MTASK_MG_NODE_ROOT
-REM overrides the root. Keep this block in sync with scripts\*\*.bat - see the T02616 gate.
-if not defined MTASK_MG_NODE_ROOT set "MTASK_MG_NODE_ROOT=C:\Users\hspcadmin\.workbuddy\binaries\node\versions"
-set "MGNode="
-for /f "usebackq delims=" %%D in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0lib\resolve-managed-node.ps1"`) do set "MGNode=%%D"
-if defined MGNode set "PATH=%MGNode%;%PATH%"
-if defined MGNode (
-    echo   managed node: %MGNode%
-) else (
-    echo   [WARN] no usable managed node under %MTASK_MG_NODE_ROOT%
-    echo   [WARN] this run uses the node already on PATH - native module ABI is not guaranteed
-)
-
-REM 覆盖 Electron 下载镜像：全局 .npmrc 的 electron_mirror 指向不可达的内网 artifactory，
-REM 改用 npmmirror，保证 electron 二进制下载与 electron-builder 打包缓存可用
-set "ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/"
-set "ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/"
-
-echo ============================================
-echo   MTask Build
-echo ============================================
-echo.
-echo Steps:
-echo   1. Check/install workspace deps if missing
-echo   2. Ensure Electron binary downloaded
-echo   3. Typecheck server
-echo   4. Build server  -^> server\dist
-echo   5. Build web     -^> web\dist
-echo   6. Package exe   -^> release\
-echo.
-
-node --version >nul 2>&1
-if errorlevel 1 (
-    echo [ERROR] 未找到 node，请安装 Node.js 或配置 managed node 路径
-    pause
-    exit /b 1
-)
-
-REM [1/6] 依赖检查（npm workspaces 依赖统一提升到根 node_modules）
-echo [1/6] 检查依赖...
-if not exist "node_modules" (
-    echo   依赖缺失，在项目根目录执行 npm install...
-    call npm install --no-audit --no-fund
-    if errorlevel 1 (
-        echo [ERROR] 依赖安装失败
-        pause
-        exit /b 1
-    )
-) else (
-    echo   [OK] node_modules 已存在
-)
-
-REM [2/6] 确认 Electron 二进制已下载
-echo [2/6] 检查 Electron 二进制...
-if not exist "node_modules\electron\dist\electron.exe" (
-    echo   Electron 二进制缺失，执行下载...
-    call node "node_modules\electron\install.js"
-    if errorlevel 1 (
-        echo [ERROR] Electron 二进制下载失败
-        pause
-        exit /b 1
-    )
-) else (
-    echo   [OK] electron.exe 已存在
-)
-
-REM [3/6] 类型检查
-echo [3/6] 类型检查 server...
-pushd server
-call npm run typecheck
-if errorlevel 1 (
-    popd
-    echo [ERROR] 类型检查未通过
-    pause
-    exit /b 1
-)
-popd
-
-REM [4/6] 构建后端
-echo [4/6] 构建后端...
-pushd server
-call npm run build
-if errorlevel 1 (
-    popd
-    echo [ERROR] 后端构建失败
-    pause
-    exit /b 1
-)
-popd
-
-REM [5/6] 构建前端
-echo [5/6] 构建前端...
-pushd web
-call npm run build
-if errorlevel 1 (
-    popd
-    echo [ERROR] 前端构建失败
-    pause
-    exit /b 1
-)
-popd
-
-REM [6/6] 打包 Electron exe
-echo [6/6] 打包 Electron exe...
-call npx electron-builder --win
-if errorlevel 1 (
-    echo [ERROR] Electron 打包失败
-    pause
-    exit /b 1
-)
-
-echo.
-echo ============================================
-echo   构建完成
-echo ============================================
-echo   后端产物:   server\dist
-echo   前端产物:   web\dist
-echo   exe 安装包: release\  ^(NSIS 安装程序 + 便携版^)
-echo.
-echo   启动后端服务: scripts\启动服务.bat
-echo   开发模式运行桌面壳:
-echo     npm run electron
-echo ============================================
-echo.
-pause
-exit /b 0
-"""
+# T03731: 构建打包.bat 的旧模板（6 步、无守卫、无 ABI 切换）已删除，避免误生成覆盖真实入口。
+# 真正的入口是 7 步版，直接编辑 scripts构建打包.bat；三条入口共享同一份 [7/7] 段。
 
 START_BAT = r"""@echo off
 chcp 936 >nul 2>&1
@@ -518,12 +384,14 @@ def verify(name: str, expect_fragment: str) -> None:
 
 if __name__ == '__main__':
     print('生成 MTask 脚本...')
-    write_bat('构建打包.bat', BUILD_BAT)
+    # T03731: 构建打包.bat 不再由本文件生成。BUILD_BAT 模板停在 6 步版本（无 HEAD 自洽预检、
+    # 无 ABI 切换、无版本回滚），而仓库里真正的入口已经是 7 步版并接入了多条守卫；
+    # 早先误跑本脚本会把 7 步版整份覆盖回 6 步版，一跑构建就丢守卫 —— 这是「改错」的一个来源。
+    # 该入口请直接编辑 scripts\构建打包.bat（三条入口保持同一份 [7/7] 段）。
     write_bat('启动服务.bat', START_BAT)
     write_bat('停止服务.bat', STOP_BAT)
     write_bat('runhidden.vbs', RUNHIDDEN_VBS)
     print('校验...')
-    verify('构建打包.bat', 'MTask Build')
     verify('启动服务.bat', '正在启动桌面壳')
     verify('停止服务.bat', '正在停止 MTask 服务')
     verify('runhidden.vbs', 'WScript.Shell')

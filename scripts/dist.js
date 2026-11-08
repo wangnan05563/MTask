@@ -56,7 +56,9 @@ const ROOT = path.resolve(__dirname, '..');
   // 打包前记录工作区当前的原生二进制（必须先取快照再切换，否则快照就是 Electron 那份、还原等于没做），
   // 缓存缺失在这里就 fail-fast，避免打到一半才炸。
   const prevAbi = snapshotWorkspaceAbi(ROOT);
-  switchAbi(ROOT, 'electron', abiOpts);
+  // T03731：switchAbi 现在带重试与改名旁路接管，返回 sidecar 供还原时使用
+  const switched = switchAbi(ROOT, 'electron', abiOpts);
+  const abiSidecar = switched.sidecar;
 
   // T02079：输出目录兜底 + 安全删除开关，与 scripts/打包.mjs 共用同一实现
   const { resolveOutputDir, buildChildEnv } = await import('./lib/abi-switch.mjs');
@@ -78,11 +80,11 @@ const ROOT = path.resolve(__dirname, '..');
 
   // 成功、失败、被子进程异常终止都要还原 ABI（否则本地 node 直跑 server/dist 会 ERR_DLOPEN_FAILED）
   child.on('exit', (code) => {
-    restoreWorkspaceAbi(ROOT, prevAbi, abiOpts);
+    restoreWorkspaceAbi(ROOT, prevAbi, { ...abiOpts, sidecar: abiSidecar });
     process.exit(code ?? 1);
   });
   child.on('error', (err) => {
-    restoreWorkspaceAbi(ROOT, prevAbi, abiOpts);
+    restoreWorkspaceAbi(ROOT, prevAbi, { ...abiOpts, sidecar: abiSidecar });
     fail(`electron-builder 启动失败：${err.message}`);
   });
 })();
