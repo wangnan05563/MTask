@@ -14,6 +14,11 @@
 export interface BranchOption {
   type: 'branch' | 'remote' | 'tag';
   name: string;
+  /** T04584：候选所属仓库相对工作空间的路径（''/缺省 = 根仓库）。同名分支跨仓库时靠它区分，
+   *  选中后按该仓库取数；讲稿卡等旧调用方不传，行为与改造前逐字一致。 */
+  repoSub?: string;
+  /** T04584：候选的仓库标注（如「项目 · banks」），仅子仓库候选有值，根仓库候选不显示标注。 */
+  repoLabel?: string;
 }
 
 const TYPE_WEIGHT: Record<BranchOption['type'], number> = { branch: 0, remote: 1, tag: 2 };
@@ -49,7 +54,9 @@ export function filterBranches(options: readonly BranchOption[], query: string, 
   const seen = new Set<string>();
   const scored: Array<{ option: BranchOption; rank: number }> = [];
   for (const option of options) {
-    const key = `${option.type}:${option.name}`;
+    // T04584：去重键带上 repoSub——同名分支（如多个仓库都有 main）跨仓库是不同候选，不能互相覆盖；
+    // 旧调用方不传 repoSub 时键尾恒为 ':'，去重行为与改造前一致。
+    const key = `${option.type}:${option.name}:${option.repoSub ?? ''}`;
     if (seen.has(key)) continue;
     seen.add(key);
     const rank = fuzzyRank(option.name, query);

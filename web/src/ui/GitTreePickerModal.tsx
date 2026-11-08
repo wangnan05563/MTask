@@ -24,6 +24,7 @@ import {
   applyCommitCounts,
   blockedRepoRows,
   branchNameOf,
+  branchOptionsFromCensus,
   buildRepoBranchGroups,
   censusTargetsFromRepoLists,
   defaultExpandedBranches,
@@ -45,6 +46,7 @@ import {
   type RepoListResult,
   type RepoScanTarget,
 } from '../utils/gitRepoBranchGroups';
+import type { BranchOption } from '../utils/scopeControls'; // T04584：起点分支候选（含子仓库 repoSub）
 
 /** 聚合视图里「在途取数窗口」的并发预算：与普查同一口径，一个仓库多就一起多（T04525） */
 const PANE_LOAD_INFLIGHT = REPO_SCAN_CONCURRENCY;
@@ -154,6 +156,9 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
 }) {
   const [projectId, setProjectId] = useState(activeProjectId || projects[0]?.id || '');
   const [head, setHead] = useState('');
+  /** T04584：平铺视图当前取数的仓库（'' = 根仓库）。起点分支输入框选中子仓库候选时切到该 repoSub，
+   *  load/confirm 都按它定位——否则选了 banks 的分支仍按根仓库取数，子目录分支永远查不到。 */
+  const [flatRepoSub, setFlatRepoSub] = useState('');
   const [allBranches, setAllBranches] = useState(false);
   const [search, setSearch] = useState('');
   const [commits, setCommits] = useState<GitTreeCommit[]>([]);
@@ -167,6 +172,8 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [foldRefs, setFoldRefs] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
+  /** T04584：取数序号守卫——切子仓库分支时旧的根仓库请求可能晚到，晚到者不得覆盖新结果。 */
+  const loadSeq = useRef(0);
 
   /* ---------- T04527：分支聚合（多仓库）视图。缺省关闭，关闭时下面这些状态一概不参与渲染 ---------- */
   const [repoView, setRepoView] = useState(initialRepoView === true);
@@ -194,6 +201,12 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   /** T04583：先把普查输入收窄到当前项目的工作空间，再归组/列不可用行——否则跨工作空间的所选项目
    *  会把别的工作空间的分支一并显示，项目下拉切换只改排序不改成员（过滤失效）。同目录子仓库照旧保留。 */
   const scopedCensus = useMemo(() => (census ? inputsForActiveWorkspace(census, projectId) : []), [census, projectId]);
+  /** T04584：起点分支候选。普查前退回根仓库 refs（外观与改造前一致）；展开输入框触发普查后，
+   *  换成「当前项目根仓库 + 子仓库」的并集，子仓库分支带 repoSub 标注，选中即按该仓库取数。 */
+  const headOptions = useMemo<BranchOption[]>(
+    () => (census ? branchOptionsFromCensus(scopedCensus, projectId) : refs),
+    [census, scopedCensus, projectId, refs],
+  );
   const repoGroups = useMemo(
     () => applyCommitCounts(buildRepoBranchGroups(scopedCensus, projectId), countsByPane),
     [scopedCensus, projectId, countsByPane],
@@ -330,9 +343,10 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
     setSelected(selectedByProjectRef.current[projectId] ?? []);
     setAnchor(null);
     setExpanded(new Set());
+    setFlatRepoSub(''); // T04584：换项目回到根仓库，别把上个项目的子仓库路径带过来
   }, [projectId]);
 
-  useEffect(() => { void loadRef.current(false); }, [projectId, head, allBranches, repoView]);
+  useEffect(() => { void loadRef.current(false); }, [projectId, head, allBranches, repoView, flatRepoSub]);
 
   // 打开聚合视图才普查一次（方案 §5.1「先保留单仓库体验」）；同一份弹窗生命周期内复用结果，不反复 fork git。
   // T04525：条件从 `projects.length > 1` 放开到「有项目就普查」——需求要看的本来就是
@@ -370,14 +384,16 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
 
   async function load(append: boolean) {
     if (!projectId || repoView) return;
+    const seq = ++loadSeq.current;
     setLoading(true);
     setError('');
     const nextSkip = append ? commits.length : 0;
     try {
       // Q11 裁定：Git 树取数端点上提为 `GET /git/log`——任务侧与讲稿侧共用同一取数逻辑，
       // 不再让任务抽屉依赖讲稿命名空间（旧 POST 路径仍在服务端保留转发）。
-      const qs = buildLogQuery(projectId, head, allBranches, search, nextSkip);
+      const qs = buildLogQuery(projectId, head, allBranches, search, nextSkip, flatRepoSub);
       const r = await api.get<GitLogResponse>(`/git/log?${qs}`);
+      if (seq !== loadSeq.current) return;
       if (!r.ok) {
         setError(r.error?.message ?? 'Git 取数失败');
         setCommits(append ? commits : []);
@@ -393,13 +409,16 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
       // 可视集变了就重排已选顺序（保持「新→旧」与列表一致），但不删列表外的历史选择
       setSelected((prev) => orderSelected(merged, prev));
     } catch (e) {
+      if (seq !== loadSeq.current) return;
       // 网络异常与后端 5xx 都走这里：给出可复述的一句话，而不是一片空白列表
       setError(`无法连接到本机服务或取数被拒绝：${e instanceof Error ? e.message : String(e)}`);
       setCommits(append ? commits : []);
       setHasMore(false);
     } finally {
-      setLoading(false);
-      listRef.current?.focus();
+      if (seq === loadSeq.current) {
+        setLoading(false);
+        listRef.current?.focus();
+      }
     }
   }
   loadRef.current = load;
@@ -439,7 +458,8 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   function confirm() {
     if (!repoView) {
       if (selected.length === 0) return;
-      onConfirm(projectId, orderSelected(commits, selected), '');
+      // T04584：平铺视图也可能正看着某个子仓库，确认时把 repoSub 一起交出去（空串 = 根仓库，与改造前一致）
+      onConfirm(projectId, orderSelected(commits, selected), flatRepoSub);
       return;
     }
     // 分组视图：确认口径由 `resolveRepoConfirmation` 把关——多仓库有勾选就拒，不做假的跨仓库合并
@@ -495,7 +515,9 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
               输入框本体保留 data-lck="git-tree-head"，手输 SHA/标签与改造前一致 */}
           <BranchPicker value={head}
             onChange={(next) => { setAllBranches(false); setHead(next); }}
-            options={refs} testId="git-tree-head" width={200}
+            options={headOptions} testId="git-tree-head" width={200}
+            onOpen={() => { if (!census && !scanning && projects.length > 0) void runCensus(projects); }}
+            onSelect={(opt) => setFlatRepoSub(opt.repoSub ?? '')}
             placeholder="起点分支/标签/SHA（留空=HEAD）" ariaLabel="起点版本" disabled={allBranches} />
           <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 'var(--fs-s)' }}>
             <input data-lck="git-tree-all" type="checkbox" checked={allBranches} onChange={(e) => setAllBranches(e.target.checked)} />

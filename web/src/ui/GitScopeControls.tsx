@@ -66,7 +66,7 @@ function useOutsideClose(open: boolean, ref: React.RefObject<HTMLElement>, close
 // 分支 / 标签 / SHA 选择器
 // ---------------------------------------------------------------------------
 
-export function BranchPicker({ value, onChange, options, placeholder, disabled, testId, ariaLabel, width = 150, onOpen }: {
+export function BranchPicker({ value, onChange, options, placeholder, disabled, testId, ariaLabel, width = 150, onOpen, onSelect }: {
   readonly value: string;
   readonly onChange: (next: string) => void;
   readonly options: readonly BranchOption[];
@@ -77,6 +77,8 @@ export function BranchPicker({ value, onChange, options, placeholder, disabled, 
   readonly width?: number;
   /** 首次展开时向上层要候选（懒加载：默认「全部项目」不该在进面板时就逐仓扫） */
   readonly onOpen?: () => void;
+  /** T04584：选中候选时把整条 option 交回上层（含 repoSub）；onChange 仍只回填 name，旧调用方不传此回调即保持原行为 */
+  readonly onSelect?: (option: BranchOption) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -91,7 +93,7 @@ export function BranchPicker({ value, onChange, options, placeholder, disabled, 
   };
 
   const filtered = useMemo(() => filterBranches(options, query, 100), [options, query]);
-  const commit = (name: string) => { onChange(name); close(); };
+  const commit = (option: BranchOption) => { onSelect?.(option); onChange(option.name); close(); };
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Escape') { close(); return; }
@@ -99,7 +101,7 @@ export function BranchPicker({ value, onChange, options, placeholder, disabled, 
     if (!open) return;
     if (e.key === 'ArrowDown') { e.preventDefault(); setActive((i) => Math.min(filtered.length - 1, i + 1)); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); setActive((i) => Math.max(0, i - 1)); }
-    else if (e.key === 'Enter' && filtered[active]) { e.preventDefault(); commit(filtered[active].name); }
+    else if (e.key === 'Enter' && filtered[active]) { e.preventDefault(); commit(filtered[active]); }
   }
 
   return (
@@ -157,12 +159,15 @@ export function BranchPicker({ value, onChange, options, placeholder, disabled, 
             // 只给标签挂类型：装饰里的分支名与远端名都是 `feature/x` 形态（`--decorate=short` 分不出本地/远端），
             // 硬贴「分支/远端」会贴错，标签是唯一能确定的类型。
             // 候选项是原生 <button>，已选态用 aria-pressed 表达（不再借用 listbox/option 角色）
-            <button key={`${option.type}:${option.name}`} type="button" aria-pressed={option.name === value}
+            // T04584：子仓库候选补一枚仓库标注（repoSub），同名分支跨仓库时一眼分得清；根仓库候选无标注，外观不变。
+            <button key={`${option.type}:${option.name}:${option.repoSub ?? ''}`} type="button" aria-pressed={option.name === value}
               data-lck={testId ? `${testId}-option` : undefined} data-ref={option.name} data-ref-type={option.type}
-              title={option.type === 'tag' ? `标签 · ${option.name}` : option.name}
+              data-ref-sub={option.repoSub || undefined}
+              title={option.repoLabel ? `${option.repoLabel} · ${option.name}` : (option.type === 'tag' ? `标签 · ${option.name}` : option.name)}
               onMouseEnter={() => setActive(i)}
-              onClick={() => commit(option.name)}
+              onClick={() => commit(option)}
               style={{ ...ROW, background: i === active ? 'var(--surface-2)' : 'transparent' }}>
+              {option.repoLabel && <span style={{ ...PILL, flexShrink: 0, color: 'var(--text-muted)' }}>{option.repoSub}</span>}
               {option.type === 'tag' && <span style={{ ...PILL, flexShrink: 0 }}>标签</span>}
               <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {option.name}

@@ -13,6 +13,7 @@
  *  3. **不制造不可执行的假合并**：确认阶段一次只回传一个仓库的 SHA 集合，多仓库有选则直接拒绝。
  */
 import type { GitRefName } from './gitTreeSelect';
+import type { BranchOption } from './scopeControls';
 
 /**
  * 归一化分支名（同名聚合的键）：tag 不参与；远端跟踪引用去掉最前面的远端名一段。
@@ -197,6 +198,31 @@ export function inputsForActiveWorkspace(inputs: readonly RepoBranchInput[], act
   const ws = norm(active.workspacePath ?? '');
   if (!ws) return inputs.filter((i) => i.projectId === activeProjectId);
   return inputs.filter((i) => norm(i.workspacePath ?? '') === ws);
+}
+
+/**
+ * T04584：把普查输入折算成「起点分支」输入框的候选列表。
+ *
+ * 单仓库形态的 head 输入框过去只拿根仓库的 refs，工作空间目录里的子仓库（banks/deploy…）分支
+ * 根本不出现，用户无从按子仓库分支取数。这里只取**当前项目**的可用仓库（平铺取数按 projectId+repoSub
+ * 定位，别的项目的仓库平铺视图取不到，不该混进候选）：根仓库候选不带标注（外观与改造前一致），
+ * 子仓库候选带 repoSub + repoLabel，同名分支跨仓库由 filterBranches 按 type:name:repoSub 区分、不互相覆盖。
+ * 顺序：根仓库在前，其余子仓库按相对路径字典序。引用名用原始 ref.name（取数时直接当 head 用）。
+ */
+export function branchOptionsFromCensus(inputs: readonly RepoBranchInput[], activeProjectId: string): BranchOption[] {
+  const mine = inputs
+    .filter((i) => i.projectId === activeProjectId && i.available)
+    .sort((a, b) => ((a.repoSub ?? '') ? 1 : 0) - ((b.repoSub ?? '') ? 1 : 0)
+      || (a.repoSub ?? '').localeCompare(b.repoSub ?? ''));
+  const out: BranchOption[] = [];
+  for (const input of mine) {
+    const sub = (input.repoSub ?? '').trim();
+    const repoLabel = sub ? `${input.projectName || input.projectId} · ${sub}` : undefined;
+    for (const ref of input.refs) {
+      out.push({ type: ref.type, name: ref.name, repoSub: sub, repoLabel });
+    }
+  }
+  return out;
 }
 
 /**
