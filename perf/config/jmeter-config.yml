@@ -1,5 +1,5 @@
 # ============================================================================
-# 26_MTask 后端 API 全端点性能压测配置（jmeter-performance-test，配置驱动）
+# MTask 后端 API 全端点性能压测配置（jmeter-performance-test，配置驱动）
 # 被测目标：Express + better-sqlite3 后端（独立沙箱实例，绝不连生产库）
 # 开发端口 39876；生产/打包实例在 39877（F:\Program Files\MTask），不触碰。
 # 数据目录：perf/sandbox/data2（由 perf/seed/seed-v2.js 播种的确定性夹具集）
@@ -22,9 +22,9 @@ jmeter:
 # ---------------------------------------------------------------------------
 sandbox:
   enabled: true
-  cwd: "D:/code/otherProjects/26_MTask/perf/sandbox"
+  cwd: "D:/code/otherProjects/MTask/perf/sandbox"
   # SUT = 编译产物 server/dist/index.js（与 src 同步重建），由 managed Node 22.22.2 启动
-  startup_cmd: "C:/Users/hspcadmin/.workbuddy/binaries/node/versions/22.22.2-2/node.exe D:/code/otherProjects/26_MTask/server/dist/index.js"
+  startup_cmd: "C:/Users/hspcadmin/.workbuddy/binaries/node/versions/22.22.2-2/node.exe D:/code/otherProjects/MTask/server/dist/index.js"
   pkg: ""
   port: 39899
   health_path: "/api/health"
@@ -39,7 +39,7 @@ sandbox:
   # 若共用同一端口会导致沙箱 SUT 被 dev 实例顶掉、压测流量打到带 accessToken 的 dev 服务（整批 401）。
   env_overrides:
     MTask_PORT: "39899"
-    MTask_DATA_DIR: "D:/code/otherProjects/26_MTask/perf/sandbox/data2"
+    MTask_DATA_DIR: "D:/code/otherProjects/MTask/perf/sandbox/data2"
 
   preflight:
     enabled: true
@@ -70,11 +70,11 @@ resource_monitor:
   # 故改由压测编排在 SUT 就绪后写入监听 pid（perf/out3/sut.pid），最精确无歧义。
   match:
     mode: pid_file
-    pid_file: "D:/code/otherProjects/26_MTask/perf/out3/sut.pid"
+    pid_file: "D:/code/otherProjects/MTask/perf/out3/sut.pid"
   sample_interval_sec: 3
   duration_samples: 270         # 覆盖「启动(~110s) + 全阶段负载(~510s)」并留余量，自动落盘退出
   metrics: ["rss_mb", "private_mb", "cpu_percent", "handles", "threads"]
-  output_csv: "D:/code/otherProjects/26_MTask/perf/out3/sut_resource.csv"
+  output_csv: "D:/code/otherProjects/MTask/perf/out3/sut_resource.csv"
   alert:
     enabled: true
     max_rss_mb: 600
@@ -433,13 +433,13 @@ analysis:
 # ---------------------------------------------------------------------------
 report:
   formats: ["markdown"]
-  output_dir: "D:/code/otherProjects/26_MTask/perf/out3"
+  output_dir: "D:/code/otherProjects/MTask/perf/out3"
   percentiles: [50, 95, 99]
   endpoint_table: true
   group_label_prefixes: []
 
 results:
-  output_dir: "D:/code/otherProjects/26_MTask/perf/out3"
+  output_dir: "D:/code/otherProjects/MTask/perf/out3"
   format: csv
   keep_count: 10
 

@@ -1,5 +1,5 @@
 # ============================================================
-# 26_MTask 工作空间清理配置（2026-09-10 基于示例模板裁剪）
+# MTask 工作空间清理配置（2026-09-10 基于示例模板裁剪）
 # 项目形态：Electron + React + Express + SQLite 桌面应用（npm workspaces）
 # ============================================================
 
@@ -219,7 +219,7 @@ service_indicators:
   process_names: ["MTask.exe", "electron.exe", "node.exe"]
   command_line_probe:
     enabled: true
-    include_patterns: ["26_MTask", "electron/main.js", "server/dist/index.js"]
+    include_patterns: ["otherProjects\\MTask", "electron/main.js", "server/dist/index.js"]
     exclude_patterns: ["npx-cli.js", "_npx", "mcp", "WorkBuddy"]
     on_unavailable: "treat_as_unknown"
   file_occupancy_probes:

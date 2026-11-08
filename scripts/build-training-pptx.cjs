@@ -3,9 +3,11 @@
  * 修复 html2pptx 转换质量差的问题：全部幻灯片用原生元素构建。
  * Run: node scripts/build-training-pptx.cjs
  */
-const pptxgen = require('C:/Users/hspcadmin/.workbuddy/plugins/cache/experts/ppt-implement/1.0.13/skills/ppt-implement/scripts/export/node_modules/pptxgenjs');
+const path = require('node:path');
+const pptxgen = require('pptxgenjs');
 
-const OUT = 'D:/code/otherProjects/26_MTask/artifacts/presentation.pptx';
+// 产物路径从脚本位置推导：工作空间目录改名或移动后不必再改这里
+const OUT = path.join(__dirname, '..', 'artifacts', 'presentation.pptx');
 
 // ============================================================
 // SLIDE DIMENSIONS - LAYOUT_16x9

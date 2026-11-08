@@ -7,11 +7,14 @@ the strokes restores the intended clean-white poster look.
 """
 import os
 import sys
+from pathlib import Path
 from PIL import Image
 
-SRC = r"d:\code\otherProjects\26_MTask\generated-images\Vertical_poster__2_3_ratio___T_2026-09-19T00-03-24.png"
-OUT_DIR = r"D:\code\otherProjects\26_MTask\outputs"
-OUT = os.path.join(OUT_DIR, "life-home-tokyo-techou-poster.png")
+# 路径从脚本位置推导：工作空间目录改名或移动后不必再改这里
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "generated-images" / "Vertical_poster__2_3_ratio___T_2026-09-19T00-03-24.png"
+OUT_DIR = ROOT / "outputs"
+OUT = OUT_DIR / "life-home-tokyo-techou-poster.png"
 
 im = Image.open(SRC).convert("RGB")
 w, h = im.size
