@@ -4541,7 +4541,7 @@ export function TasksPage() {
     // T03623：第二排收起后筛选态不可见——按钮上用计数徽标提示「当前有几项筛选在生效」
     const moreActiveCount = [catFilter !== '', priorityFilter !== '', fieldFilterField !== '', fieldSort !== ''].filter(Boolean).length;
     return (
-      <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+      <div className="op-host" style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         {/* T02167 二轮：宿主组改可换行——窄窗（≤430px）时行内容纳不下整组（项目条+工作空间+图标钮），
             原 nowrap 会把压缩全部转嫁给 minWidth:0 的项目条（它当时是唯一可压缩项），实测 380px 宽
             按钮被压到 40px、两枚统计徽标越出按钮边框 29px。改换行后由换行让位，项目条保住 min-content。 */}
@@ -4730,8 +4730,12 @@ export function TasksPage() {
                （T03623 UI-06 实测组宽 224 换行到第二排）；
             ② 给搜索框加 width:150/minWidth:96/flexShrink:1 让它先让位——逐档实测（t03645 门 UI-13c/13d）
                出厂尺寸下 1440→1180 全程「更多」都留在首排，把搜索框再撑宽 76px（258px、禁止压缩）到 1240px 档仍留在首排，
-               说明首排本有富余，这套让位样式不承重，属于多余的复杂度。 */}
-        <span style={{ position: 'relative', display: 'inline-flex', marginLeft: 'auto' }}>
+               说明首排本有富余，这套让位样式不承重，属于多余的复杂度。
+            T04592：移除搜索框 span 的 marginLeft:'auto'——它把 [搜索框][更多] 顶到工具条最右端、窄窗时换行下沉，
+            与 Git 徽标/一键收起拉开大段空白；改为随流左对齐紧凑排列，控件间距由容器 gap 统一收口。
+            搜索框 flex:1 1 120px：基准宽 120 保证行宽不足时仍排首行不换行（flex-wrap 按基准宽判定换行，
+            单纯 flexShrink/minWidth:0 拦不住），富余时增长到 maxWidth:220 封顶；input width:100%/minWidth:0 跟随伸缩。 */}
+        <span style={{ position: 'relative', display: 'inline-flex', flex: '1 1 120px', minWidth: 0, maxWidth: 220 }}>
           <input
             ref={searchInputRef}
             className="op-hidden"
@@ -4739,7 +4743,7 @@ export function TasksPage() {
             onChange={(e) => setSearch(e.target.value)}
             placeholder="搜索标题/描述/编号…" data-page-search
             aria-label="搜索任务（标题/描述/编号）"
-            style={{ padding: '6px 8px 6px 26px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)' }}
+            style={{ width: '100%', minWidth: 0, padding: '6px 8px 6px 26px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)' }}
           />
           {search && (
             <button
