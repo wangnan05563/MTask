@@ -16,6 +16,7 @@ import {
   GitCollectError,
   collectAuthorNames,
   collectGitGraph,
+  collectRepoBasicMeta,
   probeRepository,
   type GitGraphEntry,
   type GitRefName,
@@ -248,6 +249,25 @@ export interface GitReposResult {
   error?: { kind: string; message: string };
 }
 
+/** T04586：元数据取数并发上限——清单可能几十个子仓库，逐个 fork git 会拖慢整视图 */
+const REPO_META_CONCURRENCY = 4;
+
+/** T04586：给发现到的每个仓库补 当前分支/最新提交/origin URL（空仓库/无远端回空串，不剔除该仓库）。 */
+async function enrichReposWithMeta(repos: NestedRepo[]): Promise<NestedRepo[]> {
+  const out = [...repos];
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    while (cursor < out.length) {
+      const i = cursor;
+      cursor += 1;
+      const meta = await collectRepoBasicMeta(out[i].absPath);
+      out[i] = { ...out[i], ...meta };
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(REPO_META_CONCURRENCY, out.length) }, () => worker()));
+  return out;
+}
+
 /**
  * T04525：把工作空间目录展开成「里面有哪些仓库」。
  *
@@ -267,12 +287,15 @@ export async function queryGitRepos(req: GitReposRequest): Promise<GitReposResul
   const workspacePath = (project.workspace_path ?? '').trim();
   if (!workspacePath) return { ok: false, ...named, error: { kind: 'no-workspace', message: '未配置工作空间路径（请在项目管理中补配）' } };
   try {
-    const found = await discoverNestedRepos(workspacePath);
+    // T04586：清单要覆盖「任意层级」的嵌套仓库，故深度不设浅上限（discoverNestedRepos 缺省 2 层留给
+    // 聚合普查/提取卡等旧调用方保持向后兼容）；性能仍由 maxScanDirs/maxCount 兜底，截断经 truncated 显式告知。
+    const found = await discoverNestedRepos(workspacePath, { maxDepth: Number.POSITIVE_INFINITY });
     if (!found.repos.length) {
       return { ok: false, ...named, workspacePath, truncated: found.truncated, scannedDirs: found.scannedDirs,
-        error: { kind: 'not-a-repo', message: '该工作空间目录及其下一层子目录内没有 Git 仓库' } };
+        error: { kind: 'not-a-repo', message: '该工作空间目录及其子目录内没有 Git 仓库' } };
     }
-    return { ok: true, ...named, workspacePath, repos: found.repos, truncated: found.truncated, scannedDirs: found.scannedDirs };
+    const repos = await enrichReposWithMeta(found.repos);
+    return { ok: true, ...named, workspacePath, repos, truncated: found.truncated, scannedDirs: found.scannedDirs };
   } catch (e) {
     return { ok: false, ...named, workspacePath, error: { kind: 'failed', message: e instanceof Error ? e.message : String(e) } };
   }

@@ -37,7 +37,8 @@ const FORMAT_FIELD_SEPARATORS = String.fromCodePoint(0x1f, 0x1e);
 
 /** 每个只读子命令允许的选项（白名单，防止调用方借选项写盘或改配置） */
 const ALLOWED_FLAGS: Record<GitReadonlySubcommand, RegExp[]> = {
-  'rev-parse': [/^--is-inside-work-tree$/, /^--verify$/, /^--quiet$/],
+  // T04586：--abbrev-ref 只把 HEAD 解析成短分支名（纯输出格式，只读），供多仓库清单带当前分支
+  'rev-parse': [/^--is-inside-work-tree$/, /^--verify$/, /^--quiet$/, /^--abbrev-ref$/],
   // T03302：Git 树取数需要 --all（全分支）、--skip/-n（懒加载分页）、--no-walk（只取点名提交）
   // T03590：`--until` 与 `--since` 同形（日期窗口右端），字面量范围与左端一致
   // T03345：批量摘要用 \x1f/\x1e 作字段/记录分隔符（主题里可能含空格与冒号，用 %x1f 拼串才不歧义），
@@ -313,6 +314,34 @@ export async function collectRemoteUrl(cwd: string, opts: GitCollectOptions = {}
   const url = r.stdout.trim();
   if (!url) throw new GitCollectError('no-remote', '该仓库未配置 origin 远端');
   return url;
+}
+
+/** T04586：多仓库清单每项的基础 git 元数据（当前分支 / 最新提交 / origin URL）。 */
+export interface RepoBasicMeta {
+  branch: string;
+  commit: string;
+  remoteUrl: string;
+}
+
+/**
+ * T04586：读一个仓库的基础元数据，供递归仓库清单结构化返回。
+ * 空仓库（无提交）/ 无 origin 都不算失败：对应字段回空串，清单仍列出该仓库（约束 3/4）。
+ *  detached HEAD 时 --abbrev-ref 回 'HEAD'，归一为空串（无当前分支）。
+ */
+export async function collectRepoBasicMeta(cwd: string, opts: GitCollectOptions = {}): Promise<RepoBasicMeta> {
+  const read = async (flags: string[], positional: string[]): Promise<string> => {
+    try {
+      return (await runGitReadonly('rev-parse', flags, positional, cwd, opts)).stdout.trim();
+    } catch {
+      return '';
+    }
+  };
+  const [commit, rawBranch, remoteUrl] = await Promise.all([
+    read([], ['HEAD']),
+    read(['--abbrev-ref'], ['HEAD']),
+    collectRemoteUrl(cwd, opts).catch(() => ''),
+  ]);
+  return { commit, branch: rawBranch === 'HEAD' ? '' : rawBranch, remoteUrl };
 }
 
 export interface CommitSummaryRow {

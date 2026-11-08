@@ -28,6 +28,12 @@ export interface NestedRepo {
   /** 展示名：根仓库用工作空间目录名，子仓库用其所在目录名 */
   displayName: string;
   isRoot: boolean;
+  /** T04586：当前分支（detached/空仓库为空串）；发现阶段不填，由清单取数层补元数据 */
+  branch?: string;
+  /** T04586：最新提交哈希（空仓库为空串） */
+  commit?: string;
+  /** T04586：origin 远端 URL（未配置为空串） */
+  remoteUrl?: string;
 }
 
 export interface DiscoverReposResult {
