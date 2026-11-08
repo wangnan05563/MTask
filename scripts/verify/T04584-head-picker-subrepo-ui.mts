@@ -118,6 +118,9 @@ await page.waitForTimeout(300);
 async function openHeadPicker() {
   await navToReport();
   await page.waitForSelector('[data-t03366="git-scope-picker"]', { timeout: 20000 });
+  // T04595：项目多选改下拉条，先展开触发钮再勾选项目复选项
+  await clickPrep('[data-t04595="project-dropdown-trigger"]');
+  await page.waitForTimeout(250);
   await clickPrep(`input[aria-label^="纳入项目 T04584"]`);
   await page.waitForTimeout(500);
   await clickPrep('[data-t04553="open"]');

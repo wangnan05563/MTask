@@ -75,11 +75,14 @@ await page.waitForTimeout(300);
 try {
   await navToReport();
   await page.waitForSelector('[data-t03366="git-scope-picker"]', { timeout: 20000 });
+  // T04595：项目多选改下拉条，先展开触发钮再勾选项目复选项
+  await clickPrep('[data-t04595="project-dropdown-trigger"]');
+  await page.waitForTimeout(250);
   await clickPrep(`input[aria-label^="纳入项目 T04585"]`);
   await page.waitForTimeout(400);
   await clickPrep('[data-t04553="open"]');
   await page.waitForSelector('[data-lck="git-tree-modal"]', { timeout: 20000 });
-  // 多仓库入口默认开聚合；确保聚合态
+  // T04595：多仓库入口默认平铺（取消默认分支聚合）；本门测聚合视图，按需切到聚合态
   await page.waitForSelector('[data-lck="git-tree-repo-view"]', { timeout: 20000 });
   if ((await page.locator('[data-lck="git-tree-repo-view"]').getAttribute('aria-pressed')) !== 'true') {
     await clickPrep('[data-lck="git-tree-repo-view"]');

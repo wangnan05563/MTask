@@ -533,18 +533,27 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
           <button type="button" data-lck="git-tree-search-btn" onClick={() => void load(false)} disabled={loading} style={boxStyle}>
             <Search size={13} style={{ marginRight: 4 }} />搜索
           </button>
-          {/* T04527：跨仓库分支聚合视图开关。默认关——单仓库体验（含取数次数）与改造前一致；
-              打开后才会逐仓库做一次引用普查（并发上限 3），所以不替用户擅自多 fork git 子进程
-              T04525：入口条件不能再看 `projects.length > 1`——一个项目的工作空间目录里可以有多仓库，
-              只有一个项目时同样要能聚合（上一轮被打回的就在这里：按钮根本没出现，用户无从点开） */}
+          {/* T04595：结果区两种展示模式（参考 IDEA Git 视图）——「按时间顺序混合显示」（平铺，提交按时间线排列，
+              可勾全部分支混合）/「按仓库分组显示」（同一分支→多仓库聚合）。默认平铺（T04595 取消默认分支聚合）。
+              「按仓库分组显示」钮保留 data-lck="git-tree-repo-view" 与切换语义（既有回归门按 aria-pressed 点击切换）；
+              「按时间顺序混合显示」钮绝对回到平铺。T04525：入口条件看 projects.length>0（单项目工作空间内也可有多仓库）。 */}
           {projects.length > 0 && (
-            <button type="button" data-lck="git-tree-repo-view" aria-pressed={repoView} disabled={scanning}
-              onClick={() => { setError(''); setRepoView((v) => !v); }}
-              title="按「同一分支 → 多个仓库」聚合展示：既含多个项目的工作空间，也含同一工作空间目录内的子仓库（取数仍逐仓库确认）"
-              style={{ ...boxStyle, cursor: 'pointer', background: repoView ? 'var(--accent)' : 'var(--surface)', color: repoView ? '#fff' : 'var(--text)' }}>
-              {scanning ? <Loader2 size={13} className="aispin" style={{ marginRight: 4, verticalAlign: '-2px' }} /> : <FolderGit2 size={13} style={{ marginRight: 4, verticalAlign: '-2px' }} />}
-              分支聚合（多仓库）
-            </button>
+            <div data-t04595="view-mode-group" style={{ display: 'inline-flex', alignItems: 'center', border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }}>
+              <button type="button" data-lck="git-tree-mode-time" aria-pressed={!repoView} disabled={scanning}
+                onClick={() => { setError(''); setRepoView(false); }}
+                title="按时间顺序混合显示：提交按时间线统一排列（可勾「全部分支」混合各分支），单仓库逐条确认"
+                style={{ ...boxStyle, border: 'none', borderRadius: 0, cursor: 'pointer', background: !repoView ? 'var(--accent)' : 'var(--surface)', color: !repoView ? '#fff' : 'var(--text)' }}>
+                <GitBranch size={13} style={{ marginRight: 4, verticalAlign: '-2px' }} />
+                按时间顺序混合显示
+              </button>
+              <button type="button" data-lck="git-tree-repo-view" aria-pressed={repoView} disabled={scanning}
+                onClick={() => { setError(''); setRepoView((v) => !v); }}
+                title="按仓库分组显示：同一分支→多个仓库聚合（含工作空间目录内的子仓库），取数仍逐仓库确认；再点回到时间顺序"
+                style={{ ...boxStyle, border: 'none', borderRadius: 0, borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', background: repoView ? 'var(--accent)' : 'var(--surface)', color: repoView ? '#fff' : 'var(--text)' }}>
+                {scanning ? <Loader2 size={13} className="aispin" style={{ marginRight: 4, verticalAlign: '-2px' }} /> : <FolderGit2 size={13} style={{ marginRight: 4, verticalAlign: '-2px' }} />}
+                按仓库分组显示
+              </button>
+            </div>
           )}
         </div>
 

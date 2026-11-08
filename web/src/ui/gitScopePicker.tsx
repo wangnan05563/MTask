@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type CSSProperties, type Dispatch, type SetStateAction } from 'react';
-import { AlertTriangle, CheckSquare, FolderGit2, FolderOpen, GitCommitHorizontal, Loader2, Square } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from 'react';
+import { AlertTriangle, CheckSquare, ChevronDown, FolderGit2, FolderOpen, GitCommitHorizontal, Loader2, Square } from 'lucide-react';
 import { api, type Project, type Task, type TaskCategory } from '../api/client';
 import { FIELD_QUIET, PILL } from './primitives';
 import { wsBasename } from './WorkspaceSelect';
@@ -143,6 +143,18 @@ export function GitScopePicker({ projects, value, onChange }: {
   const [cats, setCats] = useState<TaskCategory[]>([]);
   /** T04553：手动提交弹窗的两种入口——单仓库列表（'single'）与分支聚合（'multi'） */
   const [commitPickerMode, setCommitPickerMode] = useState<'single' | 'multi' | null>(null);
+  /** T04595：项目多选改下拉条——默认收起，点击触发钮展开勾选弹层；勾选语义（同工作空间硬约束、
+   *  取消项目级联清理任务/提交）原样保留，只是把常显列表收进弹层，紧凑展示已选项目摘要。 */
+  const [projectOpen, setProjectOpen] = useState(false);
+  const projectHostRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!projectOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (projectHostRef.current && !projectHostRef.current.contains(e.target as Node)) setProjectOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [projectOpen]);
 
   const idsKey = value.projectIds.join(',');
   const statusFilter = value.status;
@@ -231,30 +243,52 @@ export function GitScopePicker({ projects, value, onChange }: {
 
   return (
     <div data-t03366="git-scope-picker" style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
-      {/* ① 项目多选（同工作空间硬约束） */}
+      {/* ① 项目多选（同工作空间硬约束）——T04595 改下拉条：常显列表收进弹层，触发钮紧凑展示已选摘要；
+          勾选语义（projectPickability 同空间硬约束、toggleProject 级联清理）原样保留 */}
       <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>项目（多项目必须同一工作空间）</div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 150, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6, padding: 4 }}>
-        {projects.length === 0 && <div style={{ ...ROW, color: 'var(--text-muted)' }}>暂无项目</div>}
-        {projects.map((p) => {
-          const checked = value.projectIds.includes(p.id);
-          const pick = projectPickability(p, value.projectIds, projects);
-          const disabled = !pick.ok && !checked;
-          return (
-            <label
-              key={p.id}
-              title={pick.reason || p.workspace_path || '未绑定工作空间'}
-              style={{ ...ROW, opacity: disabled ? 0.45 : 1, cursor: disabled ? 'not-allowed' : 'pointer' }}
-            >
-              <input type="checkbox" checked={checked} disabled={disabled} onChange={() => toggleProject(p)}
-                aria-label={`纳入项目 ${p.name}`} style={{ flexShrink: 0, cursor: 'inherit' }} />
-              <span style={{ ...PILL, flexShrink: 0, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
-              <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-muted)', fontSize: 'var(--fs-xs)' }}>
-                {p.workspace_path ? wsBasename(p.workspace_path) : '未绑定工作空间'}
-              </span>
-              {pick.reason && <span style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--warn)' }}>{pick.reason}</span>}
-            </label>
-          );
-        })}
+      <div ref={projectHostRef} style={{ position: 'relative', minWidth: 0 }}>
+        <button
+          type="button"
+          data-t04595="project-dropdown-trigger"
+          onClick={() => setProjectOpen((v) => !v)}
+          aria-expanded={projectOpen}
+          aria-label="项目范围：选择要纳入的项目（多选，下拉展开）"
+          title={value.projectIds.length ? `已选 ${value.projectIds.length} 个项目：${projects.filter((p) => value.projectIds.includes(p.id)).map((p) => p.name).join('、')}` : '未选择项目，点击展开勾选'}
+          style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', minWidth: 0, boxSizing: 'border-box', padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)', cursor: 'pointer', textAlign: 'left' }}
+        >
+          <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: value.projectIds.length ? 'var(--text)' : 'var(--text-muted)' }}>
+            {value.projectIds.length
+              ? projects.filter((p) => value.projectIds.includes(p.id)).map((p) => p.name).join('、')
+              : '未选择项目（点击展开勾选）'}
+          </span>
+          <span style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{value.projectIds.length ? `已选 ${value.projectIds.length}` : '0'}</span>
+          <ChevronDown size={12} style={{ flexShrink: 0, transform: projectOpen ? 'rotate(180deg)' : 'none' }} />
+        </button>
+        {projectOpen && (
+          <div data-t04595="project-dropdown-menu" style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 40, boxSizing: 'border-box', minWidth: 260, maxWidth: 'min(420px, calc(100vw - 24px))', display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 220, overflowY: 'auto', border: '1px solid var(--border-strong)', borderRadius: 8, background: 'var(--card-bg)', boxShadow: '0 6px 18px rgba(0,0,0,.14)', padding: 4 }}>
+            {projects.length === 0 && <div style={{ ...ROW, color: 'var(--text-muted)' }}>暂无项目</div>}
+            {projects.map((p) => {
+              const checked = value.projectIds.includes(p.id);
+              const pick = projectPickability(p, value.projectIds, projects);
+              const disabled = !pick.ok && !checked;
+              return (
+                <label
+                  key={p.id}
+                  title={pick.reason || p.workspace_path || '未绑定工作空间'}
+                  style={{ ...ROW, opacity: disabled ? 0.45 : 1, cursor: disabled ? 'not-allowed' : 'pointer' }}
+                >
+                  <input type="checkbox" checked={checked} disabled={disabled} onChange={() => toggleProject(p)}
+                    aria-label={`纳入项目 ${p.name}`} style={{ flexShrink: 0, cursor: 'inherit' }} />
+                  <span style={{ ...PILL, flexShrink: 0, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
+                  <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-muted)', fontSize: 'var(--fs-xs)' }}>
+                    {p.workspace_path ? wsBasename(p.workspace_path) : '未绑定工作空间'}
+                  </span>
+                  {pick.reason && <span style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--warn)' }}>{pick.reason}</span>}
+                </label>
+              );
+            })}
+          </div>
+        )}
       </div>
       {ws.conflict && (
         <div style={{ ...ROW, color: 'var(--warn)' }}>
@@ -269,24 +303,26 @@ export function GitScopePicker({ projects, value, onChange }: {
         </div>
       )}
 
-      {/* T04553（裁决 C）：多仓库选范围独立入口。Git 提取卡与 Sonar 卡共用本组件，两处都指向这里；
-          聚合视图只是「浏览 + 逐仓库确认」，不产生执行，因此不随 ws.blocked 灰化——
+      {/* T04553（裁决 C）/ T04595：与「代码评审讲稿生成」卡复用同一个 GitTreePickerModal「从 Git 树选范围」组件。
+          默认落在平铺视图直接查各仓库本地分支（initialRepoView=false，不再默认开「分支聚合」）；
+          聚合视图仍可在弹窗内手动切换，只是「浏览 + 逐仓库确认」，不产生执行，因此不随 ws.blocked 灰化——
           跨空间/未绑定时仍可打开预选，执行侧的同一工作空间约束由各面板的 ws.blocked 继续把关。 */}
       <div data-t04553="multi-repo-entry" style={{ ...ROW, flexWrap: 'wrap' }}>
         <button
           type="button"
           data-t04553="open"
+          data-t04595="git-tree-entry"
           onClick={() => setCommitPickerMode('multi')}
           disabled={value.projectIds.length === 0}
-          title={value.projectIds.length === 0 ? '先在上方勾选项目' : '按「同一分支 → 多个仓库」聚合选提交，含工作空间目录内的子仓库'}
+          title={value.projectIds.length === 0 ? '先在上方勾选项目' : '从 Git 树选范围：默认查各仓库本地分支，含工作空间目录内的子仓库；可在弹窗内切换分支聚合'}
           style={{ ...PILL, cursor: value.projectIds.length ? 'pointer' : 'not-allowed', opacity: value.projectIds.length ? 1 : 0.5 }}
         >
-          <FolderGit2 size={12} /> 多仓库选范围
+          <FolderGit2 size={12} /> 从 Git 树选范围
         </button>
         <span style={{ flex: '1 1 auto', minWidth: 0, color: ws.blocked ? 'var(--warn)' : 'var(--text-muted)' }}>
           {ws.blocked
             ? '当前范围跨工作空间或未绑定：可打开浏览与预选，提取/扫描仍需同一工作空间'
-            : '同一分支跨多个仓库时从这里选提交，一次确认回传一个仓库'}
+            : '默认查各仓库本地分支；同一分支跨多个仓库时可在弹窗内切「分支聚合」，一次确认回传一个仓库'}
         </span>
       </div>
 
@@ -421,7 +457,7 @@ export function GitScopePicker({ projects, value, onChange }: {
           projects={projects.filter((p) => value.projectIds.includes(p.id))}
           activeProjectId={value.projectIds[0] ?? ''}
           selectedByProject={commitIdsByProject}
-          initialRepoView={commitPickerMode === 'multi'}
+          initialRepoView={false}
           onConfirm={confirmManualCommits}
           onClose={() => setCommitPickerMode(null)}
           zIndex={1200}

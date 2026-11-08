@@ -223,10 +223,13 @@ try {
 try {
   await freshPage(); await navTo('report');
   await page.waitForSelector('[data-t03366="git-scope-picker"]', { timeout: 20000 });
+  // T04595：项目多选改下拉条，先展开触发钮再勾选项目复选项
+  await clickPrep('[data-t04595="project-dropdown-trigger"]');
+  await page.waitForTimeout(250);
   await clickPrep(`input[aria-label^="纳入项目 T04582"]`);
   await page.waitForTimeout(500);
   await clickPrep('[data-t04553="open"]');
-  // 多仓库入口默认开「分支聚合」视图（提交行藏在可展开的仓库面板里）；切回平铺单仓库视图，
+  // T04595：多仓库入口默认平铺（取消默认分支聚合）；若仍处聚合态则切回平铺单仓库视图，
   // 同一颗 git-tree-select 提交标题按钮直接渲染，取证对象不变（row-title-btn 类同一条 CSS 收口）
   await page.waitForSelector('[data-lck="git-tree-repo-view"]', { timeout: 20000 });
   if ((await page.locator('[data-lck="git-tree-repo-view"]').getAttribute('aria-pressed')) === 'true') {

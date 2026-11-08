@@ -69,6 +69,19 @@ export function filterBranches(options: readonly BranchOption[], query: string, 
   return scored.slice(0, Math.max(0, limit)).map((s) => s.option);
 }
 
+/** T04595：分支候选按类型分组（本地分支 / 远程分支 / 标签），组内保留传入顺序。
+ *  type 由服务端引用清单裁定（refs/heads→branch、refs/remotes→remote、refs/tags→tag，
+ *  见 gitCollect.parseRefNameList）；普查（branchOptionsFromCensus）后类型权威，分组据此呈现。
+ *  只重排呈现，不改候选成员与选中回填语义。空组不输出。 */
+export interface BranchOptionGroup { type: BranchOption['type']; label: string; options: BranchOption[] }
+const BRANCH_GROUP_LABEL: Record<BranchOption['type'], string> = { branch: '本地分支', remote: '远程分支', tag: '标签' };
+export function groupBranchesByType(options: readonly BranchOption[]): BranchOptionGroup[] {
+  const order: BranchOption['type'][] = ['branch', 'remote', 'tag'];
+  return order
+    .map((type) => ({ type, label: BRANCH_GROUP_LABEL[type], options: options.filter((o) => o.type === type) }))
+    .filter((g) => g.options.length > 0);
+}
+
 const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 /** 严格校验 `YYYY-MM-DD`（含 2 月 30 日这类越界日） */

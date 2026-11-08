@@ -9,6 +9,7 @@ import {
   endBoundary,
   filterAuthorSuggestions,
   filterBranches,
+  groupBranchesByType,
   joinAuthorGroups,
   monthCells,
   monthOf,
@@ -92,7 +93,9 @@ export function BranchPicker({ value, onChange, options, placeholder, disabled, 
     if (next) onOpen?.();
   };
 
-  const filtered = useMemo(() => filterBranches(options, query, 100), [options, query]);
+  const grouped = useMemo(() => groupBranchesByType(filterBranches(options, query, 100)), [options, query]);
+  // T04595：键盘导航与回车确认仍按一维序列走，但序列顺序与分组渲染一致（本地→远程→标签，组内按模糊档位）
+  const filtered = useMemo(() => grouped.flatMap((g) => g.options), [grouped]);
   const commit = (option: BranchOption) => { onSelect?.(option); onChange(option.name); close(); };
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -155,25 +158,36 @@ export function BranchPicker({ value, onChange, options, placeholder, disabled, 
               {options.length === 0 ? '未取到分支列表：仍可直接手输分支/标签/SHA' : `没有匹配「${query}」的分支或标签`}
             </div>
           )}
-          {filtered.map((option, i) => (
-            // 只给标签挂类型：装饰里的分支名与远端名都是 `feature/x` 形态（`--decorate=short` 分不出本地/远端），
-            // 硬贴「分支/远端」会贴错，标签是唯一能确定的类型。
-            // 候选项是原生 <button>，已选态用 aria-pressed 表达（不再借用 listbox/option 角色）
-            // T04584：子仓库候选补一枚仓库标注（repoSub），同名分支跨仓库时一眼分得清；根仓库候选无标注，外观不变。
-            <button key={`${option.type}:${option.name}:${option.repoSub ?? ''}`} type="button" aria-pressed={option.name === value}
-              data-lck={testId ? `${testId}-option` : undefined} data-ref={option.name} data-ref-type={option.type}
-              data-ref-sub={option.repoSub || undefined}
-              title={option.repoLabel ? `${option.repoLabel} · ${option.name}` : (option.type === 'tag' ? `标签 · ${option.name}` : option.name)}
-              onMouseEnter={() => setActive(i)}
-              onClick={() => commit(option)}
-              style={{ ...ROW, background: i === active ? 'var(--surface-2)' : 'transparent' }}>
-              {option.repoLabel && <span style={{ ...PILL, flexShrink: 0, color: 'var(--text-muted)' }}>{option.repoSub}</span>}
-              {option.type === 'tag' && <span style={{ ...PILL, flexShrink: 0 }}>标签</span>}
-              <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {option.name}
-              </span>
-            </button>
-          ))}
+          {grouped.map((g, gi) => {
+            const base = grouped.slice(0, gi).reduce((n, x) => n + x.options.length, 0);
+            return (
+              <div key={g.type} data-lck={testId ? `${testId}-group` : undefined} data-ref-group={g.type}>
+                <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', padding: '4px 6px 2px', fontWeight: 600 }}>
+                  {g.label}（{g.options.length}）
+                </div>
+                {g.options.map((option, oi) => {
+                  const i = base + oi;
+                  // 候选项是原生 <button>，已选态用 aria-pressed 表达（不再借用 listbox/option 角色）
+                  // T04584：子仓库候选补一枚仓库标注（repoSub），同名分支跨仓库时一眼分得清；根仓库候选无标注，外观不变。
+                  // T04595：本地/远程/标签由分组头标明类型（type 来自服务端引用清单），组内不再逐行贴类型徽标。
+                  return (
+                    <button key={`${option.type}:${option.name}:${option.repoSub ?? ''}`} type="button" aria-pressed={option.name === value}
+                      data-lck={testId ? `${testId}-option` : undefined} data-ref={option.name} data-ref-type={option.type}
+                      data-ref-sub={option.repoSub || undefined}
+                      title={option.repoLabel ? `${option.repoLabel} · ${option.name}` : (option.type === 'tag' ? `标签 · ${option.name}` : option.name)}
+                      onMouseEnter={() => setActive(i)}
+                      onClick={() => commit(option)}
+                      style={{ ...ROW, background: i === active ? 'var(--surface-2)' : 'transparent' }}>
+                      {option.repoLabel && <span style={{ ...PILL, flexShrink: 0, color: 'var(--text-muted)' }}>{option.repoSub}</span>}
+                      <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {option.name}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
