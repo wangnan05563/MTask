@@ -656,7 +656,7 @@ function CommitRows({ commits, selected, expandedSet, keyPrefix, onRowClick, onT
             {/* 复选框只是勾选态的视觉镜像（真正的控件是右侧按钮）；点它同样落到同一段点选逻辑上 */}
             <input type="checkbox" checked={checked} readOnly tabIndex={-1} aria-label={`选择提交 ${c.short}`}
               onClick={(e) => onRowClick(i, e)} style={{ cursor: 'pointer' }} />
-            <button type="button" data-lck="git-tree-select" aria-pressed={checked}
+            <button type="button" className="row-title-btn" data-lck="git-tree-select" aria-pressed={checked}
               aria-label={`${checked ? '取消选择' : '选择'}提交 ${c.short}：${c.subject}`}
               onClick={(e) => onRowClick(i, e)}
               style={{

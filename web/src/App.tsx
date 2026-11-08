@@ -363,10 +363,11 @@ function Shell() {
         .title-op:active:not(:disabled) { transform: scale(.88); }
         /* 文字/功能按钮：整体轻微倾斜（幅度收敛避免文本难读），active 缩放 */
         button:hover:not(:disabled):not(.tbtn-anim):not(.nav-btn):not(.abtn):not(.ghost):not(.row-title-btn):not(.task-op) { transform: rotate(-1.5deg); } /* T00494：记录标题按钮不参与悬浮旋转；T00513：task-op 行内按钮走倾斜缩放基准 */
-        /* T00890：导航与行标题按钮补齐悬浮微倾斜——两者被上方兜底 :not() 排除，需各自独立声明才具备「所有页面按钮悬浮微倾斜」的统一反馈。
-           nav-btn 含文字标签，幅度略大带缩放；row-title-btn 是标题，幅度轻微避免文字难读。 */
+        /* T00890：导航按钮补齐悬浮微倾斜——被上方兜底 :not() 排除，需独立声明才具备统一反馈。
+           T04582：行标题按钮（row-title-btn）是任务/提示词/通用需求/通知中心/Git 树选范围五处的「数据标题」，
+           去除悬浮倾斜——标题区域悬浮不再 rotate/scale（便于选中复制）；导航与其余按钮的倾斜体系保持不变。 */
         .nav-btn:hover:not(:disabled) { transform: scale(1.06) rotate(-2deg); }
-        button.row-title-btn:hover:not(:disabled) { transform: scale(1.02) rotate(-1deg); }
+        button.row-title-btn:hover:not(:disabled) { transform: none; }
         button { transition: transform .18s ease, background-color .15s ease; }
         /* T02143：能力卡片容器（div role=button，内嵌角标按钮不能套在原生 button 里）补回全局
            button 规则给过的悬浮/手感——否则这次 DOM 规范修复会顺带回退 T00494 的微交互体系 */

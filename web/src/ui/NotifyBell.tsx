@@ -146,7 +146,7 @@ export function NotifyBell() {
               if (isSystem || (it.kind === 'ai_state' && it.detail.includes('失败'))) iconColor = 'var(--danger)';
               else if (it.kind === 'verified') iconColor = 'var(--success)';
               return (
-                <button key={it.id} onClick={() => (isSystem ? setOpen(false) : gotoTask(it))}
+                <button key={it.id} className="row-title-btn" onClick={() => (isSystem ? setOpen(false) : gotoTask(it))}
                   title={isSystem ? `${it.detail} — 系统告警，无需跳转` : `${it.detail} — 点击前往任务${taskNoSuffix}`}
                   style={{ display: 'flex', gap: 8, width: '100%', textAlign: 'left', padding: '9px 14px', border: 'none', borderBottom: '1px solid var(--surface-2)', background: unread ? 'var(--accent-soft)' : 'transparent', cursor: 'pointer', alignItems: 'flex-start' }}
                 >
