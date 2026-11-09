@@ -48,6 +48,34 @@ export const PRD_CONTEXT_LIMIT = 6000;
 /** T04896：多文档总预算——超出按「主 PRD 优先、其余按 updated_at 倒序」裁，主 PRD 永不省 */
 export const PRD_CONTEXT_TOTAL_LIMIT = 24000;
 
+/** T04898：章节感知截断的关键词权重表（可配置常量，不硬编码死在函数里）。
+ *  高权重：命中即该章节信息密度高（验收/接口/设计/字段/错误码/性能/约束），预算不足时优先保留；
+ *  低权重：目录/修订记录/参考文献等低信息量章节，预算不足时优先省略。 */
+export const PRD_SECTION_HIGH_KEYWORDS: readonly string[] = [
+  '验收标准', '验收', '接口', 'api', '设计', '字段', '数据模型', '错误码', '性能', '约束', '需求', '范围', '数据',
+];
+export const PRD_SECTION_LOW_KEYWORDS: readonly string[] = [
+  '目录', '修订记录', 'changelog', '参考文献', '附录', '修订历史', '版本记录',
+];
+/** T04898：章节评分——标题命中高权重词 +2、正文高权重词每个 +1、低权重词每个 -1（下限 0）。
+ *  标题命中的信号最强（章节名即主题），权重高于正文命中。 */
+export function scorePrdSection(heading: string, body: string): number {
+  const h = heading.toLowerCase();
+  const b = body.toLowerCase();
+  let s = 0;
+  for (const k of PRD_SECTION_HIGH_KEYWORDS) {
+    if (h.includes(k.toLowerCase())) s += 2;
+    const re = new RegExp(k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    const m = b.match(re);
+    if (m) s += Math.min(m.length, 3); // 正文命中封顶，避免长章节靠重复词刷分
+  }
+  for (const k of PRD_SECTION_LOW_KEYWORDS) {
+    if (h.includes(k.toLowerCase())) s -= 2;
+    if (b.toLowerCase().includes(k.toLowerCase())) s -= 1;
+  }
+  return Math.max(0, s);
+}
+
 /** 解析 req_ids：脏数据/非数组一律视为无关联 */
 function parseReqIds(raw: string | null | undefined): string[] {
   try {
@@ -107,11 +135,76 @@ function hitByTargetRowAll(db: ReturnType<typeof getDb>, taskId?: string, planId
   return titleHit ? [titleHit] : [];
 }
 
-/** 取 PRD 正文并按上限截断（保头保尾，中段标注略去字数与文档 id） */
+/**
+ * T04898：章节感知截断（替代机械保头保尾）。
+ * - 用 `^#{1,6}\s` 标题切章节；无标题结构（切不出带标题的段落）退化为旧机械保头保尾，零回归；
+ * - 每段按 scorePrdSection 算信息分，预算不足时按「低分优先省略」选出保留集，再**按原文顺序**拼接；
+ * - 章节边界保留（整段省略，不跨章节机械切字）；被省略章节名在末尾显式列出；
+ * - 单章节本身超预算时，对该章退化为机械保头保尾兜底（章节内仍无法取舍）。
+ */
 function trimPrdContent(content: string, docId: string): string {
   if (content.length <= PRD_CONTEXT_LIMIT) return content;
-  const half = Math.floor(PRD_CONTEXT_LIMIT / 2);
-  return `${content.slice(0, half)}\n\n……（中段略去 ${content.length - PRD_CONTEXT_LIMIT} 字符，全文见 PRD 文档 ${docId}）……\n\n${content.slice(-half)}`;
+  const sections = splitPrdSections(content);
+  // 无标题结构（如纯文本、或全文仅一段无标题正文）→ 退化为旧机械保头保尾（零回归红线）
+  if (sections.length <= 1) {
+    const half = Math.floor(PRD_CONTEXT_LIMIT / 2);
+    return `${content.slice(0, half)}\n\n……（中段略去 ${content.length - PRD_CONTEXT_LIMIT} 字符，全文见 PRD 文档 ${docId}）……\n\n${content.slice(-half)}`;
+  }
+  const scored = sections.map((s) => ({ ...s, score: scorePrdSection(s.heading, s.body) }));
+  // 贪心选章：按分数降序，入选直到预算耗尽；低分章节（目录/修订记录）自然被优先挤出
+  let budget = PRD_CONTEXT_LIMIT;
+  const selected = new Set<number>();
+  const byScore = scored.map((s, i) => ({ i, score: s.score, len: s.full.length })).sort((a, b) => b.score - a.score || a.i - b.i);
+  for (const item of byScore) {
+    const len = item.len;
+    // 单章超预算：截断该章（保头保尾）仍入选，占满预算
+    if (len <= budget) {
+      selected.add(item.i);
+      budget -= len;
+    } else if (budget > 0 && selected.size === 0) {
+      // 第一入选章节就超预算（极端单章超长）：对该章机械保头保尾兜底
+      const s = scored[item.i];
+      const half = Math.max(1, Math.floor(budget / 2));
+      s.full = `${s.full.slice(0, half)}\n\n……（中段略去 ${s.full.length - budget} 字符，全文见 PRD 文档 ${docId}）……\n\n${s.full.slice(-half)}`;
+      selected.add(item.i);
+      budget = 0;
+      break;
+    } else {
+      break; // 预算已不足以容纳下一章，后续章节全部省略
+    }
+  }
+  // 按原文顺序输出选中的章节
+  const kept = scored.filter((_, i) => selected.has(i)).map((s) => s.full);
+  const omitted = scored.filter((_, i) => !selected.has(i)).map((s) => s.heading || '(无标题段)');
+  let out = kept.join('\n\n');
+  if (omitted.length > 0) {
+    out += `\n\n……（已省略章节：${omitted.join('、')}，全文见 PRD 文档 ${docId}）……`;
+  }
+  return out;
+}
+
+/** T04898：用 `^#{1,6}\s` 标题把 PRD 正文切成章节段。返回 [{heading, body, full}]，heading 为标题行文本（无 # 前缀）。 */
+interface PrdSection { heading: string; body: string; full: string }
+function splitPrdSections(content: string): PrdSection[] {
+  const headingRe = /^#{1,6}\s+(.+)$/gm;
+  const matches: Array<{ index: number; heading: string }> = [];
+  let m: RegExpExecArray | null;
+  while ((m = headingRe.exec(content)) !== null) {
+    matches.push({ index: m.index, heading: m[1].trim() });
+  }
+  if (matches.length === 0) return [];
+  const sections: PrdSection[] = [];
+  for (let i = 0; i < matches.length; i += 1) {
+    const start = matches[i].index;
+    const end = i + 1 < matches.length ? matches[i + 1].index : content.length;
+    const full = content.slice(start, end).trim();
+    const heading = matches[i].heading;
+    // body = 去掉首行标题后的正文
+    const firstNewline = full.indexOf('\n');
+    const body = firstNewline >= 0 ? full.slice(firstNewline + 1) : '';
+    sections.push({ heading, body, full });
+  }
+  return sections;
 }
 
 /** T04896：把一篇 prd_docs 取正文并截断成一个段（复用单篇 trimPrdContent 口径） */
