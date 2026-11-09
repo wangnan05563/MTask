@@ -1090,8 +1090,9 @@ type PrdImportPlanItem = { title: string; description?: string; durationDays?: n
 /** importPrd 的 requirements 入参行（与该方法内联签名同构） */
 type PrdImportReqItem = { reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string; sourceIndex?: number };
 
-/** T04064：批量导入时每个来源文件各自落一条 prd_docs；filename 保留原名，同名批内加序号 */
-type PrdImportDocItem = { filename?: string; contentMd?: string };
+/** T04064：批量导入时每个来源文件各自落一条 prd_docs；filename 保留原名，同名批内加序号。
+ *  T04897：docKind 标注文档类型（'prd'/'design'/'test'），缺省 'prd'——主 PRD 与设计/测试文档据此区分 */
+type PrdImportDocItem = { filename?: string; contentMd?: string; docKind?: 'prd' | 'design' | 'test' };
 
 /** importPrd 的 planTargets 元素：实际落库标题 + 复用的原行 id（null=新建） */
 interface PrdImportPlanTarget { title: string; reuseId: string | null }
@@ -1131,20 +1132,22 @@ function resolvePrdDocTarget(
 
 function persistPrdDocForImport(
   db: ReturnType<typeof getDb>, projectId: string, rawPrdMd: string | undefined, rawFilename: string | undefined, t: string,
+  docKind: 'prd' | 'design' | 'test' = 'prd',
 ): string | undefined {
   const { target, prdMd, filename, contentHash } = resolvePrdDocTarget(db, projectId, rawPrdMd, rawFilename);
   if (target.action === 'none') return undefined;
   if (target.action === 'reuse') {
     // 覆盖：更新正文/哈希/时间戳；filename 仅在本次带值时覆盖；status 保留原值（不重置用户确认态）
-    db.prepare("UPDATE prd_docs SET content_md = ?, filename = CASE WHEN ? <> '' THEN ? ELSE filename END, origin_hash = ?, updated_at = ? WHERE id = ?")
-      .run(prdMd, filename, filename, contentHash, t, target.id);
-    logService.log('INFO', 'prd', `[PRD导入覆盖] project=${projectId} doc=${target.id} filename=${filename}（同内容/同名复用，不新建）`);
+    // T04897：doc_kind 仅在本次显式带值（非默认 'prd'）时覆盖，避免把已标注 design 的文档误回退成 prd
+    db.prepare("UPDATE prd_docs SET content_md = ?, filename = CASE WHEN ? <> '' THEN ? ELSE filename END, origin_hash = ?, doc_kind = ?, updated_at = ? WHERE id = ?")
+      .run(prdMd, filename, filename, contentHash, docKind, t, target.id);
+    logService.log('INFO', 'prd', `[PRD导入覆盖] project=${projectId} doc=${target.id} filename=${filename} kind=${docKind}（同内容/同名复用，不新建）`);
     return target.id;
   }
   const createdId = uuid();
   db.prepare(
-    `INSERT INTO prd_docs (id, project_id, filename, content_md, origin_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(createdId, projectId, filename, prdMd, contentHash, t, t);
+    `INSERT INTO prd_docs (id, project_id, filename, content_md, origin_hash, doc_kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(createdId, projectId, filename, prdMd, contentHash, docKind, t, t);
   return createdId;
 }
 
@@ -1152,16 +1155,17 @@ function persistPrdDocForImport(
  * T04064：多 PRD 导入的文件名规划——每份来源保留原名；同一批内重名按 ` (2)`、` (3)` 区分，
  * 以满足「同名文档也必须各自独立展示」的约束。import 与 preview 共用本函数，两边落点才不会分叉。
  */
-function planPrdDocNames(docs: PrdImportDocItem[]): Array<{ filename: string; contentMd: string }> {
+function planPrdDocNames(docs: PrdImportDocItem[]): Array<{ filename: string; contentMd: string; docKind: 'prd' | 'design' | 'test' }> {
   const seen = new Map<string, number>();
   return docs.map((d) => {
     const base = (d.filename ?? '').trim() || '未命名 PRD.md';
+    const docKind = d.docKind ?? 'prd';
     const n = (seen.get(base) ?? 0) + 1;
     seen.set(base, n);
-    if (n === 1) return { filename: base, contentMd: d.contentMd ?? '' };
+    if (n === 1) return { filename: base, contentMd: d.contentMd ?? '', docKind };
     const dot = base.lastIndexOf('.');
     const filename = dot > 0 ? `${base.slice(0, dot)} (${n})${base.slice(dot)}` : `${base} (${n})`;
-    return { filename, contentMd: d.contentMd ?? '' };
+    return { filename, contentMd: d.contentMd ?? '', docKind };
   });
 }
 
@@ -1174,7 +1178,7 @@ function persistPrdDocsForImport(
 ): { docIds: string[]; legacyPrdId: string | undefined } {
   if (Array.isArray(input.prdDocs) && input.prdDocs.length > 0) {
     const docIds = planPrdDocNames(input.prdDocs)
-      .map((d) => persistPrdDocForImport(db, projectId, d.contentMd, d.filename, t))
+      .map((d) => persistPrdDocForImport(db, projectId, d.contentMd, d.filename, t, d.docKind))
       .filter((id): id is string => !!id);
     return { docIds, legacyPrdId: undefined };
   }
@@ -2897,8 +2901,8 @@ export const PlanService = {
     createTasks?: boolean;
     prdMd?: string;
     prdFilename?: string;
-    /** T04064：多文件导入时逐份保留原文与原名，每份一条 prd_docs */
-    prdDocs?: Array<{ filename?: string; contentMd?: string }>;
+    /** T04064：多文件导入时逐份保留原文与原名，每份一条 prd_docs；T04897：docKind 标注文档类型 */
+    prdDocs?: Array<{ filename?: string; contentMd?: string; docKind?: 'prd' | 'design' | 'test' }>;
     onDuplicatePlan?: 'new' | 'reuse';
   }): { requirements: number; requirementsCreated: number; reusedRequirements: number; plans: number; tasks: number; unlinkedReqNos: string[]; prdId?: string; prdIds: string[]; reqNoMap: Array<{ from: string; to: string }>; dupPlanTitles: Array<{ title: string; existing: number; renamedTo?: string; reusedPlanId?: string }>; reusedPlans: number; ambiguousReqNos: string[]; orphanRequirements: Array<{ reqNo: string; title: string }>; planRowIds: Array<string | null> } {
     const db = getDb();
@@ -3038,8 +3042,8 @@ export const PlanService = {
     createTasks?: boolean;
     prdMd?: string;
     prdFilename?: string;
-    /** T04064：多文件导入的逐份文档（只读预演同样逐份比对是否新建/复用） */
-    prdDocs?: Array<{ filename?: string; contentMd?: string }>;
+    /** T04064：多文件导入的逐份文档（只读预演同样逐份比对是否新建/复用）；T04897：docKind 标注文档类型 */
+    prdDocs?: Array<{ filename?: string; contentMd?: string; docKind?: 'prd' | 'design' | 'test' }>;
     onDuplicatePlan?: 'new' | 'reuse';
   }): {
     willCreatePlans: number; willReusePlans: number; willRenamePlans: number;
@@ -3118,8 +3122,9 @@ export const PlanService = {
   listPrdDocs(projectId: string): Array<Record<string, unknown>> {
     const db = getDb();
     // T03159（U20）：带出 origin_hash，供前端在「确认版覆盖录入」前识别同源既有文档并给字符数摘要确认
+    // T04897：带出 doc_kind（'prd'/'design'/'test'），供 PRD 管理列表与 mtask_get_prd 区分文档类型
     return db.prepare(
-      `SELECT id, project_id, filename, status, origin_hash, LENGTH(content_md) AS content_chars, created_at, updated_at
+      `SELECT id, project_id, filename, status, doc_kind, origin_hash, LENGTH(content_md) AS content_chars, created_at, updated_at
        FROM prd_docs WHERE project_id = ? ORDER BY created_at DESC`,
     ).all(projectId) as Array<Record<string, unknown>>;
   },

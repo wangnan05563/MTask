@@ -378,6 +378,8 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
   const [prdSources, setPrdSources] = useSessionState<{ name: string; text: string }[]>(PERSIST_KEYS.sources, []);
   // T03700+：缺失分片（含原文）——会话级保留，切页后仍可补解析
   const [failedShards, setFailedShards] = useSessionState<FailedShardRow[]>(PERSIST_KEYS.failed, []);
+  // T04897：关联设计/测试文档——不参与 AI 解析，手动选文件读内容后随主 PRD 一起落 prd_docs（docKind 标注类型）
+  const [designDocs, setDesignDocs] = useState<Array<{ name: string; text: string; docKind: 'design' | 'test' }>>([]);
 
   // S2004：行字段更新回调下沉为组件级函数，避免 JSX 深层嵌套箭头
   const patchReq = (i: number, patch: Partial<PrdReq>) => setReqs((p) => p.map((x, j) => (j === i ? { ...x, ...patch } : x)));
@@ -386,6 +388,26 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
     setPlans((prev) => recalcMilestoneDurations(prev.map((x, j) => (j === i ? { ...x, ...patch } : x))));
   // S2004：已选文件删除回调同样下沉，避免 JSX 内 setPickedFiles 回调嵌套过深
   const removePickedFile = (idx: number) => setPickedFiles((prev) => prev.filter((_, j) => j !== idx));
+  // T04897：读取关联设计/测试文档（不参与 AI 解析，读原文后随主 PRD 落 prd_docs；类型缺省 design，可改）
+  const addDesignDocs = useCallback(async (files: File[]) => {
+    const items: Array<{ name: string; text: string; docKind: 'design' | 'test' }> = [];
+    for (const f of files) {
+      try {
+        const text = await f.text();
+        if (!text.trim()) continue;
+        items.push({ name: f.name, text, docKind: 'design' });
+      } catch (e) {
+        aiImportStore.log(`读取设计文档失败（已跳过）：${f.name} —— ${String((e as Error).message ?? e)}`, 'error');
+      }
+    }
+    if (items.length > 0) {
+      setDesignDocs((prev) => [...prev, ...items]);
+      aiImportStore.log(`已添加 ${items.length} 份关联文档（类型默认 design，可在列表中修改；随主 PRD 一起导入「PRD 管理」，不参与 AI 解析）`, 'ok');
+    }
+  }, []);
+  const patchDesignDoc = (i: number, patch: Partial<{ name: string; docKind: 'design' | 'test' }>) =>
+    setDesignDocs((prev) => prev.map((d, j) => (j === i ? { ...d, ...patch } : d)));
+  const removeDesignDoc = (i: number) => setDesignDocs((prev) => prev.filter((_, j) => j !== i));
   const { busy, fileName, error } = snap;
 
   useEffect(() => {
@@ -530,7 +552,11 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
         createTasks,
         requirements: rq.map(({ include: _inc, key: _key, ...rest }) => rest),
         plans: pl.map(({ include: _inc, key: _key, ...rest }) => ({ ...rest, reqNos: rest.reqNos.filter((n) => keptNos.has(n)) })),
-        prdDocs: prdSources.map((s) => ({ filename: s.name, contentMd: s.text })),
+        // T04897：主 PRD（prdSources）docKind 默认 prd；关联设计/测试文档（designDocs）带各自 docKind 一并落 prd_docs
+        prdDocs: [
+          ...prdSources.map((s) => ({ filename: s.name, contentMd: s.text, docKind: 'prd' as const })),
+          ...designDocs.map((d) => ({ filename: d.name, contentMd: d.text, docKind: d.docKind })),
+        ],
         prdMd: singleSource ? prdMd || undefined : undefined,
         prdFilename: singleSource ? prdFilename || undefined : undefined,
         // T02076：同名计划处置——'reuse' 走幂等补写，缺省新建让号
@@ -717,6 +743,17 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
               setPickedFiles((prev) => [...prev, ...fs]);
             }} />
         </label>
+        <label className="tbtn-anim" title="关联设计/测试文档（.md/.pdf，可多选）——不参与 AI 解析，读原文后随主 PRD 一起导入「PRD 管理」；类型默认 design，可在下方列表改为 test"
+          style={{ cursor: busy ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, border: '1px solid var(--border-strong)', color: 'var(--text-secondary)', fontSize: 'var(--fs-s)' }}>
+          <FileUp size={13} /> 添加设计文档{designDocs.length > 0 ? `（${designDocs.length}）` : ''}
+          <input type="file" multiple accept=".md,.markdown,.pdf,.txt" style={FILE_INPUT_SR_ONLY}
+            onChange={(e) => {
+              const fs = e.target.files ? Array.from(e.target.files) : [];
+              e.target.value = '';
+              if (fs.length === 0) return;
+              void addDesignDocs(fs);
+            }} />
+        </label>
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', cursor: 'pointer' }}
           title="勾选后：WBS 节点同时生成待办任务（携带需求关联），便于 AI 推进执行">
           <input type="checkbox" checked={createTasks} onChange={(e) => setCreateTasks(e.target.checked)} style={{ cursor: 'pointer' }} />
@@ -824,6 +861,33 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
               <span style={{ fontSize: 'var(--fs-s)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={f.name}>{f.name}</span>
               <button onClick={() => removePickedFile(i)} className="tbtn-anim"
                 title="删除 — 从已选列表中移除该文件，不再参与解析" aria-label="删除：移除已选文件"
+                style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px' }}>
+                <Trash2 size={13} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* T04897：关联设计/测试文档列表——不参与 AI 解析，随主 PRD 一起落 prd_docs；类型可改 design/test */}
+      {designDocs.length > 0 && (
+        <div data-t04897="design-docs" style={{ marginBottom: 10, border: '1px solid var(--border-strong)', borderRadius: 8, padding: '8px 10px', background: 'var(--card-bg)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+            <strong style={{ fontSize: 'var(--fs-s)' }}>关联文档（{designDocs.length}）</strong>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>不参与 AI 解析，导入时随主 PRD 落「PRD 管理」；类型可改</span>
+          </div>
+          {designDocs.map((d, i) => (
+            <div key={`${d.name}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0' }}>
+              <FileUp size={12} style={{ color: 'var(--text-secondary)', flexShrink: 0 }} />
+              <span style={{ fontSize: 'var(--fs-s)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={d.name}>{d.name}</span>
+              <select value={d.docKind} aria-label={`文档类型 ${d.name}`}
+                onChange={(e) => patchDesignDoc(i, { docKind: e.target.value as 'design' | 'test' })}
+                style={{ padding: '1px 4px', fontSize: 'var(--fs-xs)', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+                <option value="design">设计文档</option>
+                <option value="test">测试用例</option>
+              </select>
+              <button onClick={() => removeDesignDoc(i)} className="tbtn-anim"
+                title="移除该关联文档" aria-label={`移除关联文档 ${d.name}`}
                 style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px' }}>
                 <Trash2 size={13} />
               </button>

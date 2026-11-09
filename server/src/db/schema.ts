@@ -381,6 +381,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
       project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       filename    TEXT DEFAULT '',
       content_md  TEXT NOT NULL,
+      -- T04897：文档类型——'prd'=需求正文 | 'design'=设计文档 | 'test'=测试用例；默认 'prd'
+      doc_kind    TEXT NOT NULL DEFAULT 'prd',
       created_at  TEXT NOT NULL,
       updated_at  TEXT NOT NULL
     );
@@ -1022,6 +1024,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('prd_requirements', 'prd_id', 'prd_id TEXT');
   // T00770：PRD 文档状态流转——'prd'=草稿/评审中 | 'confirmed'=确认版（进入需求跟踪矩阵的正式基线）
   ensureColumn('prd_docs', 'status', "status TEXT NOT NULL DEFAULT 'prd'");
+  // T04897：文档类型——'prd'=需求正文 | 'design'=设计文档 | 'test'=测试用例；存量行回填默认 'prd'
+  ensureColumn('prd_docs', 'doc_kind', "doc_kind TEXT NOT NULL DEFAULT 'prd'");
   // T00821：同源生成批次标识——同一份 AI 生成多次「确认录入」据此覆盖同一条而非重复新建；空=未参与覆盖（不改动其它业务）
   ensureColumn('prd_docs', 'origin_hash', "origin_hash TEXT DEFAULT ''");
   // T00769：问题级别——blocker=🔴阻塞 | suggested=🟡建议 | info=🟢提示 | custom=用户自定义（空=未分级）

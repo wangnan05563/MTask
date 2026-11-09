@@ -28,8 +28,9 @@ export interface PrdContext {
   hitBy: PrdHitBy;
   /** T04896：该对象同项目下全部 prd_docs 的目录（主 PRD 在前，按 updated_at 倒序）。
    *  仅当命中路径为 req_ids（显式关联、跨多需求）时填充；单文档/requirement/title 命中为 undefined（不改变存量）。
-   *  供注入块尾追加「【本任务关联文档】」提示，让外部 AI 发现设计文档。 */
-  docIndex?: Array<{ prdId: string; filename: string; chars: number; hit: boolean }>;
+   *  供注入块尾追加「【本任务关联文档】」提示，让外部 AI 发现设计文档。
+   *  T04897：元素带 docKind（'prd'/'design'/'test'），formatPrdContext 据此在目录行外显类型标签。 */
+  docIndex?: Array<{ prdId: string; filename: string; chars: number; hit: boolean; docKind: 'prd' | 'design' | 'test' }>;
   /** T04896：全量命中正文（含多文档总预算截断结果），每篇一段。
    *  单文档场景与 `content` 同值（逐字一致）；多文档场景拼 `PRD 文档《A》相关原文：…\n…\nPRD 文档《B》相关原文：…`。
    *  调用方消费本字段替代裸 `content` 即可零成本获得多文档能力，存量单文档调用方不改也仍逐字一致。 */
@@ -136,12 +137,18 @@ function joinSegmentsMulti(primary: PrdDocSegment, rest: PrdDocSegment[]): strin
   return omitted > 0 ? `${lines.join('\n\n')}\n\n……（已省略 ${omitted} 篇关联 PRD，全文见 mtask_get_prd）` : lines.join('\n\n');
 }
 
-/** T04896：同项目 prd_docs 目录（主 PRD 在前，余按 updated_at 倒序），供注入块尾提示 */
+/** T04896：同项目 prd_docs 目录（主 PRD 在前，余按 updated_at 倒序），供注入块尾提示；T04897：透出 doc_kind */
 function buildDocIndex(db: ReturnType<typeof getDb>, projectId: string, primaryPrdId: string): PrdContext['docIndex'] {
   const rows = db.prepare(
-    `SELECT id, filename, content_md FROM prd_docs WHERE project_id = ? ORDER BY updated_at DESC`,
-  ).all(projectId) as { id: string; filename: string; content_md: string }[];
-  return rows.map((r) => ({ prdId: r.id, filename: r.filename, chars: r.content_md.length, hit: r.id === primaryPrdId }));
+    `SELECT id, filename, content_md, doc_kind FROM prd_docs WHERE project_id = ? ORDER BY updated_at DESC`,
+  ).all(projectId) as { id: string; filename: string; content_md: string; doc_kind: string }[];
+  return rows.map((r) => ({
+    prdId: r.id,
+    filename: r.filename,
+    chars: r.content_md.length,
+    hit: r.id === primaryPrdId,
+    docKind: (r.doc_kind === 'design' || r.doc_kind === 'test' ? r.doc_kind : 'prd') as 'prd' | 'design' | 'test',
+  }));
 }
 
 /**
@@ -200,7 +207,7 @@ export function formatPrdContext(prd: PrdContext | null): string | undefined {
     : `PRD 文档《${prd.filename || '未命名'}》相关原文：\n${prd.content}`;
   if (prd.docIndex && prd.docIndex.length > 0) {
     const idx = prd.docIndex
-      .map((d) => `${d.filename || '未命名'}(${d.hit ? 'prd' : 'doc'}, ${d.chars}字)`)
+      .map((d) => `${d.filename || '未命名'}(${d.docKind}, ${d.chars}字)`)
       .join(', ');
     out += `\n【本任务关联文档】prd_docs: [${idx}]；全文调 mtask_get_prd(prdId=...) 取`;
   }
