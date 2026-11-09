@@ -191,9 +191,13 @@ export function resolvePrdContext(target: { taskId?: string; planId?: string; re
  */
 export function formatPrdContext(prd: PrdContext | null): string | undefined {
   if (!prd) return undefined;
-  // contentMulti 单文档与 content 同值（逐字一致），多文档为拼接正文——统一取它即可零回归
-  const body = prd.contentMulti ?? prd.content;
-  let out = body;
+  // 单文档场景：contentMulti 与 content 同值（均为纯正文），须补 `PRD 文档《x》相关原文：` 前缀，
+  //   与 T04896 之前调用方裸拼逐字一致（红线）。多文档场景 contentMulti 已是 joinSegmentsMulti
+  //   拼好的带前缀多段文本，直接用。
+  const isMulti = prd.contentMulti != null && prd.contentMulti !== prd.content;
+  let out = isMulti
+    ? prd.contentMulti!
+    : `PRD 文档《${prd.filename || '未命名'}》相关原文：\n${prd.content}`;
   if (prd.docIndex && prd.docIndex.length > 0) {
     const idx = prd.docIndex
       .map((d) => `${d.filename || '未命名'}(${d.hit ? 'prd' : 'doc'}, ${d.chars}字)`)
