@@ -5,7 +5,7 @@ import { TaskService, type TaskView } from './TaskService';
 import { parseReqIds } from './reqStatusSync'; // T02164：摘要上下文需要任务/计划两侧的需求挂接，复用同一 req_ids 解析口径
 import { logService } from './LogService';
 import { getAdapter } from '../adapters';
-import { resolvePrdContext, type PrdContext } from '../util/prdContext'; // T00763：任务关联 PRD → AI 上下文自动注入（util 独立避免循环依赖）
+import { resolvePrdContext, formatPrdContext, type PrdContext } from '../util/prdContext'; // T00763：任务关联 PRD → AI 上下文自动注入（util 独立避免循环依赖）；T04896：formatPrdContext 统一拼装（多文档 + 文档目录）
 import { WorkspaceService } from './WorkspaceService'; // T00777：工作空间检索增强
 import type { StreamResult, SubmitResult, PollResult, TokenUsage, JobResult } from '../adapters/types';
 import type { ToolConfig } from '../adapters';
@@ -93,7 +93,7 @@ async function organizeOne(
       title: task.title,
       description,
       projectName: project?.name ?? '',
-      prdContext: prd ? `PRD 文档《${prd.filename || '未命名'}》相关原文：\n${prd.content}` : undefined,
+      prdContext: formatPrdContext(prd),
       workspacePath: project?.workspace_path || undefined, // T00771
     },
     config,
@@ -212,7 +212,8 @@ function buildSummaryUserPrompt(deps: {
     history ? `【历史状态（时间线，旧→新）】\n${history}` : '',
   ];
   const prd = deps.prd;
-  if (prd) blocks.push(`【关联 PRD 原文】\nPRD 文档《${prd.filename || '未命名'}》相关原文：\n${prd.content}`);
+  const prdBlock = prd ? formatPrdContext(prd) : undefined;
+  if (prdBlock) blocks.push(`【关联 PRD 原文】\n${prdBlock}`);
   return blocks.filter((b) => b.trim().length > 0).join('\n\n');
 }
 
@@ -802,7 +803,7 @@ export const AIService = {
         description: task.description,
         aiSummary: task.ai_summary ?? undefined,
         projectName: project?.name ?? '',
-        prdContext: prd ? `PRD 文档《${prd.filename || '未命名'}》相关原文：\n${prd.content}` : undefined,
+        prdContext: formatPrdContext(prd),
         workspacePath: project?.workspace_path || undefined, // T00771
       };
       // 发送前固化上下文快照（FR4.4）
@@ -828,7 +829,7 @@ export const AIService = {
         description: task.description,
         aiSummary: task.ai_summary ?? undefined,
         projectName: project?.name ?? '',
-        prdContext: prd ? `PRD 文档《${prd.filename || '未命名'}》相关原文：\n${prd.content}` : undefined,
+        prdContext: formatPrdContext(prd),
         workspacePath: project?.workspace_path || undefined, // T00771
       };
       // 与 buildSender 一致：提交前固化上下文快照，避免任务被改导致回执错位

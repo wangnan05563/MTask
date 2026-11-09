@@ -23,7 +23,7 @@ import { AIService } from '../services/AIService';
 import { MilestoneForecastService } from '../services/MilestoneForecastService'; // T03194（PM-204）：里程碑达成预测
 import { buildShareSnapshotPdf } from '../services/ShareSnapshotService'; // T03197（PM-404）：脱敏分享快照（pdfkit 由服务内部按需加载）
 import { backfillComplexity, listInvalid as listInvalidComplexity, listMissing as listMissingComplexity } from '../services/PlanComplexity'; // T01058 后续 / T02122：计划行复杂度批量补算 + 值域断言
-import { resolvePrdContext } from '../util/prdContext'; // T00763：计划关联 PRD → 评估上下文
+import { resolvePrdContext, formatPrdContext } from '../util/prdContext'; // T00763：计划关联 PRD → 评估上下文；T04896：formatPrdContext 统一拼装（多文档 + 文档目录）
 import { parseLimit, parseOffset, wantsTotal } from '../util/list-page'; // T02284：列表分页参数统一口径（limit/offset/total=1）
 import { exportGate, REPORT_GATE, EXPORT_QUEUE_WAIT_EXPORTED } from '../util/export-gate'; // T00789：导出类并发闸；T02105：启动会稿与周报共用 REPORT_GATE；M2-b：纯导出端点开有界排队
 import { startSseKeepalive } from './sseKeepalive'; // T03959：SSE 静默期保活帧（防长耗时模型调用期间链路被掐）
@@ -1470,7 +1470,7 @@ planApi.post('/ai-evaluate', async (req, res) => {
         assignee: typeof it.assignee === 'string' ? it.assignee : null,
       },
       toolId,
-      prd ? `PRD 文档《${prd.filename || '未命名'}》相关原文：\n${prd.content}` : undefined,
+      formatPrdContext(prd),
     );
     results.push({ id, ok: r.ok, evaluation: r.evaluation, error: r.error });
   }
