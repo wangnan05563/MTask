@@ -31,6 +31,7 @@ import {
   defaultExpandedBranches,
   defaultExpandedRepos,
   inputsForActiveWorkspace,
+  localOnlyRefInputs,
   mapSettledWithLimit,
   mergePaneSelections,
   paneKeyOf,
@@ -178,6 +179,8 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
 
   /* ---------- T04527：分支聚合（多仓库）视图。缺省关闭，关闭时下面这些状态一概不参与渲染 ---------- */
   const [repoView, setRepoView] = useState(initialRepoView === true);
+  /** T04883：分组视图默认只列本地分支；勾上「显示远程分支」才把远程跟踪引用放回分组 */
+  const [showRemoteBranches, setShowRemoteBranches] = useState(false);
   /** 引用普查结果（每个仓库一份 refs）；null = 还没普查过，此时不画任何分组层 */
   const [census, setCensus] = useState<RepoBranchInput[] | null>(null);
   const [scanning, setScanning] = useState(false);
@@ -202,6 +205,12 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   /** T04583：先把普查输入收窄到当前项目的工作空间，再归组/列不可用行——否则跨工作空间的所选项目
    *  会把别的工作空间的分支一并显示，项目下拉切换只改排序不改成员（过滤失效）。同目录子仓库照旧保留。 */
   const scopedCensus = useMemo(() => (census ? inputsForActiveWorkspace(census, projectId) : []), [census, projectId]);
+  /** T04883：分组视图的数据源——默认只留本地分支；勾「显示远程分支」才用全量普查引用。
+   *  起点分支候选仍走全量 census（含远程），用户可通过搜索/输入框手动按远程分支取数。 */
+  const groupInputs = useMemo(
+    () => (showRemoteBranches ? scopedCensus : localOnlyRefInputs(scopedCensus)),
+    [scopedCensus, showRemoteBranches],
+  );
   /** T04584：起点分支候选。普查前退回根仓库 refs（外观与改造前一致）；展开输入框触发普查后，
    *  换成「当前项目根仓库 + 子仓库」的并集，子仓库分支带 repoSub 标注，选中即按该仓库取数。 */
   const headOptions = useMemo<BranchOption[]>(
@@ -209,8 +218,8 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
     [census, scopedCensus, projectId, refs],
   );
   const repoGroups = useMemo(
-    () => applyCommitCounts(buildRepoBranchGroups(scopedCensus, projectId), countsByPane),
-    [scopedCensus, projectId, countsByPane],
+    () => applyCommitCounts(buildRepoBranchGroups(groupInputs, projectId), countsByPane),
+    [groupInputs, projectId, countsByPane],
   );
   /** 未绑定/取数失败的仓库：没有 refs 可归组，但要单独成行（验收点 5） */
   const blockedRows = useMemo(() => blockedRepoRows(scopedCensus, projectId), [scopedCensus, projectId]);
@@ -264,7 +273,8 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
       setCensus(next);
       // 首屏折叠：只把「当前项目所在的那条分支」摊开，其余仓库要点一下才取数（方案 §3.3）
       // T04583：默认展开按「收窄到当前工作空间后」的分组算，与视图显示成员一致
-      const groups = buildRepoBranchGroups(inputsForActiveWorkspace(next, projectId), projectId);
+      const scoped = inputsForActiveWorkspace(next, projectId);
+      const groups = buildRepoBranchGroups(showRemoteBranches ? scoped : localOnlyRefInputs(scoped), projectId);
       setOpenBranches((prev) => (prev.length ? prev : defaultExpandedBranches(groups, projectId)));
       setOpenRepos((prev) => (prev.length
         ? prev
@@ -555,6 +565,14 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
               </button>
             </div>
           )}
+          {/* T04883：分组视图默认只列本地分支；要看远程跟踪引用由用户显式勾选，不再默认全量加载 */}
+          {repoView && (
+            <label data-lck="git-tree-show-remote" title="默认只列本地分支；勾选后把各仓库的远程跟踪引用一起纳入分组"
+              style={{ display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
+              <input type="checkbox" checked={showRemoteBranches} onChange={(e) => setShowRemoteBranches(e.target.checked)} />
+              显示远程分支
+            </label>
+          )}
         </div>
 
         {!foldRefs && visibleRefs.length > 0 && (
@@ -565,7 +583,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
               const branch = branchNameOf(r) ?? r.name;
               const repoCount = repoCountByBranch[branch] ?? 0;
               return (
-                <button key={`${r.type}:${r.name}`} type="button" data-lck="git-tree-ref" data-ref={r.name}
+                <button key={`${r.type}:${r.name}`} type="button" className="row-title-btn" data-lck="git-tree-ref" data-ref={r.name}
                   data-repo-count={repoCount > 1 ? repoCount : undefined}
                   onClick={() => onChipClick(r)}
                   style={{ ...chipStyle, cursor: 'pointer', background: head === r.name && !allBranches && !repoView ? 'var(--accent)' : 'var(--surface)', color: head === r.name && !allBranches && !repoView ? '#fff' : 'var(--text-secondary)' }}>
@@ -736,7 +754,7 @@ function CommitRows({ commits, selected, expandedSet, keyPrefix, onRowClick, onT
               <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 90 }} title={fullTime(c.date)}>{relTime(c.date)}</span>
               <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 64 }} title={c.author}>{c.author}</span>
             </button>
-            <button type="button" onClick={(e) => { e.stopPropagation(); onToggleRowExpand(c.sha); }} aria-label={open ? '收起提交详情' : '展开提交详情'}
+            <button type="button" className="row-title-btn" onClick={(e) => { e.stopPropagation(); onToggleRowExpand(c.sha); }} aria-label={open ? '收起提交详情' : '展开提交详情'}
               aria-expanded={open} data-lck="git-tree-expand"
               style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 0, display: 'inline-flex', alignItems: 'center', height: 16 }}>
               {open ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
@@ -815,7 +833,7 @@ function RepoBranchGroupList({ groups, blocked, activeProjectId, panes, openBran
         const branchOpen = openBranches.includes(group.branchKey);
         return (
           <div key={group.branchKey} data-lck="git-repo-group" data-branch={group.branchName}>
-            <button type="button" data-lck="git-repo-branch" aria-expanded={branchOpen} onClick={() => onToggleBranch(group.branchKey)} style={groupHeadStyle}>
+            <button type="button" className="row-title-btn" data-lck="git-repo-branch" aria-expanded={branchOpen} onClick={() => onToggleBranch(group.branchKey)} style={groupHeadStyle}>
               {branchOpen ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
               <GitBranch size={13} style={{ color: 'var(--accent)' }} />
               <span style={{ fontWeight: 600 }}>{group.branchName}</span>
@@ -838,7 +856,7 @@ function RepoBranchGroupList({ groups, blocked, activeProjectId, panes, openBran
               return (
                 <div key={paneKey} data-lck="git-repo-repo" data-project={row.projectId} data-repo-sub={row.repoSub || '.'} data-status={row.status}
                   style={{ marginLeft: 12, paddingLeft: 8, borderLeft: '2px solid var(--border)', background: repoOpen ? 'var(--surface-2)' : 'transparent' }}>
-                  <button type="button" data-lck="git-repo-repo-toggle" aria-expanded={repoOpen} disabled={!row.available}
+                  <button type="button" className="row-title-btn" data-lck="git-repo-repo-toggle" aria-expanded={repoOpen} disabled={!row.available}
                     onClick={() => {
                       const nextOpen = !repoOpen;
                       onToggleRepo(paneKey);

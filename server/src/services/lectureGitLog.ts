@@ -12,8 +12,8 @@ import { getDb } from '../db/connection';
 import { ACTIVE_PROJECT_WHERE } from '../util/projectRouting';
 import {
   GIT_GRAPH_DEFAULT_PAGE,
-  GIT_GRAPH_MAX_PAGE,
   GitCollectError,
+  collectAllRefNames,
   collectAuthorNames,
   collectGitGraph,
   collectRepoBasicMeta,
@@ -84,21 +84,6 @@ const toCommit = (e: GitGraphEntry): GitLogCommit => ({
   date: e.date,
   subject: e.subject,
 });
-
-/** 从提交装饰里聚合去重的分支/标签名（`--all` 窗口内的可见引用） */
-function collectRefNames(entries: readonly GitGraphEntry[]): GitRefName[] {
-  const seen = new Set<string>();
-  const out: GitRefName[] = [];
-  for (const e of entries) {
-    for (const r of e.refs) {
-      const key = `${r.type}:${r.name}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(r);
-    }
-  }
-  return out.sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name));
-}
 
 function fail(project: ProjectRow | undefined, req: GitLogRequest, kind: string, message: string): GitLogResult {
   return {
@@ -208,9 +193,10 @@ export async function queryGitLog(req: GitLogRequest): Promise<GitLogResult> {
     });
     const firstPage = (req.skip ?? 0) === 0 && !(req.search ?? '').trim();
     if (firstPage) {
-      // 引用清单一次独立取数：只看当前分支的话，别的热分支根本不会出现在装饰里
-      const all = await collectGitGraph(repoPath, { all: true, limit: GIT_GRAPH_MAX_PAGE });
-      refs = collectRefNames(all.commits);
+      // T04883：引用清单改由 for-each-ref 全量取，不再受 `git log --all` 的提交窗口限制。
+      // 旧口径只收窗口内提交的装饰，子仓库独有/久未更新的分支 tip 落在窗口外就整个丢失，
+      // 分组视图与起点分支候选都查不到它；这里一条只读命令取齐三类命名空间。
+      refs = await collectAllRefNames(repoPath);
     }
   } catch (e) {
     const kind = e instanceof GitCollectError ? e.kind : 'failed';
@@ -289,7 +275,14 @@ export async function queryGitRepos(req: GitReposRequest): Promise<GitReposResul
   try {
     // T04586：清单要覆盖「任意层级」的嵌套仓库，故深度不设浅上限（discoverNestedRepos 缺省 2 层留给
     // 聚合普查/提取卡等旧调用方保持向后兼容）；性能仍由 maxScanDirs/maxCount 兜底，截断经 truncated 显式告知。
-    const found = await discoverNestedRepos(workspacePath, { maxDepth: Number.POSITIVE_INFINITY });
+    // T04883：census 额外开启 descendIntoRepos —— 一个目录被认定为仓库后仍继续下钻。像
+    // `BEMP5.0DEV/banks` 这种「本身是仓库、内部还可能装着别的仓库」的分组目录，旧口径命中即边界，
+    // 内部仓库连同它们的分支整个不出现。上限同步放宽，避免深层清单先被 40 条截断。
+    const found = await discoverNestedRepos(workspacePath, {
+      maxDepth: Number.POSITIVE_INFINITY,
+      descendIntoRepos: true,
+      maxCount: 200,
+    });
     if (!found.repos.length) {
       return { ok: false, ...named, workspacePath, truncated: found.truncated, scannedDirs: found.scannedDirs,
         error: { kind: 'not-a-repo', message: '该工作空间目录及其子目录内没有 Git 仓库' } };

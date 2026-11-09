@@ -10,8 +10,9 @@
  * 三条口径：
  *  1. **以 `.git` 实体为唯一判据**（目录或 worktree/子模块的 gitfile 都算）：不做「看起来像工程目录」的猜测，
  *     否则 `node_modules` 里每个包都会冒充仓库；
- *  2. **命中即边界**：一个目录被认定为仓库后不再往里下钻——仓库内再嵌仓库属于该仓库自己的事务，
- *     列出来只会让清单变噪音；
+ *  2. **命中即边界（默认）**：一个目录被认定为仓库后不再往里下钻——仓库内再嵌仓库属于该仓库自己的事务，
+ *     列出来只会让清单变噪音；`descendIntoRepos`（T04883，仅 `/git/repos` 普查开启）是例外：分组目录
+ *     本身是仓库、内部仍装着独立仓库时（如 `BEMP5.0DEV/banks`），继续下钻才不会把那些仓库连同分支漏掉；
  *  3. **有界**：深度、目录数、返回条数全部有上限，发现过程不许变成全盘扫描（工作空间可能是几百 GB 的代码树）。
  *
  * 只读：本模块只 `readdir`/`stat`，绝不 fork git、绝不写任何文件。
@@ -95,12 +96,14 @@ function toPosixRel(workspacePath: string, absPath: string): string {
  */
 export async function discoverNestedRepos(
   workspacePath: string,
-  limits: { maxDepth?: number; maxCount?: number; maxScanDirs?: number } = {},
+  limits: { maxDepth?: number; maxCount?: number; maxScanDirs?: number; descendIntoRepos?: boolean } = {},
 ): Promise<DiscoverReposResult> {
   const root = path.resolve(workspacePath);
   const maxDepth = limits.maxDepth ?? NESTED_REPO_MAX_DEPTH;
   const maxCount = limits.maxCount ?? NESTED_REPO_MAX_COUNT;
   const maxScanDirs = limits.maxScanDirs ?? NESTED_REPO_MAX_SCAN_DIRS;
+  /** T04883：默认保持「命中即边界」，仅普查显式开启时才进仓库目录内部继续找 */
+  const descendIntoRepos = limits.descendIntoRepos ?? false;
   const repos: NestedRepo[] = [];
   let scannedDirs = 0;
   let truncated = false;
@@ -127,9 +130,11 @@ export async function discoverNestedRepos(
       scannedDirs += 1;
       const isRepo = await hasGitEntry(abs);
       if (isRepo) {
-        if (repos.length >= maxCount) { truncated = true; continue; }
-        repos.push({ subPath: toPosixRel(root, abs), absPath: abs, displayName: entry.name, isRoot: false });
-        continue; // 口径 2：命中即边界，不再下钻
+        if (repos.length >= maxCount) truncated = true;
+        else repos.push({ subPath: toPosixRel(root, abs), absPath: abs, displayName: entry.name, isRoot: false });
+        // T04883：census 开启 descendIntoRepos 时不停在这里，继续把该目录压进队列；
+        // 仍受 maxDepth / maxScanDirs 约束，且 .git、node_modules 等由 isSkippedName 挡住。
+        if (!descendIntoRepos) continue; // 口径 2：默认命中即边界，不再下钻
       }
       // 符号链接指向目录才继续下钻；链接环路由 maxScanDirs 兜住
       if (entry.isSymbolicLink()) {

@@ -1769,6 +1769,30 @@ async function collectRefTypes(cwd: string, opts: GitCollectOptions): Promise<Ma
   return parseRefNameList(r.stdout);
 }
 
+/**
+ * T04883：独立的**全量引用清单**，不走 `git log --all` 的提交窗口。
+ *
+ * 旧实现在 `/git/log` 首页用 `collectGitGraph({ all: true, limit: GIT_GRAPH_MAX_PAGE })` 的
+ * 提交装饰聚合 refs：只有指向窗口内那几百条提交的引用才会出现。久未更新、或在子仓库里
+ * 单独存在的分支，其 tip 落在窗口之外，于是分组视图和起点分支候选都「查不到这条分支」。
+ * `for-each-ref` 一次取齐 heads/remotes/tags 三个命名空间，与提交窗口大小无关，也少跑一次全量 log。
+ */
+export async function collectAllRefNames(cwd: string, opts: GitCollectOptions = {}): Promise<GitRefName[]> {
+  const bySha = await collectRefTypes(cwd, opts);
+  const seen = new Set<string>();
+  const out: GitRefName[] = [];
+  for (const list of bySha.values()) {
+    for (const ref of list) {
+      const key = `${ref.type}:${ref.name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(ref);
+    }
+  }
+  // 与旧 `collectRefNames` 的展示顺序一致（类型 → 名称），避免分组/候选列表顺序抖动
+  return out.sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name));
+}
+
 function parseGraphLog(stdout: string): GitGraphEntry[] {
   const out: GitGraphEntry[] = [];
   for (const line of stdout.split('\n')) {

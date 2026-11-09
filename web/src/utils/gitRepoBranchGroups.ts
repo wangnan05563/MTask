@@ -201,6 +201,18 @@ export function inputsForActiveWorkspace(inputs: readonly RepoBranchInput[], act
 }
 
 /**
+ * T04883：「按仓库分组」默认只列本地分支。
+ *
+ * census 拿回的是 heads/remotes/tags 三类引用，旧口径把它们一起归组：每个 `origin/x`
+ * 都被归一成一条分支组，远程分支数量往往数倍于本地，分组列表一开就铺满噪声。
+ * 这里按服务端给的可信 `ref.type` 只留 `branch`（tag 本就不参与分组），远程引用由
+ * UI 开关显式打开后再放回。返回新数组、不改原 inputs——起点分支候选与不可用行还要用全量。
+ */
+export function localOnlyRefInputs(inputs: readonly RepoBranchInput[]): RepoBranchInput[] {
+  return inputs.map((input) => ({ ...input, refs: input.refs.filter((r) => r.type === 'branch') }));
+}
+
+/**
  * T04584：把普查输入折算成「起点分支」输入框的候选列表。
  *
  * 单仓库形态的 head 输入框过去只拿根仓库的 refs，工作空间目录里的子仓库（banks/deploy…）分支
