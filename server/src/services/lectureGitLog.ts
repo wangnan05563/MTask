@@ -22,6 +22,7 @@ import {
   type GitRefName,
 } from './gitCollect';
 import { discoverNestedRepos, isRepositoryRoot, resolveRepoSubPath, type NestedRepo } from './nestedRepos';
+import { cacheGet, cacheSet } from '../util/ttl-cache';
 
 export interface GitLogRequest {
   projectId: string;
@@ -238,6 +239,11 @@ export interface GitReposResult {
 /** T04586：元数据取数并发上限——清单可能几十个子仓库，逐个 fork git 会拖慢整视图 */
 const REPO_META_CONCURRENCY = 4;
 
+/** T04886：仓库发现 + 元数据取数结果的内存缓存 TTL。普查（`/git/repos`）会递归扫描目录并逐仓库 fork git，
+ *  在极宽工作空间下开销显著（实测 BEMP5.0DEV 全量扫描约 4 分钟）；用户连续打开/刷新弹窗时命中缓存即可省掉整段开销。
+ *  选 TTL 而非「目录 mtime 摘要」：摘要本身需遍历全树，开销≈扫描，得不偿失；30s 覆盖交互窗口已足够。 */
+const GIT_REPOS_CACHE_TTL = 30_000;
+
 /** T04586：给发现到的每个仓库补 当前分支/最新提交/origin URL（空仓库/无远端回空串，不剔除该仓库）。 */
 async function enrichReposWithMeta(repos: NestedRepo[]): Promise<NestedRepo[]> {
   const out = [...repos];
@@ -272,6 +278,10 @@ export async function queryGitRepos(req: GitReposRequest): Promise<GitReposResul
   const named = { ...base, projectName: project.name };
   const workspacePath = (project.workspace_path ?? '').trim();
   if (!workspacePath) return { ok: false, ...named, error: { kind: 'no-workspace', message: '未配置工作空间路径（请在项目管理中补配）' } };
+  // T04886：缓存命中直接返回，跳过递归扫描 + 逐仓库元数据 fork（仅缓存 ok:true，失败结果不缓存以免掩盖配置变更）。
+  const cacheKey = `git-repos:${workspacePath}`;
+  const cached = cacheGet<GitReposResult>(cacheKey);
+  if (cached) return cached;
   try {
     // T04586：清单要覆盖「任意层级」的嵌套仓库，故深度不设浅上限（discoverNestedRepos 缺省 2 层留给
     // 聚合普查/提取卡等旧调用方保持向后兼容）；性能仍由 maxScanDirs/maxCount 兜底，截断经 truncated 显式告知。
@@ -288,7 +298,9 @@ export async function queryGitRepos(req: GitReposRequest): Promise<GitReposResul
         error: { kind: 'not-a-repo', message: '该工作空间目录及其子目录内没有 Git 仓库' } };
     }
     const repos = await enrichReposWithMeta(found.repos);
-    return { ok: true, ...named, workspacePath, repos, truncated: found.truncated, scannedDirs: found.scannedDirs };
+    const result: GitReposResult = { ok: true, ...named, workspacePath, repos, truncated: found.truncated, scannedDirs: found.scannedDirs };
+    cacheSet(cacheKey, result, GIT_REPOS_CACHE_TTL);
+    return result;
   } catch (e) {
     return { ok: false, ...named, workspacePath, error: { kind: 'failed', message: e instanceof Error ? e.message : String(e) } };
   }

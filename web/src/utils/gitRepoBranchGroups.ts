@@ -435,6 +435,9 @@ export interface RepoListResult {
   ok: boolean;
   repos?: { subPath?: string }[];
   workspacePath?: string;
+  /** T04886：因深度/条数上限被截断——前端要显式提示，不能让清单看起来是全集 */
+  truncated?: boolean;
+  scannedDirs?: number;
   error?: { kind?: string; message?: string };
 }
 

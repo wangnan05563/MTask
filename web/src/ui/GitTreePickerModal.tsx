@@ -184,6 +184,8 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   /** 引用普查结果（每个仓库一份 refs）；null = 还没普查过，此时不画任何分组层 */
   const [census, setCensus] = useState<RepoBranchInput[] | null>(null);
   const [scanning, setScanning] = useState(false);
+  /** T04886：逐项目 `/git/repos` 的截断信息（因目录上限未扫全），用于显式提示，不阻断正常列出 */
+  const [truncations, setTruncations] = useState<{ projectId: string; projectName: string; truncated: boolean; scannedDirs: number }[]>([]);
   /** 「仓库 × 分支」窗口：懒加载回来的提交、勾选、取数状态与错误 */
   const [panes, setPanes] = useState<Record<string, RepoPane>>({});
   const [paneAnchor, setPaneAnchor] = useState<Record<string, number | null>>({});
@@ -271,6 +273,11 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
       const next = targets.map((t, i) => repoInputFromScan(
         { id: t.projectId, name: t.projectName, workspacePath: t.workspacePath, repoSub: t.repoSub }, settled[i]));
       setCensus(next);
+      // T04886：把逐项目的截断信息挑出来，供 UI 显式提示（不阻断列表）
+      setTruncations(scanProjects.map((p, i) => {
+        const v = repoLists[i]?.status === 'fulfilled' ? repoLists[i].value : undefined;
+        return { projectId: p.id, projectName: p.name, truncated: !!v?.truncated, scannedDirs: Number(v?.scannedDirs ?? 0) };
+      }));
       // 首屏折叠：只把「当前项目所在的那条分支」摊开，其余仓库要点一下才取数（方案 §3.3）
       // T04583：默认展开按「收窄到当前工作空间后」的分组算，与视图显示成员一致
       const scoped = inputsForActiveWorkspace(next, projectId);
@@ -602,6 +609,13 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
         )}
 
         {error && <p data-lck="git-tree-error" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', margin: '2px 0 8px' }}>{error}</p>}
+
+        {/* T04886：扫描被目录上限截断时显式提示，避免用户误以为「真的没有更多仓库」 */}
+        {!scanning && truncations.some((t) => t.truncated) && (
+          <div data-lck="git-tree-truncated" style={{ fontSize: 'var(--fs-s)', color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '6px 10px', marginBottom: 8 }}>
+            部分项目扫描已达目录上限（最多扫描 {Math.max(...truncations.filter((t) => t.truncated).map((t) => t.scannedDirs))} 个目录），深层仓库可能未列出。若缺少预期仓库，请在项目管理中收窄工作空间路径。
+          </div>
+        )}
 
         {repoView ? (
           <RepoBranchGroupList groups={repoGroups} blocked={blockedRows} activeProjectId={projectId}
