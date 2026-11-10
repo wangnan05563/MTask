@@ -65,6 +65,8 @@ export interface PrdParseResult {
   failedChunkIds?: string[];
   /** T03700+：服务端自动补齐的计划行对应的需求编号（原缺口需求） */
   autoFilledReqNos?: string[];
+  /** 2026-11-10 质量复核优化②：服务端跨片合并后检测到的并行 WBS 套数（>1 需归一化） */
+  wbsGroups?: number;
 }
 
 /**

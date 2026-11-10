@@ -52,13 +52,22 @@ export function addChildEdge(deps: string | null | undefined, parentId: string):
  * 与 `PlanService.milestoneDurations`（导入侧工期汇总）同一口径，保证「归属」与「工期汇总」不漂。
  * 返回 [{ index: 子行下标, parentIndex: 父里程碑下标 }]；首个里程碑之前的行无归属（不归任何里程碑）。
  */
-export function intervalChildEdges(items: Array<{ kind?: string }>): Array<{ index: number; parentIndex: number }> {
+export function intervalChildEdges(
+  items: Array<{ kind?: string }>,
+  /**
+   * 2026-11-10 质量复核优化⑥：系统自动补齐的占位行不归属任何里程碑。
+   * 背景：补齐行被追加在末尾/段尾，旧区间规则把它们全挂到「最后一个里程碑」下，
+   * 实测「6 审批路线与匹配」工期 2 却挂了 25 个子项，进度聚合与包络重算双双失真。
+   * 跳过只影响 child 边，不改行本身、不改工期汇总以外的任何字段。
+   */
+  options?: { skip?: (index: number, item: { kind?: string }) => boolean },
+): Array<{ index: number; parentIndex: number }> {
   const out: Array<{ index: number; parentIndex: number }> = [];
   let parent = -1;
   for (let i = 0; i < items.length; i++) {
     const kind = items[i]?.kind;
     if (kind === 'milestone') { parent = i; continue; }
-    if (kind === 'normal' && parent >= 0) out.push({ index: i, parentIndex: parent });
+    if (kind === 'normal' && parent >= 0 && !options?.skip?.(i, items[i])) out.push({ index: i, parentIndex: parent });
   }
   return out;
 }
