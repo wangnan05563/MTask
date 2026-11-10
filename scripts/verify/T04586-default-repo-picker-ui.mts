@@ -80,6 +80,26 @@ const reqs: string[] = [];
 const attrOf = (pg: any, sel: string, name: string) => pg.locator(sel).first().getAttribute(name).catch(() => null);
 const textOf = (pg: any, sel: string) => pg.locator(sel).first().innerText().catch(() => '');
 const hasReq = (frag: string) => reqs.some((u) => u.includes(frag));
+/** 平铺首屏要连走「根仓库取数 → /git/repos → 切到真实子仓库再取数」两段异步，
+ *  固定 sleep 在慢实例上会把「还没回来」误判成「取不到提交」，一律按行数条件轮询。 */
+const waitRows = async (pg: any, predicate: (n: number) => boolean, tries = 60) => {
+  for (let i = 0; i < tries; i += 1) {
+    const n = await pg.locator('button[data-lck="git-tree-select"]').count();
+    if (predicate(n)) return n;
+    await pg.waitForTimeout(250);
+  }
+  return pg.locator('button[data-lck="git-tree-select"]').count();
+};
+/** 切换仓库后要等「带该 repoSub 的请求已发出 + 新仓库提交行已渲染」两段异步都完成；
+ *  各夹具仓库提交数相同（都是 1 条），单看行数会命中切换前的旧结果，故按提交标题判定。 */
+const waitCommit = async (pg: any, frag: string, subject: string, tries = 60) => {
+  const sel = `button[data-lck="git-tree-select"][aria-label*="${subject}"]`;
+  for (let i = 0; i < tries; i += 1) {
+    if (hasReq(frag) && (await pg.locator(sel).count()) > 0) return true;
+    await pg.waitForTimeout(250);
+  }
+  return false;
+};
 
 /** 用真实用户路径打开「从 Git 树选范围」弹窗（每个场景独立 context，避免 localStorage 串项目） */
 async function openPicker(project: any) {
@@ -127,7 +147,7 @@ try {
   /* ---------- A 组 · 默认平铺视图：打开即列出全部仓库 ---------- */
   const { ctx, p } = await openPicker(projectA);
   await p.waitForSelector('[data-lck="git-tree-repo-select"]', { timeout: 30000 });
-  await p.waitForTimeout(1200);
+  await waitRows(p, (n) => n > 0);
   ok('A-01 默认仍是「按时间顺序混合显示」（T04595 裁决未被反转）',
     (await attrOf(p, '[data-lck="git-tree-mode-time"]', 'aria-pressed')) === 'true'
     && (await attrOf(p, '[data-lck="git-tree-repo-view"]', 'aria-pressed')) === 'false');
@@ -153,14 +173,14 @@ try {
 
   /* ---------- B 组 · 逐仓库切换（含三级嵌套） ---------- */
   await p.selectOption('[data-lck="git-tree-repo-select"]', 'banks');
-  await p.waitForTimeout(1200);
-  ok('B-01 切到 banks：请求带 repoSub=banks 且取到提交',
-    hasReq('repoSub=banks') && (await p.locator('button[data-lck="git-tree-select"]').count()) > 0);
+  await waitCommit(p, 'repoSub=banks', 'init banks');
+  ok('B-01 切到 banks：请求带 repoSub=banks 且取到该仓库提交',
+    hasReq('repoSub=banks') && (await p.locator('button[data-lck="git-tree-select"][aria-label*="init banks"]').count()) > 0);
   ok('B-02 切仓库后底部标注同步为 banks', (await textOf(p, '[data-lck="git-tree-selected"]')).includes(' · banks'));
   await p.selectOption('[data-lck="git-tree-repo-select"]', 'grp/sub/deep');
-  await p.waitForTimeout(1200);
-  ok('B-03 切到三级嵌套 grp/sub/deep：请求带编码后的 repoSub 且取到提交',
-    hasReq('repoSub=grp%2Fsub%2Fdeep') && (await p.locator('button[data-lck="git-tree-select"]').count()) > 0);
+  await waitCommit(p, 'repoSub=grp%2Fsub%2Fdeep', 'init deep');
+  ok('B-03 切到三级嵌套 grp/sub/deep：请求带编码后的 repoSub 且取到该仓库提交',
+    hasReq('repoSub=grp%2Fsub%2Fdeep') && (await p.locator('button[data-lck="git-tree-select"][aria-label*="init deep"]').count()) > 0);
   ok('B-04 三级嵌套仓库标注正确', (await textOf(p, '[data-lck="git-tree-selected"]')).includes(' · grp/sub/deep'));
 
   /* ---------- C 组 · 分组视图回归（本轮不得破坏旧聚合能力） ---------- */
@@ -178,7 +198,7 @@ try {
   /* ---------- D 组 · 向后兼容：根本身就是仓库 ---------- */
   const second = await openPicker(projectB);
   await second.p.waitForSelector('[data-lck="git-tree-repo-select"]', { timeout: 30000 });
-  await second.p.waitForTimeout(1000);
+  await waitRows(second.p, (n) => n > 0);
   const rootVal = await second.p.locator('[data-lck="git-tree-repo-select"]').inputValue();
   ok('D-01 根是仓库时默认 repoSub 仍为 ""（旧单仓库取数逻辑不变）', rootVal === '', `value=${rootVal}`);
   ok('D-02 单仓库场景仍显示选择器且只有 1 项，提交正常加载',
