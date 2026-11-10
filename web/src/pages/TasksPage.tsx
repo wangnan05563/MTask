@@ -3358,8 +3358,12 @@ export function TasksPage() {
       }
       return { title: '取消编辑处理结果 — 放弃未保存的修改', aria: '取消编辑处理结果：放弃未保存的修改' };
     })();
+    // T05439：本行左侧是「切换任务完成状态」勾选框。原来整行 marginLeft:32 时，
+    // 勾选框 x ≈ 标题行任务编号 x（置顶图标 21 + gap 8 ≈ 29），两者几乎垂直对齐——
+    // 双击编号复制时鼠标稍下移就命中勾选框，误把任务标成完成。
+    // 整行贴到行首后勾选框与编号水平错开约 30px，误触消除；不影响右侧优先级/分类/按钮组。
     return (
-      <div className="task-op task-toolbar" style={{ marginLeft: 32, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+      <div className="task-op task-toolbar" style={{ marginLeft: 0, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
         {/* T00547：完成状态/验证结果控件——与工具栏同行、靠左显示（marginRight auto 分隔左右两组）
             T03700：验证结果紧贴 Git 徽标右侧（原在状态开关之后，距「切换任务完成状态」过近易误触）；
             组内间距提到 12px，徽标隐藏（gitOn=false）时两者也保持 ≥12px 的间距 */}
