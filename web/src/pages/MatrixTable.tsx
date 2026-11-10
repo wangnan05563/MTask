@@ -74,6 +74,40 @@ const renderTitleTodoActions = (): ReactNode => (
 
 /** 需求跟踪矩阵主表（含空态）；`x` 形参为 TS 收窄后的惯用命名，勿误读为闭包 x */
 // T03185（UX-05⑤）：占位按钮改禁用后不再需要 `flash`，形参一并摘掉（父级调用点同步）
+/**
+ * T05437：「关联PRD / 关联SDD」文档名单元格（模块级定义，避免每次渲染新建组件类型导致重挂载）。
+ *
+ * 旧实现里按钮是 inline-flex、内部 span 只写了 `overflow:hidden/textOverflow:ellipsis`，
+ * 但 flex 子项默认 `min-width:auto` 不会收缩——省略号根本不生效，长文件名把单元格撑宽并换行，
+ * 单条记录高度被抬高。这里给按钮与 span 都补 `minWidth:0`，配 `whiteSpace:nowrap` 强制单行，
+ * 悬浮用原生 title 给出完整文件名（不引入任何 tooltip 依赖）。
+ */
+function DocCell({ doc, kind, onOpen, titleDetail }: {
+  readonly doc: { filename: string } | null | undefined;
+  readonly kind: 'prd' | 'sdd';
+  readonly onOpen: () => void;
+  readonly titleDetail?: string;
+}) {
+  if (!doc) return <span style={{ color: 'var(--text-muted)' }}>—</span>;
+  const label = kind === 'prd' ? 'PRD' : 'SDD';
+  const head = kind === 'prd' ? '打开 PRD 原文' : '打开方案设计原文';
+  return (
+    <button type="button" onClick={onOpen} className="tbtn-anim"
+      title={`${head}：${doc.filename}${titleDetail ?? ''}`}
+      aria-label={`打开关联 ${label} ${doc.filename}`}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)',
+        border: 'none', background: 'transparent', color: 'var(--accent)', cursor: 'pointer',
+        padding: 0, maxWidth: '100%', minWidth: 0, textAlign: 'left',
+      }}>
+      <FileText size={11} style={{ flexShrink: 0 }} />
+      <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {doc.filename}
+      </span>
+    </button>
+  );
+}
+
 export function MatrixTable({ p }: { readonly p: MatrixTableProps }) {
   const { rows, multi, selIds, caseCounts, queryId, linkFor, allRef } = p;
 
@@ -215,28 +249,13 @@ export function MatrixTable({ p }: { readonly p: MatrixTableProps }) {
               </td>
               <MatrixCaseCell reqId={r.id} reqNo={r.req_no} title={r.title}
                 count={caseCounts[r.id] ?? 0} onDrill={p.onDrillCases} />
-              <td style={{ padding: '4px 6px', maxWidth: 180 }}>
-                {r.prdDoc ? (
-                  <button onClick={() => p.onOpenPrd(r.prdDoc!, { title: r.title, reqNo: r.req_no })} className="tbtn-anim"
-                    title={`打开 PRD 原文：${r.prdDoc.filename}（定位到「${r.title}」章节）`}
-                    aria-label={`打开关联 PRD ${r.prdDoc.filename}`}
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', border: 'none', background: 'transparent', color: 'var(--accent)', cursor: 'pointer', padding: 0, maxWidth: '100%', textAlign: 'left' }}>
-                    <FileText size={11} style={{ flexShrink: 0 }} />
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.prdDoc.filename}</span>
-                  </button>
-                ) : <span style={{ color: 'var(--text-muted)' }}>—</span>}
+              <td style={{ padding: '4px 6px', width: 168, maxWidth: 168, whiteSpace: 'nowrap' }}>
+                <DocCell doc={r.prdDoc} kind="prd" titleDetail={`（定位到「${r.title}」章节）`}
+                  onOpen={() => p.onOpenPrd(r.prdDoc!, { title: r.title, reqNo: r.req_no })} />
               </td>
               {/* T05208（方案 B）：关联SDD——打开设计文档原文（不带需求定位关键词，SDD 与需求行非一一对应） */}
-              <td style={{ padding: '4px 6px', maxWidth: 180 }}>
-                {r.sddDoc ? (
-                  <button onClick={() => p.onOpenPrd(r.sddDoc!)} className="tbtn-anim"
-                    title={`打开方案设计原文：${r.sddDoc.filename}`}
-                    aria-label={`打开关联 SDD ${r.sddDoc.filename}`}
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', border: 'none', background: 'transparent', color: 'var(--accent)', cursor: 'pointer', padding: 0, maxWidth: '100%', textAlign: 'left' }}>
-                    <FileText size={11} style={{ flexShrink: 0 }} />
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.sddDoc.filename}</span>
-                  </button>
-                ) : <span style={{ color: 'var(--text-muted)' }}>—</span>}
+              <td style={{ padding: '4px 6px', width: 168, maxWidth: 168, whiteSpace: 'nowrap' }}>
+                <DocCell doc={r.sddDoc} kind="sdd" onOpen={() => p.onOpenPrd(r.sddDoc!)} />
               </td>
               <td style={{ padding: '4px 6px', maxWidth: 200 }}>
                 {renderTaskChips(r.linkedTasks)}
