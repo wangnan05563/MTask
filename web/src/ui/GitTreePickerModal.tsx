@@ -170,6 +170,14 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   const [repoListTruncated, setRepoListTruncated] = useState(false);
   const [allBranches, setAllBranches] = useState(false);
   const [search, setSearch] = useState('');
+  /** T04911：分组窗口懒加载时读「此刻」的搜索词（loadPane 不在 effect 依赖里，闭包会抓旧值） */
+  const searchRef = useRef(search);
+  searchRef.current = search;
+  /** T04911：每个「仓库 × 分支」窗口的取数序号——连续搜索时旧请求晚到不得覆盖新结果 */
+  const paneSeq = useRef<Record<string, number>>({});
+  /** T04911：分组视图最近一次点搜索的关键词与重取数窗口数，用于给用户一句可见的刷新反馈 */
+  const [groupedSearchTerm, setGroupedSearchTerm] = useState('');
+  const [groupedSearchCount, setGroupedSearchCount] = useState(0);
   const [commits, setCommits] = useState<GitTreeCommit[]>([]);
   const [refs, setRefs] = useState<GitRefName[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -306,10 +314,15 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   }
 
   /** 展开某个「仓库 × 分支」窗口时才按该仓库自己的原始引用名取数（归一化名可能是 origin/ 前缀被去掉后的产物） */
-  async function loadPane(target: { repoKey: string; projectId: string; repoSub: string; branchName: string }, append: boolean) {
+  async function loadPane(target: { repoKey: string; projectId: string; repoSub: string; branchName: string }, append: boolean, force = false) {
     const key = paneKeyOf(target.repoKey, target.branchName);
     const current = panes[key];
-    if (append ? (current?.loading ?? false) : current?.loading) return;
+    // force：搜索重取数允许打断在途请求（旧响应由 paneSeq 守卫丢弃），否则连续搜索会被静默跳过
+    if (append ? (current?.loading ?? false) : (!force && current?.loading)) return;
+    // T04911：连续两次搜索（或搜索后立刻清空）时，前一个请求可能晚到并把结果覆盖回旧关键词
+    const seq = (paneSeq.current[key] ?? 0) + 1;
+    paneSeq.current[key] = seq;
+    const isStale = () => paneSeq.current[key] !== seq;
     const input = (censusRef.current ?? []).find((i) => repoKeyOf(i.projectId, i.repoSub) === target.repoKey);
     const refName = input ? refNameForBranch(input.refs, target.branchName) : null;
     setPanes((prev) => ({
@@ -317,9 +330,11 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
       [key]: { ...(prev[key] ?? emptyPane), repoKey: target.repoKey, projectId: target.projectId, repoSub: target.repoSub, branchName: target.branchName, commits: append ? (prev[key]?.commits ?? []) : [], loading: true, loaded: false, hasMore: false, error: '', selected: prev[key]?.selected ?? [] },
     }));
     try {
-      const qs = buildLogQuery(target.projectId, refName ?? target.branchName, false, '', append ? (current?.commits.length ?? 0) : 0, target.repoSub);
+      // T04911：分组窗口也必须带上当前搜索词（修复前写死 ''，且搜索按钮在 repoView 下直接 return）
+      const qs = buildLogQuery(target.projectId, refName ?? target.branchName, false, searchRef.current, append ? (current?.commits.length ?? 0) : 0, target.repoSub);
       const r = await api.get<GitLogResponse>(`/git/log?${qs}`);
       setPanes((prev) => {
+        if (isStale()) return prev;
         const pane = prev[key] ?? emptyPane;
         if (!r.ok) {
           return { ...prev, [key]: { ...pane, loading: false, loaded: false, hasMore: false, error: r.error?.message ?? 'Git 取数失败' } };
@@ -327,11 +342,43 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
         return { ...prev, [key]: { ...pane, commits: append ? dedupe([...pane.commits, ...r.commits]) : r.commits, loading: false, loaded: true, hasMore: r.hasMore, error: '' } };
       });
     } catch (e) {
-      setPanes((prev) => ({
+      setPanes((prev) => (isStale() ? prev : ({
         ...prev,
         [key]: { ...(prev[key] ?? emptyPane), loading: false, loaded: false, error: `取数失败：${e instanceof Error ? e.message : String(e)}` },
-      }));
+      })));
     }
+  }
+
+  /**
+   * T04911：分组视图的搜索链路。
+   *
+   * 修复前搜索框/搜索按钮都调 `load(false)`，而 `load` 开头 `if (!projectId || repoView) return`
+   * 直接吞掉分组模式的调用；窗口取数 `buildLogQuery` 的 search 又写死空串，即便刷新也不会带关键词。
+   * 现在按当前关键词对**已展开且已加载**的「仓库 × 分支」窗口重新取数（skip=0）；
+   * 分组头/仓库行/折叠层级一律不动（约束：只修搜索交互链路，不改分组视觉布局）。
+   * 之后新展开的窗口由 `loadPane` 经 `searchRef` 自动带上同一关键词。
+   */
+  function runGroupedSearch() {
+    const term = search.trim();
+    setGroupedSearchTerm(term);
+    setError('');
+    const loaded = Object.values(panes).filter((p) => p.loaded || p.loading);
+    if (!loaded.length) {
+      setGroupedSearchCount(0);
+      setError('请先展开一个「仓库 × 分支」窗口再搜索；展开后会自动按关键词取数');
+      return;
+    }
+    // 触发瞬间记下窗口数：重取数会把 pane.loaded 暂时置 false，直接读 panes 会显示「0 个窗口」
+    setGroupedSearchCount(loaded.length);
+    for (const pane of loaded) {
+      void loadPane({ repoKey: pane.repoKey, projectId: pane.projectId, repoSub: pane.repoSub, branchName: pane.branchName }, false, true);
+    }
+  }
+
+  /** 搜索/重新取数按视图模式分派：平铺沿用原 load，分组走窗口重取数（T04911） */
+  function triggerSearch() {
+    if (repoView) runGroupedSearch();
+    else void load(false);
   }
 
   function onPaneRowClick(key: string, index: number, e: React.MouseEvent) {
@@ -614,14 +661,20 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
             {' '}全部分支
           </label>
           <input data-lck="git-tree-search" value={search} onChange={(e) => setSearch(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') void load(false); }}
+            onKeyDown={(e) => { if (e.key === 'Enter') triggerSearch(); }}
             placeholder="搜索标题/SHA/作者后回车" style={{ ...boxStyle, width: 200 }} aria-label="搜索提交" />
-          <button type="button" onClick={() => void load(false)} disabled={loading} style={boxStyle} aria-label="重新取数" title="重新取数（当前条件）">
+          <button type="button" onClick={() => triggerSearch()} disabled={repoView ? scanning : loading} style={boxStyle} aria-label="重新取数" title="重新取数（当前条件）">
             {loading ? <Loader2 size={13} className="aispin" /> : <RefreshCw size={13} />}
           </button>
-          <button type="button" data-lck="git-tree-search-btn" onClick={() => void load(false)} disabled={loading} style={boxStyle}>
+          <button type="button" data-lck="git-tree-search-btn" onClick={() => triggerSearch()} disabled={repoView ? scanning : loading} style={boxStyle}>
             <Search size={13} style={{ marginRight: 4 }} />搜索
           </button>
+          {/* T04911：分组模式搜索的可见反馈（只是一条提示，不改分组层级/仓库行布局） */}
+          {repoView && groupedSearchTerm && (
+            <span data-lck="git-tree-grouped-search" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
+              分组搜索「{groupedSearchTerm}」· {groupedSearchCount} 个窗口已按关键词刷新
+            </span>
+          )}
           {/* T04595：结果区两种展示模式（参考 IDEA Git 视图）——「按时间顺序混合显示」（平铺，提交按时间线排列，
               可勾全部分支混合）/「按仓库分组显示」（同一分支→多仓库聚合）。默认平铺（T04595 取消默认分支聚合）。
               「按仓库分组显示」钮保留 data-lck="git-tree-repo-view" 与切换语义（既有回归门按 aria-pressed 点击切换）；
