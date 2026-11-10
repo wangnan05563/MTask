@@ -38,31 +38,35 @@ const call = async (method: string, path: string, body?: unknown) => {
   return { status: r.status, json: await r.json() as Record<string, unknown> };
 };
 
-// ---- 写入校验 ----
-let r = await call('POST', '/review-log', { batchId: 'b1', memoryId: 'm1', verdict: 'reject' });
-check('reject 缺判据 400', r.status === 400 && String(r.json.error).includes('hitRule'));
+// ---- 写入校验（T04891 裁决 A：三分类 worth/not_worth/poor_writing） ----
+let r = await call('POST', '/review-log', { batchId: 'b1', memoryId: 'm1', verdict: 'not_worth' });
+check('not_worth 缺判据 400', r.status === 400 && String(r.json.error).includes('hitRule'));
 r = await call('POST', '/review-log', { batchId: 'b1', memoryId: 'm1', verdict: 'bogus' });
 check('非法 verdict 400', r.status === 400);
-r = await call('POST', '/review-log', { batchId: 'b1', memoryId: 'm1', verdict: 'keep', reviewer: 'alice' });
-check('keep 记录写入 201', r.status === 201 && r.json.ok === true, String(r.status));
-r = await call('POST', '/review-log', { batchId: 'b1', memoryId: 'm2', verdict: 'reject', hitRule: 'Q3', reviewer: 'alice' });
-check('reject 带判据写入 201', r.status === 201);
-r = await call('POST', '/review-log', { batchId: 'b2', memoryId: 'm3', verdict: 'reject', hitRule: 'Q3' });
+r = await call('POST', '/review-log', { batchId: 'b1', memoryId: 'm1', verdict: 'worth', reviewer: 'alice' });
+check('worth 记录写入 201', r.status === 201 && r.json.ok === true, String(r.status));
+r = await call('POST', '/review-log', { batchId: 'b1', memoryId: 'm2', verdict: 'not_worth', hitRule: 'Q3', reviewer: 'alice' });
+check('not_worth 带判据写入 201', r.status === 201);
+r = await call('POST', '/review-log', { batchId: 'b2', memoryId: 'm3', verdict: 'not_worth', hitRule: 'Q3' });
 check('跨批次写入 201', r.status === 201);
+r = await call('POST', '/review-log', { batchId: 'b2', memoryId: 'm4', verdict: 'poor_writing' });
+check('poor_writing 无需判据即可写入 201（三分类不再挤进 reject）', r.status === 201, String(r.status));
 
 // ---- 列表按批次过滤 ----
 r = await call('GET', '/review-log?batchId=b1');
 check('批次过滤只回 b1 两条', (r.json.rows as unknown[]).length === 2, String((r.json.rows as unknown[]).length));
 r = await call('GET', '/review-log');
-check('全量列表三条', (r.json.rows as unknown[]).length === 3, String((r.json.rows as unknown[]).length));
+check('全量列表四条（含 poor_writing）', (r.json.rows as unknown[]).length === 4, String((r.json.rows as unknown[]).length));
 
 // ---- 拒杀率统计（规范 §10.2 告警线 40%）----
-// T04890 口径修复：分母改为**全部评审样本数**（3 条评审：2 条 Q3 reject + 1 条 keep），
-// 故 Q3 = 2/3 ≈ 0.667；「(未标注)」不再作为伪判据组输出（keep 行 hit_rule 为 NULL）。
+// T04890 口径修复：分母 = 全部评审样本数（4 条：1 worth + 2 not_worth(Q3) + 1 poor_writing），
+// 故 Q3 = 2/4 = 0.5；poor_writing 与 worth 均**不计入拒杀**（三分类信息不再被算作 reject，
+// 修正 §10.2 精度口径偏移）；「(未标注)」不再作为伪判据组输出。
 r = await call('GET', '/review-log/stats');
 const stats = r.json.stats as { hitRule: string; total: number; rejected: number; rejectRate: number }[];
 const q3 = stats.find((s) => s.hitRule === 'Q3');
-check('Q3 判据拒杀率按全局样本分母 2/3（非旧口径 100%）', q3?.total === 3 && q3?.rejected === 2 && Math.abs((q3?.rejectRate ?? 0) - 0.667) < 0.001, JSON.stringify(q3));
+check('Q3 判据拒杀率按全局样本分母 2/4=0.5（非旧口径 100%）', q3?.total === 4 && q3?.rejected === 2 && q3?.rejectRate === 0.5, JSON.stringify(q3));
+check('poor_writing 不计入拒杀（rejected 仅 2 条 not_worth）', (q3?.rejected ?? 0) === 2, JSON.stringify(stats));
 check('不再输出「(未标注)」伪判据组', !stats.some((s) => s.hitRule === '(未标注)'), JSON.stringify(stats.map((s) => s.hitRule)));
 
 // ---- 导出清单必须包含评审记录（换机不丢回归基线）----

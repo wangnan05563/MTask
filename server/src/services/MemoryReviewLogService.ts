@@ -4,19 +4,26 @@ import { getDb } from '../db/connection';
 /**
  * T04158（PRD MEM-604 / F8）：记忆抽样评审记录。
  *
- * 规范 §10.2 要求每批随机抽 20 条人工评审，判定「不值得记」时必须记命中判据编号
- * （Q1–Q7 / W1–W8 / 禁记项），样本与标注留档作回归基线；连续两批同一判据拒杀率 >40% → 重写规则。
+ * 规范 §10.2 要求每批随机抽 20 条人工评审，三分类「值得记 / 不值得记 / 写得不好」；
+ * 判定「不值得记」(not_worth) 时必须记命中判据编号（Q1–Q7 / W1–W8 / 禁记项），
+ * 样本与标注留档作回归基线；连续两批同一判据拒杀率 >40% → 重写规则。
+ * T04891（裁决 A）：verdict 对齐 PRD §5 权威枚举 worth/not_worth/poor_writing，
+ * 老库 keep→worth / reject→not_worth 由 schema 迁移幂等处理。
  * 本模块只承载「记录 + 统计」，评审流程本身是人工动作（T04164）。
  */
 
 /** 每批抽样条数（规范 §10.2 固定 20） */
 export const REVIEW_BATCH_SIZE = 20;
 
+/** T04891：PRD §5 权威三分类 verdict */
+export type ReviewVerdict = 'worth' | 'not_worth' | 'poor_writing';
+const VERDICTS: readonly ReviewVerdict[] = ['worth', 'not_worth', 'poor_writing'];
+
 export interface ReviewLogInput {
   batchId: string;
   memoryId: string;
-  verdict: 'keep' | 'reject';
-  /** 判定「不值得记」时必填：命中判据编号（Q1–Q7 / W1–W8 / 禁记项） */
+  verdict: ReviewVerdict;
+  /** 判定「不值得记」(not_worth) 时必填：命中判据编号（Q1–Q7 / W1–W8 / 禁记项） */
   hitRule?: string;
   reviewer?: string;
 }
@@ -27,10 +34,11 @@ export function appendReviewLog(input: ReviewLogInput): ReviewLogResult {
   const batchId = (input.batchId ?? '').trim();
   const memoryId = (input.memoryId ?? '').trim();
   if (!batchId || !memoryId) return { ok: false, error: 'batchId/memoryId 必填' };
-  if (input.verdict !== 'keep' && input.verdict !== 'reject') return { ok: false, error: 'verdict 只能是 keep/reject' };
-  // 判据编号是拒杀率统计的唯一维度：拒杀不填判据会让这条样本无法进入回归基线
-  if (input.verdict === 'reject' && !String(input.hitRule ?? '').trim()) {
-    return { ok: false, error: 'verdict=reject 时必须填 hitRule（命中判据编号）' };
+  if (!VERDICTS.includes(input.verdict)) return { ok: false, error: 'verdict 只能是 worth/not_worth/poor_writing' };
+  // 判据编号是拒杀率统计的唯一维度：not_worth 不填判据会让这条样本无法进入回归基线。
+  // worth（值得记）与 poor_writing（写得不好）不要求 hitRule——三分类信息不再被迫挤进 reject。
+  if (input.verdict === 'not_worth' && !String(input.hitRule ?? '').trim()) {
+    return { ok: false, error: 'verdict=not_worth 时必须填 hitRule（命中判据编号）' };
   }
   const id = `rv-${uuid()}`;
   getDb().prepare(`INSERT INTO memory_review_log
@@ -45,7 +53,7 @@ export interface ReviewLogRow {
   id: string;
   batch_id: string;
   memory_id: string;
-  verdict: 'keep' | 'reject';
+  verdict: ReviewVerdict;
   hit_rule: string | null;
   reviewer: string | null;
   created_at: string;

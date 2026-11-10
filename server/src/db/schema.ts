@@ -690,12 +690,13 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
     CREATE INDEX IF NOT EXISTS idx_memory_review_queue_product ON memory_review_queue(product_key);
 
     -- T04158（PRD MEM-604 / F8）：抽样评审记录。每批随机 20 条人工评审（规范 §10.2），
-    -- verdict=keep/reject 与命中判据留档作回归基线；无外键（样本可能已被软失效/清理）。
+    -- T04891（裁决 A）：verdict 三分类与 PRD §5 权威 DDL 对齐——worth=值得记 /
+    -- not_worth=不值得记（须带 hit_rule）/ poor_writing=写得不好；无外键（样本可能已被软失效/清理）。
     CREATE TABLE IF NOT EXISTS memory_review_log (
       id          TEXT PRIMARY KEY,
       batch_id    TEXT NOT NULL,
       memory_id   TEXT NOT NULL,
-      verdict     TEXT NOT NULL CHECK(verdict IN ('keep','reject')),
+      verdict     TEXT NOT NULL CHECK(verdict IN ('worth','not_worth','poor_writing')),
       hit_rule    TEXT,
       reviewer    TEXT,
       created_at  TEXT NOT NULL
@@ -1096,6 +1097,9 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureQueueJobsCascade();
   // T01872：需求编号项目内唯一——数据库层兜底约束（存量重复时只告警不建索引，见函数注释）
   ensurePrdReqNoUnique();
+  // T04891（裁决 A）：老库 memory_review_log 的 verdict CHECK 仍是 keep/reject，需整表重建
+  // 扩为 PRD §5 三分类并迁移历史映射（SQLite 无法 ALTER CHECK）
+  ensureReviewLogVerdictEnum();
 
   seedPromptCategories();
   // 移动端随手记默认归属项目（收件箱）：确定性 id，保证每次启动只创建一次
@@ -1300,4 +1304,50 @@ function ensureQueueJobsCascade(): void {
   // 重建后恢复索引（索引随 DROP 一并消失）
   db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_queue ON queue_jobs(queue_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_queue_status ON queue_jobs(queue_id, status)');
+}
+
+/**
+ * T04891（裁决 A）：memory_review_log 的 verdict CHECK 从 ('keep','reject')
+ * 扩为 PRD §5 权威三分类 ('worth','not_worth','poor_writing')。
+ *
+ * SQLite 无法 ALTER CHECK 约束，只能 rename → create → copy → drop → rename（与
+ * ensureQueueJobsCascade 同族），全程事务，任一步失败回滚保留原表。
+ * 历史数据映射：keep→worth、reject→not_worth（已是新枚举的行原样保留），
+ * 保证评审回归基线不丢、规则迭代统计口径连续（T04890 的 ruleRejectStats 已同时认
+ * 'reject'/'not_worth'，迁移前后拒杀率不跳变）。
+ * 幂等：按 sqlite_master 的表 DDL 是否含旧 CHECK 判定，新库/已迁移库直接跳过。
+ */
+function ensureReviewLogVerdictEnum(): void {
+  const db = getDb();
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memory_review_log'").get() as
+    | { sql: string }
+    | undefined;
+  if (!row) return; // 表不存在：本次 create 已按新定义建表
+  const needMigrate = /verdict\s+TEXT\s+NOT\s+NULL\s+CHECK\s*\(\s*verdict\s+IN\s*\(\s*'keep'\s*,\s*'reject'\s*\)\s*\)/i.test(row.sql);
+  if (!needMigrate) return; // 已是三分类（或未来再扩），不动
+  const tx = db.transaction(() => {
+    db.exec('ALTER TABLE memory_review_log RENAME TO memory_review_log_old');
+    db.exec(`
+      CREATE TABLE memory_review_log_new (
+        id          TEXT PRIMARY KEY,
+        batch_id    TEXT NOT NULL,
+        memory_id   TEXT NOT NULL,
+        verdict     TEXT NOT NULL CHECK(verdict IN ('worth','not_worth','poor_writing')),
+        hit_rule    TEXT,
+        reviewer    TEXT,
+        created_at  TEXT NOT NULL
+      );
+    `);
+    db.exec(`
+      INSERT INTO memory_review_log_new (id, batch_id, memory_id, verdict, hit_rule, reviewer, created_at)
+      SELECT id, batch_id, memory_id,
+             CASE verdict WHEN 'keep' THEN 'worth' WHEN 'reject' THEN 'not_worth' ELSE verdict END,
+             hit_rule, reviewer, created_at
+      FROM memory_review_log_old;
+    `);
+    db.exec('DROP TABLE memory_review_log_old');
+    db.exec('ALTER TABLE memory_review_log_new RENAME TO memory_review_log');
+  });
+  tx();
+  db.exec('CREATE INDEX IF NOT EXISTS idx_memory_review_log_batch ON memory_review_log(batch_id, created_at)');
 }

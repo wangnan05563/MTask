@@ -23,7 +23,7 @@ const now = new Date().toISOString();
 db.prepare(`INSERT INTO memory_review_queue (id,product_key,project_id,title,content,type,source_kind,created_at)
   VALUES (?,?,?,?,?,?,?,?)`).run('q-1', 'wiki', null, '待确认候选', '电话 13800138000', 'project', 'auto', now);
 db.prepare(`INSERT INTO memory_review_log (id,batch_id,memory_id,verdict,hit_rule,reviewer,created_at)
-  VALUES (?,?,?,?,?,?,?)`).run('rv-1', 'b-1', 'm-1', 'reject', 'Q3', 'alice', now);
+  VALUES (?,?,?,?,?,?,?)`).run('rv-1', 'b-1', 'm-1', 'not_worth', 'Q3', 'alice', now);
 
 const bundle = await exportBundle();
 check('导出包含 memory_review_queue', Array.isArray(bundle.data.memory_review_queue) && (bundle.data.memory_review_queue as unknown[]).length === 1,
