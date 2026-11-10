@@ -25,6 +25,8 @@ import {
   INK_FONT,
   ON_BRAND,
   PAPER_BG,
+  STATUS_OK_FONT,
+  STATUS_WARN_FONT,
   WARN_FONT,
   ZEBRA_FILL,
 } from '../util/exportStyle';
@@ -217,6 +219,9 @@ export const PALETTE = {
   zebraFill: ZEBRA_FILL,
   border: BORDER_ARGB,
   warn: WARN_FONT,
+  /** T05075：状态列语义色（ok 绿 / warn 橙）——装配层按 `statusToneOf` 现取，不再读 deckDesign 的固化值 */
+  statusOk: STATUS_OK_FONT,
+  statusWarn: STATUS_WARN_FONT,
   accent: ACCENT_FONT,
   /** T02156 恒生品牌四色（与模板背景图同源，见 exportStyle 注释） */
   brandDeep: BRAND_DEEP,
@@ -232,6 +237,9 @@ export function auditPalette(): string[] {
     ['正文/表头底', PALETTE.ink, PALETTE.headFill],
     ['正文/斑马底', PALETTE.ink, PALETTE.zebraFill],
     ['提示红/纸面', PALETTE.warn, PALETTE.paper],
+    // T05075：状态语义色同样要过门禁 6（0B6B3A≈6.6、9A5B00≈5.4，均 >4.5）
+    ['状态绿/纸面', PALETTE.statusOk, PALETTE.paper],
+    ['状态橙/纸面', PALETTE.statusWarn, PALETTE.paper],
     ['强调蓝/纸面', PALETTE.accent, PALETTE.paper],
     ['表头字/品牌底', PALETTE.onBrand, PALETTE.brandDeep],
     ['品牌深/纸面', PALETTE.brandDeep, PALETTE.paper],

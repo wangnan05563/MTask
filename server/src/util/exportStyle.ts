@@ -107,6 +107,17 @@ export const BRAND_PALE = 'C9DCF6';
 /** 品牌深底上的正文色（表格表头白字，对 08409C 对比度 ≈9.5） */
 export const ON_BRAND = 'FFFFFF';
 
+/**
+ * T05075（对齐 T04189 状态语义）：状态列的 ok 绿 / warn 橙。
+ *
+ * 来源是 `deckDesign.STATUS`——启动会 / 阶段总结的 PPTX 与 HTML 两套产物共用同一份
+ * 状态语义（`statusToneOf`），而 PPTX 装配层会把这些色真的画到「状态」列上。
+ * 因此它们和其他版式色一样必须纳入本单源，否则 T02099 的 S-08（表外色值）、
+ * X-01（改名模拟后产物不随表移动）、N-04（掺色判据基线不为空）会集体失守。
+ */
+export const STATUS_OK_FONT = '0B6B3A';
+export const STATUS_WARN_FONT = '9A5B00';
+
 // ---------- T02960（方案 A）：阶段性总结汇报 PPT 的版式预设三档 ----------
 
 /** 版式预设键。英文键名是对外契约（SSE 入参持久化后不随中文改版漂移），中文名放 `label` 给面板展示。 */

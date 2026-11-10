@@ -44,7 +44,8 @@ import {
   type DateRange,
   type LayoutFrames,
 } from './kickoff-layout';
-import { STATUS, statusToneOf } from './deckDesign'; // 2026-11-06：状态列语义色与 HTML 版同源（同一份 statusToneOf）
+import { statusToneOf } from './deckDesign'; // 2026-11-06：状态列语义判定与 HTML 版同源（同一份 statusToneOf）；
+// T05075：色值改由 kickoff-layout 的 PALETTE 现取，不再读 deckDesign 固化的 fg 串（避免装配层留第二份抄本）
 import { KICKOFF_ABORT_MSG, KICKOFF_PLACEHOLDER, type KickoffBundle, type KickoffDataKey, type KickoffOutlineItem } from './kickoffService';
 
 /** 单页装配产物：一个块 = 一个原生对象 */
@@ -1430,9 +1431,11 @@ export function drawBlock(slide: any, block: Block): void {
     const cellColor = (text: string, c: number): string => {
       if (!statusCols[c]) return PALETTE.ink;
       const tone = statusToneOf(text);
-      if (tone === 'ok') return STATUS.ok.fg;
-      if (tone === 'warn') return STATUS.warn.fg;
-      if (tone === 'bad') return STATUS.bad.fg;
+      // T05075：状态色必须每次从版式单源 PALETTE 现取——写成 deckDesign 的固化串时，
+      // 「单源表改名模拟」不会传导到状态列，S-08 也会把它们报成表外色值。
+      if (tone === 'ok') return PALETTE.statusOk;
+      if (tone === 'warn') return PALETTE.statusWarn;
+      if (tone === 'bad') return PALETTE.warn;
       return PALETTE.ink;
     };
     const rows = [

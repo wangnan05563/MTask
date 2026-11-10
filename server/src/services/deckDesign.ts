@@ -9,7 +9,7 @@
  * 视觉口径参考正式工作汇报：暖白纸面 + 近黑正文 + 克制的品牌蓝 + 语义化的状态色，
  * 靠细线、对齐与留白建立秩序，不靠圆角卡片堆叠（那会让汇报看起来像仪表盘）。
  */
-import { BRAND_BRIGHT, BRAND_DEEP, BRAND_PALE, DECK_STYLES, type DeckStyleKey } from '../util/exportStyle';
+import { BRAND_BRIGHT, BRAND_DEEP, BRAND_PALE, DECK_STYLES, STATUS_OK_FONT, STATUS_WARN_FONT, type DeckStyleKey } from '../util/exportStyle';
 
 /** 正文近黑（与 exportStyle.INK_FONT 同值；此处按「设计角色」再命名一次，渲染层只认角色） */
 export const INK = '1F2937';
@@ -28,8 +28,10 @@ export const TINT = 'F3F1EA';
 
 /** 语义状态色：只用在这三件事上，不做装饰（插件配方明确列为失败信号） */
 export const STATUS = {
-  ok: { fg: '0B6B3A', bg: 'E6F4EC' },
-  warn: { fg: '9A5B00', bg: 'FBF0DC' },
+  // T05075：前景色改为引用版本层单源（exportStyle），不再在共享设计层写第二份字面量——
+  // PPTX 装配走 `PALETTE.statusOk/statusWarn`，HTML 走这里的 `fg`，两边同值但只有一个来源。
+  ok: { fg: STATUS_OK_FONT, bg: 'E6F4EC' },
+  warn: { fg: STATUS_WARN_FONT, bg: 'FBF0DC' },
   bad: { fg: 'B42318', bg: 'FBEAE8' },
   neutral: { fg: INK_SOFT, bg: TINT },
 } as const;
