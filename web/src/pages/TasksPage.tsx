@@ -4963,9 +4963,15 @@ export function TasksPage() {
     // T03211：全部项目视图没有单项目对象——用各项目计数之和，仍保持「首屏即全量」口径
     const aggTodo = projects.reduce((s, p) => s + (p.todo_count ?? 0), 0);
     const aggDone = projects.reduce((s, p) => s + (p.done_count ?? 0), 0);
+    const aggUnv = projects.reduce((s, p) => s + (p.unverified_count ?? 0), 0);
     const aggregate = activeProject === ALL_PROJECTS;
     const todoTotal = curProj?.todo_count ?? (aggregate ? aggTodo : todo.length);
     const doneTotal = curProj?.done_count ?? (aggregate ? aggDone : done.length);
+    // T05076：未验证数改取**项目级全量**计数，与项目下拉徽标（服务端 `done AND verified=0`）同源。
+    // 修复前用 `done.filter(!verified)`——那是本页已加载的一页（PAGE_SIZE=200）内的数量，
+    // 项目已完成超过一页、或未验证项排在页外时会算成 0，于是出现「下拉 5 / 页签 0」。
+    const unverifiedTotal = curProj?.unverified_count
+      ?? (aggregate ? aggUnv : done.filter((t) => !t.verified).length);
     return (
       <>
         {batchBar}
@@ -5001,7 +5007,7 @@ export function TasksPage() {
             （沿用 .op-hidden 口径；tab 按钮常驻可见且排在控件之前，满足 T03162 键盘可达规范） */}
         <div className="op-host" data-t03620="tabbar" style={{ display: 'flex', gap: 4, alignItems: 'center', borderBottom: '1px solid var(--border-strong)', marginBottom: 8 }}>
           {([['todo', `待办（${visibleTodo.length}/${todoTotal}）`],
-             ['done', `已完成（${visibleDone.length}/${doneTotal}，未验证 ${done.filter((t) => !t.verified).length}）`],
+             ['done', `已完成（${visibleDone.length}/${doneTotal}，未验证 ${unverifiedTotal}）`],
              ['shelved', `搁置（${visibleShelved.length}）`]] as const).map(([key, label]) => (
             <button key={key} onClick={() => setActiveTab(key)} aria-pressed={activeTab === key}
               title={`${label} — 点击切换到该列表`}
