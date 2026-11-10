@@ -154,7 +154,7 @@ function laneCell(lanes: LaneLayout, row: number, lane: number) {
   return <span key={lane}> </span>;
 }
 
-export function GitTreePickerModal({ projects, activeProjectId, selectedByProject, initialRepoView = false, onConfirm, onClose, zIndex = 1000 }: {
+export function GitTreePickerModal({ projects, activeProjectId, selectedByProject, initialRepoView = false, onConfirm, onClose, zIndex = 1000, targetLabel }: {
   readonly projects: Project[];
   readonly activeProjectId: string;
   /** 各项目已选 SHA（确认后由卡片写回；弹窗内改的是当前项目的这一份） */
@@ -166,6 +166,12 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   readonly onClose: () => void;
   /** 抽屉内打开时须高于 SlideOver（1100），否则弹窗被抽屉遮住（八期 §3.2.3） */
   readonly zIndex?: number;
+  /**
+   * T05078：批量补录入口专用——明示本次「确认选择」会写入哪个任务。
+   * 不传则完全不渲染（其余三个入口零影响）；根因是目标对用户不可见时，
+   * 队列推进会让同一批勾选被误认为「还是刚才那个任务」。
+   */
+  readonly targetLabel?: string;
 }) {
   const [projectId, setProjectId] = useState(activeProjectId || projects[0]?.id || '');
   const [head, setHead] = useState('');
@@ -736,6 +742,19 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
             <X size={15} />
           </button>
         </header>
+
+        {/* T05078：目标任务条——只在调用方显式传入时出现，其它入口不渲染 */}
+        {targetLabel && (
+          <div data-lck="git-tree-target" title={`本次「确认选择」将把勾选的提交关联到：${targetLabel}`}
+            style={{
+              marginTop: 8, padding: '5px 9px', borderRadius: 6, background: 'var(--surface-2)',
+              border: '1px solid var(--border-strong)', fontSize: 'var(--fs-s)', color: 'var(--text)',
+              // 任务标题可能很长：在标签条内换行，不用省略号藏掉目标
+              overflowWrap: 'anywhere', wordBreak: 'break-word',
+            }}>
+            本次确认将关联到：<strong>{targetLabel}</strong>
+          </div>
+        )}
 
         <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', margin: '10px 0' }}>
           {projects.length > 1 && (

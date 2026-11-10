@@ -1210,10 +1210,14 @@ export function TasksPage() {
       }
     }
     setGitLinkBusy(false);
-    if (failed.length) flash(`部分关联失败：${failed.join('；')}`, 'error');
-    else flash(`已为 ${head.task_no ?? head.id} 手动关联 ${shas.length} 个提交${repoSub ? `（仓库 ${repoSub}）` : ''}`);
-    const last = gitLinkQueue.length <= 1;
-    setGitLinkQueue(last ? [] : gitLinkQueue.slice(1));
+    // T05078：把「本次写给谁」「还剩几条」一起说清；队列用函数式更新，避免异步期间被
+    // onClose 清空后旧闭包又把已清掉的队列写回来（那会让用户以为还有任务待补录）。
+    const remaining = Math.max(0, gitLinkQueue.length - 1);
+    const tail = remaining > 0 ? `；还有 ${remaining} 条未回写，可继续补录` : '';
+    if (failed.length) flash(`部分关联失败：${failed.join('；')}${tail}`, 'error');
+    else flash(`已为 ${head.task_no ?? head.id} 手动关联 ${shas.length} 个提交${repoSub ? `（仓库 ${repoSub}）` : ''}${tail}`);
+    const last = remaining === 0;
+    setGitLinkQueue((prev) => (prev.length <= 1 ? [] : prev.slice(1)));
     if (last) {
       // 整条补录队列收尾才重载列表：逐条重载会把同一页拉 N 次
       gitSummaries.refresh();
@@ -5542,8 +5546,14 @@ export function TasksPage() {
   /** 八期 §3.1.5：未回写「手动关联」逐条补录队列——一次只弹一个任务的取数窗，确认即写入 task_git_links(source='manual') */
   function renderManualGitLinkQueue() {
     if (gitLinkQueue.length === 0) return null;
+    const head = gitLinkQueue[0];
+    // T05078：目标可见（targetLabel）+ 目标切换即重挂载（key=head.id）。
+    // 修复前弹窗不显示目标、队列推进时组件不卸载且勾选保留，用户再点一次「确认选择」
+    // 就把同一批提交写进了下一个任务（T05064 实测 T00004/T00005 同拿一个 SHA）。
     return (
       <GitTreePickerModal
+        key={head.id}
+        targetLabel={`${head.task_no ?? head.id} · ${head.title}${gitLinkQueue.length > 1 ? ` · 第 1/${gitLinkQueue.length} 条` : ''}`}
         projects={projects.filter((p) => p.id === activeProject)}
         activeProjectId={activeProject}
         selectedByProject={{}}
