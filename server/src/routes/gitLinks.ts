@@ -19,6 +19,7 @@ import {
   unlinkCommit,
 } from '../services/taskGitLinks';
 import { queryGitLog, queryGitRepos, type GitLogRequest } from '../services/lectureGitLog';
+import { queryCommitFiles } from '../services/gitCommitFiles';
 import { suggestGitLinks } from '../services/gitAiLink';
 import { cacheGet, cacheSet } from '../util/ttl-cache';
 import { createHash } from 'node:crypto';
@@ -169,6 +170,31 @@ gitLinksApi.get('/git/log', async (req, res) => {
     res.json(await queryGitLog(body));
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+/**
+ * T05210：Git 树选范围弹窗**右栏变更文件树**的取数口——body `{ projectId, repoSub?, shas: string[] }`。
+ *
+ * 与 `/tasks/:id/git/:sha/files` 的分工：那条要任务 id（抽屉里的文件页），这条按项目 + 仓库坐标定位，
+ * 因为弹窗此时还没有任务。一次请求最多点名 `MAX_COMMIT_FILES_BATCH` 个提交（超出回 `dropped`，
+ * 由前端继续发下一片），内部复用 `collectCommitFilesBatch` 的一次 `git log --no-walk`。
+ * 降级（未配工作空间 / 没装 git / 不是仓库）回 200 + `ok:false` + 一句话，让右栏能说清「为什么没有文件」。
+ */
+gitLinksApi.post('/git/commit-files', async (req, res) => {
+  const body = req.body ?? {};
+  const projectId = typeof body.projectId === 'string' ? body.projectId.trim() : '';
+  if (!projectId) return res.status(400).json({ error: 'projectId 必填' });
+  const shas = Array.isArray(body.shas) ? body.shas.filter((s: unknown): s is string => typeof s === 'string') : [];
+  if (!shas.length) return res.status(400).json({ error: 'shas 必填（提交 SHA 数组）' });
+  try {
+    res.json(await queryCommitFiles({
+      projectId,
+      repoSub: typeof body.repoSub === 'string' ? body.repoSub : '',
+      shas,
+    }));
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
   }
 });
 

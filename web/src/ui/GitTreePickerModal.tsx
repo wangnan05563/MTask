@@ -55,6 +55,8 @@ import {
 import { mergeRepoTimelines, repoLabelOf, resolveMixedConfirmation, type RepoTimelineInput } from '../utils/gitTimelineMerge'; // T04912：多仓库混合时间线纯函数层
 import { shouldShowSubjectTooltip, subjectTooltipBox } from '../utils/gitSubjectTooltip'; // T04913：标题截断判据与浮层坐标
 import type { BranchOption } from '../utils/scopeControls'; // T04584：起点分支候选（含子仓库 repoSub）
+import { GitTreeFilePanel, RepoStripe, type DetailEntry } from './gitTreeFilePanel'; // T05210：IDEA 双栏 · 右栏文件树与摘要
+import { GIT_TREE_STYLE, repoColorMap, repoColorVar } from './gitTreeTheme'; // T05210：Design Tokens 与仓库色单源
 
 /** 聚合视图里「在途取数窗口」的并发预算：与普查同一口径，一个仓库多就一起多（T04525） */
 const PANE_LOAD_INFLIGHT = REPO_SCAN_CONCURRENCY;
@@ -241,6 +243,58 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   }, [project, activeRepoChoice]);
   const visibleRefs = useMemo(() => groupByRef(commits), [commits]);
   const summary = useMemo(() => summarizeSelection(commits, selected), [commits, selected]);
+
+  /* ---------- T05210：IDEA 双栏所需的两个派生量 ---------- */
+  /** 项目名索引：右栏摘要要说清「这条提交来自哪个仓库」，根仓库不带 repoSub 时得回落到项目名 */
+  const projectNameById = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const p of projects) m[p.id] = p.name;
+    return m;
+  }, [projects]);
+  /**
+   * 仓库色索引：由「当前可见的所有仓库」排序后取色（`repoColorMap` 保证视图内两两不同）。
+   * 只在真的有 ≥2 个仓库时才需要颜色——单仓库视图整屏一个色等于没上色，反而添噪。
+   */
+  const repoColorKeys = useMemo(() => {
+    if (repoView) return Object.values(panes).map((p) => repoKeyOf(p.projectId, p.repoSub));
+    if (mixActive) return commits.map((c) => repoKeyOf(projectId, c.repoSub ?? ''));
+    return [];
+  }, [repoView, panes, mixActive, commits, projectId]);
+  const colorIndex = useMemo(() => repoColorMap(repoColorKeys).index, [repoColorKeys]);
+  const multiRepoColored = useMemo(() => new Set(repoColorKeys).size > 1, [repoColorKeys]);
+
+  /**
+   * 右栏的输入：把「已选 SHA」还原成带仓库坐标的记录。
+   * 平铺混合视图里每条提交有自己的来源仓库，分组视图里由所在窗口决定——两处都要带上 projectId，
+   * 因为分组视图的普查是跨项目的（一个工作空间里可能有多项）。
+   */
+  const detailEntries = useMemo<DetailEntry[]>(() => {
+    const out: DetailEntry[] = [];
+    const push = (c: GitTreeCommit, pid: string, sub: string, label: string) => {
+      out.push({
+        sha: c.sha, short: c.short, author: c.author, date: c.date, subject: c.subject,
+        parents: c.parents, refs: c.refs, projectId: pid, repoSub: sub, repoLabel: label,
+        repoKey: repoKeyOf(pid, sub),
+      });
+    };
+    if (repoView) {
+      for (const pane of Object.values(panes)) {
+        for (const sha of pane.selected) {
+          const c = pane.commits.find((x) => x.sha === sha);
+          if (!c) continue;
+          push(c, pane.projectId, pane.repoSub, repoLabelOf(pane.repoSub, projectNameById[pane.projectId] ?? '', ''));
+        }
+      }
+      return out;
+    }
+    for (const sha of selected) {
+      const c = commits.find((x) => x.sha === sha);
+      if (!c) continue;
+      if (mixActive) push(c, projectId, c.repoSub ?? '', c.repoLabel ?? flatRepoLabel);
+      else push(c, projectId, flatRepoSub, flatRepoLabel);
+    }
+    return out;
+  }, [repoView, panes, selected, commits, mixActive, projectId, flatRepoSub, flatRepoLabel, projectNameById]);
 
   /* ---------- T04527：分组视图的派生数据与动作 ---------- */
   /** 已加载窗口的提交数（未加载的窗口不带计数，分组头显示「仓库数」而不谎报「提交数」） */
@@ -716,8 +770,10 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   }
 
   return (
-    /* 原生 <dialog open>：显隐仍由本组件挂载/卸载控制（父层只在需要时渲染），Esc 仍由上面的监听负责 */
-    <dialog open data-lck="git-tree-modal" aria-modal="true" aria-label="从 Git 树选择评审范围"
+    /* 原生 <dialog open>：显隐仍由本组件挂载/卸载控制（父层只在需要时渲染），Esc 仍由上面的监听负责。
+       T05210：显式补 role="dialog"——原生 <dialog> 的隐式角色在部分自动化/无障碍工具里取不到
+       `getAttribute('role')`，显式声明后「弹窗以 dialog 角色出场」这条可被直接断言，也不再依赖隐式语义。 */
+    <dialog open role="dialog" data-lck="git-tree-modal" aria-modal="true" aria-label="从 Git 树选择评审范围"
       style={{
         position: 'fixed', inset: 0, zIndex: 1000, margin: 0, padding: 16, border: 'none',
         width: 'auto', height: 'auto', maxWidth: 'none', maxHeight: 'none',
@@ -729,8 +785,9 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   0% { transform: scale(1); opacity: 1; }
   45% { transform: scale(.93); opacity: .72; }
   100% { transform: scale(1); opacity: 1; }
-}`}</style>
-      <div style={{ width: 'min(1080px, 96vw)', maxHeight: '88vh', display: 'flex', flexDirection: 'column', background: 'var(--card-bg)', border: '1px solid var(--accent)', borderRadius: 10, padding: 14 }}>
+}${GIT_TREE_STYLE}`}</style>
+      {/* T05210：双栏后需要更多横向空间（左栏记录 + 右栏文件树）；窄屏仍按 96vw 收边 */}
+      <div style={{ width: 'min(1400px, 97vw)', maxHeight: '90vh', display: 'flex', flexDirection: 'column', background: 'var(--card-bg)', border: '1px solid var(--accent)', borderRadius: 10, padding: 14 }}>
         <header style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <GitBranch size={16} style={{ color: 'var(--accent)' }} />
           <strong style={{ fontSize: 'var(--fs-l)' }}>Git 树选范围</strong>
@@ -907,32 +964,46 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
           </div>
         )}
 
-        {repoView ? (
-          <RepoBranchGroupList groups={repoGroups} blocked={blockedRows} activeProjectId={projectId}
-            panes={panes} openBranches={openBranches} openRepos={openRepos} groupExpanded={groupExpanded}
-            scanning={scanning} censusDone={!!census}
-            onToggleBranch={(key) => setOpenBranches((prev) => toggleKey(prev, key))}
-            onToggleRepo={(key) => setOpenRepos((prev) => toggleKey(prev, key))}
-            onLoadRepo={(row, branchName, append) => void loadPane({ repoKey: row.repoKey, projectId: row.projectId, repoSub: row.repoSub, branchName }, append)}
-            onRowClick={onPaneRowClick}
-            onToggleRowExpand={toggleGroupRowExpand}
-            onSelectAllVisible={(key, check) => setPanes((prev) => {
-              const pane = prev[key];
-              return pane ? { ...prev, [key]: { ...pane, selected: toggleVisible(pane.commits, pane.selected, check) } } : prev;
-            })} />
-        ) : (
-          <div ref={listRef} tabIndex={-1} data-lck="git-tree-rows"
-            style={{ flex: '1 1 auto', minHeight: 180, maxHeight: '48vh', overflow: 'auto', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface)' }}>
-            {!loading && commits.length === 0 && !error && (
-              <p data-lck="git-tree-empty" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: 12, margin: 0 }}>
-                这个仓库在当前条件下没有可显示的提交：换个分支、放宽搜索，或改用区间/粘贴 patch。
-              </p>
+        {/* T05210：IDEA 风格双栏——左「记录列表」，右「变更文件树 + 摘要」。
+            两栏各自滚动：左栏翻页/搜索、右栏看长文件树时互不牵扯滚动位置。
+            `data-lck="git-tree-rows"` 仍在左栏滚动容器上（既有回归门按它定位行），行锚点一并保留。 */}
+        <div data-lck="git-tree-split"
+          style={{ display: 'flex', gap: 10, alignItems: 'stretch', flex: '1 1 auto', minHeight: 0, maxHeight: '58vh' }}>
+          <div style={{ flex: '0 0 46%', minWidth: 0, maxWidth: '46%', display: 'flex', flexDirection: 'column', maxHeight: '58vh' }}>
+            {repoView ? (
+              <RepoBranchGroupList groups={repoGroups} blocked={blockedRows} activeProjectId={projectId}
+                panes={panes} openBranches={openBranches} openRepos={openRepos} groupExpanded={groupExpanded}
+                scanning={scanning} censusDone={!!census} colorIndex={colorIndex} multiRepoColored={multiRepoColored}
+                onToggleBranch={(key) => setOpenBranches((prev) => toggleKey(prev, key))}
+                onToggleRepo={(key) => setOpenRepos((prev) => toggleKey(prev, key))}
+                onLoadRepo={(row, branchName, append) => void loadPane({ repoKey: row.repoKey, projectId: row.projectId, repoSub: row.repoSub, branchName }, append)}
+                onRowClick={onPaneRowClick}
+                onToggleRowExpand={toggleGroupRowExpand}
+                onSelectAllVisible={(key, check) => setPanes((prev) => {
+                  const pane = prev[key];
+                  return pane ? { ...prev, [key]: { ...pane, selected: toggleVisible(pane.commits, pane.selected, check) } } : prev;
+                })} />
+            ) : (
+              <div ref={listRef} tabIndex={-1} data-lck="git-tree-rows"
+                style={{ flex: '1 1 auto', minHeight: 180, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface)' }}>
+                {!loading && commits.length === 0 && !error && (
+                  <p data-lck="git-tree-empty" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: 12, margin: 0 }}>
+                    这个仓库在当前条件下没有可显示的提交：换个分支、放宽搜索，或改用区间/粘贴 patch。
+                  </p>
+                )}
+                <CommitRows commits={commits} selected={selected} expandedSet={expanded} keyPrefix=""
+                  onRowClick={onRowClick} onToggleRowExpand={toggleRowExpand}
+                  colorIndex={colorIndex} repoTintOf={multiRepoColored
+                    ? (c) => repoKeyOf(projectId, mixActive ? (c.repoSub ?? '') : flatRepoSub)
+                    : undefined} />
+                {loading && <p style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: 8, margin: 0 }}>取数中…</p>}
+              </div>
             )}
-            <CommitRows commits={commits} selected={selected} expandedSet={expanded} keyPrefix=""
-              onRowClick={onRowClick} onToggleRowExpand={toggleRowExpand} />
-            {loading && <p style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: 8, margin: 0 }}>取数中…</p>}
           </div>
-        )}
+          <div style={{ flex: '1 1 auto', minWidth: 0, display: 'flex', flexDirection: 'column', maxHeight: '58vh' }}>
+            <GitTreeFilePanel entries={detailEntries} colorIndex={colorIndex} />
+          </div>
+        </div>
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 8 }}>
           {!repoView && !mixActive && hasMore && (
@@ -1095,7 +1166,7 @@ function CommitSubject({ text }: { readonly text: string }) {
  *
  * 车道按**各自那份 commits** 计算：方案 §9.3——跨仓库拼车道会画出根本不存在的父子连线。
  */
-function CommitRows({ commits, selected, expandedSet, keyPrefix, onRowClick, onToggleRowExpand, compactRefs = false }: {
+function CommitRows({ commits, selected, expandedSet, keyPrefix, onRowClick, onToggleRowExpand, compactRefs = false, colorIndex, repoTintOf }: {
   readonly commits: GitTreeCommit[];
   readonly selected: readonly string[];
   readonly expandedSet: Set<string>;
@@ -1104,19 +1175,30 @@ function CommitRows({ commits, selected, expandedSet, keyPrefix, onRowClick, onT
   readonly onToggleRowExpand: (sha: string) => void;
   /** T04585：仅聚合视图置真，简化 decorate；平铺视图缺省 false 保持原展示 */
   readonly compactRefs?: boolean;
+  /** T05210：仓库色索引（与右栏同一份）；未提供则不画色条 */
+  readonly colorIndex?: Record<string, number>;
+  /** T05210：本行所属仓库的色键；返回 null/undefined 表示这一行不上色（单仓库视图） */
+  readonly repoTintOf?: (c: GitTreeCommit) => string | null | undefined;
 }) {
   const lanes = assignLanes(commits);
   // T04912：混合时间线跨仓库拼车道会画出根本不存在的父子连线（方案 §9.3），有仓库标签时一律不画
   const hasRepoTags = commits.some((c) => !!c.repoLabel);
+  const tintKeys = repoTintOf && colorIndex
+    ? commits.map((c) => repoTintOf(c)).filter((k): k is string => !!k)
+    : [];
+  const tinted = new Set(tintKeys).size > 1;
   return (
     <>
       {commits.map((c, i) => {
         const checked = selected.includes(c.sha);
         const open = expandedSet.has(`${keyPrefix}${c.sha}`);
+        const tintKey = tinted ? repoTintOf?.(c) : null;
         return (
           /* 行本身只是布局容器；「点选这一条」落到行内的原生 <button> 上（Shift/Ctrl 框选语义不变） */
           <div key={`${keyPrefix}${c.sha}`} data-lck="git-tree-row" data-sha={c.sha} data-selected={checked ? '1' : '0'}
-            style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '2px 8px', borderBottom: '1px solid var(--border)', background: checked ? 'var(--surface-2)' : 'transparent' }}>
+            style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '2px 8px', borderBottom: '1px solid var(--border)', background: checked ? 'var(--gt-row-selected)' : 'transparent' }}>
+            {/* T05210：仓库色条（IDEA 的变更集色块）——与右栏文件名同色，形成左→右视觉关联 */}
+            {tintKey && colorIndex ? <RepoStripe repoKey={tintKey} colorIndex={colorIndex} /> : null}
             {/* 复选框只是勾选态的视觉镜像（真正的控件是右侧按钮）；点它同样落到同一段点选逻辑上 */}
             <input type="checkbox" checked={checked} readOnly tabIndex={-1} aria-label={`选择提交 ${c.short}`}
               onClick={(e) => onRowClick(i, e)} style={{ cursor: 'pointer' }} />
@@ -1134,11 +1216,17 @@ function CommitRows({ commits, selected, expandedSet, keyPrefix, onRowClick, onT
                 </span>
               )}
               <code style={{ fontFamily: FONT_MONO, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{c.short}</code>
-              {/* T04912：来源仓库标识——次要色、单行省略，hover/title 给全称；不用右键查也能区分仓库 */}
+              {/* T05210：仓库图标（带该仓库标识色）——比纯文字标签更快认出「这条来自哪个仓库」 */}
+              {c.repoLabel && tintKey && colorIndex && (
+                <FolderGit2 size={13} data-lck="git-tree-repo-icon" aria-hidden
+                  style={{ flex: '0 0 auto', color: repoColorVar(colorIndex[tintKey]) }} />
+              )}
+              {/* T04912：来源仓库标识——次要色、单行省略，hover/title 给全称；不用右键查也能区分仓库。
+                  T05210：多仓库时标签文字取该仓库标识色，与图标、左色条、右栏文件名四处同源。 */}
               {c.repoLabel && (
                 <span data-lck="git-tree-repo-tag" data-repo-sub={c.repoSub ?? ''}
                   title={`来源仓库：${c.repoLabel}`}
-                  style={{ ...chipStyle, flex: '0 1 auto', minWidth: 0, maxWidth: 132, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-secondary)', background: 'var(--surface-2)', fontSize: 'var(--fs-xs)' }}>
+                  style={{ ...chipStyle, flex: '0 1 auto', minWidth: 0, maxWidth: 132, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: tintKey && colorIndex ? repoColorVar(colorIndex[tintKey]) : 'var(--text-secondary)', background: 'var(--surface-2)', fontSize: 'var(--fs-xs)' }}>
                   {c.repoLabel}
                 </span>
               )}
@@ -1189,7 +1277,7 @@ const groupHeadStyle: React.CSSProperties = {
  * 这一层只画结构，不判据：分组/计数/状态/原因全部由 `utils/gitRepoBranchGroups.ts` 算好后传进来，
  * 于是「失败仓库不许隐身」「一次只回传一个仓库」这些能撒谎的边界都有 node 门可钉，不必全靠浏览器实测。
  */
-function RepoBranchGroupList({ groups, blocked, activeProjectId, panes, openBranches, openRepos, groupExpanded, scanning, censusDone,
+function RepoBranchGroupList({ groups, blocked, activeProjectId, panes, openBranches, openRepos, groupExpanded, scanning, censusDone, colorIndex, multiRepoColored,
   onToggleBranch, onToggleRepo, onLoadRepo, onRowClick, onToggleRowExpand, onSelectAllVisible }: {
   readonly groups: RepoBranchGroup[];
   readonly blocked: RepoBranchRow[];
@@ -1200,6 +1288,9 @@ function RepoBranchGroupList({ groups, blocked, activeProjectId, panes, openBran
   readonly groupExpanded: Set<string>;
   readonly scanning: boolean;
   readonly censusDone: boolean;
+  /** T05210：仓库色索引（与右栏同源）；`multiRepoColored` 为假时仍用原来的「当前项目 = 强调色」口径 */
+  readonly colorIndex: Record<string, number>;
+  readonly multiRepoColored: boolean;
   readonly onToggleBranch: (branchKey: string) => void;
   readonly onToggleRepo: (paneKey: string) => void;
   /** 按仓库行取数：一个项目可能有根仓库 + 多个子仓库，只带 projectId 无法定位是哪一个（T04525） */
@@ -1210,7 +1301,7 @@ function RepoBranchGroupList({ groups, blocked, activeProjectId, panes, openBran
 }) {
   return (
     <div data-lck="git-repo-groups"
-      style={{ flex: '1 1 auto', minHeight: 180, maxHeight: '48vh', overflow: 'auto', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface)' }}>
+      style={{ flex: '1 1 auto', minHeight: 180, maxHeight: '100%', overflow: 'auto', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface)' }}>
       {!censusDone && scanning && (
         <p data-lck="git-repo-scanning" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: 12, margin: 0 }}>
           正在逐仓库读取分支清单（并发 {REPO_SCAN_CONCURRENCY}）…仓库多时会稍等。
@@ -1257,7 +1348,8 @@ function RepoBranchGroupList({ groups, blocked, activeProjectId, panes, openBran
                     }}
                     style={{ ...groupHeadStyle, background: 'transparent', borderBottom: 'none', padding: '4px 4px', cursor: row.available ? 'pointer' : 'not-allowed', opacity: row.available ? 1 : 0.7 }}>
                     {row.available ? (repoOpen ? <ChevronDown size={11} aria-hidden /> : <ChevronRight size={11} aria-hidden />) : <span style={{ width: 11 }} />}
-                    <FolderGit2 size={13} style={{ color: isCurrent ? 'var(--accent)' : 'var(--text-muted)' }} />
+                    {/* T05210：多仓库时仓库图标取该仓库标识色（与右栏文件树同色）；单仓库保持原「当前项目 = 强调色」 */}
+                    <FolderGit2 size={13} style={{ color: multiRepoColored ? repoColorVar(colorIndex[row.repoKey]) : (isCurrent ? 'var(--accent)' : 'var(--text-muted)') }} />
                     <span style={{ fontSize: 'var(--fs-s)', color: isCurrent ? 'var(--text)' : 'var(--text-secondary)' }}>{row.repoLabel}</span>
                     {/* 子仓库这一枚标记是「同一目录里不止一个仓库」的直接证据，门与用户都靠它 */}
                     {row.repoSub && <span data-lck="git-repo-repo-nested" style={chipStyle}>目录内仓库</span>}
