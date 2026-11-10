@@ -205,11 +205,12 @@ try {
     await page.locator(`${rowSel(BRANCH, sub)} [data-lck="git-tree-row"]`).first().click();
     await page.waitForTimeout(250);
   }
-  // 取数进行中确认本就是禁用的；等到可点为止——拒绝要发生在点击之后并给出原因，而不是一只没有解释的灰按钮
+  // 取数进行中确认本就是禁用的；等到可点为止——拒绝要发生在点击之后并给出原因，而不是一只没有解释的灰按钮。
+  // 高负载（多隔离实例 + 串行回归）下窗口懒加载可能超过 60s，故放宽等待预算到 120s；判据仍是「按钮可点」。
   const clickable = await page.waitForFunction(() => {
     const b = document.querySelector<HTMLButtonElement>('[data-lck="git-tree-confirm"]');
     return !!b && !b.disabled;
-  }, undefined, { timeout: 60000 }).then(() => true).catch(() => false);
+  }, undefined, { timeout: 120000 }).then(() => true).catch(() => false);
   const diag = await page.evaluate(() => ({
     footer: document.body.innerText.match(/已选[^\n]*/)?.[0] ?? '',
     loadingPanes: [...document.querySelectorAll('p')].filter((p) => (p.textContent ?? '').includes('取数中')).length,

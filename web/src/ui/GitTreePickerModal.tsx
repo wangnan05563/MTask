@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom'; // T04913：标题 Tooltip 挂 body，绕开列表 overflow 裁剪
 import { Check, ChevronDown, ChevronRight, FolderGit2, GitBranch, Loader2, RefreshCw, Search, Tag, X } from 'lucide-react'; // T03654：折叠箭头统一 lucide · T04527：仓库行用 FolderGit2
 import { api } from '../api/client';
 import type { Project } from '../api/client';
@@ -52,6 +53,7 @@ import {
   type RepoScanTarget,
 } from '../utils/gitRepoBranchGroups';
 import { mergeRepoTimelines, repoLabelOf, resolveMixedConfirmation, type RepoTimelineInput } from '../utils/gitTimelineMerge'; // T04912：多仓库混合时间线纯函数层
+import { shouldShowSubjectTooltip, subjectTooltipBox } from '../utils/gitSubjectTooltip'; // T04913：标题截断判据与浮层坐标
 import type { BranchOption } from '../utils/scopeControls'; // T04584：起点分支候选（含子仓库 repoSub）
 
 /** 聚合视图里「在途取数窗口」的并发预算：与普查同一口径，一个仓库多就一起多（T04525） */
@@ -954,6 +956,68 @@ function CommitRefPills({ refs, compact }: { readonly refs: GitRefName[]; readon
 }
 
 /**
+ * T04913：提交标题「单行省略 + 悬浮全量显示」。
+ *
+ * 改造前已有 CSS 单行省略与原生 `title`，但原生提示有 ~1s 延迟、样式由浏览器决定、
+ * 长文本在窄屏还会被裁，不满足「不同分辨率和浏览器下显示一致」。这里：
+ *  - 只在 `scrollWidth > clientWidth`（真截断）时显示受控浮层，短标题不打扰；
+ *  - portal 到 body + `position: fixed`，列表容器 `overflow:auto` 裁不到；坐标由纯函数
+ *    `subjectTooltipBox` 按视口钳制，靠右/靠底自动收边或翻转；
+ *  - `pointerEvents: none` 且不接管 onClick，点选 / Shift 框选语义逐字不变；
+ *  - 去掉会与自定义浮层叠出两份提示的原生 title，改用 `aria-label` + `data-full-subject`
+ *    承担无障碍与取证（全文始终可从 DOM 读出）。
+ */
+function CommitSubject({ text }: { readonly text: string }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [box, setBox] = useState<ReturnType<typeof subjectTooltipBox> | null>(null);
+  const show = () => {
+    const el = ref.current;
+    if (!el || !shouldShowSubjectTooltip(el.scrollWidth, el.clientWidth)) { setBox(null); return; }
+    const r = el.getBoundingClientRect();
+    setBox(subjectTooltipBox(
+      { left: r.left, top: r.top, bottom: r.bottom, right: r.right },
+      { width: window.innerWidth, height: window.innerHeight },
+    ));
+  };
+  useEffect(() => {
+    if (!box) return;
+    // 列表滚动 / 视口变化后旧坐标立即失效，收起而不是把浮层留在半空
+    const hide = () => setBox(null);
+    window.addEventListener('scroll', hide, true);
+    window.addEventListener('resize', hide);
+    return () => {
+      window.removeEventListener('scroll', hide, true);
+      window.removeEventListener('resize', hide);
+    };
+  }, [box]);
+  return (
+    <>
+      <span ref={ref} data-lck="git-tree-subject" data-full-subject={text} aria-label={text}
+        onMouseEnter={show} onMouseLeave={() => setBox(null)}
+        style={{
+          flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          // 由继承 body 字号收敛到 --fs-s（默认档 12px，比原 13px 小一级、仍比 11px 的日期/作者高一层级），
+          // 配合行内边距由 3px 收到 2px，单条记录更紧凑，一屏能多看几行。
+          fontSize: 'var(--fs-s)', lineHeight: 1.3,
+        }}>
+        {text}
+      </span>
+      {box && createPortal(
+        <span data-lck="git-tree-subject-tooltip" role="tooltip"
+          style={{
+            position: 'fixed', left: box.left, top: box.top, maxWidth: box.maxWidth, width: 'max-content',
+            display: 'block', zIndex: 2000, pointerEvents: 'none', padding: '6px 10px', borderRadius: 6,
+            background: 'var(--card-bg)', color: 'var(--text)', border: '1px solid var(--border-strong)',
+            boxShadow: '0 4px 16px rgba(0,0,0,0.18)', fontSize: 'var(--fs-s)', lineHeight: 1.45,
+            whiteSpace: 'normal', overflowWrap: 'anywhere',
+          }}>
+          {text}
+        </span>, document.body)}
+    </>
+  );
+}
+
+/**
  * 提交行 + 详情行。单仓库列表和分组视图里每个仓库的列表共用这一段 JSX，
  * 差别只在 `keyPrefix`（同一 SHA 可能在两个仓库的窗口里各出现一次，展开态不能串）。
  *
@@ -980,7 +1044,7 @@ function CommitRows({ commits, selected, expandedSet, keyPrefix, onRowClick, onT
         return (
           /* 行本身只是布局容器；「点选这一条」落到行内的原生 <button> 上（Shift/Ctrl 框选语义不变） */
           <div key={`${keyPrefix}${c.sha}`} data-lck="git-tree-row" data-sha={c.sha} data-selected={checked ? '1' : '0'}
-            style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '3px 8px', borderBottom: '1px solid var(--border)', background: checked ? 'var(--surface-2)' : 'transparent' }}>
+            style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '2px 8px', borderBottom: '1px solid var(--border)', background: checked ? 'var(--surface-2)' : 'transparent' }}>
             {/* 复选框只是勾选态的视觉镜像（真正的控件是右侧按钮）；点它同样落到同一段点选逻辑上 */}
             <input type="checkbox" checked={checked} readOnly tabIndex={-1} aria-label={`选择提交 ${c.short}`}
               onClick={(e) => onRowClick(i, e)} style={{ cursor: 'pointer' }} />
@@ -1006,7 +1070,7 @@ function CommitRows({ commits, selected, expandedSet, keyPrefix, onRowClick, onT
                   {c.repoLabel}
                 </span>
               )}
-              <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.subject}>{c.subject}</span>
+              <CommitSubject text={c.subject} />
               <CommitRefPills refs={c.refs} compact={compactRefs} />
               <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 90 }} title={fullTime(c.date)}>{relTime(c.date)}</span>
               <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 64 }} title={c.author}>{c.author}</span>
