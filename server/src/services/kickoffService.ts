@@ -945,6 +945,20 @@ export function validateOutline(raw: unknown, opts: { lenientDataKeys?: boolean;
   const warnings: string[] = [];
   const outline: KickoffOutlineItem[] = raw.map((v, i) => validateOutlinePage(v, i, warnings, opts.lenientBullets === true));
   outline.forEach((p, i) => assertDataKeyBudget(p, i, outline, warnings, opts.lenientDataKeys === true));
+  // T05066（T02156 遗留③）：同一 dataKey 全稿只挂一页。AI 大纲编排曾把 preflight 块挂到相邻两页
+  // （13/14 页表格几乎一致），装配层照单全收就出重复表格。提示词层已加约束（OUTLINE_SYSTEM 第 4 条），
+  // 这里兜底去重：保留首次出现页、后续页去掉并记 warning。软着陆而非硬失败——重复块影响观感不影响
+  // 可用性，不值得为它触发整稿重试；去掉后「首次出现仍在」，必含页判定（timeline/workload）不受影响。
+  const firstPageOf = new Map<KickoffDataKey, number>();
+  outline.forEach((p, i) => {
+    const dup = p.dataKeys.filter((k) => firstPageOf.has(k));
+    if (dup.length > 0) {
+      const at = dup.map((k) => `第 ${(firstPageOf.get(k) ?? 0) + 1} 页`).join('、');
+      warnings.push(`第 ${i + 1} 页 dataKeys ${dup.join('/')} 已挂载于${at}，本页已去掉（同一数据块全稿只挂一页，避免相邻两页出现几乎一致的表格）`);
+      p.dataKeys = p.dataKeys.filter((k) => !dup.includes(k));
+    }
+    for (const k of p.dataKeys) if (!firstPageOf.has(k)) firstPageOf.set(k, i);
+  });
   // 必含两页（FR-4.5 时间线 / FR-4.6 工作量）——缺任一页等于稿子不可用，硬失败让模型补齐
   if (!outline.some((p) => p.dataKeys.includes('timeline'))) throw new Error(`大纲缺少时间线页（须有一页 dataKeys 含 'timeline'）`);
   if (!outline.some((p) => p.dataKeys.includes('workload'))) throw new Error(`大纲缺少工作量页（须有一页 dataKeys 含 'workload'）`);
@@ -989,6 +1003,7 @@ export const OUTLINE_SYSTEM = `你是项目启动会 PPT 的大纲编排器。�
 2. section 只能取：${KICKOFF_SECTIONS.join(' / ')}；
 3. layout 只能取：${KICKOFF_LAYOUTS.join(' / ')}；
 4. dataKeys 只能取：${KICKOFF_DATA_KEYS.join(' / ')}；一页可多个，但**最多 2 个**（3 个数据块加要点必然挤爆版面，装配层只能整块省略，页面就缺内容）；
+   ⚠ 同一 dataKey **全稿只能挂一页**——同一数据块出现在两页，两页就是几乎一样的表格（T02156 实测踩坑）。想再讲这个维度就写 bullets 结论，不要再挂数据块；
 5. 每页 bullets ≤${BULLET_MAX_LINES} 条，每条 ≤${BULLET_MAX_CHARS} 字；
 6. 必须至少一页 dataKeys 含 "timeline"，至少一页 dataKeys 含 "workload"；
    ⚠ 常见错误：把 layout 设成 "timeline" 但 dataKeys 里没有 "timeline" 这个键（如
@@ -1022,7 +1037,7 @@ export const OUTLINE_SYSTEM = `你是项目启动会 PPT 的大纲编排器。�
 
 const OUTLINE_SYSTEM_RETRY = `只输出 JSON 数组（${PAGE_MIN}~${PAGE_MAX} 个元素），元素：{section,title,bullets,dataKeys,layout}。
 section∈[${KICKOFF_SECTIONS.join('|')}] layout∈[${KICKOFF_LAYOUTS.join('|')}] dataKeys⊆[${KICKOFF_DATA_KEYS.join('|')}]
-每页 dataKeys **≤${DATA_KEYS_MAX} 个**（超出会被系统截断）；
+每页 dataKeys **≤${DATA_KEYS_MAX} 个**（超出会被系统截断）；同一 dataKey 全稿只挂一页（重复挂载会被系统去掉后续页的该键）；
 bullets 每条≤${BULLET_MAX_CHARS}字；必须至少一页 dataKeys 含 "timeline"（只把 layout 设成 'timeline' 而 dataKeys 里没这个键不算，会被整稿退回）、至少一页 dataKeys 含 "workload"；数字一律用 dataKeys 表示，禁止编造数字。
 第 1 页 cover、第 2 页 toc、末页 thanks；章节分隔用 section（dataKeys 空）；阶段链用 flow、人员标签用 chip（各至多一页）。
 每页至少 1 条 bullets 用「」照抄输入里出现过的具体名称，全稿带「」指代的 bullets ≥6 成；
