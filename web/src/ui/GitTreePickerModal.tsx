@@ -58,6 +58,11 @@ import type { BranchOption } from '../utils/scopeControls'; // T04584：起点�
 
 /** 聚合视图里「在途取数窗口」的并发预算：与普查同一口径，一个仓库多就一起多（T04525） */
 const PANE_LOAD_INFLIGHT = REPO_SCAN_CONCURRENCY;
+/**
+ * T05063：「确认选择」点击动画时长。需求建议 200-300ms，取中值 250ms，
+ * 与项目既有 `copy-pop .28s` / `toast-in .2s` / `sheet-up 220ms` 同一量级。
+ */
+const CONFIRM_ANIM_MS = 250;
 
 /**
  * T03302：代码评审讲稿卡 · Git 树选范围弹窗（布局参照 JetBrains Git Log，点选按勾选式多选—T03326）。
@@ -175,6 +180,9 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   const [mixRepos, setMixRepos] = useState(true);
   /** T04912：部分仓库取数失败的降级说明——不阻断其余仓库，也不伪装成「这个仓库没提交」 */
   const [mixedWarnings, setMixedWarnings] = useState<string[]>([]);
+  /** T05063：确认按钮点击动画进行中（同时充当连点守卫） */
+  const [confirming, setConfirming] = useState(false);
+  const confirmTimer = useRef<number | null>(null);
   const [allBranches, setAllBranches] = useState(false);
   const [search, setSearch] = useState('');
   /** T04911：分组窗口懒加载时读「此刻」的搜索词（loadPane 不在 effect 依赖里，闭包会抓旧值） */
@@ -426,6 +434,12 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
     return () => globalThis.removeEventListener('keydown', onKey);
   }, [onClose]);
 
+  // T05063：动画窗口内被取消/Esc 关闭时，绝不能把延迟提交漏到关闭之后
+  useEffect(() => () => {
+    if (confirmTimer.current != null) window.clearTimeout(confirmTimer.current);
+    confirmTimer.current = null;
+  }, []);
+
   // 切项目 = 换一份已选与可视集，否则「在 A 项目选的提交」会串到 B 项目的范围里
   useEffect(() => {
     setSelected(selectedByProjectRef.current[projectId] ?? []);
@@ -670,6 +684,30 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   const canConfirm = repoView
     ? paneSelectedCount > 0 && !paneBusy && !scanning
     : selected.length > 0 && !loading && (!error || mixActive);
+  /** 动画窗口内按钮置灰（需求允许），但对外仍用「还能不能确认」这一条判据表达原因 */
+  const confirmEnabled = canConfirm && !confirming;
+
+  /**
+   * T05063：点击先播 250ms 动画，动画结束才真正 `confirm()`。
+   *
+   * 为什么不能「同步 confirm + 同时播动画」：四个入口里 `gitScopePicker`（`setCommitPickerMode(null)`）
+   * 与讲稿卡（`setGitTreeOpen(false)`）在确认后**同步卸载**弹窗，动画来不及绘制就被卸载，
+   * 用户仍会读成「点了没反应」并继续连点。延迟一个动画时长不改结果，但保证反馈始终可见。
+   *
+   * 防连点两道：① `confirming` 期间 `disabled`（浏览器不再派发 click）；
+   * ② 即便同一帧内被程序化连发多次，重复调用只会 `clearTimeout` 前一个定时器，最终只提交一次。
+   * 组件卸载时（Esc / 取消 / 父层关闭）会清定时器，不会把提交漏到关闭之后。
+   */
+  function onConfirmClick() {
+    if (!confirmEnabled) return;
+    setConfirming(true);
+    if (confirmTimer.current != null) window.clearTimeout(confirmTimer.current);
+    confirmTimer.current = window.setTimeout(() => {
+      confirmTimer.current = null;
+      setConfirming(false);
+      confirm();
+    }, CONFIRM_ANIM_MS);
+  }
 
   return (
     /* 原生 <dialog open>：显隐仍由本组件挂载/卸载控制（父层只在需要时渲染），Esc 仍由上面的监听负责 */
@@ -680,6 +718,12 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
         background: 'rgba(15,23,42,0.45)', color: 'inherit',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}>
+      {/* T05063：只给「确认选择」用的点击反馈关键帧（缩放 + 透明度），不动全局样式，也不影响其它按钮 */}
+      <style>{`@keyframes git-tree-confirm-pop {
+  0% { transform: scale(1); opacity: 1; }
+  45% { transform: scale(.93); opacity: .72; }
+  100% { transform: scale(1); opacity: 1; }
+}`}</style>
       <div style={{ width: 'min(1080px, 96vw)', maxHeight: '88vh', display: 'flex', flexDirection: 'column', background: 'var(--card-bg)', border: '1px solid var(--accent)', borderRadius: 10, padding: 14 }}>
         <header style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <GitBranch size={16} style={{ color: 'var(--accent)' }} />
@@ -910,8 +954,17 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
             </label>
           )}
           <button type="button" data-lck="git-tree-cancel" onClick={onClose} style={boxStyle}>取消</button>
-          <button type="button" data-lck="git-tree-confirm" onClick={confirm} disabled={!canConfirm}
-            style={{ ...boxStyle, background: canConfirm ? 'var(--accent)' : 'var(--surface-2)', color: canConfirm ? '#fff' : 'var(--text-muted)', cursor: canConfirm ? 'pointer' : 'not-allowed' }}>
+          <button type="button" data-lck="git-tree-confirm" onClick={onConfirmClick} disabled={!confirmEnabled}
+            aria-busy={confirming || undefined}
+            style={{
+              ...boxStyle,
+              background: confirmEnabled ? 'var(--accent)' : 'var(--surface-2)',
+              color: confirmEnabled ? '#fff' : 'var(--text-muted)',
+              cursor: confirmEnabled ? 'pointer' : 'not-allowed',
+              // 动画只在点击后的 250ms 内挂上，结束即移除，不给按钮留常驻 transform
+              animation: confirming ? `git-tree-confirm-pop ${CONFIRM_ANIM_MS}ms cubic-bezier(.4,0,.2,1)` : undefined,
+              willChange: 'transform, opacity',
+            }}>
             <Check size={13} style={{ marginRight: 4, verticalAlign: '-2px' }} />确认选择
           </button>
         </div>
