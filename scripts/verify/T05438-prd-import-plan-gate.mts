@@ -88,5 +88,16 @@ ok('B-07 导入 payload 按 include 过滤（取消勾选的套真的不会进�
 ok('B-08 前端提示改成「保留第一套、其余套取消勾选」',
   /保留第一套、其余套取消勾选 \$\{n\.disabledRows\} 条/.test(panel));
 
+console.log('—— C 组 · 导入默认排期（P0-3） ——');
+ok('C-01 仅当「所有计划行都没给 startDate」才补排（保留手工排期）',
+  /const hasAnyStart = planItems\.some\(\(p\) => !!p\.startDate\);/.test(svc)
+  && /if \(!hasAnyStart\) \{[\s\S]{0,120}loadCalendar\(\)/.test(svc));
+ok('C-02 按 WBS 顺序串行排期（start=cursor，end 推移后 cursor=下一工作日）',
+  /planStarts\[i\] = cursor;[\s\S]{0,160}cursor = nextWorkday\(calcEndDate\(cursor, d, calSchedule\), calSchedule\);/.test(svc));
+ok('C-03 落库用的是排期后的开始日（createBatch 不再拿 planItems 的空日期落到今天）',
+  /startDate: planStarts\[i\],/.test(svc) && !/startDate: planItems\[i\]\.startDate,/.test(svc));
+ok('C-04 里程碑工期 = 包络（串行排期下包络=子项和，两条口径合一）',
+  /const duration = Math\.max\(envelope, sumKids\);/.test(svc));
+
 console.log(`\nPASS=${pass} FAIL=${fail}`);
 if (fail > 0) process.exitCode = 1;

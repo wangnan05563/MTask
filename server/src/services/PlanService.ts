@@ -2974,6 +2974,22 @@ export const PlanService = {
       planItems.map((p, i) => ({ kind: planKinds[i], durationDays: p.durationDays })),
       (i) => isGapFillPlan({ title: planItems[i]?.title, description: planItems[i]?.description }),
     );
+    // T05440（P0-3）：导入默认排期。AI 只给 durationDays 不给 startDate，旧行为是全部落「今天」
+    // （insertNewBatchRow 的空则今天），实测 146/146 条 start_date 同一天，甘特图与里程碑包络全失真。
+    // 仅当「所有计划行都没给 startDate」时按 WBS 顺序串行补排（里程碑与明细一起排）：
+    // 这样每个里程碑的「日历包络」正好等于其子项工期之和，与 P0-2 的工期口径完全自洽；
+    // 任何一行给了 startDate 都视为调用方自己排了期，本段整段跳过，保留手工排期。
+    const hasAnyStart = planItems.some((p) => !!p.startDate);
+    const planStarts: Array<string | undefined> = planItems.map((p) => p.startDate);
+    if (!hasAnyStart) {
+      const calSchedule = loadCalendar();
+      let cursor = fmt(new Date());
+      for (let i = 0; i < planItems.length; i += 1) {
+        const d = Math.max(1, Math.round(Number(planDurations[i]) || 1));
+        planStarts[i] = cursor;
+        cursor = nextWorkday(calcEndDate(cursor, d, calSchedule), calSchedule);
+      }
+    }
     const t = now();
     let taskCount = 0;
     const unlinkedReqNos = new Set<string>();
@@ -3032,7 +3048,7 @@ export const PlanService = {
         const created = this.createBatch(projectId, newIdx.map((i) => ({
           title: planTargets[i].title,
           description: planItems[i].description,
-          startDate: planItems[i].startDate,
+          startDate: planStarts[i],
           // T01001 二轮：工期用汇总后的值（里程碑 = 其下明细之和），保证导入后两边对得上
           durationDays: planDurations[i],
           assignee: planItems[i].assignee,
