@@ -433,12 +433,63 @@ export interface RepoScanTarget {
 /** `/git/repos` 回包形状（只取普查要用的字段） */
 export interface RepoListResult {
   ok: boolean;
-  repos?: { subPath?: string }[];
+  repos?: {
+    subPath?: string;
+    /** T04586 复验：平铺视图的仓库选择器要显示展示名与结构化 git 元数据 */
+    displayName?: string;
+    isRoot?: boolean;
+    branch?: string;
+    commit?: string;
+    remoteUrl?: string;
+  }[];
   workspacePath?: string;
   /** T04886：因深度/条数上限被截断——前端要显式提示，不能让清单看起来是全集 */
   truncated?: boolean;
   scannedDirs?: number;
   error?: { kind?: string; message?: string };
+}
+
+/** T04586 复验：默认（平铺）视图的仓库选择器候选项，来自 `/git/repos` 的递归清单 */
+export interface RepoChoice {
+  /** 相对工作空间根的 POSIX 路径；'' = 根仓库 */
+  subPath: string;
+  displayName: string;
+  isRoot: boolean;
+  branch: string;
+  commit: string;
+  remoteUrl: string;
+}
+
+/** 把 `/git/repos` 回包折成仓库选择器候选项；失败/空清单回空数组（不发明第二套仓库口径） */
+export function repoChoicesFromRepoList(list: RepoListResult | null | undefined): RepoChoice[] {
+  if (!list?.ok || !Array.isArray(list.repos)) return [];
+  return list.repos.map((r) => {
+    const subPath = (r.subPath ?? '').trim();
+    return {
+      subPath,
+      displayName: (r.displayName ?? '').trim() || (subPath ? subPath.split('/').pop() ?? subPath : '根目录仓库'),
+      isRoot: r.isRoot === true || subPath === '',
+      branch: (r.branch ?? '').trim(),
+      commit: (r.commit ?? '').trim(),
+      remoteUrl: (r.remoteUrl ?? '').trim(),
+    };
+  });
+}
+
+/**
+ * 平铺视图默认看哪个仓库。
+ *
+ * T04586 复验失败的根因就在这里：默认恒定 `repoSub=''`，只有分组视图/起点分支下拉才去问
+ * `/git/repos`，于是「工作空间目录里装着多个仓库」在用户第一屏根本不存在。
+ * 口径：清单含根仓库 → 保持 ''（旧单仓库逻辑逐字不变）；根不在清单（只是装仓库的目录）
+ * → 落到第一个子仓库，否则默认视图会对一个非 git 的目录报「不是 Git 仓库」。
+ * 已选值仍在清单里时原样保留（用户手动切过仓库后刷新清单不把他拽回默认）。
+ */
+export function defaultRepoSub(choices: readonly RepoChoice[], current = ''): string {
+  const sub = (current ?? '').trim();
+  if (choices.some((c) => c.subPath === sub)) return sub;
+  if (choices.some((c) => c.isRoot)) return '';
+  return choices[0]?.subPath ?? '';
 }
 
 /**

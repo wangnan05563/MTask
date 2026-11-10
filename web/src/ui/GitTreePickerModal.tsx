@@ -30,6 +30,8 @@ import {
   censusTargetsFromRepoLists,
   defaultExpandedBranches,
   defaultExpandedRepos,
+  defaultRepoSub,
+  repoChoicesFromRepoList,
   inputsForActiveWorkspace,
   localOnlyRefInputs,
   mapSettledWithLimit,
@@ -45,6 +47,7 @@ import {
   type RepoBranchGroup,
   type RepoBranchInput,
   type RepoBranchRow,
+  type RepoChoice,
   type RepoListResult,
   type RepoScanTarget,
 } from '../utils/gitRepoBranchGroups';
@@ -161,6 +164,10 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   /** T04584：平铺视图当前取数的仓库（'' = 根仓库）。起点分支输入框选中子仓库候选时切到该 repoSub，
    *  load/confirm 都按它定位——否则选了 banks 的分支仍按根仓库取数，子目录分支永远查不到。 */
   const [flatRepoSub, setFlatRepoSub] = useState('');
+  /** T04586 复验：默认平铺视图的仓库清单（打开弹窗即递归普查，不再只有切到分组视图才问 /git/repos） */
+  const [repoChoices, setRepoChoices] = useState<RepoChoice[]>([]);
+  const [repoListState, setRepoListState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [repoListTruncated, setRepoListTruncated] = useState(false);
   const [allBranches, setAllBranches] = useState(false);
   const [search, setSearch] = useState('');
   const [commits, setCommits] = useState<GitTreeCommit[]>([]);
@@ -194,6 +201,13 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   const [openRepos, setOpenRepos] = useSessionState<string[]>('git.tree.openRepos', []);
 
   const project = useMemo(() => projects.find((p) => p.id === projectId), [projects, projectId]);
+  /** T04586 复验：平铺视图当前看的仓库。底部原先一律写项目名，会把子仓库的提交也标成「根目录仓库」 */
+  const activeRepoChoice = useMemo(() => repoChoices.find((c) => c.subPath === flatRepoSub), [repoChoices, flatRepoSub]);
+  const flatRepoLabel = useMemo(() => {
+    const base = project?.name ?? '';
+    if (!activeRepoChoice) return base;
+    return activeRepoChoice.isRoot ? `${base}（根目录仓库）` : `${base} · ${activeRepoChoice.subPath}`;
+  }, [project, activeRepoChoice]);
   const visibleRefs = useMemo(() => groupByRef(commits), [commits]);
   const summary = useMemo(() => summarizeSelection(commits, selected), [commits, selected]);
 
@@ -366,6 +380,33 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
 
   useEffect(() => { void loadRef.current(false); }, [projectId, head, allBranches, repoView, flatRepoSub]);
 
+  /**
+   * T04586 复验修复：默认（平铺）视图也要「开箱列出工作空间目录里的所有仓库」。
+   *
+   * 修复前只有 `repoView` 或展开起点分支下拉才触发 runCensus → 平铺视图恒定 `repoSub=''`，
+   * 用户工作空间里装着 7 个子仓库，第一屏也只取根目录那一个（【验证失败 2026-11-10】）。
+   * 这里不阻塞原有首屏取数（单仓库场景零额外延迟）；清单回来后渲染仓库选择器，并在
+   * 「根不是仓库」时把取数坐标落到第一个子仓库（根是仓库则保持 ''，旧行为逐字不变）。
+   */
+  useEffect(() => {
+    if (!projectId) return;
+    let alive = true;
+    setRepoListState('loading');
+    setRepoChoices([]);
+    setRepoListTruncated(false);
+    void api.get<RepoListResult>(`/git/repos?${new URLSearchParams({ projectId })}`)
+      .then((list) => {
+        if (!alive) return;
+        const choices = repoChoicesFromRepoList(list);
+        setRepoChoices(choices);
+        setRepoListTruncated(!!list.truncated);
+        setRepoListState('ready');
+        setFlatRepoSub((prev) => defaultRepoSub(choices, prev));
+      })
+      .catch(() => { if (alive) setRepoListState('error'); });
+    return () => { alive = false; };
+  }, [projectId]);
+
   // 打开聚合视图才普查一次（方案 §5.1「先保留单仓库体验」）；同一份弹窗生命周期内复用结果，不反复 fork git。
   // T04525：条件从 `projects.length > 1` 放开到「有项目就普查」——需求要看的本来就是
   // **一个**工作空间目录里的多个仓库，只在多项目场景才普查正是上次验收失败的原因。
@@ -529,6 +570,37 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
               {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           )}
+          {/* T04586 复验：默认视图的仓库选择器——递归清单（根 + 任意层级子仓库），每项带分支/短提交。
+              清单含根仓库时 value 仍是 ''，旧「单仓库」口径逐字不变，只是多了可切换的仓库坐标。 */}
+          {!repoView && repoChoices.length > 0 && (
+            <select data-lck="git-tree-repo-select" value={flatRepoSub}
+              aria-label="选择工作空间内的 Git 仓库"
+              title="工作空间目录内递归发现的 Git 仓库（含任意层级子目录）"
+              onChange={(e) => {
+                // 换仓库 = 换一份可视集：旧仓库的勾选/起点分支不带过去，确认仍按 flatRepoSub 回传
+                setSelected([]);
+                setAnchor(null);
+                setHead('');
+                setAllBranches(false);
+                setFlatRepoSub(e.target.value);
+              }}
+              style={{ ...boxStyle, maxWidth: 320 }}>
+              {repoChoices.map((c) => (
+                <option key={c.subPath || '.'} value={c.subPath}>
+                  {`${c.isRoot ? `根目录仓库 · ${c.displayName}` : c.subPath}${c.branch ? ` · ${c.branch}` : ''}${c.commit ? `@${c.commit.slice(0, 8)}` : ''}`}
+                </option>
+              ))}
+            </select>
+          )}
+          {!repoView && repoChoices.length > 1 && (
+            <span data-lck="git-tree-repo-count" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+              工作空间内 {repoChoices.length} 个仓库
+              {repoListTruncated ? '（扫描已达上限，深层仓库可能未列出）' : ''}
+            </span>
+          )}
+          {!repoView && repoListState === 'error' && (
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>仓库清单取数失败，仍按当前仓库取数</span>
+          )}
           {/* T03590：head 文本框升级为可展开的分支选择器（模糊过滤 + 选中即按该分支重新取数 + 清除）；
               输入框本体保留 data-lck="git-tree-head"，手输 SHA/标签与改造前一致 */}
           <BranchPicker value={head}
@@ -665,7 +737,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
               </>
             ) : (
               <>已选 {summary.count} 个提交{summary.count > 0 ? `（${summary.runs} 段）` : ''}
-                {project ? ` · 仓库 ${project.name}` : ''}
+                {flatRepoLabel ? ` · 仓库 ${flatRepoLabel}` : ''}
               </>
             )}
           </span>
