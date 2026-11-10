@@ -7,6 +7,11 @@ import { ProjectListHint, projectListPlaceholder, useProjectList } from '../ui/p
 import { CopyButton } from '../ui/CopyButton';
 import { EXPORT_MIME, saveBlob } from '../utils/download';
 import { aiImportStore } from '../stores/aiImportStore';
+// 2026-11-10 质量复核优化：导入前质量自检（纯函数，只读分析 + 用户确认后才归一化）
+import {
+  analyzeImportQuality, disableConstraintReqs, formatQualitySummary, isConstraintReq, isGapFillPlan,
+  normalizeWbs, type QualitySource, type QualitySummary,
+} from '../utils/prdQuality';
 
 /** T00662：PRD 解析结果（需求项 + WBS 计划草稿） */
 interface PrdReq { reqNo: string; title: string; content: string; sourceRef: string; priority: string; include: boolean; key: string; /** T04064：来源文件下标（= prdDocs 下标），导入时据此回填 prd_id */ sourceIndex?: number; }
@@ -31,7 +36,8 @@ function recalcMilestoneDurations(list: PrdPlan[]): PrdPlan[] {
     let sum = 0;
     for (let j = i + 1; j < out.length; j++) {
       if (isMilestoneRow(out[j])) break;
-      if (out[j].include) sum += Math.max(1, Math.round(Number(out[j].durationDays) || 1));
+      // 2026-11-10 质量复核优化⑥：系统补齐占位行不计入里程碑工期（与服务端 child 归属口径一致）
+      if (out[j].include && !isGapFillPlan(out[j])) sum += Math.max(1, Math.round(Number(out[j].durationDays) || 1));
     }
     if (sum > 0) out[i] = { ...out[i], durationDays: sum };
   }
@@ -60,6 +66,8 @@ interface PrdPreviewResult {
   orphanRequirements: Array<{ reqNo: string; title: string }>;
   prdDoc: { action: 'none' | 'reuse' | 'create'; id?: string; by?: 'hash' | 'name' };
   planRowsPreview: Array<{ title: string; reuseId: string | null }>;
+  /** 2026-11-10 质量复核优化①：每份来源文档被需求行引用的条数（零引用＝该文档未参与生成） */
+  docReferences?: Array<{ filename: string; docKind: 'prd' | 'design' | 'test'; reqCount: number }>;
   createTasks: boolean;
   readOnly: true;
 }
@@ -119,6 +127,14 @@ function logPreviewResult(p: PrdPreviewResult): void {
     const names = p.orphanRequirements.slice(0, 12).map((x) => x.reqNo).join('、');
     const more = p.orphanRequirements.length > 12 ? ' 等' : '';
     aiImportStore.log(`预演提醒：本次要新建的 ${p.orphanRequirements.length} 条需求没有任何计划/待办引用（${names}${more}）`, 'info');
+  }
+  // 2026-11-10 质量复核优化①：逐份来源文档的引用数，暴露「只归档但被误认为参与了生成」的文档
+  for (const d of p.docReferences ?? []) {
+    if (d.reqCount > 0) continue;
+    const role = d.docKind === 'prd' ? 'PRD' : d.docKind === 'design' ? '设计文档' : '测试用例';
+    aiImportStore.log(`预演提醒：${role}「${d.filename}」被 0 条需求引用——${d.docKind === 'prd'
+      ? '该来源文档未产出任何需求，请确认是否漏选/漏解析'
+      : '关联文档按设计仅归档、不参与 AI 解析；若期望其内容进入 WBS，需作为 PRD 文件参与解析'}`, 'info');
   }
 }
 
@@ -196,6 +212,266 @@ function logAutoFilled(rows: ReadonlyArray<{ title: string; description?: string
   );
 }
 
+/**
+ * 2026-11-10 质量复核优化④/⑤/⑦：把「导入前质量自检」摊到控制台。
+ * 只播报、不改数据——所有处置都由用户显式点按钮或编辑表格完成。
+ */
+function logQualityWarnings(s: QualitySummary): void {
+  const severe = s.wbsGroups > 1 || s.constraintReqs > 0 || s.versionConflicts > 0 || s.durationIssues > 0;
+  aiImportStore.log(formatQualitySummary(s), severe ? 'error' : 'info');
+  if (s.wbsGroups > 1) {
+    aiImportStore.log(`⚠ 检测到 ${s.wbsGroups} 套并行 WBS（分片各自产出完整里程碑后直接拼接）——建议导入前点「合并重复 WBS」统一编号；否则同一业务模块会重复排期`, 'error');
+  }
+  if (s.constraintReqs > 0) {
+    aiImportStore.log(`⚠ ${s.constraintReqs} 条需求命中「不新增/不改造/已闭环/废止」等否定口径——这类是约束或验收项，不应作为待开发需求排期，可用「取消勾选否定口径」批量排除`, 'error');
+  }
+  if (s.versionConflicts > 0) {
+    const brief = s.conflicts.slice(0, 6).map((c) => `${c.id}（${c.states.map((x) => x.doc).join(' ↔ ')}）`).join('、');
+    aiImportStore.log(`⚠ 跨文档版本冲突 ${s.versionConflicts} 项：${brief}${s.versionConflicts > 6 ? ' 等' : ''}——同一编号在不同来源里「待确认」与「已确认」并存，请人工裁定基线版本后再导入`, 'error');
+  }
+  if (s.durationIssues > 0) {
+    aiImportStore.log(`⚠ ${s.durationIssues} 个里程碑工期 ≠ 其下明细之和（例：${s.durationDetails.slice(0, 2).map((d) => `${d.title} ${d.declared}天/${d.computed}天`).join('、')}）——导入前可点「合并重复 WBS」重算`, 'error');
+  }
+  if (s.coverageGaps > 0) {
+    const gaps = s.coverage.filter((g) => g.missing.length > 0).map((g) => `${g.label} ${g.covered}/${g.total}`).join('、');
+    aiImportStore.log(`源文档条目覆盖自检：${gaps}；共 ${s.coverageGaps} 个编号未出现在解析结果中，可能是「需求级」内容，请人工确认是否需补计划`, 'info');
+  }
+  if (s.docCounts.design === 0 && s.docCounts.test === 0 && s.docCounts.prd > 0) {
+    aiImportStore.log('提示：本次没有关联设计/测试文档。如需归档配套方案设计，请在「关联设计/测试文档」添加；该类文档按设计只归档、不参与 AI 解析，若期望其实现细节进入 WBS，需作为 PRD 文件参与解析', 'info');
+  }
+}
+
+/**
+ * 2026-11-10 质量复核优化⑧：把质量检查报告做成「导入附加产物」——只读 Markdown，随用户下载。
+ * 与 tmp/质量检查报告-BEMP审批-PRD导入-20261110.md 的检查项同口径，便于逐次回归对照。
+ */
+function formatQualityReport(s: QualitySummary, baseline: string, sources: QualitySource[]): string {
+  const lines: string[] = [
+    '# PRD 导入质量自检报告',
+    '',
+    `- 生成时间：${new Date().toISOString()}`,
+    `- 版本基线（唯一需求依据）：${baseline.trim() || '**未裁定**'}`,
+    `- 来源文档：${sources.map((x) => `${x.name}［${x.role === 'prd' ? 'PRD·参与解析' : x.role === 'design' ? '设计·只归档' : '测试·只归档'}］`).join('、') || '（无）'}`,
+    `- 检查方式：前端只读分析（未改写源文档、未改写数据库）`,
+    '',
+    '## 一、总体结论',
+    '',
+    (s.wbsGroups > 1 || s.versionConflicts > 0 || s.durationIssues > 0 || s.constraintReqs > 0 || s.coverageGaps > 0)
+      ? '**需复核后导入**：存在并行 WBS / 版本冲突 / 工期不符 / 否定口径 / 覆盖缺口，详见下表。'
+      : '**通过**：未检测到结构性偏差；推定字段与业务判定仍需人工复核。',
+    '',
+    formatQualitySummary(s),
+    '',
+    '## 二、检查项',
+    '',
+    '| 检查项 | 数值 | 说明 |',
+    '|---|---:|---|',
+    `| 并行 WBS 套数 | ${s.wbsGroups} | >1 表示分片各自产出了完整里程碑体系 |`,
+    `| 同题重复计划 | ${s.duplicateGroups} 组 / ${s.duplicateRows} 行 | 归一化标题相同 |`,
+    `| 自动补齐占位行 | ${s.gapFillRows} | 无业务语义，不归属里程碑 |`,
+    `| 里程碑工期不符 | ${s.durationIssues} | 声明工期 ≠ 其下明细之和 |`,
+    `| 否定/已闭环口径 | ${s.constraintReqs} | 约束项，不应作待开发需求 |`,
+    `| 溯源未标注 | ${s.unattributedReqs} | sourceRef 非章节/Q 编号格式 |`,
+    `| 跨文档版本冲突 | ${s.versionConflicts} | 同编号状态相反 |`,
+    `| 源文档覆盖缺口 | ${s.coverageGaps} | 章节/Q/S/D/R/T/N/O 编号未出现在解析结果 |`,
+    `| 推定字段行 | ${s.inferredFieldRows} | 工期/复杂度/优先级/排期源文档均无依据 |`,
+    '',
+    '## 三、跨文档版本冲突',
+    '',
+  ];
+  if (s.conflicts.length === 0) lines.push('（无）', '');
+  else {
+    lines.push('| 编号 | 来源文档 | 状态 | 原文片段 |', '|---|---|---|---|');
+    for (const c of s.conflicts) {
+      for (const st of c.states) {
+        lines.push(`| ${c.id} | ${st.doc} | ${st.state === 'pending' ? '待确认' : '已确认'} | ${st.excerpt.replace(/\|/g, '\\|').slice(0, 100)} |`);
+      }
+    }
+    lines.push('');
+  }
+  lines.push('## 四、源文档条目覆盖', '', '| 类别 | 覆盖/总数 | 缺口编号 |', '|---|---|---|');
+  for (const g of s.coverage) {
+    lines.push(`| ${g.label} | ${g.covered}/${g.total} | ${g.missing.slice(0, 40).join('、') || '—'}${g.missing.length > 40 ? ` 等 ${g.missing.length} 项` : ''} |`);
+  }
+  lines.push('', '## 五、里程碑工期不符', '');
+  if (s.durationDetails.length === 0) lines.push('（无）', '');
+  else {
+    lines.push('| 里程碑 | 声明工期 | 明细合计 | 子项数 |', '|---|---:|---:|---:|');
+    for (const d of s.durationDetails.slice(0, 40)) lines.push(`| ${d.title} | ${d.declared} | ${d.computed} | ${d.children} |`);
+    lines.push('');
+  }
+  lines.push('## 六、同题重复计划（示例）', '');
+  lines.push(...(s.duplicateExamples.length ? s.duplicateExamples.map((x) => `- ${x}`) : ['（无）']), '');
+  lines.push(
+    '## 七、处置建议',
+    '',
+    '1. 多套 WBS → 点「合并重复 WBS」统一 M1…Mn（只取消勾选重复行，不删行）。',
+    '2. 否定/已闭环口径 → 点「取消勾选否定口径」，或逐条改标为约束/验收项。',
+    '3. 版本冲突 → 在面板指定「唯一需求依据」后，逐条复核冲突编号的基线状态。',
+    '4. 覆盖缺口 → 确认是「需求级内容」还是需补计划；关联设计/测试文档按设计只归档、不参与 AI 解析。',
+    '5. 工期不符 / 占位行 → 归一化后仍不符的，人工调整明细工期；占位行改为有业务语义的任务或取消勾选。',
+    '6. 推定字段（工期/复杂度/优先级/排期）→ 源文档无依据，导入后人工排期并标注为推定值。',
+    '',
+    '---',
+    '',
+    '*本报告由导入面板只读生成，未对源文档或已生成数据做任何修改。*',
+  );
+  return lines.join('\n') + '\n';
+}
+
+/** 小指标块（主题色走 CSS 变量，暗色主题同样可读） */
+function QualityMetric({ label, value, bad, hint }: {
+  readonly label: string; readonly value: string | number; readonly bad: boolean; readonly hint: string;
+}) {
+  return (
+    <span title={hint} style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', border: '1px solid var(--border)', borderRadius: 5, padding: '2px 7px', whiteSpace: 'nowrap' }}>
+      {label}{' '}
+      <strong style={{ color: bad ? 'var(--danger)' : 'var(--text)' }}>{value}</strong>
+    </span>
+  );
+}
+
+/** 2026-11-10 质量复核优化①③⑤⑦：预演增强卡片——所有数值只读，处置必须用户显式点按钮 */
+function QualityCard({ s, sources, baselineDoc, onBaseline, previewDocRefs, busy, onNormalize, onDisable, onRefresh, onExport }: {
+  readonly s: QualitySummary;
+  readonly sources: QualitySource[];
+  readonly baselineDoc: string;
+  readonly onBaseline: (v: string) => void;
+  readonly previewDocRefs: NonNullable<PrdPreviewResult['docReferences']>;
+  readonly busy: boolean;
+  readonly onNormalize: () => void;
+  readonly onDisable: () => void;
+  readonly onRefresh: () => void;
+  readonly onExport: () => void;
+}) {
+  const severe = s.wbsGroups > 1 || s.versionConflicts > 0 || s.durationIssues > 0 || s.constraintReqs > 0;
+  const prdNames = sources.filter((x) => (x.role ?? 'prd') === 'prd').map((x) => x.name);
+  const gapGroups = s.coverage.filter((g) => g.missing.length > 0);
+  return (
+    <div data-qc="import-quality" style={{ marginBottom: 10, border: `1px solid ${severe ? 'var(--danger)' : 'var(--border-strong)'}`, borderRadius: 8, padding: '8px 10px', background: 'var(--card-bg)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <strong style={{ fontSize: 'var(--fs-s)', color: severe ? 'var(--danger)' : 'var(--text)' }}>
+          导入前质量自检{severe ? '（需复核）' : '（通过）'}
+        </strong>
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+          只读快照 · 解析完成/预演/一键处置时刷新；逐字符编辑表格不会重扫源文档
+        </span>
+        <span style={{ flex: 1 }} />
+        <button onClick={onRefresh} disabled={busy} className="tbtn-anim" title="按当前表格内容重新计算质量快照并播报到控制台"
+          style={{ fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: busy ? 'default' : 'pointer', padding: '3px 8px' }}>
+          重新自检
+        </button>
+        <button onClick={onExport} disabled={busy} className="tbtn-anim" title="导出质量自检报告（只读 Markdown）——优化意见⑧：作为导入附加产物，便于逐次回归"
+          style={{ fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: busy ? 'default' : 'pointer', padding: '3px 8px' }}>
+          导出质量报告
+        </button>
+        <button onClick={onNormalize} disabled={busy || s.planCount === 0} className="tbtn-anim"
+          title="同题计划只留首见（置 include=false，不删行可勾回）、里程碑统一编号 M1…Mn、按明细重算工期"
+          style={{ fontSize: 'var(--fs-xs)', border: '1px solid var(--danger)', borderRadius: 6, background: 'transparent', color: 'var(--danger)', cursor: busy ? 'default' : 'pointer', padding: '3px 8px' }}>
+          合并重复 WBS
+        </button>
+        <button onClick={onDisable} disabled={busy || s.constraintReqs === 0} className="tbtn-anim"
+          title="把「不新增/不改造/已闭环/废止/保持现状」等约束项取消勾选（不删行、不改状态，可再勾回）"
+          style={{ fontSize: 'var(--fs-xs)', border: '1px solid var(--danger)', borderRadius: 6, background: 'transparent', color: 'var(--danger)', cursor: busy ? 'default' : 'pointer', padding: '3px 8px' }}>
+          取消勾选否定口径（{s.constraintReqs}）
+        </button>
+      </div>
+      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', margin: '6px 0' }}>{formatQualitySummary(s)}</div>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
+        <QualityMetric label="来源 PRD/设计/测试" value={`${s.docCounts.prd}/${s.docCounts.design}/${s.docCounts.test}`} bad={s.docCounts.prd === 0} hint="设计/测试文档按当前设计只归档、不参与 AI 解析" />
+        <QualityMetric label="并行 WBS" value={`${s.wbsGroups} 套`} bad={s.wbsGroups > 1} hint="分片各自产出完整里程碑后直接拼接会造成重复排期" />
+        <QualityMetric label="同题重复" value={`${s.duplicateGroups} 组 / ${s.duplicateRows} 行`} bad={s.duplicateRows > 0} hint="归一化标题（去掉章号/空白/标点）后相同" />
+        <QualityMetric label="占位行" value={s.gapFillRows} bad={s.gapFillRows > 0} hint="系统自动补齐，无业务语义，不归属里程碑" />
+        <QualityMetric label="工期不符" value={s.durationIssues} bad={s.durationIssues > 0} hint="里程碑声明工期 ≠ 其下明细之和" />
+        <QualityMetric label="否定口径" value={s.constraintReqs} bad={s.constraintReqs > 0} hint="约束/验收项，不应作为待开发需求" />
+        <QualityMetric label="溯源未标注" value={s.unattributedReqs} bad={s.unattributedReqs > 0} hint="sourceRef 不是章节/Q 编号格式，无法唯一定位原文" />
+        <QualityMetric label="版本冲突" value={s.versionConflicts} bad={s.versionConflicts > 0} hint="同一编号在不同来源里「待确认」与「已确认」并存" />
+        <QualityMetric label="覆盖缺口" value={s.coverageGaps} bad={s.coverageGaps > 0} hint="源文档章节/Q/S/D/R/T/N/O 编号未出现在解析结果中" />
+        <QualityMetric label="推定字段" value={`${s.inferredFieldRows} 行`} bad hint="工期/复杂度/优先级/排期在源文档中均无依据" />
+      </div>
+      {/* 优化意见①④：版本基线显式裁定 + 预演逐文档引用数回显 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
+        <label style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          版本基线（唯一需求依据）：
+          <select value={baselineDoc} onChange={(e) => onBaseline(e.target.value)} disabled={busy || prdNames.length === 0}
+            title="跨文档同一编号状态冲突时，指定哪份 PRD 为唯一需求依据；未裁定且存在冲突时禁止导入"
+            style={{ padding: '2px 4px', fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', maxWidth: 260 }}>
+            <option value="">未裁定{s.versionConflicts > 0 ? '（存在冲突，将阻止导入）' : ''}</option>
+            {prdNames.map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </label>
+        {s.versionConflicts > 0 && !baselineDoc.trim() && (
+          <span role="alert" style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>
+            检测到 {s.versionConflicts} 项跨文档版本冲突，必须先裁定基线再导入
+          </span>
+        )}
+        {(s.docCounts.design > 0 || s.docCounts.test > 0) && (
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+            关联设计/测试文档只归档、不参与 AI 解析；若期望其实现细节进入 WBS，需作为 PRD 文件参与解析
+          </span>
+        )}
+      </div>
+      {previewDocRefs.length > 0 && (
+        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', marginBottom: 4 }}>
+          预演文档引用数：
+          {previewDocRefs.map((d) => (
+            <span key={`${d.filename}-${d.docKind}`} style={{ marginRight: 8, color: d.reqCount === 0 ? 'var(--danger)' : 'var(--text-secondary)' }}>
+              {d.filename}［{d.docKind === 'prd' ? 'PRD' : d.docKind === 'design' ? '设计' : '测试'}］{d.reqCount} 条{d.reqCount === 0 ? '（未参与生成）' : ''}
+            </span>
+          ))}
+        </div>
+      )}
+      <details>
+        <summary style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', cursor: 'pointer' }}>
+          查看冲突 / 覆盖缺口 / 工期明细（{s.conflicts.length} 项冲突、{s.coverageGaps} 项缺口、{s.durationIssues} 个工期不符）
+        </summary>
+        <div style={{ maxHeight: 240, overflow: 'auto', fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', marginTop: 6 }}>
+          <div style={{ marginBottom: 6 }}>
+            <strong style={{ color: 'var(--text)' }}>跨文档版本冲突</strong>
+            {s.conflicts.length === 0 ? <div>— 无</div> : s.conflicts.map((c) => (
+              <div key={c.id} style={{ marginTop: 2 }}>
+                <strong style={{ color: 'var(--danger)' }}>{c.id}</strong>：
+                {c.states.map((st) => `${st.doc}（${st.state === 'pending' ? '待确认' : '已确认'}）「${st.excerpt.slice(0, 60)}」`).join(' ↔ ')}
+              </div>
+            ))}
+          </div>
+          <div style={{ marginBottom: 6 }}>
+            <strong style={{ color: 'var(--text)' }}>源文档条目覆盖</strong>
+            {gapGroups.length === 0 ? <div>— 全部命中</div> : gapGroups.map((g) => (
+              <div key={g.label}>{g.label}：{g.covered}/{g.total}，缺口 {g.missing.slice(0, 25).join('、')}{g.missing.length > 25 ? ` 等 ${g.missing.length} 项` : ''}</div>
+            ))}
+          </div>
+          <div style={{ marginBottom: 6 }}>
+            <strong style={{ color: 'var(--text)' }}>里程碑工期不符</strong>
+            {s.durationDetails.length === 0 ? <div>— 无</div> : s.durationDetails.slice(0, 20).map((d) => (
+              <div key={`${d.index}-${d.title}`}>{d.title}：声明 {d.declared} 天 / 明细合计 {d.computed} 天（{d.children} 子项）</div>
+            ))}
+          </div>
+          <div>
+            <strong style={{ color: 'var(--text)' }}>同题重复示例</strong>
+            {s.duplicateExamples.length === 0 ? <div>— 无</div> : s.duplicateExamples.map((x, i) => <div key={`${i}-${x}`}>{x}</div>)}
+          </div>
+        </div>
+      </details>
+    </div>
+  );
+}
+
+/**
+ * 2026-11-10 质量复核优化①：质量自检的来源集合 = 参与解析的主 PRD + 只归档的关联设计/测试文档。
+ * 单独抽成模块级纯函数，是为了让「解析完成立即算」和「预演时按最新行重算」用同一份来源，
+ * 且解析回调里能直接用本轮新读到的 sources（此时 prdSources 状态还没更新，读状态会拿到旧值）。
+ */
+function qualitySources(
+  prd: ReadonlyArray<{ name: string; text: string }>,
+  design: ReadonlyArray<{ name: string; text: string; docKind: 'design' | 'test' }>,
+): QualitySource[] {
+  return [
+    ...prd.map((s) => ({ name: s.name, text: s.text, role: 'prd' as const })),
+    ...design.map((d) => ({ name: d.name, text: d.text, role: d.docKind })),
+  ];
+}
+
 /** 解析前置校验：目标项目/AI 模型缺失或未选文件时给出可见原因并中止 */
 function canStartParse(projectId: string, toolId: string, fileCount: number): boolean {
   if (!projectId) { aiImportStore.patch({ error: '请先选择目标项目' }); aiImportStore.log('缺少目标项目，已中止', 'error'); return false; }
@@ -224,6 +500,11 @@ async function parseOneFile(
   // T02270 复议：分片完整跑完是**无损**结果，按普通信息展示——不能混进上面的 ⚠，
   // 否则用户看到分片提示会误判成「又被砍到 20 条」。
   if (r.parseNote) aiImportStore.log(r.parseNote);
+  // 2026-11-10 质量复核优化②：服务端跨片去重后仍有多套里程碑编号时，解析完就点名，
+  // 不等到导入后靠人工看甘特才发现（本次复核实测 7 套并行 WBS）。
+  if ((r.wbsGroups ?? 0) > 1) {
+    aiImportStore.log(`⚠ ${file.name}：跨片合并后仍有 ${r.wbsGroups} 套并行 WBS 编号——请在导入前点「合并重复 WBS」统一为 M1…Mn，否则同一模块会重复排期`, 'error');
+  }
   // T03730：HTML 里被跳过的片段（内嵌页/图表/无 alt 图片）与层级丢失提示——按警示级透出，避免静默丢内容
   for (const w of r.parseWarnings ?? []) aiImportStore.log(`⚠ ${w}`, 'error');
   return {
@@ -234,6 +515,7 @@ async function parseOneFile(
     textMd: r.textMd,
     failedChunks: r.failedChunks,
     failedChunkIds: r.failedChunkIds,
+    wbsGroups: r.wbsGroups,
   };
 }
 
@@ -380,6 +662,87 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
   const [failedShards, setFailedShards] = useSessionState<FailedShardRow[]>(PERSIST_KEYS.failed, []);
   // T04897：关联设计/测试文档——不参与 AI 解析，手动选文件读内容后随主 PRD 一起落 prd_docs（docKind 标注类型）
   const [designDocs, setDesignDocs] = useState<Array<{ name: string; text: string; docKind: 'design' | 'test' }>>([]);
+  // 2026-11-10 质量复核优化⑦：质量自检快照只在「解析完成 / 预演」时重算，
+  // 避免编辑表格时对每个按键都全文扫描源文档（单次扫描约 10 万字 × 8 组标识符）。
+  const [qualitySnapshot, setQualitySnapshot] = useState<QualitySummary | null>(null);
+  const [previewDocRefs, setPreviewDocRefs] = useState<NonNullable<PrdPreviewResult['docReferences']>>([]);
+  // 2026-11-10 质量复核优化④：基线裁定走会话级持久化——切页回来不能把已选定的「唯一需求依据」丢了
+  const [baselineDoc, setBaselineDoc] = useSessionState<string>('prd-import.baselineDoc', '');
+  /** 冲突未裁定 → 导入软闸：不静默把矛盾口径一起落库（未检测到冲突时完全不干预既有流程） */
+  const baselineRequired = (qualitySnapshot?.versionConflicts ?? 0) > 0 && !baselineDoc.trim();
+
+  /** 本次参与质量自检的全部来源（含只归档不解析的关联文档） */
+  const currentSources = (): QualitySource[] => qualitySources(prdSources, designDocs);
+
+  /**
+   * 按当前表格状态重算质量快照。只做只读分析，不改任何行。
+   * 刻意不做 useEffect 逐键重算：源文档十万字 × 8 组编号的全文扫描，逐个字符编辑都会卡住表格；
+   * 触发点固定为「解析完成 / 预演 / 关联文档变化 / 用户点重新自检 / 一键处置之后」。
+   */
+  function refreshQuality(opts: {
+    sources?: QualitySource[]; reqRows?: PrdReq[]; planRows?: PrdPlan[]; log?: boolean;
+  } = {}): QualitySummary {
+    const s = analyzeImportQuality({
+      sources: opts.sources ?? currentSources(),
+      reqs: opts.reqRows ?? reqs,
+      plans: opts.planRows ?? plans,
+    });
+    setQualitySnapshot(s);
+    if (opts.log) logQualityWarnings(s);
+    return s;
+  }
+
+  /** 关联文档增删后刷新快照（表格行不变，用 ref 读最新行，避免把 reqs/plans 放进依赖逐键重扫） */
+  const rowsRef = useRef({ reqs, plans });
+  rowsRef.current = { reqs, plans };
+  useEffect(() => {
+    if (rowsRef.current.reqs.length === 0 && rowsRef.current.plans.length === 0) return;
+    const s = analyzeImportQuality({
+      sources: qualitySources(prdSources, designDocs),
+      reqs: rowsRef.current.reqs,
+      plans: rowsRef.current.plans,
+    });
+    setQualitySnapshot(s);
+    // 依赖刻意不含 reqs/plans：逐键编辑不重扫源文档，只在关联文档变化时重算（主 PRD 解析完成时已单独算过一次）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [designDocs]);
+
+  /** 一键归一化：同题计划只留首见（不删行，置 include=false 可勾回）+ 里程碑统一 M1…Mn + 重算工期 */
+  function normalizeWbsNow() {
+    if (busy || plans.length === 0) return;
+    const n = normalizeWbs(plans);
+    const next = recalcMilestoneDurations(n.plans.map((p, i) => ({
+      ...plans[i],
+      title: p.title ?? plans[i].title,
+      include: p.include ?? plans[i].include,
+      durationDays: p.durationDays ?? plans[i].durationDays,
+    })));
+    setPlans(next);
+    const s = refreshQuality({ planRows: next });
+    aiImportStore.log(
+      `已合并重复 WBS：保留第一套、其余套取消勾选 ${n.disabledRows} 条（行仍保留，可勾回）、重编号里程碑 ${n.renumberedMilestones} 个；`
+      + `并行 WBS ${n.groupsBefore} 套 → ${n.groupsAfter} 套，工期不符里程碑 ${s.durationIssues} 个`,
+      'ok',
+    );
+  }
+
+  /** 一键排除否定口径需求：「不新增/不改造/已闭环/废止」是约束项，不是待开发需求 */
+  function disableConstraintNow() {
+    if (busy || reqs.length === 0) return;
+    const d = disableConstraintReqs(reqs);
+    const next = reqs.map((r, i) => ({ ...r, include: d.reqs[i].include ?? r.include }));
+    setReqs(next);
+    refreshQuality({ reqRows: next });
+    aiImportStore.log(`已取消勾选 ${d.disabled} 条否定/已闭环口径需求（只取消勾选，不删行、不改写状态；如需保留可重新勾选）`, 'ok');
+  }
+
+  /** 优化意见⑧：质量报告作为导入附加产物（只读 Markdown 下载，不落库、不改源文档） */
+  function downloadQualityReport() {
+    const s = refreshQuality();
+    const md = formatQualityReport(s, baselineDoc, currentSources());
+    saveBlob(new Blob([md], { type: EXPORT_MIME.md }), `PRD导入质量自检-${new Date().toISOString().slice(0, 10)}.md`);
+    aiImportStore.log(`已导出导入前质量自检报告（只读 Markdown）：版本冲突 ${s.versionConflicts} 项、覆盖缺口 ${s.coverageGaps} 项、工期不符 ${s.durationIssues} 个、并行 WBS ${s.wbsGroups} 套`, 'ok');
+  }
 
   // S2004：行字段更新回调下沉为组件级函数，避免 JSX 深层嵌套箭头
   const patchReq = (i: number, patch: Partial<PrdReq>) => setReqs((p) => p.map((x, j) => (j === i ? { ...x, ...patch } : x)));
@@ -516,12 +879,21 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
     const planRows = recalcMilestoneDurations(drafts.map((x, i) => ({ ...x, include: true, key: `pp-${stamp}-${i}` })));
     setReqs(reqRows);
     setPlans(planRows);
+    setPreviewDocRefs([]); // 上一轮的预演引用数作废，避免新解析结果还挂着旧文档统计
+    // 2026-11-10 质量复核优化④/⑤/⑦：解析完成即算一次质量快照并播报（只读，不改任何行）。
+    // 来源用本轮新读到的 sources + 当前关联文档；此时 prdSources 状态仍是上一轮，不能读状态。
+    const quality = analyzeImportQuality({
+      sources: qualitySources(sources, designDocs),
+      reqs: reqRows, plans: planRows,
+    });
+    setQualitySnapshot(quality);
+    logQualityWarnings(quality);
     // T00982：同步落盘 + 递增完成戳（解析期间切页导致组件卸载时，这两处是结果不丢的关键）
     persistParseResult(reqRows, planRows, sources);
     aiImportStore.log(`解析完成（${results.length}/${total} 个文件）：合并需求 ${requirements.length} 条、WBS 计划 ${drafts.length} 条，编号已全局重排（REQ-001…），可编辑后导入`, 'ok');
     release();
     aiImportStore.patch({ busy: false, parseStamp: stamp });
-  }, [projectId, toolId, setReqs, setPlans, setPrdSources]);
+  }, [projectId, toolId, setReqs, setPlans, setPrdSources, designDocs]);
 
   /**
    * T02300：勾选过滤 + PRD 全文拼接 + 处置口径收成**同一个** payload 构造函数。
@@ -581,12 +953,19 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
     const composed = composeImportPayload();
     if (!composed) { aiImportStore.log('未勾选任何需求，无法预演（计划的需求关联需要需求行作锚点）', 'error'); return; }
     const { payload } = composed;
+    // 2026-11-10 质量复核优化⑦：预演按「当前勾选/编辑后的行」重算一次质量快照并播报，
+    // 让 WBS 套数、占位行、否定口径、未标注溯源、推定字段在点「导入」之前可见（解析快照会随编辑过期）。
+    const quality = refreshQuality({ log: true });
+    if (quality.versionConflicts > 0 && !baselineDoc.trim()) {
+      aiImportStore.log(`⚠ 检测到 ${quality.versionConflicts} 项跨文档版本冲突，尚未指定版本基线——请在「导入前质量自检」选定唯一需求依据；预演仍只读，不落库`, 'error');
+    }
     aiImportStore.patch({ busy: true, error: '' });
     aiImportStore.log('预演中：只读统计本次导入的连带影响，不改动任何数据…');
     logDroppedReqNos(composed.droppedReqNos, '预演');
     try {
       const p = await api.post<PrdPreviewResult>('/plans/import-prd/preview', payload);
       logPreviewResult(p);
+      setPreviewDocRefs(p.docReferences ?? []);
     } catch (e) {
       const msg = String((e as Error).message ?? e);
       aiImportStore.patch({ error: msg });
@@ -600,9 +979,19 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
   async function doImport() {
     const composed = composeImportPayload();
     if (!composed) { aiImportStore.patch({ error: '请至少勾选一条需求（计划的需求关联需要需求行作锚点）' }); aiImportStore.log('未勾选任何需求，已中止导入', 'error'); return; }
+    // 2026-11-10 质量复核优化④：同一编号在多份来源里「待确认 / 已确认」并存时，
+    // 未裁定基线就导入会把矛盾口径一起落成待开发需求（本次复核 Q-70 即此类）→ 显式软闸，不静默放行。
+    if (baselineRequired) {
+      aiImportStore.patch({ error: '存在跨文档版本冲突，请先在「导入前质量自检」指定版本基线' });
+      aiImportStore.log('导入已中止：检测到跨文档版本冲突且未指定版本基线——请选定「唯一需求依据」并复核冲突清单后再导入', 'error');
+      return;
+    }
     const payload = composed.payload;
     const rqCount = ((payload.requirements as unknown[]) ?? []).length;
     const plCount = ((payload.plans as unknown[]) ?? []).length;
+    if (baselineDoc.trim()) {
+      aiImportStore.log(`版本基线裁定：以「${baselineDoc.trim()}」为唯一需求依据；其余来源仅作设计/参考，冲突项按该基线口径人工复核`, 'info');
+    }
     aiImportStore.patch({ busy: true, error: '' });
     aiImportStore.log(`导入中：需求 ${rqCount} 条、计划 ${plCount} 条${createTasks ? '，并同步生成待办任务' : ''}…`);
     logDroppedReqNos(composed.droppedReqNos, '导入');
@@ -612,6 +1001,7 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
       // T00982：导入成功即清空完成戳，避免后续再按旧戳把已导入的结果拉回界面
       aiImportStore.patch({ lastSaved: r.plans, parseStamp: 0 });
       setReqs([]); setPlans([]); setPrdSources([]); setFailedShards([]);
+      setQualitySnapshot(null); setPreviewDocRefs([]); // 快照/预演引用数随本批数据作废
       onSaved?.(r);
     } catch (e) {
       const msg = String((e as Error).message ?? e);
@@ -896,6 +1286,22 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
         </div>
       )}
 
+      {/* 2026-11-10 质量复核优化①③⑤⑦：导入前质量自检卡片（只读快照 + 用户显式处置） */}
+      {qualitySnapshot && (reqs.length > 0 || plans.length > 0) && (
+        <QualityCard
+          s={qualitySnapshot}
+          sources={currentSources()}
+          baselineDoc={baselineDoc}
+          onBaseline={setBaselineDoc}
+          previewDocRefs={previewDocRefs}
+          busy={busy}
+          onNormalize={normalizeWbsNow}
+          onDisable={disableConstraintNow}
+          onRefresh={() => refreshQuality({ log: true })}
+          onExport={downloadQualityReport}
+        />
+      )}
+
       {(reqs.length > 0 || plans.length > 0) && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12 }}>
           {/* 需求清单（矩阵行） */}
@@ -931,9 +1337,16 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
                           style={{ width: 80, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-xs)', padding: '1px 4px' }} />
                       </td>
                       <td style={{ padding: 4 }}>
-                        <input value={r.title} aria-label="需求标题" title={r.content}
-                          onChange={(e) => patchReq(i, { title: e.target.value })}
-                          style={{ width: '100%', border: 'none', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)' }} />
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                          {/* 优化意见③：否定语义就地可见——「不新增/已闭环」是约束项，不该被当待开发需求静默排期 */}
+                          {isConstraintReq(r) && r.include && (
+                            <span aria-label="否定口径提示" title="命中「不新增/不改造/不修正/已闭环/废止/保持现状」等否定口径：该行更可能是约束或验收项，不应作为待开发需求排期；可用上方「取消勾选否定口径」批量排除"
+                              style={{ color: 'var(--danger)', fontSize: 'var(--fs-xs)', flexShrink: 0 }}>⚠</span>
+                          )}
+                          <input value={r.title} aria-label="需求标题" title={r.content}
+                            onChange={(e) => patchReq(i, { title: e.target.value })}
+                            style={{ width: '100%', border: 'none', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)' }} />
+                        </div>
                       </td>
                       <td style={{ padding: 4, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.sourceRef}>{r.sourceRef || '—'}</td>
                     </tr>
@@ -1023,8 +1436,10 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
             style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 12px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)', cursor: (busy || submittableReqs === 0) ? 'default' : 'pointer' }}>
             <Eye size={13} /> 预演（只读）
           </button>
-          <button onClick={() => void doImport()} disabled={busy || submittableReqs === 0} className="tbtn-anim"
-            title={submittableReqs === 0 ? '需先勾选至少一条需求 — 计划的需求关联以需求行为锚点，只勾计划会留下悬空关联' : '导入勾选的条目——需求进矩阵、计划进甘特（含需求关联）、可选生成待办任务'}
+          <button onClick={() => void doImport()} disabled={busy || submittableReqs === 0 || baselineRequired} className="tbtn-anim"
+            title={submittableReqs === 0 ? '需先勾选至少一条需求 — 计划的需求关联以需求行为锚点，只勾计划会留下悬空关联'
+              : baselineRequired ? '存在跨文档版本冲突且未指定版本基线 — 请先在「导入前质量自检」选定唯一需求依据'
+                : '导入勾选的条目——需求进矩阵、计划进甘特（含需求关联）、可选生成待办任务'}
             aria-label="导入 PRD 解析结果"
             style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 14px', borderRadius: 6, border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)', cursor: (busy || submittableReqs === 0) ? 'default' : 'pointer' }}>
             <Save size={13} /> 导入（需求 {includedReqs} 条 / 计划 {includedPlans} 条{createTasks ? ' + 待办' : ''}）
@@ -1033,6 +1448,11 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
           {submittableReqs === 0 && (
             <span role="alert" data-t03185="need-req" style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>
               至少勾选一条需求才能预演或导入：计划的需求关联需要需求行作锚点，只勾计划会产生悬空关联。
+            </span>
+          )}
+          {baselineRequired && (
+            <span role="alert" data-qc="baseline-required" style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>
+              导入已暂停：存在跨文档版本冲突，请先在上方「导入前质量自检」指定版本基线（唯一需求依据）。预演仍可正常使用。
             </span>
           )}
         </div>

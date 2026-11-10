@@ -28,6 +28,7 @@ import { touchCompletedAt } from './IterationService'; // T03186（PM-201④）�
 import { WebhookService } from './WebhookService'; // T03196（PM-401）：计划事件外发
 import { isRateLimitError, sleepMs, rateLimitBackoffMs } from '../util/rateLimit'; // T03700：限流识别与退避单源
 import { htmlToMarkdown, decodeHtmlBuffer } from './htmlDoc'; // T03730：HTML 版 PRD → 层级文本（零新依赖）
+import { dedupeDraftsByNormalizedTitle, detectWbsGroups, formatWbsNote, isGapFillPlan } from '../util/prdWbs'; // 2026-11-10：分片 WBS 归一化 / 补齐行判定（质量复核优化）
 
 /** T01361：需求跟踪矩阵行（prd_requirements 全列 + 联表摘要）——具体化类型替代 Record<string, unknown>（Sonar S6551） */
 export interface RequirementRow {
@@ -376,8 +377,8 @@ function recalcMilestoneEnvelope(db: ReturnType<typeof getDb>, milestoneId: stri
     | { id: string; project_id: string; start_date: string; end_date: string }
     | undefined;
   if (!m) return;
-  const rows = db.prepare('SELECT start_date, end_date, deps FROM plan_tasks WHERE project_id = ? AND archived = 0').all(m.project_id) as
-    Array<{ start_date: string; end_date: string; deps: string }>;
+  const rows = db.prepare('SELECT start_date, end_date, duration_days, deps FROM plan_tasks WHERE project_id = ? AND archived = 0').all(m.project_id) as
+    Array<{ start_date: string; end_date: string; duration_days: number; deps: string }>;
   const kids = rows.filter((r) => hasChildEdge(r.deps, milestoneId));
   if (kids.length === 0) return;
   // 包络取最早开始日 / 最晚结束日：日期串定宽 YYYY-MM-DD，字典序即时间序。
@@ -388,9 +389,19 @@ function recalcMilestoneEnvelope(db: ReturnType<typeof getDb>, milestoneId: stri
   const start = startDates[0];
   const end = endDates.at(-1);
   if (!start || !end || (start === m.start_date && end === m.end_date)) return;
-  const duration = workdaysInRange(start, end, loadCalendar());
+  // T05438（P0-2）：工期口径统一——日历包络与「子项工期之和」取较大者。
+  // 旧实现直接用包络覆盖 duration_days：子项并行（同一天起跑）时包络只有几天，
+  // 会把 milestoneDurations() 刚写好的汇总值（如 51）冲成 4，造成「4 天 / 24 个子项 51 天」。
+  // 串行排期下两者相等，行为与改造前一致；并行时工期保留工作量语义，start/end 仍是真实跨度。
+  const cal = loadCalendar();
+  const envelope = workdaysInRange(start, end, cal);
+  const sumKids = kids.reduce((n, k) => n + Math.max(1, Math.round(Number(k.duration_days) || 1)), 0);
+  const duration = Math.max(envelope, sumKids);
+  // 工期取到「子项之和」时，end 必须同步按工期推移，否则会出现「工期 51 天 / 跨度 4 天」的自相矛盾。
+  // 取舍：数据自洽优先于 T01704 的「止期不长于子任务」——并行排期下里程碑代表工作量，跨度本就短于工作量。
+  const endFinal = duration > envelope ? calcEndDate(start, duration, cal) : end;
   db.prepare('UPDATE plan_tasks SET start_date = ?, end_date = ?, duration_days = ?, updated_at = ? WHERE id = ?')
-    .run(start, end, duration, now(), milestoneId);
+    .run(start, endFinal, duration, now(), milestoneId);
 }
 
 function calcEndDate(start: string, durationDays: number, cal: WorkdayCal): string {
@@ -876,13 +887,18 @@ function resolvePrdKind(title: string, kindRaw: unknown): PlanKind {
  * 目的：AI 给出的里程碑工期常与其明细合计不相等（实测 M1=4、明细合计 5），导入后两边对不上；
  * 这里在落库前统一按明细汇总，保证里程碑工期与其子任务合计恒等（无明细时保留原值）。
  */
-function milestoneDurations(items: Array<{ kind?: PlanKind; durationDays?: number }>): number[] {
+function milestoneDurations(
+  items: Array<{ kind?: PlanKind; durationDays?: number }>,
+  /** 2026-11-10 质量复核：系统补齐占位行不计入里程碑汇总（与 intervalChildEdges 的 child 归属口径一致） */
+  skip?: (index: number) => boolean,
+): number[] {
   const out = items.map((it) => Math.max(1, Math.floor(Number(it?.durationDays) || 1)));
   for (let i = 0; i < items.length; i++) {
     if (items[i]?.kind !== 'milestone') continue;
     let sum = 0;
     for (let j = i + 1; j < items.length; j++) {
       if (items[j]?.kind === 'milestone') break;
+      if (skip?.(j)) continue;
       sum += out[j] ?? 1;
     }
     if (sum > 0) out[i] = sum; // 无明细的里程碑保留 AI 给的工期
@@ -1437,7 +1453,10 @@ function applyImportMilestoneChildEdges(
   },
 ): void {
   const { t, planItems, planKinds, planTargets, planIds } = ctx;
-  const edges = intervalChildEdges(planItems.map((_, i) => ({ kind: planKinds[i] })));
+  // 2026-11-10 质量复核优化⑥：系统补齐占位行不补 child 边（与 milestoneDurations 的跳过口径一致），
+  // 否则段尾的补齐行会整批挂到最后一个里程碑下，实测出现「工期 2 / 25 个子项」的失真归属。
+  const skipGapFill = (i: number): boolean => isGapFillPlan({ title: planItems[i]?.title, description: planItems[i]?.description });
+  const edges = intervalChildEdges(planItems.map((_, i) => ({ kind: planKinds[i] })), { skip: skipGapFill });
   const updDeps = db.prepare('UPDATE plan_tasks SET deps = ?, updated_at = ? WHERE id = ?');
   const newMs = new Set(planTargets.map((x, i) => (x.reuseId ? null : planIds[i])).filter((x): x is string => !!x));
   const touchedParents = new Set<string>();
@@ -2649,6 +2668,8 @@ export const PlanService = {
     failedChunks?: PrdFailedChunk[];
     /** T03700+：系统自动补齐的计划行对应的需求编号（原缺口需求）——前端播报「已自动补齐 N 条」 */
     autoFilledReqNos?: string[];
+    /** 2026-11-10 质量复核优化②：合并后检测到的并行 WBS 套数（>1 提示导入前归一化） */
+    wbsGroups?: number;
   }> {
     const system = [
       '你是 MTask 的 PRD 解析助手：既要拆分 WBS 计划，也要**逐条提取可跟踪需求**（用于生成需求跟踪矩阵）。',
@@ -2675,6 +2696,9 @@ export const PlanService = {
       // T00979：上限从 25 条放宽到 60 条，以满足「里程碑 + 明细」两层组织；仍强制 JSON 完整闭合优先
       '5. **输出规模控制（必须遵守）**：requirements 最多 40 条；plans 最多 60 条（需容纳里程碑与明细两级，先保证每个里程碑至少带其直接明细任务，再取舍更细的层级）；title ≤30 字、content/description ≤40 字。'
       + '文档过长时合并同类需求与同级任务，**宁可少几条也不得把里程碑降级为无明细**，同时必须保证 JSON 完整闭合——输出被截断会导致整个导入失败。',
+      // 2026-11-10 质量复核优化②：长文档分片时每片都产一套完整 WBS 会拼出多套并行里程碑编号
+      '6. **多分片 WBS 一致性（长文档自动分片时必须遵守）**：只有包含原文「里程碑/阶段」定义章节的那一片输出里程碑行；'
+      + '其余片只输出 normal 明细任务，禁止另起一套 1/2/3 章号或 M1~Mn 里程碑编号；各片共用同一套全局 WBS，明细标题沿用原文编号、不臆造新阶段。',
     ].join('\n');
     // T00707：首轮若被截断/解析失败，重试改用精简提示词（压缩到更小规模，确保能完整闭合）
     const systemCompact = [
@@ -2738,7 +2762,11 @@ export const PlanService = {
       // 但未被任何 WBS 计划 reqNos 关联的需求编号即可追溯性缺口。
       const uncoveredReqNos = collectUncoveredReqNos(requirements, drafts);
       const coverageWarn = buildCoverageWarn(drafts.length, requirements, uncoveredReqNos);
-      return { requirements, drafts, coverageWarn, uncoveredReqNos, truncatedNote, autoFilledReqNos: filledReqNos.length > 0 ? filledReqNos : undefined };
+      return {
+        requirements, drafts, coverageWarn, uncoveredReqNos, truncatedNote,
+        autoFilledReqNos: filledReqNos.length > 0 ? filledReqNos : undefined,
+        wbsGroups: detectWbsGroups(drafts).groups,
+      };
     } finally {
       clearTimeout(totalTimer);
     }
@@ -2766,6 +2794,8 @@ export const PlanService = {
     failedChunks?: PrdFailedChunk[];
     /** T03700+：系统自动补齐的计划行对应的需求编号（原缺口需求） */
     autoFilledReqNos?: string[];
+    /** 2026-11-10 质量复核优化②：跨片合并后检测到的并行 WBS 套数 */
+    wbsGroups?: number;
   } | null> {
     const chunks = splitPrdChunks(docText, PRD_CHUNK_CHARS, PRD_CHUNK_MAX);
     if (chunks.length <= 1) return null;
@@ -2799,7 +2829,10 @@ export const PlanService = {
       const sysI = system
         + `\n【分片解析·第 ${i + 1}/${n} 片】本片只是完整文档的一部分：只解析本片出现的需求与计划，不要臆测其它片的内容；`
         + 'requirements 的 reqNo 从 REQ-001 起片内顺序编号（系统合并时会全局去重重排）；plans 的 WBS 编号保留原文写法。'
-        + '\n【分片规模控制】本片 requirements 最多 32 条、plans 最多 45 条，保证 JSON 完整闭合优先——宁可少几条也不得输出到被截断。';
+        + '\n【分片规模控制】本片 requirements 最多 32 条、plans 最多 45 条，保证 JSON 完整闭合优先——宁可少几条也不得输出到被截断。'
+        // 2026-11-10 质量复核优化②：每片各产一套完整 WBS 是「7 套并行里程碑」的直接成因
+        + '\n【WBS 一致性】只有本片确实包含原文「里程碑/阶段」定义章节时才输出里程碑行；否则只输出 normal 明细任务，'
+        + '禁止另起一套 1/2/3 章号或 M1~Mn 里程碑编号——所有分片共用同一套全局 WBS。';
       // T03700：片级解析循环——限流错误退避重试同一片（askJson 内部重试也按 rateLimitBackoffMs 先等再试），
       // 非限流错误保持原语义立即失败；每轮等待前检查剩余预算与中止信号。
       let lastError = '';
@@ -2856,8 +2889,13 @@ export const PlanService = {
     if (parts.length === 0) return null;
     const merged = mergeChunkedPrdParts(parts);
     if (merged.requirements.length === 0 && merged.drafts.length === 0) return null;
+    // 2026-11-10 质量复核优化②：跨片按归一化标题去重（reqNos 取并集，不丢关联）；
+    // 结构性的「多套 WBS 合并」不在此静默执行——交给导入前用户确认的一键归一化，避免误删业务不同的同题行。
+    const deduped = dedupeDraftsByNormalizedTitle(merged.drafts);
+    const wbsInfo = detectWbsGroups(deduped.drafts);
+    const wbsNote = formatWbsNote(wbsInfo.groups, wbsInfo.milestones, deduped.merged);
     // T03700+：合并后系统兜底补齐——模型漏挂的横切/非功能需求在此落行，缺口集合不再随每轮解析漂移
-    const { drafts, filledReqNos } = applyAutoGapFill(merged.requirements, merged.drafts);
+    const { drafts, filledReqNos } = applyAutoGapFill(merged.requirements, deduped.drafts);
     const uncoveredReqNos = collectUncoveredReqNos(merged.requirements, drafts);
     const coverageWarn = buildCoverageWarn(drafts.length, merged.requirements, uncoveredReqNos);
     // T03700+：缺失片统一收集（失败 + 因预算中止而未跑的），并带上原文——前端据此展示/复制/单独补解析。
@@ -2889,6 +2927,7 @@ export const PlanService = {
         : `文档较长且解析达到 ${PRD_PARSE_TOTAL_TIMEOUT_MS / 1000}s 总预算，已返回前 ${parts.length}/${n} 片合并结果——未解析的片已在下方「缺失分片」列出，可单独补解析或拆分文档后重试`;
     const parseNote = complete
       ? `文档较长，已自动分 ${n} 片解析并合并去重（需求 ${merged.requirements.length} 条、计划 ${drafts.length} 条${filledReqNos.length > 0 ? `，其中自动补齐 ${filledReqNos.length} 条缺口需求` : ''}）`
+        + (wbsNote ? `；${wbsNote}` : '')
       : undefined;
     return {
       requirements: merged.requirements,
@@ -2899,6 +2938,7 @@ export const PlanService = {
       parseNote,
       failedChunks: failedChunks.length > 0 ? failedChunks : undefined,
       autoFilledReqNos: filledReqNos.length > 0 ? filledReqNos : undefined,
+      wbsGroups: wbsInfo.groups,
     };
   },
 
@@ -2929,7 +2969,11 @@ export const PlanService = {
     if (reqs.length === 0 && planItems.length === 0) throw new Error('没有可导入的需求或计划条目');
     // T01001 二轮：落库前统一汇总里程碑工期（= 其下明细之和），覆盖直接调 import-prd / MCP 未做汇总的路径
     const planKinds = planItems.map((p) => (p.kind ?? resolvePrdKind(p.title, p.kind)));
-    const planDurations = milestoneDurations(planItems.map((p, i) => ({ kind: planKinds[i], durationDays: p.durationDays })));
+    // 2026-11-10 质量复核优化⑥：工期汇总与 child 归属共用同一「跳过补齐行」判定，杜绝两边口径漂移
+    const planDurations = milestoneDurations(
+      planItems.map((p, i) => ({ kind: planKinds[i], durationDays: p.durationDays })),
+      (i) => isGapFillPlan({ title: planItems[i]?.title, description: planItems[i]?.description }),
+    );
     const t = now();
     let taskCount = 0;
     const unlinkedReqNos = new Set<string>();
@@ -3071,6 +3115,8 @@ export const PlanService = {
     orphanRequirements: Array<{ reqNo: string; title: string }>;
     prdDoc: { action: 'none' | 'reuse' | 'create'; id?: string; by?: 'hash' | 'name' };
     prdDocs: Array<{ filename: string; action: 'none' | 'reuse' | 'create'; id?: string; by?: 'hash' | 'name' }>;
+    /** 2026-11-10 质量复核优化①：每份来源文档被需求行引用的条数——零引用即「文档未参与生成」的硬证据 */
+    docReferences: Array<{ filename: string; docKind: 'prd' | 'design' | 'test'; reqCount: number }>;
     planRowsPreview: Array<{ title: string; reuseId: string | null }>;
     createTasks: boolean;
     readOnly: true;
@@ -3112,6 +3158,14 @@ export const PlanService = {
       ? reqPlan.rows.filter((x) => !x.reuseId && !linkedRefs.has(x.targetRef)).map((x) => ({ reqNo: x.reqNo, title: x.title }))
       : [];
     const baseTitles = planItems.map((p) => p.title.trim());
+    // 2026-11-10 质量复核优化①：逐份统计来源文档的需求引用数。
+    // T04897 的关联 design/test 文档只归档、不参与 AI 解析，必然是 0；主 PRD 之外的 prd 文档若为 0
+    // 说明该文档虽落库却没有产出任何需求（多来源合并时容易被误认为「两份文档都生成了计划」）。
+    const docReferences = (input.prdDocs ?? []).map((d, i) => ({
+      filename: d.filename ?? `文档${i + 1}`,
+      docKind: (d.docKind ?? 'prd') as 'prd' | 'design' | 'test',
+      reqCount: reqs.filter((r) => (r.sourceIndex ?? 0) === i).length,
+    }));
     return {
       willCreatePlans: planTargets.filter((x) => !x.reuseId).length,
       willReusePlans: planTargets.filter((x) => x.reuseId).length,
@@ -3127,6 +3181,7 @@ export const PlanService = {
       orphanRequirements,
       prdDoc,
       prdDocs: prdDocsPreview,
+      docReferences,
       planRowsPreview: planTargets.map((x) => ({ title: x.title, reuseId: x.reuseId })),
       createTasks: input.createTasks === true,
       readOnly: true,
@@ -3142,8 +3197,19 @@ export const PlanService = {
     // T04897：带出 doc_kind（'prd'/'design'/'test'），供 PRD 管理列表与 mtask_get_prd 区分文档类型
     return db.prepare(
       `SELECT id, project_id, filename, status, doc_kind, origin_hash, LENGTH(content_md) AS content_chars, created_at, updated_at
-       FROM prd_docs WHERE project_id = ? ORDER BY created_at DESC`,
+       FROM prd_docs WHERE project_id = ? AND archived = 0 ORDER BY created_at DESC`,
     ).all(projectId) as Array<Record<string, unknown>>;
+  },
+
+  /** T05080：已归档 PRD 文档列表（归档菜单展示；projectId 为空时返回全部项目） */
+  listArchivedPrdDocs(projectId: string): Array<Record<string, unknown>> {
+    const db = getDb();
+    const where = projectId ? 'project_id = ? AND archived = 1' : 'archived = 1';
+    const params = projectId ? [projectId] : [];
+    return db.prepare(
+      `SELECT id, project_id, filename, status, doc_kind, origin_hash, LENGTH(content_md) AS content_chars, created_at, updated_at, archived_at
+       FROM prd_docs WHERE ${where} ORDER BY archived_at DESC, created_at DESC`,
+    ).all(...params) as Array<Record<string, unknown>>;
   },
 
   /** T00959：导出件头部需要的项目简要信息（名称缺失时回退「未命名项目」，不抛错以不阻断导出） */
@@ -3201,12 +3267,34 @@ export const PlanService = {
     return this.getPrdDoc(id);
   },
 
-  /** 删除 PRD 文档（其待确认问题经 FK CASCADE 一并清理） */
+  /** 删除 PRD 文档：改为软删（归档）；待确认问题一并标记删除（T02218 deleted_at 口径） */
   deletePrdDoc(id: string): void {
     const db = getDb();
     if (!db.prepare('SELECT id FROM prd_docs WHERE id = ?').get(id)) throw new Error('PRD 文档不存在');
-    db.prepare('DELETE FROM prd_issues WHERE prd_id = ?').run(id);
-    db.prepare('DELETE FROM prd_docs WHERE id = ?').run(id);
+    const t = now();
+    db.transaction(() => {
+      db.prepare("UPDATE prd_issues SET deleted_at = ? WHERE prd_id = ? AND COALESCE(deleted_at, '') = ''").run(t, id);
+      db.prepare('UPDATE prd_docs SET archived = 1, archived_at = ? WHERE id = ?').run(t, id);
+    })();
+  },
+
+  /** T05080：还原已归档的 PRD 文档（归档 -> 活动） */
+  restorePrdDoc(id: string): boolean {
+    const db = getDb();
+    const row = db.prepare('SELECT id, archived FROM prd_docs WHERE id = ?').get(id) as { id: string; archived: number } | undefined;
+    if (!row?.archived) return false;
+      db.prepare('UPDATE prd_docs SET archived = 0, archived_at = NULL, updated_at = ? WHERE id = ?').run(now(), id);
+    return true;
+  },
+
+  /** T05080：彻底删除已归档的 PRD 文档（物理删，不可逆） */
+  purgePrdDoc(id: string): { deleted: number } {
+    const db = getDb();
+    const row = db.prepare('SELECT id, archived FROM prd_docs WHERE id = ?').get(id) as { id: string; archived: number } | undefined;
+    if (!row?.archived) return { deleted: 0 };
+    const deleted = db.prepare('DELETE FROM prd_docs WHERE id = ? AND archived = 1').run(id).changes;
+    if (deleted) db.prepare("DELETE FROM prd_issues WHERE prd_id = ?").run(id);
+    return { deleted };
   },
 
   /** 状态流转：'prd'（草稿/评审中）↔ 'confirmed'（确认版） */
@@ -3413,7 +3501,7 @@ export const PlanService = {
    */
   listRequirements(projectId: string): RequirementRow[] {
     const db = getDb();
-    const reqs = db.prepare('SELECT * FROM prd_requirements WHERE project_id = ? ORDER BY sort_order, created_at').all(projectId) as Array<Omit<RequirementRow, 'linkedPlans' | 'linkedTasks' | 'prdDoc'>>;
+    const reqs = db.prepare('SELECT * FROM prd_requirements WHERE project_id = ? AND archived = 0 ORDER BY sort_order, created_at').all(projectId) as Array<Omit<RequirementRow, 'linkedPlans' | 'linkedTasks' | 'prdDoc'>>;
     const plans = db.prepare('SELECT id, title, status, req_ids FROM plan_tasks WHERE project_id = ? AND archived = 0').all(projectId) as Array<{ id: string; title: string; status: string; req_ids: string | null }>;
     const tasks = db.prepare('SELECT id, task_no, title, status, verified, req_ids FROM tasks WHERE project_id = ? AND archived = 0').all(projectId) as Array<{ id: string; task_no: string | null; title: string; status: string; verified: number; req_ids: string | null }>;
     const parse = (v: string | null): string[] => {
@@ -3421,7 +3509,7 @@ export const PlanService = {
       try { const a = JSON.parse(v) as unknown; return Array.isArray(a) ? a.filter((x): x is string => typeof x === 'string') : []; } catch { return []; }
     };
     // T00763：项目内 PRD 文档摘要——矩阵行经 prd_id 关联，前端「查看PRD」按钮按此取文档
-    const prdDocs = db.prepare('SELECT id, filename FROM prd_docs WHERE project_id = ?').all(projectId) as Array<{ id: string; filename: string }>;
+    const prdDocs = db.prepare('SELECT id, filename FROM prd_docs WHERE project_id = ? AND archived = 0').all(projectId) as Array<{ id: string; filename: string }>;
     const docById = new Map(prdDocs.map((d) => [d.id, d]));
     // T00784：反向索引替换 O(N×M) 逐需求 filter——原先每个需求都对全量 plans/tasks 重跑
     // JSON.parse（N 需求 × M 计划/任务），压测实测 436 次调用累计 117.6s 事件循环时间，
@@ -3506,6 +3594,17 @@ export const PlanService = {
     return db.prepare('SELECT * FROM prd_requirements WHERE id = ?').get(id) as Record<string, unknown>;
   },
 
+  /** T05080：已归档需求行列表（归档菜单展示；projectId 为空时返回全部项目） */
+  listArchivedRequirements(projectId: string): Array<Record<string, unknown>> {
+    const db = getDb();
+    const where = projectId ? 'project_id = ? AND archived = 1' : 'archived = 1';
+    const params = projectId ? [projectId] : [];
+    return db.prepare(
+      `SELECT id, project_id, req_no, title, priority, status, archived_at
+       FROM prd_requirements WHERE ${where} ORDER BY archived_at DESC, sort_order`,
+    ).all(...params) as Array<Record<string, unknown>>;
+  },
+
   /**
    * 删除需求行：清理计划/待办上的悬空引用，返回破坏面（T01869）。
    * 原实现全表扫描 plan_tasks/tasks（连项目条件都没有），项目多时每次删一行都要重写
@@ -3519,7 +3618,8 @@ export const PlanService = {
     const projectId = req.project_id;
     const plans = db.prepare("SELECT id, req_ids FROM plan_tasks WHERE project_id = ? AND COALESCE(req_ids,'') != ''").all(projectId) as Array<{ id: string; req_ids: string }>;
     const tasks = db.prepare("SELECT id, req_ids FROM tasks WHERE project_id = ? AND COALESCE(req_ids,'') != ''").all(projectId) as Array<{ id: string; req_ids: string }>;
-    const deletedCases = (db.prepare('SELECT COUNT(*) AS n FROM test_cases WHERE req_id = ?').get(id) as { n: number }).n;
+    const t = now();
+    const archivedCases = (db.prepare('SELECT COUNT(*) AS n FROM test_cases WHERE req_id = ? AND archived = 0').get(id) as { n: number }).n;
     const strip = (json: string): string | null => {
       try {
         const a = (JSON.parse(json) as unknown[]).filter((x) => x !== id);
@@ -3531,9 +3631,29 @@ export const PlanService = {
     db.transaction(() => {
       for (const p of plans) { const n = strip(p.req_ids); if (n !== p.req_ids) { db.prepare('UPDATE plan_tasks SET req_ids = ?, updated_at = ? WHERE id = ?').run(n, now(), p.id); strippedPlans += 1; } }
       for (const x of tasks) { const n = strip(x.req_ids); if (n !== x.req_ids) { db.prepare('UPDATE tasks SET req_ids = ?, updated_at = ? WHERE id = ?').run(n, now(), x.id); strippedTasks += 1; } }
-      db.prepare('DELETE FROM prd_requirements WHERE id = ?').run(id);
+      // T05080：删除=归档——软删需求及其下用例，保留数据以备归档菜单恢复/彻底删除
+      db.prepare('UPDATE test_cases SET archived = 1, archived_at = ? WHERE req_id = ? AND archived = 0').run(t, id);
+      db.prepare('UPDATE prd_requirements SET archived = 1, archived_at = ? WHERE id = ?').run(t, id);
     })();
-    return { strippedPlans, strippedTasks, deletedCases };
+    return { strippedPlans, strippedTasks, deletedCases: archivedCases };
+  },
+
+  /** T05080：还原已归档的需求行（归档 -> 活动） */
+  restoreRequirement(id: string): boolean {
+    const db = getDb();
+    const row = db.prepare('SELECT id, archived FROM prd_requirements WHERE id = ?').get(id) as { id: string; archived: number } | undefined;
+    if (!row?.archived) return false;
+      db.prepare('UPDATE prd_requirements SET archived = 0, archived_at = NULL, updated_at = ? WHERE id = ?').run(now(), id);
+    return true;
+  },
+
+  /** T05080：彻底删除已归档的需求行（物理删，不可逆） */
+  purgeRequirement(id: string): { deleted: number } {
+    const db = getDb();
+    const row = db.prepare('SELECT id, archived FROM prd_requirements WHERE id = ?').get(id) as { id: string; archived: number } | undefined;
+    if (!row?.archived) return { deleted: 0 };
+    const deleted = db.prepare('DELETE FROM prd_requirements WHERE id = ? AND archived = 1').run(id).changes;
+    return { deleted };
   },
 
   /** T01867：项目内重复需求编号分组（存量脏数据可见化；新数据已不会再产生） */
