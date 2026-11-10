@@ -3,6 +3,7 @@ import zlib from 'node:zlib';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { initSchema } from './db/schema';
+import { backfillPrdDocLinks } from './util/prdDocLink'; // T05208：存量主 PRD ↔ 设计文档（SDD）关联回填
 import { api } from './routes';
 import { taskSuggestApi } from './routes/taskSuggest'; // T03255（AI-203）：分类/优先级建议（只读）
 import tunnelRouter, { tryAutoStartTunnel } from './routes/tunnel'; // T03312：autoStart 的消费方（此前只有存与显示）
@@ -238,6 +239,14 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 });
 
 initSchema();
+// T05208（裁决方案 B）：存量「方案设计/测试用例」文档按同主题唯一命中补显式关联边。
+// 幂等且只补空值——已挂接的文档不会被改写；判不出/歧义的保持未关联，读取时退回单文档行为。
+try {
+  const prdDocLinked = backfillPrdDocLinks();
+  if (prdDocLinked > 0) console.log(`[mtask] prd-doc link backfill: ${prdDocLinked} document(s) linked to primary PRD`);
+} catch (e) {
+  console.error('[mtask] prd-doc link backfill failed:', e);
+}
 // T00470：启动对账——直写库场景（AI 脚本回写）绕过同步钩子时，兜底对齐待办→计划状态
 try {
   const fixed = reconcileLinkedPlanStatuses();

@@ -21,6 +21,7 @@ import { parsePlanDeps, depsSatisfied } from '../util/planDeps'; // T01284：dep
 import { addChildEdge, childParentIds, hasChildEdge, intervalChildEdges } from '../util/milestoneChild'; // T02090 口径 A：child 边纯函数单源
 import { recalcMilestoneProgress, recalcMilestonesOfChild, milestoneHasChildren } from './milestoneProgress'; // T02090：里程碑进度聚合
 import { resolveReqNo, groupDuplicateReqNos, isReqNoTaken } from '../util/reqNo'; // T01867：需求编号项目内唯一顺延
+import { inferDocKindFromFilename, linkImportedPrdDocs, listSddDocIndex } from '../util/prdDocLink'; // T05208：方案 B 显式关联（导入建边 / 矩阵 SDD 列）
 import { syncReqStatuses } from './reqStatusSync'; // T02087：需求状态随计划/待办完成度派生
 import { nextPlanTitle } from '../util/planTitle'; // T01875：计划标题撞名让号（与需求编号顺延同构）
 import { touchCompletedAt } from './IterationService'; // T03186（PM-201④）：完成时刻单点维护（燃尽回溯依赖它）
@@ -45,6 +46,8 @@ export interface RequirementRow {
   linkedPlans: Array<{ id: string; title: string; status: string }>;
   linkedTasks: Array<{ taskNo: string | null; title: string | null; status: string; verified: boolean }>;
   prdDoc: { id: string; filename: string } | null;
+  /** T05208（方案 B）：该需求所属主 PRD 的配套设计文档（SDD，显式关联边；无则 null） */
+  sddDoc?: { id: string; filename: string } | null;
 }
 
 export interface PlanTaskRow {
@@ -1132,22 +1135,30 @@ function resolvePrdDocTarget(
 
 function persistPrdDocForImport(
   db: ReturnType<typeof getDb>, projectId: string, rawPrdMd: string | undefined, rawFilename: string | undefined, t: string,
-  docKind: 'prd' | 'design' | 'test' = 'prd',
+  docKind?: 'prd' | 'design' | 'test',
 ): string | undefined {
   const { target, prdMd, filename, contentHash } = resolvePrdDocTarget(db, projectId, rawPrdMd, rawFilename);
   if (target.action === 'none') return undefined;
+  // T05208：调用方未显式标注类型时按文件名推断——「方案设计/测试用例」被当主 PRD 导入时
+  // doc_kind 会一律落缺省 'prd'，下游 docs[] 就分不清哪篇是设计文档（实测 T05082 两份均为 prd）。
+  // 显式值优先，推断只兜底。
+  const kind = docKind ?? inferDocKindFromFilename(filename);
   if (target.action === 'reuse') {
     // 覆盖：更新正文/哈希/时间戳；filename 仅在本次带值时覆盖；status 保留原值（不重置用户确认态）
     // T04897：doc_kind 仅在本次显式带值（非默认 'prd'）时覆盖，避免把已标注 design 的文档误回退成 prd
+    // T05208：同上——本轮判不出类型时不把已标注 design/test 的文档降级回 prd
+    const prev = db.prepare('SELECT doc_kind FROM prd_docs WHERE id = ?').get(target.id) as { doc_kind: string } | undefined;
+    const prevKind = prev?.doc_kind;
+    const finalKind = kind === 'prd' && (prevKind === 'design' || prevKind === 'test') ? prevKind : kind;
     db.prepare("UPDATE prd_docs SET content_md = ?, filename = CASE WHEN ? <> '' THEN ? ELSE filename END, origin_hash = ?, doc_kind = ?, updated_at = ? WHERE id = ?")
-      .run(prdMd, filename, filename, contentHash, docKind, t, target.id);
-    logService.log('INFO', 'prd', `[PRD导入覆盖] project=${projectId} doc=${target.id} filename=${filename} kind=${docKind}（同内容/同名复用，不新建）`);
+      .run(prdMd, filename, filename, contentHash, finalKind, t, target.id);
+    logService.log('INFO', 'prd', `[PRD导入覆盖] project=${projectId} doc=${target.id} filename=${filename} kind=${finalKind}（同内容/同名复用，不新建）`);
     return target.id;
   }
   const createdId = uuid();
   db.prepare(
     `INSERT INTO prd_docs (id, project_id, filename, content_md, origin_hash, doc_kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(createdId, projectId, filename, prdMd, contentHash, docKind, t, t);
+  ).run(createdId, projectId, filename, prdMd, contentHash, kind, t, t);
   return createdId;
 }
 
@@ -1159,7 +1170,8 @@ function planPrdDocNames(docs: PrdImportDocItem[]): Array<{ filename: string; co
   const seen = new Map<string, number>();
   return docs.map((d) => {
     const base = (d.filename ?? '').trim() || '未命名 PRD.md';
-    const docKind = d.docKind ?? 'prd';
+    // T05208：显式 docKind 优先；缺省时按文件名推断（设计/测试文档被当主 PRD 导入也能贴对类型）
+    const docKind = d.docKind ?? inferDocKindFromFilename(base);
     const n = (seen.get(base) ?? 0) + 1;
     seen.set(base, n);
     if (n === 1) return { filename: base, contentMd: d.contentMd ?? '', docKind };
@@ -1177,9 +1189,14 @@ function persistPrdDocsForImport(
   db: ReturnType<typeof getDb>, projectId: string, input: { prdDocs?: PrdImportDocItem[]; prdMd?: string; prdFilename?: string }, t: string,
 ): { docIds: string[]; legacyPrdId: string | undefined } {
   if (Array.isArray(input.prdDocs) && input.prdDocs.length > 0) {
-    const docIds = planPrdDocNames(input.prdDocs)
-      .map((d) => persistPrdDocForImport(db, projectId, d.contentMd, d.filename, t, d.docKind))
-      .filter((id): id is string => !!id);
+    const planned = planPrdDocNames(input.prdDocs).map((d) => ({
+      ...d,
+      id: persistPrdDocForImport(db, projectId, d.contentMd, d.filename, t, d.docKind),
+    }));
+    const docIds = planned.map((d) => d.id).filter((id): id is string => !!id);
+    // T05208（裁决方案 B）：同批导入的「方案设计/测试用例」显式挂到本批主 PRD，无需人工挂接；
+    // 单文档口径（prdMd）没有配套文档，不产生边。
+    linkImportedPrdDocs(projectId, planned, t);
     return { docIds, legacyPrdId: undefined };
   }
   return { docIds: [], legacyPrdId: persistPrdDocForImport(db, projectId, input.prdMd, input.prdFilename, t) };
@@ -3426,13 +3443,16 @@ export const PlanService = {
         if (bucket) bucket.push(item); else tasksByReq.set(id, [item]);
       }
     }
+    // T05208（方案 B）：主 PRD → 配套设计文档（SDD）显式关联索引，供矩阵「关联SDD」列按行展示
+    const sddByPrd = listSddDocIndex(projectId);
     return reqs.map((r) => {
       const rid = String(r.id);
       const linkedPlans = plansByReq.get(rid) ?? [];
       const linkedTasks = tasksByReq.get(rid) ?? [];
       const prdId = typeof r.prd_id === 'string' ? r.prd_id : null;
       const prdDoc = prdId ? docById.get(prdId) : undefined;
-      return { ...r, linkedPlans, linkedTasks, prdDoc: prdDoc ?? null };
+      const sddDoc = prdId ? sddByPrd.get(prdId) : undefined;
+      return { ...r, linkedPlans, linkedTasks, prdDoc: prdDoc ?? null, sddDoc: sddDoc ?? null };
     });
   },
 

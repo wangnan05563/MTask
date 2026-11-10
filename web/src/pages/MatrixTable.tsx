@@ -183,6 +183,8 @@ export function MatrixTable({ p }: { readonly p: MatrixTableProps }) {
             {/* T01486：「用例」列——覆盖度指标（准则 P5）+ 矩阵下钻用例视图的唯一入口 */}
             <th style={{ padding: '5px 6px' }} title="该需求关联的测试用例条数；点击在测试用例视图中只看该需求">用例</th>
             <th style={{ padding: '5px 6px' }}>关联PRD</th>
+            {/* T05208（方案 B）：主 PRD 显式关联的方案设计文档——与「关联PRD」同列位、同交互 */}
+            <th style={{ padding: '5px 6px' }} title="主 PRD 显式关联的方案设计文档（SDD）；点击查看原文">关联SDD</th>
             <th style={{ padding: '5px 6px' }}>关联待办</th>
             <th style={{ padding: '5px 6px' }}>操作</th>
           </tr>
@@ -221,6 +223,18 @@ export function MatrixTable({ p }: { readonly p: MatrixTableProps }) {
                     style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', border: 'none', background: 'transparent', color: 'var(--accent)', cursor: 'pointer', padding: 0, maxWidth: '100%', textAlign: 'left' }}>
                     <FileText size={11} style={{ flexShrink: 0 }} />
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.prdDoc.filename}</span>
+                  </button>
+                ) : <span style={{ color: 'var(--text-muted)' }}>—</span>}
+              </td>
+              {/* T05208（方案 B）：关联SDD——打开设计文档原文（不带需求定位关键词，SDD 与需求行非一一对应） */}
+              <td style={{ padding: '4px 6px', maxWidth: 180 }}>
+                {r.sddDoc ? (
+                  <button onClick={() => p.onOpenPrd(r.sddDoc!)} className="tbtn-anim"
+                    title={`打开方案设计原文：${r.sddDoc.filename}`}
+                    aria-label={`打开关联 SDD ${r.sddDoc.filename}`}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', border: 'none', background: 'transparent', color: 'var(--accent)', cursor: 'pointer', padding: 0, maxWidth: '100%', textAlign: 'left' }}>
+                    <FileText size={11} style={{ flexShrink: 0 }} />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.sddDoc.filename}</span>
                   </button>
                 ) : <span style={{ color: 'var(--text-muted)' }}>—</span>}
               </td>

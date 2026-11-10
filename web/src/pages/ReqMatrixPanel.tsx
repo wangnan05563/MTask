@@ -22,6 +22,8 @@ export interface MatrixReq {
   status: string;
   /** T00763：需求关联的 PRD 原文文档摘要（null=该需求未挂 PRD） */
   prdDoc: { id: string; filename: string } | null;
+  /** T05208（方案 B）：主 PRD 显式关联的设计文档（SDD）；null=无配套设计文档 */
+  sddDoc: { id: string; filename: string } | null;
   linkedPlans: Array<{ id: string; title: string; status: string }>;
   linkedTasks: Array<{ id: string; taskNo: string | null; title: string; status: string; verified: boolean }>;
 }

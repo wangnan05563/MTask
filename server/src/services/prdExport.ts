@@ -445,6 +445,8 @@ export const MATRIX_COLUMNS = [
   { header: '状态', key: 'status', width: 10 },
   { header: '来源', key: 'source', width: 22 },
   { header: '关联 PRD', key: 'prdDoc', width: 26 },
+  // T05208（方案 B）：与界面「关联SDD」列同序，导出件与矩阵视图保持一致
+  { header: '关联 SDD', key: 'sddDoc', width: 26 },
   { header: '关联计划', key: 'plans', width: 32 },
   { header: '关联待办', key: 'tasks', width: 32 },
 ] as const;
@@ -458,6 +460,8 @@ export interface MatrixExportRow {
   status: string;
   source: string;
   prdDoc: string;
+  /** T05208（方案 B）：主 PRD 配套设计文档（SDD）文件名；无关联为空串 */
+  sddDoc: string;
   plans: string;
   tasks: string;
 }

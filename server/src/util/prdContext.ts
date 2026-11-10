@@ -8,6 +8,7 @@
  * 多文档/目录信息全部走**新增可选字段**（`contentMulti`/`docIndex`），调用方按需消费。
  */
 import { getDb } from '../db/connection';
+import { listRelatedPrdDocs, type PrdDocRef } from './prdDocLink';
 
 export type PrdHitBy = 'requirement' | 'req_ids' | 'title';
 
@@ -35,6 +36,10 @@ export interface PrdContext {
    *  单文档场景与 `content` 同值（逐字一致）；多文档场景拼 `PRD 文档《A》相关原文：…\n…\nPRD 文档《B》相关原文：…`。
    *  调用方消费本字段替代裸 `content` 即可零成本获得多文档能力，存量单文档调用方不改也仍逐字一致。 */
   contentMulti?: string;
+  /** T05208（裁决方案 B）：显式关联的配套文档（主 PRD 在首）。仅当存在关联的设计/测试文档时填充——
+   *  这类文档不产生需求行、走 req_ids 反查永远命中不到，此前是"孤儿文档"，AI 上下文缺半篇。
+   *  无关联文档时为 undefined，`formatPrdContext` 输出与 T04896 之后逐字一致（红线）。 */
+  relatedDocs?: PrdDocRef[];
 }
 
 /** 反查结果：命中的 PRD id 与命中路径 */
@@ -278,6 +283,20 @@ export function resolvePrdContext(target: { taskId?: string; planId?: string; re
     const projRow = db.prepare('SELECT project_id FROM prd_docs WHERE id = ?').get(primary.prdId) as { project_id: string } | undefined;
     if (projRow?.project_id) base.docIndex = buildDocIndex(db, projRow.project_id, primary.prdId);
   }
+  // T05208（方案 B）：配套设计/测试文档——没有需求行，req_ids 反查命中不到；按显式关联边补上。
+  // 仅在确有配套文档（≥2 篇）时填 relatedDocs 与 docIndex，无配套时注入串保持逐字不变（红线）。
+  // 关联查询失败不得让 PRD 反查整体失败——降级为不补关联。
+  try {
+    const related = listRelatedPrdDocs(primary.prdId);
+    if (related.length >= 2) {
+      base.relatedDocs = related;
+      if (!base.docIndex) {
+        base.docIndex = related.map((d) => ({
+          prdId: d.prdId, filename: d.filename, chars: d.chars, hit: d.relation === 'primary', docKind: d.docKind,
+        }));
+      }
+    }
+  } catch { /* 关联读取是增量能力，失败不影响主 PRD 返回 */ }
   return base;
 }
 

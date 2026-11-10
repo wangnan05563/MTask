@@ -21,6 +21,7 @@ import { resolveProjectByName } from '../util/projectRouting'; // T02938：项�
 import { ExecSessionService } from '../services/ExecSessionService'; // T01269：执行会话心跳上报（FR-1.2）
 import { SupervisorService } from '../services/SupervisorService'; // T01286：监督状态查询（FR-5.2）
 import { resolvePrdContext } from '../util/prdContext'; // T00763：PRD 上下文反查
+import { buildPrdDocsPayload } from '../util/prdDocLink'; // T05208：方案 B 显式关联（docs[] 纯增量）
 import { TestCaseService, type CaseBatchPatch, type CasePatch } from '../services/TestCaseService'; // T01493：测试用例 MCP 工具（复用服务层单源枚举与幂等落库）
 import { CASE_PRIORITY, CASE_TYPE, CASE_METHOD, CASE_STATUS, CASE_RESULT } from '../util/testCaseEnums'; // T01493：zod 枚举从单源导入，杜绝第三次口径漂移
 import { ArchiveService } from '../services/ArchiveService';
@@ -245,6 +246,18 @@ function patchSingleCase(caseId: string, patch: CasePatch): CallToolResult {
 /** 响应正文里的告警段；无告警返回空串，保持原响应逐字不变 */
 function warningNote(label: string, text: string | undefined): string {
   return text ? `\n\n⚠ ${label}：${text}` : '';
+}
+
+/**
+ * T05208（裁决方案 B）：`docs[]` = 主 PRD + 显式关联的配套文档（主 PRD 恒在首）。
+ * 纯增量字段，顶层 content/filename/prdId/hitBy/found 语义不变；无关联时仅 1 项（单文档行为）。
+ * 关联查询失败降级为 `[]`，不影响主查询（found 判定与 content 仍按原口径）。
+ */
+function buildPrdDocs(primaryPrdId: string, includeContent: boolean): ReturnType<typeof buildPrdDocsPayload> {
+  return buildPrdDocsPayload(primaryPrdId, {
+    includeContent,
+    readContent: (id) => (PlanService.getPrdDoc(id).content_md as string) ?? '',
+  });
 }
 
 /**
@@ -996,22 +1009,26 @@ export async function createMCPServer(): Promise<McpServer> {
 
   server.registerTool('mtask_get_prd', {
     title: '查询关联的 PRD 原文',
-    description: '按任务 id/编号、计划 id 或需求 id 反查其关联的 PRD 文档完整 Markdown 原文（导入时保留）；也可按项目列出全部 PRD 文档。AI 处理待办/评估时应先调用本工具获取需求背景作为上下文。',
+    description: '按任务 id/编号、计划 id 或需求 id 反查其关联的 PRD 文档完整 Markdown 原文（导入时保留）；也可按项目列出全部 PRD 文档。AI 处理待办/评估时应先调用本工具获取需求背景作为上下文。返回体 `docs[]` 为主 PRD + 显式关联的配套文档全集（主 PRD 在首，含方案设计 SDD/测试用例，每项带 id/filename/doc_kind/relation/content）；顶层 content 仍为主 PRD 全文。',
     inputSchema: {
       taskId: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
       taskNo: z.string().optional().describe('任务编号（如 T00763，与 taskId 二选一）'),
       planId: z.string().optional().describe('计划条目 id'),
       reqId: z.string().optional().describe('需求 id（矩阵行）'),
       prdId: z.string().optional().describe('PRD 文档 id（直接取全文）'),
+      includeDocsContent: z.boolean().optional().describe('docs[] 是否附带全文，默认 true；只需文档目录时传 false 可显著减小响应'),
       projectId: z.string().optional().describe('按项目列出全部 PRD 文档（与 projectName 二选一；仅列表元信息不含正文）'),
       projectName: z.string().optional().describe('按项目列出全部 PRD 文档'),
     },
   }, async (a) => {
     try {
       const db = getDb();
+      const withDocs = a.includeDocsContent !== false;
       if (a.prdId) {
         const doc = PlanService.getPrdDoc(a.prdId);
-        return ok(JSON.stringify(doc), doc);
+        const docs = buildPrdDocs(a.prdId, withDocs); // T05208
+        const payload = { ...doc, docsCount: docs.length, docs };
+        return ok(JSON.stringify(payload), payload);
       }
       // 任务编号 → 内部 id
       let taskId = a.taskId;
@@ -1024,7 +1041,9 @@ export async function createMCPServer(): Promise<McpServer> {
         const ctx = resolvePrdContext({ taskId, planId: a.planId, requirementId: a.reqId });
         if (!ctx) return ok(JSON.stringify({ found: false, message: '该对象未关联 PRD 文档' }), { found: false });
         const doc = { ...ctx, content: PlanService.getPrdDoc(ctx.prdId).content_md };
-        return ok(JSON.stringify({ found: true, ...doc }), { found: true, ...doc });
+        // T05208：显式关联的配套文档全集（未关联 PRD 时上面已返回 found:false；无配套设计文档时 docs 仅 1 项）
+        const docs = buildPrdDocs(ctx.prdId, withDocs);
+        return ok(JSON.stringify({ found: true, ...doc, docsCount: docs.length, docs }), { found: true, ...doc, docsCount: docs.length, docs });
       }
       const loc = resolveProjectIdOf(a.projectId, a.projectName);
       if (!loc.id) return err('需提供 taskId/taskNo/planId/reqId/prdId 之一，或 projectId/projectName 列出项目文档');

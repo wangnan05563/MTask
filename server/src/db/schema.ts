@@ -383,6 +383,9 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
       content_md  TEXT NOT NULL,
       -- T04897：文档类型——'prd'=需求正文 | 'design'=设计文档 | 'test'=测试用例；默认 'prd'
       doc_kind    TEXT NOT NULL DEFAULT 'prd',
+      -- T05208（裁决方案 B）：设计/测试文档显式指向其主 PRD（''=未关联）。设计文档不产生需求行，
+      -- 只有这条边才能让「任务/计划/需求 → 主 PRD → SDD」反查闭环，替代此前的文件名同源推导。
+      related_prd_id TEXT NOT NULL DEFAULT '',
       created_at  TEXT NOT NULL,
       updated_at  TEXT NOT NULL
     );
@@ -1012,6 +1015,10 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   // T00662：需求跟踪矩阵关联——计划/待办以 JSON 数组保存关联的需求 id（多对多）
   ensureColumn('plan_tasks', 'req_ids', 'req_ids TEXT');
   ensureColumn('tasks', 'req_ids', 'req_ids TEXT');
+  // T05208（裁决方案 B）：主 PRD ↔ 设计/测试文档的显式关联边（老库幂等补列，存量行默认 ''）。
+  // 索引必须在补列之后建：放进 DDL 块会在老库上先于补列执行，触发 no such column。
+  ensureColumn('prd_docs', 'related_prd_id', "related_prd_id TEXT NOT NULL DEFAULT ''");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_prd_docs_related ON prd_docs(related_prd_id)");
   // T01268（PRD §5.3）：AI 编排大脑——tasks 增量列（ensureColumn 幂等补列，兼容既有库，NFR-4）。
   // monitor_ready=待外部平台拉取的就绪标记（FR-3.1）；monitor_preferred_platform=REDISPATCH 偏好平台（FR-3.4）；
   // monitor_retry=监督器重试计数（FR-4.2）；exec_session_id=关联 exec_sessions.id（FR-1.2）

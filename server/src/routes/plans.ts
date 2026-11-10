@@ -1019,6 +1019,8 @@ planApi.get('/prd-requirements/export', exportGate('req-matrix-export', undefine
     const { buildMatrixXlsx } = await import('../services/prdExport'); // 按需加载 exceljs
     const data = rows.map((r) => {
       const prd = r.prdDoc as { filename?: string } | null;
+      // T05208（方案 B）：矩阵「关联SDD」列同源取数——主 PRD 显式关联的设计文档
+      const sdd = r.sddDoc as { filename?: string } | null;
       const plans = (r.linkedPlans as Array<{ title?: string }> | undefined) ?? [];
       const tasks = (r.linkedTasks as Array<{ taskNo?: string | null; title?: string }> | undefined) ?? [];
       return {
@@ -1029,6 +1031,7 @@ planApi.get('/prd-requirements/export', exportGate('req-matrix-export', undefine
         status: STATUS_LABEL[String(r.status ?? '')] ?? String(r.status ?? ''),
         source: String(r.source_ref ?? ''),
         prdDoc: prd?.filename ?? '',
+        sddDoc: sdd?.filename ?? '',
         plans: plans.map((p) => p.title ?? '').filter(Boolean).join('；'),
         tasks: tasks.map((t) => {
           const taskLabel = t.taskNo ? `${t.taskNo} ${t.title ?? ''}` : `${t.title ?? ''}`;
