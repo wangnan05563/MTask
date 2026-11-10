@@ -30,6 +30,10 @@ export interface GitTreeCommit {
   author: string;
   date: string;
   subject: string;
+  /** T04912：混合时间线里该提交的来源仓库坐标（'' = 根仓库）；单仓库视图不带此字段 */
+  repoSub?: string;
+  /** T04912：混合时间线里给用户看的来源仓库名，长名由 UI 截断 + title 显示全称 */
+  repoLabel?: string;
 }
 
 /** 与服务端 `gitCollect.MAX_SELECTED_COMMITS` 同值：前端拦一次给即时反馈，服务端仍是权威口径 */

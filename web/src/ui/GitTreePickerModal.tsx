@@ -51,6 +51,7 @@ import {
   type RepoListResult,
   type RepoScanTarget,
 } from '../utils/gitRepoBranchGroups';
+import { mergeRepoTimelines, repoLabelOf, resolveMixedConfirmation, type RepoTimelineInput } from '../utils/gitTimelineMerge'; // T04912：多仓库混合时间线纯函数层
 import type { BranchOption } from '../utils/scopeControls'; // T04584：起点分支候选（含子仓库 repoSub）
 
 /** 聚合视图里「在途取数窗口」的并发预算：与普查同一口径，一个仓库多就一起多（T04525） */
@@ -168,6 +169,10 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   const [repoChoices, setRepoChoices] = useState<RepoChoice[]>([]);
   const [repoListState, setRepoListState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [repoListTruncated, setRepoListTruncated] = useState(false);
+  /** T04912：平铺视图默认把工作空间内所有仓库混成一条时间线；关掉即回到 T04586 的单仓库口径 */
+  const [mixRepos, setMixRepos] = useState(true);
+  /** T04912：部分仓库取数失败的降级说明——不阻断其余仓库，也不伪装成「这个仓库没提交」 */
+  const [mixedWarnings, setMixedWarnings] = useState<string[]>([]);
   const [allBranches, setAllBranches] = useState(false);
   const [search, setSearch] = useState('');
   /** T04911：分组窗口懒加载时读「此刻」的搜索词（loadPane 不在 effect 依赖里，闭包会抓旧值） */
@@ -209,6 +214,8 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   const [openRepos, setOpenRepos] = useSessionState<string[]>('git.tree.openRepos', []);
 
   const project = useMemo(() => projects.find((p) => p.id === projectId), [projects, projectId]);
+  /** T04912：混合只在「平铺 + 用户未关闭 + 清单确实有 ≥2 个仓库」时启用；单仓库工作空间逐字走旧逻辑 */
+  const mixActive = !repoView && mixRepos && repoChoices.length > 1;
   /** T04586 复验：平铺视图当前看的仓库。底部原先一律写项目名，会把子仓库的提交也标成「根目录仓库」 */
   const activeRepoChoice = useMemo(() => repoChoices.find((c) => c.subPath === flatRepoSub), [repoChoices, flatRepoSub]);
   const flatRepoLabel = useMemo(() => {
@@ -425,7 +432,8 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
     setFlatRepoSub(''); // T04584：换项目回到根仓库，别把上个项目的子仓库路径带过来
   }, [projectId]);
 
-  useEffect(() => { void loadRef.current(false); }, [projectId, head, allBranches, repoView, flatRepoSub]);
+  // T04912：仓库清单回来 / 混合开关切换都要重取；load 内部分派到逐仓库并发取数，调用点不变
+  useEffect(() => { void loadRef.current(false); }, [projectId, head, allBranches, repoView, flatRepoSub, mixRepos, repoChoices.length]);
 
   /**
    * T04586 复验修复：默认（平铺）视图也要「开箱列出工作空间目录里的所有仓库」。
@@ -488,8 +496,62 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
     }
   }, [repoView, census, scanning, repoGroups, openBranches, openRepos, panes]);
 
+  /**
+   * T04912：「按时间顺序混合显示」的逐仓库并发取数。
+   * 进入视图前 `/git/repos` 已把根 + 任意层级子仓库（含分支元数据）列全，这里按清单各取一页，
+   * 用 `mergeRepoTimelines` 按作者时间统一排序并给每行补来源仓库。
+   * 取数失败的仓库只降级为一条说明，不拖垮其余仓库；全部失败才走「取数失败 ≠ 没有提交」的空态。
+   * 并发上限复用普查的 `REPO_SCAN_CONCURRENCY`，避免 8 仓库工作空间一次铺出大量 git 进程。
+   */
+  async function loadMixed() {
+    if (!projectId || repoView || repoChoices.length === 0) return;
+    const seq = ++loadSeq.current;
+    const choices = repoChoices.slice();
+    setLoading(true);
+    setError('');
+    setMixedWarnings([]);
+    try {
+      const results = await mapSettledWithLimit(choices, (choice) => {
+        const qs = buildLogQuery(projectId, head, allBranches, search, 0, choice.subPath);
+        return api.get<GitLogResponse>(`/git/log?${qs}`);
+      }, REPO_SCAN_CONCURRENCY);
+      if (seq !== loadSeq.current) return;
+      const inputs: RepoTimelineInput[] = [];
+      const warnings: string[] = [];
+      for (let i = 0; i < results.length; i += 1) {
+        const choice = choices[i];
+        const label = repoLabelOf(choice.subPath, choice.displayName, project?.name ?? '');
+        const res = results[i];
+        if (res.status === 'rejected') { warnings.push(`${label}：${String(res.reason)}`); continue; }
+        const r = res.value;
+        if (!r?.ok) { warnings.push(`${label}：${r?.error?.message ?? '取数失败'}`); continue; }
+        inputs.push({ repoSub: choice.subPath, repoLabel: label, commits: r.commits ?? [] });
+      }
+      const merged = mergeRepoTimelines(inputs);
+      setCommits(merged);
+      // 混合视图每仓库各取最近一页，不做跨仓库分页（skip 是单仓库语义，混用会让时间线跳档）
+      setHasMore(false);
+      setScanTruncated(false);
+      setMixedWarnings(warnings);
+      setSelected((prev) => orderSelected(merged, prev));
+      if (inputs.length === 0) setError(warnings[0] ?? '所有仓库取数失败');
+    } catch (e) {
+      if (seq !== loadSeq.current) return;
+      setError(`混合取数失败：${e instanceof Error ? e.message : String(e)}`);
+      setCommits([]);
+      setHasMore(false);
+    } finally {
+      if (seq === loadSeq.current) {
+        setLoading(false);
+        listRef.current?.focus();
+      }
+    }
+  }
+
   async function load(append: boolean) {
     if (!projectId || repoView) return;
+    // T04912：混合时间线走独立取数；搜索/重新取数/切条件仍复用同一个 load 入口，分组门锚不变
+    if (mixActive) { await loadMixed(); return; }
     const seq = ++loadSeq.current;
     setLoading(true);
     setError('');
@@ -530,6 +592,9 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   loadRef.current = load;
 
   function onRowClick(index: number, e: React.MouseEvent) {
+    // T04912：确认类错误（跨仓库勾选 / 幽灵提交）在用户重新点选后即过期；
+    // 否则用户按提示清空了其它仓库的勾选，红色提示还挂着、确认按钮也被锁死。
+    setError((prev) => (prev.includes('一次确认只能回传一个仓库') || prev.includes('所选提交已不在当前列表') ? '' : prev));
     const res = selectAt({ commits, selected, index, anchor, mods: { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey } });
     setSelected(res.selected);
     setAnchor(res.anchor);
@@ -564,6 +629,19 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   function confirm() {
     if (!repoView) {
       if (selected.length === 0) return;
+      // T04912：混合时间线与分组视图同红线——一次确认只回传一个仓库，不许把多仓库 SHA 假合并
+      if (mixActive) {
+        const out = resolveMixedConfirmation(commits, selected);
+        if (!out.ok) {
+          setError(out.code === 'multi'
+            ? `已勾选 ${out.repoSubs.length} 个仓库的提交：提取/扫描按单一仓库逐仓库执行，一次确认只能回传一个仓库，请先清空其它仓库的勾选`
+            : out.code === 'missing' ? '所选提交已不在当前列表中，请重新取数后再确认' : '还没有勾选任何提交');
+          return;
+        }
+        setError('');
+        onConfirm(projectId, orderSelected(commits, selected), out.repoSub);
+        return;
+      }
       // T04584：平铺视图也可能正看着某个子仓库，确认时把 repoSub 一起交出去（空串 = 根仓库，与改造前一致）
       onConfirm(projectId, orderSelected(commits, selected), flatRepoSub);
       return;
@@ -585,9 +663,11 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
 
   // 分组视图：勾选跨多个仓库时按钮保持**可点**——拒绝由 `confirm()` 给明原因（-disabled 只会让人对着
   // 一个没有解释的灰按钮打转，多仓库场景下这恰好是最需要「为什么不行」的一句话）
+  // T04912：混合视图的 error 可能只是「上次确认被拒」，不能把按钮锁死；取数全失败时
+  // commits 为空 → selected 必为 0，仍守住「取数失败 ≠ 没有提交」的禁用边界。
   const canConfirm = repoView
     ? paneSelectedCount > 0 && !paneBusy && !scanning
-    : selected.length > 0 && !loading && !error;
+    : selected.length > 0 && !loading && (!error || mixActive);
 
   return (
     /* 原生 <dialog open>：显隐仍由本组件挂载/卸载控制（父层只在需要时渲染），Esc 仍由上面的监听负责 */
@@ -625,6 +705,8 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
               title="工作空间目录内递归发现的 Git 仓库（含任意层级子目录）"
               onChange={(e) => {
                 // 换仓库 = 换一份可视集：旧仓库的勾选/起点分支不带过去，确认仍按 flatRepoSub 回传
+                // T04912：显式选中某个仓库即退出「混合全部仓库」，避免下拉看着像没生效
+                setMixRepos(false);
                 setSelected([]);
                 setAnchor(null);
                 setHead('');
@@ -644,6 +726,17 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
               工作空间内 {repoChoices.length} 个仓库
               {repoListTruncated ? '（扫描已达上限，深层仓库可能未列出）' : ''}
             </span>
+          )}
+          {/* T04912：默认开启——进入「按时间顺序混合显示」即自动取全部仓库，按作者时间交织；
+              关闭后逐字回到 T04586 的单仓库取数/确认口径（兼容性验收）。 */}
+          {!repoView && repoChoices.length > 1 && (
+            <label data-lck="git-tree-mix-repos"
+              title="按 Git 作者时间把工作空间内所有仓库的提交混成一条时间线；关闭后只看当前选中的仓库"
+              style={{ display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
+              <input type="checkbox" checked={mixRepos}
+                onChange={(e) => { setMixRepos(e.target.checked); setSelected([]); setAnchor(null); }} />
+              混合全部仓库
+            </label>
           )}
           {!repoView && repoListState === 'error' && (
             <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>仓库清单取数失败，仍按当前仓库取数</span>
@@ -735,6 +828,13 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
 
         {error && <p data-lck="git-tree-error" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', margin: '2px 0 8px' }}>{error}</p>}
 
+        {/* T04912：个别仓库取数失败只降级提示，其余仓库照常混入时间线，不误报成空仓库 */}
+        {!repoView && mixActive && mixedWarnings.length > 0 && (
+          <p data-lck="git-tree-mixed-warning" style={{ fontSize: 'var(--fs-xs)', color: '#b45309', margin: '2px 0 8px' }}>
+            {mixedWarnings.length} 个仓库未纳入混合时间线：{mixedWarnings.slice(0, 3).join('；')}{mixedWarnings.length > 3 ? ' …' : ''}
+          </p>
+        )}
+
         {/* T04886：扫描被目录上限截断时显式提示，避免用户误以为「真的没有更多仓库」 */}
         {!scanning && truncations.some((t) => t.truncated) && (
           <div data-lck="git-tree-truncated" style={{ fontSize: 'var(--fs-s)', color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '6px 10px', marginBottom: 8 }}>
@@ -770,12 +870,17 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
         )}
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 8 }}>
-          {!repoView && hasMore && (
+          {!repoView && !mixActive && hasMore && (
             <button type="button" data-lck="git-tree-load-more" onClick={() => void load(true)} disabled={loading} style={boxStyle}>
               加载更多（已显示 {commits.length} 条）
             </button>
           )}
-          {!repoView && scanTruncated && (
+          {!repoView && mixActive && (
+            <span data-lck="git-tree-mixed-hint" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+              每行已标注来源仓库；混合视图每仓库各取最近一页，需看更早记录请关闭「混合全部仓库」或改用分组视图
+            </span>
+          )}
+          {!repoView && !mixActive && scanTruncated && (
             <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
               搜索只扫描了最近 {GIT_TREE_PAGE_SIZE > 0 ? commits.length : 0} 条以内的窗口，可能还有更早的命中——换分支或翻页后再搜更准
             </span>
@@ -790,6 +895,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
               </>
             ) : (
               <>已选 {summary.count} 个提交{summary.count > 0 ? `（${summary.runs} 段）` : ''}
+                {mixActive ? ` · 混合 ${repoChoices.length} 个仓库` : ''}
                 {flatRepoLabel ? ` · 仓库 ${flatRepoLabel}` : ''}
               </>
             )}
@@ -864,6 +970,8 @@ function CommitRows({ commits, selected, expandedSet, keyPrefix, onRowClick, onT
   readonly compactRefs?: boolean;
 }) {
   const lanes = assignLanes(commits);
+  // T04912：混合时间线跨仓库拼车道会画出根本不存在的父子连线（方案 §9.3），有仓库标签时一律不画
+  const hasRepoTags = commits.some((c) => !!c.repoLabel);
   return (
     <>
       {commits.map((c, i) => {
@@ -884,10 +992,20 @@ function CommitRows({ commits, selected, expandedSet, keyPrefix, onRowClick, onT
                 padding: 0, border: 'none', background: 'transparent', color: 'inherit',
                 font: 'inherit', textAlign: 'left', cursor: 'pointer',
               }}>
-              <span style={{ fontFamily: FONT_MONO, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'pre', minWidth: lanes.count * 10 }}>
-                {Array.from({ length: lanes.count }, (_, l) => laneCell(lanes, i, l))}
-              </span>
+              {!hasRepoTags && (
+                <span style={{ fontFamily: FONT_MONO, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'pre', minWidth: lanes.count * 10 }}>
+                  {Array.from({ length: lanes.count }, (_, l) => laneCell(lanes, i, l))}
+                </span>
+              )}
               <code style={{ fontFamily: FONT_MONO, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{c.short}</code>
+              {/* T04912：来源仓库标识——次要色、单行省略，hover/title 给全称；不用右键查也能区分仓库 */}
+              {c.repoLabel && (
+                <span data-lck="git-tree-repo-tag" data-repo-sub={c.repoSub ?? ''}
+                  title={`来源仓库：${c.repoLabel}`}
+                  style={{ ...chipStyle, flex: '0 1 auto', minWidth: 0, maxWidth: 132, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-secondary)', background: 'var(--surface-2)', fontSize: 'var(--fs-xs)' }}>
+                  {c.repoLabel}
+                </span>
+              )}
               <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.subject}>{c.subject}</span>
               <CommitRefPills refs={c.refs} compact={compactRefs} />
               <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 90 }} title={fullTime(c.date)}>{relTime(c.date)}</span>

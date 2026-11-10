@@ -120,7 +120,9 @@ ok('C-07 load 取数带上 flatRepoSub（子仓库分支真按该仓库取数）
 ok('C-08 平铺确认回传 flatRepoSub（子仓库选择不被当根仓库）',
   modal.includes('onConfirm(projectId, orderSelected(commits, selected), flatRepoSub)'));
 ok('C-09 切项目重置 flatRepoSub', modal.includes("setFlatRepoSub(''); // T04584"));
-ok('C-10 load 触发依赖含 flatRepoSub', modal.includes('[projectId, head, allBranches, repoView, flatRepoSub]'));
+// T04912 起 load 依赖追加了 mixRepos / repoChoices.length（混合开关与仓库清单回来要重取）；
+// 本断言守住的是「flatRepoSub 必须仍在依赖里」，不再钉死逐字相等的旧数组。
+ok('C-10 load 触发依赖含 flatRepoSub', /\[projectId, head, allBranches, repoView, flatRepoSub[^\]]*\]/.test(modal));
 ok('C-11 BranchPicker 新增 onSelect 回调 prop', picker.includes('readonly onSelect?: (option: BranchOption) => void'));
 ok('C-12 BranchPicker commit 交回整条 option（含 repoSub）',
   picker.includes('const commit = (option: BranchOption) => { onSelect?.(option); onChange(option.name); close(); }'));
