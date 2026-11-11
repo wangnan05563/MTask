@@ -1043,6 +1043,13 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   // T02218：软删除——删除改为逻辑删除（deleted_at 非空=已删），列表/回写等消费方过滤；
   // 数据保留，可由管理员在「设置 → 数据维护」把 deleted_at 置空恢复
   ensureColumn('prd_issues', 'deleted_at', "deleted_at TEXT DEFAULT ''");
+  // T05080：PRD 文档 / 需求跟踪矩阵 / 测试用例 归档——补软删列（与 tasks/plan_tasks 同口径：标记留在原表，由归档菜单恢复或彻底删除）
+  ensureColumn('prd_docs', 'archived', 'archived INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('prd_docs', 'archived_at', "archived_at TEXT DEFAULT ''");
+  ensureColumn('prd_requirements', 'archived', 'archived INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('prd_requirements', 'archived_at', "archived_at TEXT DEFAULT ''");
+  ensureColumn('test_cases', 'archived', 'archived INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('test_cases', 'archived_at', "archived_at TEXT DEFAULT ''");
   // T00780：符号索引生命周期——记录建索引时的工作空间根路径，换绑/解绑时据此判定旧索引失效需清理
   ensureColumn('workspace_symbols', 'workspace', "workspace TEXT NOT NULL DEFAULT ''");
   // T00771：项目工作空间根路径——项目上下文锚点（多项目可指向同一目录，仅存路径引用）；

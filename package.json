@@ -1,6 +1,6 @@
 {
   "name": "mtask",
-  "version": "0.1.1108.241",
+  "version": "0.1.1111.249",
   "private": true,
   "main": "electron/main.js",
   "description": "AI 任务开发管理工具：项目维度任务管理 + AI 梳理 + 队列分发（Electron + React + Express + SQLite）",
@@ -159,6 +159,7 @@
       "output": "release"
     },
     "asar": true,
+    "electronDist": "node_modules/electron/dist",
     "asarUnpack": [
       "node_modules/better-sqlite3/**/*"
     ],

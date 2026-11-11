@@ -386,7 +386,7 @@ function addCaseColumnAssignments(
 
 /** 列表 WHERE 构造（供计数与取页共用，保证 total 与 items 同一套条件） */
 function buildCaseWhere(q: CaseQuery): { where: string; vals: unknown[] } {
-  const parts: string[] = ['c.project_id = ?'];
+  const parts: string[] = ['c.project_id = ?', 'c.archived = 0'];
   const vals: unknown[] = [q.projectId];
   if (q.orphanOnly) parts.push('c.req_id IS NULL');
   const rid = str(q.reqId);
@@ -507,6 +507,19 @@ export const TestCaseService = {
    * 不存 id 一律拒（而不是静默少返几行）：选择集跨会话残留时，静默少行会让用户
    * 以为「导出件就这么点」，永远发现不了丢数据。
    */
+  /** T05080：已归档用例列表（归档菜单展示） */
+  /** T05080：已归档用例列表（归档菜单展示；projectId 为空时返回全部项目） */
+  listArchived(projectId: string): { total: number; items: TestCaseWithSteps[] } {
+    const db = getDb();
+    const where = projectId ? 'c.project_id = ? AND c.archived = 1' : 'c.archived = 1';
+    const params = projectId ? [projectId] : [];
+    const rows = db
+      .prepare(`${CASE_SELECT} WHERE ${where} ORDER BY c.archived_at DESC, c.sort_order, c.created_at`)
+      .all(...params) as JoinedCase[];
+    const byCase = stepsByCase(db, rows.map((r) => r.id));
+    return { total: rows.length, items: rows.map((r) => withSteps(r, byCase.get(r.id) ?? [])) };
+  },
+
   byIds(ids: readonly string[]): TestCaseWithSteps[] {
     const db = getDb();
     const target = resolveCaseIds(db, ids);
@@ -585,17 +598,34 @@ export const TestCaseService = {
     return loadCase(db, id);
   },
 
-  /** 删除用例：步骤同事务显式删除（不依赖 pragma 是否开着，§11 数据一致） */
+  /** 删除用例：改为软删（归档），步骤随父表 archived 过滤隐藏，彻底删除时 CASCADE 清理（§11） */
   remove(id: string): { ok: true } {
     const db = getDb();
     if (!db.prepare('SELECT id FROM test_cases WHERE id = ?').get(id)) throw new Error('用例不存在');
-    db.transaction(() => {
-      db.prepare('DELETE FROM case_steps WHERE case_id = ?').run(id);
-      db.prepare('DELETE FROM test_cases WHERE id = ?').run(id);
-    })();
-    notifyChange('plans');
-    return { ok: true };
-  },
+      db.prepare('UPDATE test_cases SET archived = 1, archived_at = ? WHERE id = ? AND archived = 0').run(now(), id);
+      notifyChange('plans');
+      return { ok: true };
+    },
+
+    /** T05080：还原已归档的用例（归档 -> 活动） */
+    restore(id: string): boolean {
+      const db = getDb();
+      const row = db.prepare('SELECT id, archived FROM test_cases WHERE id = ?').get(id) as { id: string; archived: number } | undefined;
+      if (!row?.archived) return false;
+      db.prepare('UPDATE test_cases SET archived = 0, archived_at = NULL, updated_at = ? WHERE id = ?').run(now(), id);
+      notifyChange('plans');
+      return true;
+    },
+
+    /** T05080：彻底删除已归档的用例（物理删，步骤经 FK CASCADE 一并清理，不可逆） */
+    purge(id: string): { deleted: number } {
+      const db = getDb();
+      const row = db.prepare('SELECT id, archived FROM test_cases WHERE id = ?').get(id) as { id: string; archived: number } | undefined;
+      if (!row?.archived) return { deleted: 0 };
+      const deleted = db.prepare('DELETE FROM test_cases WHERE id = ? AND archived = 1').run(id).changes;
+      notifyChange('plans');
+      return { deleted };
+    },
 
   /** 批量改字段（§6.3）：一次事务一条 UPDATE；不含 title/case_no，见 `CaseBatchPatch` */
   batchPatch(ids: readonly string[], patch: CaseBatchPatch): { updated: number } {
@@ -623,14 +653,12 @@ export const TestCaseService = {
     return { updated: target.ids.length };
   },
 
-  /** 批量删除：步骤与用例同事务，一条 IN 收口（§6.3） */
+  /** 批量删除：改为软删（归档），一条 IN 收口（§6.3） */
   batchRemove(ids: readonly string[]): { deleted: number } {
     const db = getDb();
     const target = resolveCaseIds(db, ids);
-    db.transaction(() => {
-      db.prepare(`DELETE FROM case_steps WHERE case_id IN (${inHolders(target.ids.length)})`).run(...target.ids);
-      db.prepare(`DELETE FROM test_cases WHERE id IN (${inHolders(target.ids.length)})`).run(...target.ids);
-    })();
+    const t = now();
+    db.prepare(`UPDATE test_cases SET archived = 1, archived_at = ? WHERE id IN (${inHolders(target.ids.length)}) AND archived = 0`).run(t, ...target.ids);
     notifyChange('plans');
     return { deleted: target.ids.length };
   },

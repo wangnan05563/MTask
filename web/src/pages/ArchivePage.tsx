@@ -18,6 +18,36 @@ interface ArchivedPlan {
   project_name: string;
 }
 
+/** T05080：归档 PRD 文档条目（归档菜单「归档 PRD 文档」区） */
+interface ArchivedPrdDoc {
+  id: string;
+  project_id: string;
+  filename: string;
+  status: string;
+  doc_kind: string;
+  archived_at: string | null;
+}
+
+/** T05080：归档需求跟踪矩阵行（归档菜单「归档需求跟踪矩阵」区） */
+interface ArchivedReqRow {
+  id: string;
+  project_id: string;
+  req_no: string;
+  title: string;
+  priority: string;
+  status: string;
+  archived_at: string | null;
+}
+
+/** T05080：归档测试用例行（归档菜单「归档测试用例」区） */
+interface ArchivedCaseRow {
+  id: string;
+  project_id: string;
+  case_no: string;
+  title: string;
+  archived_at: string | null;
+}
+
 /** T02284：服务端分页信封（与 server/src/util/list-page.ts 的 Paged 同形状，由 `total=1` 加性通道返回） */
 interface Paged<T> {
   items: T[];
@@ -166,6 +196,11 @@ export function ArchivePage() {
   // 归档条目量级小，先整表取回 + 本地关键词过滤；分页与提示词区一致留待端点补齐后统一接入
   const reqsView = useResource<ReqEntry[]>(async () => api.get<ReqEntry[]>('/req-entries?archived=1'), { enabled: false });
 
+  // T05080：归档 PRD 文档 / 需求跟踪矩阵 / 测试用例三区——整表取回（归档量级小），本地关键词过滤，与归档通用需求同构
+  const prdDocsArchivedView = useResource<ArchivedPrdDoc[]>(async () => api.get<ArchivedPrdDoc[]>('/plans/prd-docs/archived'), { enabled: false });
+  const reqMatrixArchivedView = useResource<ArchivedReqRow[]>(async () => api.get<ArchivedReqRow[]>('/plans/prd-requirements/archived'), { enabled: false });
+  const casesArchivedView = useResource<{ total: number; items: ArchivedCaseRow[] }>(async () => api.get<{ total: number; items: ArchivedCaseRow[] }>('/plans/test-cases/archived'), { enabled: false });
+
   // 引用数据只在挂载时取一次（失败沿用旧口径静默降级：仅影响名称显示，不影响列表数据）
   useEffect(() => {
     // T01722 修复：端点误写为 /tasks/categories（404 被吞、归档任务分类名恒缺失）——与 TasksPage 同口径走 /task-categories
@@ -186,6 +221,10 @@ export function ArchivePage() {
   useEffect(() => { promptsView.reload(); }, [promptPage, pageSize, kwQuery, promptsView.reload]);
   // T03685：归档通用需求区随关键词重取（整表取回，本地过滤见 pageReqs）
   useEffect(() => { reqsView.reload(); }, [kwQuery, reqsView.reload]);
+  // T05080：三区归档列表随关键词重取（整表取回，本地过滤见下方派生数组）
+  useEffect(() => { prdDocsArchivedView.reload(); }, [kwQuery, prdDocsArchivedView.reload]);
+  useEffect(() => { reqMatrixArchivedView.reload(); }, [kwQuery, reqMatrixArchivedView.reload]);
+  useEffect(() => { casesArchivedView.reload(); }, [kwQuery, casesArchivedView.reload]);
 
   // T02258：切换条数后各列表重置到第 1 页
   useEffect(() => { setPage(1); setPlanPage(1); setPromptPage(1); }, [pageSize]);
@@ -204,6 +243,14 @@ export function ArchivePage() {
   const archivedReqs = (reqsView.data ?? []).filter((e) => !kwQuery
     || e.title.toLowerCase().includes(kwQuery.toLowerCase())
     || (e.content ?? '').toLowerCase().includes(kwQuery.toLowerCase()));
+  // T05080：三区归档条目——整表取回后本地按关键词过滤（文件名/编号/标题），与归档通用需求同构
+  const archivedPrdDocs = (prdDocsArchivedView.data ?? []).filter((d) => !kwQuery || d.filename.toLowerCase().includes(kwQuery.toLowerCase()));
+  const archivedMatrixReqs = (reqMatrixArchivedView.data ?? []).filter((r) => !kwQuery
+    || r.title.toLowerCase().includes(kwQuery.toLowerCase())
+    || r.req_no.toLowerCase().includes(kwQuery.toLowerCase()));
+  const archivedCases = (casesArchivedView.data?.items ?? []).filter((c) => !kwQuery
+    || (c.case_no ?? '').toLowerCase().includes(kwQuery.toLowerCase())
+    || c.title.toLowerCase().includes(kwQuery.toLowerCase()));
   const taskTotal = tasksView.data?.total ?? 0;
   const planTotal = plansView.data?.total ?? 0;
   const promptTotal = promptsView.data?.total ?? 0;
@@ -271,6 +318,41 @@ export function ArchivePage() {
     if (!ok) return;
     await api.del(`/req-entries/${e.id}`);
     reqsView.reload();
+  }
+
+  // T05080：归档 PRD 文档 / 需求跟踪矩阵 / 测试用例三区的还原与彻底删除（与归档通用需求同构）
+  async function restorePrdDoc(d: ArchivedPrdDoc) {
+    await api.post(`/plans/prd-docs/${d.id}/restore`);
+    flash(`已还原 PRD 文档「${d.filename}」`);
+    prdDocsArchivedView.reload();
+  }
+  async function purgePrdDoc(d: ArchivedPrdDoc) {
+    const ok = await askConfirm(`确认彻底删除 PRD 文档「${d.filename}」？此操作不可恢复。`);
+    if (!ok) return;
+    await api.post(`/plans/prd-docs/${d.id}/purge`);
+    prdDocsArchivedView.reload();
+  }
+  async function restoreMatrixReq(r: ArchivedReqRow) {
+    await api.post(`/plans/prd-requirements/${r.id}/restore`);
+    flash(`已还原需求「${r.req_no} ${r.title}」`);
+    reqMatrixArchivedView.reload();
+  }
+  async function purgeMatrixReq(r: ArchivedReqRow) {
+    const ok = await askConfirm(`确认彻底删除需求「${r.req_no} ${r.title}」？此操作不可恢复；其下已归档的测试用例将因外键级联一并彻底删除。`);
+    if (!ok) return;
+    await api.post(`/plans/prd-requirements/${r.id}/purge`);
+    reqMatrixArchivedView.reload();
+  }
+  async function restoreCase(c: ArchivedCaseRow) {
+    await api.post(`/plans/test-cases/${c.id}/restore`);
+    flash(`已还原测试用例「${c.case_no} ${c.title}」`);
+    casesArchivedView.reload();
+  }
+  async function purgeCase(c: ArchivedCaseRow) {
+    const ok = await askConfirm(`确认彻底删除测试用例「${c.case_no} ${c.title}」？此操作不可恢复。`);
+    if (!ok) return;
+    await api.post(`/plans/test-cases/${c.id}/purge`);
+    casesArchivedView.reload();
   }
 
   // ---------- T00586：批量操作（参考计划页批量工具条） ----------
@@ -553,6 +635,63 @@ export function ArchivePage() {
             <span className="abtn" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }} title={`归档时间：${e.archived_at ?? ''}`}>{relTime(e.archived_at)}</span>
             <button className="abtn" onClick={() => void restoreReq(e)} title="还原 — 将该通用需求还原到通用需求页原分类" aria-label="还原：将该通用需求还原到原分类" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
             <button className="abtn" onClick={() => void removeReq(e)} title="删除 — 彻底删除该通用需求，此操作不可恢复" aria-label="删除：彻底删除该通用需求，此操作不可恢复" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
+          </li>
+        ))}
+      </ul>
+
+      {/* T05080：归档 PRD 文档区——PRD 管理视图「归档」后在此还原或彻底删除 */}
+      <h4 style={{ fontSize: 'var(--fs-l)', margin: '20px 0 8px' }}>归档 PRD 文档（共 {archivedPrdDocs.length} 条）</h4>
+      <ResourceHint view={prdDocsArchivedView} label="归档 PRD 文档列表" />
+      {prdDocsArchivedView.phase === 'ready' && archivedPrdDocs.length === 0 && (
+        <p style={{ color: 'var(--text-muted)' }}>暂无归档 PRD 文档（或当前搜索无结果）。PRD 管理页归档后的文档会出现在这里。</p>
+      )}
+      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+        {archivedPrdDocs.map((d) => (
+          <li key={d.id} className="arena-row" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderRadius: 4, borderBottom: '1px solid var(--surface-2)' }}>
+            <span style={{ flex: 1, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {d.filename}（{projectNames[d.project_id] ?? '未知项目'}）
+            </span>
+            <span className="abtn" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }} title={`归档时间：${d.archived_at ?? ''}`}>{relTime(d.archived_at)}</span>
+            <button className="abtn" onClick={() => void restorePrdDoc(d)} title="还原 — 将该 PRD 文档还原到 PRD 管理页" aria-label="还原：将该 PRD 文档还原到 PRD 管理页" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
+            <button className="abtn" onClick={() => void purgePrdDoc(d)} title="删除 — 彻底删除该 PRD 文档，此操作不可恢复" aria-label="删除：彻底删除该 PRD 文档，此操作不可恢复" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
+          </li>
+        ))}
+      </ul>
+
+      {/* T05080：归档需求跟踪矩阵区——需求跟踪矩阵视图「归档」后在此还原或彻底删除 */}
+      <h4 style={{ fontSize: 'var(--fs-l)', margin: '20px 0 8px' }}>归档需求跟踪矩阵（共 {archivedMatrixReqs.length} 条）</h4>
+      <ResourceHint view={reqMatrixArchivedView} label="归档需求跟踪矩阵列表" />
+      {reqMatrixArchivedView.phase === 'ready' && archivedMatrixReqs.length === 0 && (
+        <p style={{ color: 'var(--text-muted)' }}>暂无归档需求跟踪矩阵行（或当前搜索无结果）。需求跟踪矩阵页归档后的行会出现在这里。</p>
+      )}
+      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+        {archivedMatrixReqs.map((r) => (
+          <li key={r.id} className="arena-row" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderRadius: 4, borderBottom: '1px solid var(--surface-2)' }}>
+            <span style={{ flex: 1, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {r.req_no} {r.title}（{projectNames[r.project_id] ?? '未知项目'}）
+            </span>
+            <span className="abtn" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }} title={`归档时间：${r.archived_at ?? ''}`}>{relTime(r.archived_at)}</span>
+            <button className="abtn" onClick={() => void restoreMatrixReq(r)} title="还原 — 将该需求行还原到需求跟踪矩阵" aria-label="还原：将该需求行还原到需求跟踪矩阵" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
+            <button className="abtn" onClick={() => void purgeMatrixReq(r)} title="删除 — 彻底删除该需求行，此操作不可恢复" aria-label="删除：彻底删除该需求行，此操作不可恢复" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
+          </li>
+        ))}
+      </ul>
+
+      {/* T05080：归档测试用例区——测试用例视图「归档」后在此还原或彻底删除 */}
+      <h4 style={{ fontSize: 'var(--fs-l)', margin: '20px 0 8px' }}>归档测试用例（共 {archivedCases.length} 条）</h4>
+      <ResourceHint view={casesArchivedView} label="归档测试用例列表" />
+      {casesArchivedView.phase === 'ready' && archivedCases.length === 0 && (
+        <p style={{ color: 'var(--text-muted)' }}>暂无归档测试用例（或当前搜索无结果）。测试用例页归档后的用例会出现在这里。</p>
+      )}
+      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+        {archivedCases.map((c) => (
+          <li key={c.id} className="arena-row" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderRadius: 4, borderBottom: '1px solid var(--surface-2)' }}>
+            <span style={{ flex: 1, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {c.case_no} {c.title}（{projectNames[c.project_id] ?? '未知项目'}）
+            </span>
+            <span className="abtn" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }} title={`归档时间：${c.archived_at ?? ''}`}>{relTime(c.archived_at)}</span>
+            <button className="abtn" onClick={() => void restoreCase(c)} title="还原 — 将该测试用例还原到测试用例页" aria-label="还原：将该测试用例还原到测试用例页" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
+            <button className="abtn" onClick={() => void purgeCase(c)} title="删除 — 彻底删除该测试用例，此操作不可恢复" aria-label="删除：彻底删除该测试用例，此操作不可恢复" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
           </li>
         ))}
       </ul>

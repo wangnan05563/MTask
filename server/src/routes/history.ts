@@ -151,14 +151,21 @@ historyApi.post('/to-archive', (req, res) => {
   const t = now();
   let tasks = 0;
   let plans = 0;
+  let prds = 0;
+  let requirements = 0;
+  let cases = 0;
   db.transaction(() => {
     tasks = db.prepare('UPDATE tasks SET archived = 1, archived_at = ?, updated_at = ? WHERE project_id = ? AND archived = 0').run(t, t, projectId).changes;
     plans = db.prepare('UPDATE plan_tasks SET archived = 1, archived_at = ?, updated_at = ? WHERE project_id = ? AND archived = 0').run(t, t, projectId).changes;
+    // T05080：项目沉淀为快照后归档删除，须一并归档 PRD/需求矩阵/测试用例，否则这几类数据会以孤儿形式残留且不进归档菜单
+    prds = db.prepare('UPDATE prd_docs SET archived = 1, archived_at = ? WHERE project_id = ? AND archived = 0').run(t, projectId).changes;
+    requirements = db.prepare('UPDATE prd_requirements SET archived = 1, archived_at = ? WHERE project_id = ? AND archived = 0').run(t, projectId).changes;
+    cases = db.prepare('UPDATE test_cases SET archived = 1, archived_at = ? WHERE project_id = ? AND archived = 0').run(t, projectId).changes;
     db.prepare('UPDATE projects SET archived = 1, history_at = NULL, updated_at = ? WHERE id = ?').run(t, projectId);
   })();
   cacheClear('projects');
   notifyChange('projects');
   notifyChange('tasks');
   if (plans > 0) notifyChange('plans');
-  res.json({ ok: true, tasks, plans });
+  res.json({ ok: true, tasks, plans, prds, requirements, cases });
 });

@@ -845,6 +845,8 @@ planApi.post('/import-prd/preview', (req, res) => {
 
 planApi.get('/prd-docs', (req, res) => wrap(res, () => PlanService.listPrdDocs(pid(req))));
 
+// T05080：归档 PRD 文档列表（须在 /:id 之前注册，避免 archived 被当成 id）
+planApi.get('/prd-docs/archived', (req, res) => wrap(res, () => PlanService.listArchivedPrdDocs(typeof req.query.projectId === 'string' ? req.query.projectId : '')));
 planApi.get('/prd-docs/:id', (req, res) => wrap(res, () => PlanService.getPrdDoc(req.params.id)));
 
 /** 反向更新 PRD 原文（全量覆盖）：AI 修订或用户编辑后的完整 Markdown 回写 */
@@ -871,6 +873,9 @@ planApi.post('/prd-docs', (req, res) => {
 });
 
 planApi.delete('/prd-docs/:id', (req, res) => wrap(res, () => { PlanService.deletePrdDoc(req.params.id); return { ok: true }; }));
+// T05080：归档恢复 / 彻底删除
+planApi.post('/prd-docs/:id/restore', (req, res) => wrap(res, () => PlanService.restorePrdDoc(req.params.id)));
+planApi.post('/prd-docs/:id/purge', (req, res) => wrap(res, () => PlanService.purgePrdDoc(req.params.id)));
 
 planApi.patch('/prd-docs/:id/status', (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
@@ -1061,6 +1066,8 @@ planApi.post('/prd-requirements', (req, res) => {
   }));
 });
 
+// T05080：归档需求列表（须在 /:id 之前注册）
+planApi.get('/prd-requirements/archived', (req, res) => wrap(res, () => PlanService.listArchivedRequirements(typeof req.query.projectId === 'string' ? req.query.projectId : '')));
 planApi.patch('/prd-requirements/:id', (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
   wrap(res, () => PlanService.updateRequirement(req.params.id, {
@@ -1076,6 +1083,8 @@ planApi.patch('/prd-requirements/:id', (req, res) => {
 planApi.get('/prd-requirements/duplicates', (req, res) => wrap(res, () => ({ groups: PlanService.duplicateReqNos(pid(req)) })));
 
 planApi.delete('/prd-requirements/:id', (req, res) => wrap(res, () => PlanService.deleteRequirement(req.params.id)));
+planApi.post('/prd-requirements/:id/restore', (req, res) => wrap(res, () => PlanService.restoreRequirement(req.params.id)));
+planApi.post('/prd-requirements/:id/purge', (req, res) => wrap(res, () => PlanService.purgeRequirement(req.params.id)));
 
 /** 关联调整：需求 ↔ 计划/待办（linked=true 建立关联，false 解除） */
 planApi.post('/prd-requirements/:id/link', (req, res) => {
@@ -1301,6 +1310,8 @@ planApi.post('/test-cases/export', exportGate('testcase-export', undefined, { de
   }
 });
 
+// T05080：归档用例列表（须在 /:id 之前注册）
+planApi.get('/test-cases/archived', (req, res) => wrap(res, () => TestCaseService.listArchived(typeof req.query.projectId === 'string' ? req.query.projectId : '')));
 planApi.get('/test-cases/:id', (req, res) => wrap(res, () => TestCaseService.get(req.params.id)));
 
 planApi.post('/test-cases', (req, res) => {
@@ -1358,6 +1369,8 @@ planApi.patch('/test-cases/:id', (req, res) => {
 });
 
 planApi.delete('/test-cases/:id', (req, res) => wrap(res, () => TestCaseService.remove(req.params.id)));
+planApi.post('/test-cases/:id/restore', (req, res) => wrap(res, () => TestCaseService.restore(req.params.id)));
+planApi.post('/test-cases/:id/purge', (req, res) => wrap(res, () => TestCaseService.purge(req.params.id)));
 
 // ---------- 计划任务 CRUD ----------
 planApi.get('/', (req, res) => wrap(res, () => PlanService.list(pid(req))));

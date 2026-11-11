@@ -66,13 +66,17 @@ if ($env:SKIP_BUILD) {
 }
 
 # [2] Locate the freshly built setup exe (newest by write time).
+# The build entry falls forward to release2..9 whenever release\win-unpacked cannot be
+# deleted (antivirus / Explorer holds app.asar). Looking only in `release` then silently
+# publishes the PREVIOUS installer with the wrong tag. Search every release* dir instead.
 Write-Host '[2] Locate installer artifact...'
 $asset = $null
-Get-ChildItem -Path $ReleaseDir -Filter $AssetGlob -ErrorAction SilentlyContinue |
+Get-ChildItem -Path $RepoRoot -Directory -Filter 'release*' -ErrorAction SilentlyContinue |
+  ForEach-Object { Get-ChildItem -Path $_.FullName -Filter $AssetGlob -File -ErrorAction SilentlyContinue } |
   Sort-Object LastWriteTime -Descending |
   ForEach-Object { if (-not $asset) { $asset = $_.FullName } }
 if (-not $asset) {
-  Write-Host "[ERROR] no '$AssetGlob' found in $ReleaseDir"
+  Write-Host "[ERROR] no '$AssetGlob' found under any release* dir in $RepoRoot"
   Write-Host '  Run without SKIP_BUILD=1 first, or place the artifact there.'
   exit 1
 }
@@ -88,9 +92,28 @@ if (-not $APPVER) {
 }
 Write-Host "  version: $APPVER"
 
+# A stale artifact must never be published as a new version: after a real build the
+# installer filename must carry exactly the version bump-version.js left in package.json.
+# Read as UTF-8 and extract with a regex, NOT ConvertFrom-Json: PS 5.1 Get-Content defaults
+# to the ANSI codepage, which turns the Chinese description into invalid JSON and throws.
+if (-not $env:SKIP_BUILD) {
+  $pkgRaw = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'package.json') -Encoding UTF8
+  $expected = $null
+  if ($pkgRaw -match '"version"\s*:\s*"([^"]+)"') { $expected = $Matches[1] }
+  if (-not $expected) {
+    Write-Host '[ERROR] cannot read version from package.json - refusing to publish.'
+    exit 1
+  }
+  if ($APPVER -ne $expected) {
+    Write-Host "[ERROR] stale installer: artifact version $APPVER != package.json version $expected"
+    Write-Host '  The build did not produce a fresh artifact. Refusing to publish.'
+    exit 1
+  }
+}
+
 # [4] Generate release notes from git log (falls back to version-only if no commits).
 Write-Host '[4] Generate release notes...'
-$notes = Join-Path $ReleaseDir ("release-notes-" + $APPVER + '.md')
+$notes = Join-Path (Split-Path $asset -Parent) ("release-notes-" + $APPVER + '.md')
 & $PY $NotesGen $APPVER $notes
 if ($LASTEXITCODE -ne 0) {
   Write-Host '[ERROR] release notes generation failed'

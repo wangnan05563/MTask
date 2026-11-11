@@ -285,11 +285,11 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
     // T01486 A15：`test_cases.req_id` 是 CASCADE 外键，删需求会连带删掉其下用例（物理删除），
     // 条数必须弹前先给用户看——事后提示等于没提示
     const n = caseCounts[r.id] ?? 0;
-    const caseHint = n > 0 ? `\n\n⚠ 将一并删除 ${n} 条测试用例（及其步骤），此操作不可撤销。` : '';
-    if (!(await askConfirm(`删除需求「${r.title}」？\n\n其与计划/待办的关联将一并清理（计划与任务本身不受影响）。${caseHint}`))) return;
+    const caseHint = n > 0 ? `\n\n⚠ 将一并归档 ${n} 条测试用例（及其步骤），可在归档菜单还原。` : '';
+    if (!(await askConfirm(`归档需求「${r.title}」？\n\n其与计划/待办的关联将一并清理（计划与任务本身不受影响）。${caseHint}`))) return;
     try {
       await api.del(`/plans/prd-requirements/${r.id}`);
-      flash(n > 0 ? `已删除需求，连带清理 ${n} 条测试用例` : '已删除需求并清理关联');
+      flash(n > 0 ? `已归档需求，其 ${n} 条测试用例一并归档` : '已归档需求并清理关联');
       await load();
     } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
   }
@@ -332,14 +332,14 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
     const withCases = ids.map((id) => caseCounts[id] ?? 0).filter((n) => n > 0);
     const total = withCases.reduce((a, b) => a + b, 0);
     const caseHint = total > 0
-      ? `\n\n⚠ 其中 ${withCases.length} 条需求名下共 ${total} 条测试用例会被一并删除（及其步骤），此操作不可撤销。`
+      ? `\n\n⚠ 其中 ${withCases.length} 条需求名下共 ${total} 条测试用例会被一并归档（及其步骤），可在归档菜单还原。`
       : '';
-    if (!(await askConfirm(`删除选中的 ${ids.length} 条需求？\n\n其与计划/待办的关联将一并清理（计划与任务本身不受影响）。${caseHint}`))) return;
+    if (!(await askConfirm(`归档选中的 ${ids.length} 条需求？\n\n其与计划/待办的关联将一并清理（计划与任务本身不受影响）。${caseHint}`))) return;
     setBusy(true);
     try {
       for (const id of ids) await api.del(`/plans/prd-requirements/${id}`);
       setSelIds([]);
-      flash(total > 0 ? `已删除 ${ids.length} 条需求，连带清理 ${total} 条测试用例` : `已删除 ${ids.length} 条需求并清理关联`);
+      flash(total > 0 ? `已归档 ${ids.length} 条需求，其 ${total} 条测试用例一并归档` : `已归档 ${ids.length} 条需求并清理关联`);
       await load();
     } catch (e) { flash(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
   }
@@ -387,7 +387,7 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
       <span style={{ flex: 1 }} />
       {/* T00773：多选模式开关（参考项目计划 T00564）——勾选需求后批量改状态/删除 */}
       <button onClick={() => { setMulti((m) => !m); setSelIds([]); }} className="tbtn-anim"
-        title={multi ? '退出多选模式' : '多选模式 — 勾选需求后批量更改状态/删除'} aria-label={multi ? '退出多选模式' : '进入多选模式'}
+        title={multi ? '退出多选模式' : '多选模式 — 勾选需求后批量更改状态/归档'} aria-label={multi ? '退出多选模式' : '进入多选模式'}
         style={{ display: 'inline-flex', alignItems: 'center', fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 6, background: multi ? 'var(--accent)' : 'transparent', color: multi ? 'var(--accent-text)' : 'var(--text)', cursor: 'pointer', padding: '3px 7px' }}>
         {multi ? <Check size={12} /> : <ListChecks size={12} />}
       </button>
@@ -405,7 +405,7 @@ export function ReqMatrixPanel({ projectId, onClose, onDrillCases, locateReqId, 
             {STATUS_OPTIONS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
           </select>
           <button onClick={() => void batchDeleteReqs()} disabled={busy} className="task-op"
-            title="删除选中需求 — 一并清理其与计划/待办的关联" aria-label="批量删除选中需求"
+            title="归档选中需求 — 一并清理其与计划/待办的关联" aria-label="批量归档选中需求"
             style={{ display: 'inline-flex', alignItems: 'center', fontSize: 'var(--fs-xs)', border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--danger)', padding: 2 }}>
             <Trash2 size={13} />
           </button>

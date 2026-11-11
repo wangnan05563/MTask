@@ -313,11 +313,11 @@ export function PrdPanel({ projectId, onClose }: {
   }
 
   async function removeDoc(d: PrdDoc) {
-    if (!(await askConfirm(`删除 PRD 文档「${d.filename}」？\n\n其下待确认问题将一并删除，正文不可恢复。`))) return;
+    if (!(await askConfirm(`归档 PRD 文档「${d.filename}」？\n\n其下待确认问题将一并归档，可于「归档管理」菜单还原或彻底删除。`))) return;
     try {
       await api.del(`/plans/prd-docs/${d.id}`);
       if (selectedId === d.id) { setSelectedId(''); setDetail(null); }
-      flash('已删除 PRD 文档');
+      flash('已归档 PRD 文档');
       await load();
     } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
   }
@@ -492,7 +492,7 @@ export function PrdPanel({ projectId, onClose }: {
             <button onClick={() => { void toggleStatus(d); }} className="tbtn-anim" title={d.status === 'confirmed' ? '转回草稿（PRD）' : '确认为确认版 PRD'} aria-label={d.status === 'confirmed' ? '把该文档转回草稿' : '把该文档确认为正式版'} style={opBtn}>
               {d.status === 'confirmed' ? <Undo2 size={11} /> : <Check size={11} />}
             </button>
-            <button onClick={() => { void removeDoc(d); }} className="tbtn-anim" title="删除文档" aria-label="删除该 PRD 文档" style={{ ...opBtn, color: 'var(--danger)' }}><Trash2 size={11} /></button>
+            <button onClick={() => { void removeDoc(d); }} className="tbtn-anim" title="归档文档" aria-label="归档该 PRD 文档" style={{ ...opBtn, color: 'var(--danger)' }}><Trash2 size={11} /></button>
           </span>
         </div>
       ))}

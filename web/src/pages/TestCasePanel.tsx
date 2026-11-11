@@ -181,13 +181,13 @@ export function TestCasePanel({ projectId, focusReqId, focusSeq, onLocateReq, on
   }, [newTitle, projectId, reqFilter, flash, load, setNewTitle]);
 
   const removeCase = useCallback(async (row: CaseRow): Promise<void> => {
-    if (!(await askConfirm(`删除用例「${row.case_no} ${row.title}」？\n\n其 ${row.steps.length} 个步骤一并删除，此操作不可撤销。`))) return;
+    if (!(await askConfirm(`归档用例「${row.case_no} ${row.title}」？\n\n其 ${row.steps.length} 个步骤一并归档，可于「归档管理」菜单还原或彻底删除。`))) return;
     setBusy(true);
     try {
       await api.del(`/plans/test-cases/${row.id}`);
       setSelIds(selIds.filter((x) => x !== row.id));
       if (expandedId === row.id) setExpandedId('');
-      flash('已删除用例及其步骤');
+      flash('已归档用例及其步骤');
       await load();
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
@@ -228,11 +228,11 @@ export function TestCasePanel({ projectId, focusReqId, focusSeq, onLocateReq, on
 
   const batchDelete = useCallback(async (): Promise<void> => {
     if (selIds.length === 0) return;
-    if (!(await askConfirm(`删除选中的 ${selIds.length} 条测试用例？\n\n其步骤一并删除，此操作不可撤销。`))) return;
+    if (!(await askConfirm(`归档选中的 ${selIds.length} 条测试用例？\n\n其步骤一并归档，可于「归档管理」菜单还原或彻底删除。`))) return;
     setBusy(true);
     try {
       const r = await api.del<{ deleted: number }>('/plans/test-cases/batch', { ids: selIds });
-      flash(`已删除 ${r.deleted} 条用例及其步骤`);
+      flash(`已归档 ${r.deleted} 条用例及其步骤`);
       setSelIds([]);
       await load();
     } catch (e) {

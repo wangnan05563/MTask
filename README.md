@@ -39,6 +39,7 @@
 - [数据与安全](#数据与安全)
 - [MCP / API 接口](#mcp--api-接口)
 - [开发者指南](#开发者指南)
+- [GitHub 发布与更新](#github-发布与更新)
 - [品牌与社交预览](#品牌与社交预览)
 - [功能与需求对照](#功能与需求对照)
 - [相关文档](#相关文档)
@@ -100,7 +101,7 @@ MTask 不是一个待办清单，而是把 **任务 → 代码 → 结论 → �
 **工程化与运维**
 - 数据迁移：换机 bundle 导入 / 导出，覆盖导入前自动快照；数据维护：DB 在线 CRUD；本地备份 / 恢复
 - 内网穿透：Cloudflare / Cpolar / Tailscale + 访问令牌
-- 应用自更新：基于 GitHub Releases 的版本检查与断点续传
+- 应用自更新：基于 GitHub Releases 的版本检查与断点续传（详见 [GitHub 发布与更新](#github-发布与更新)）
 - 执行会话监督审计、后台日志、项目级 Webhook、SonarQube 质量扫描
 - 发布门禁：`scripts/tests/` 下的 `verify-*` 脚本覆盖 HEAD 自洽性、原生模块 ABI、打包壳与各特性回归
 
@@ -359,10 +360,75 @@ node ../../node_modules/tsx/dist/cli.mjs adapter-e2e.mjs  # 终端 2：真实跑
 
 ---
 
+## GitHub 发布与更新
+
+MTask 的「发布」与「更新」都围绕 **GitHub Releases** 展开：维护者把 Windows 安装包发到仓库 Release，应用内「版本更新」模块再拉取最新 Release 做断点续传式升级。
+
+### 版本号约定
+
+安装包使用 **4 段版本号** `<major>.<minor>.<MMDD>.<seq>`（如 `0.1.1110.244`），**不是标准 semver**——这是刻意的：Windows 文件版本号每段必须 ≤ 65535，直接用 8 位日期会溢出。`scripts/bump-version.js` 每次构建自动递增该版本（写入 `package.json` / `electron/package.json` / `package-lock.json` 三处）。
+
+- 发布时的 Release tag **等于该 4 段版本号**（前缀 `v` 可有可无，如 `v0.1.1110.244`）；
+- 应用内自更新解析 tag 时按 `v?数字.数字(…)` 匹配，并逐段**数值**比较（`0.1.10 > 0.1.9`），段数不齐补 0。
+
+### 应用自更新（基于 GitHub Releases）
+
+入口：**设置 → 关于 → 版本更新**。它通过 HTTPS 读取仓库**最新发布的 Release**（不是 tag 本身），比较 tag 与本地版本：
+
+- 有更新 → 展示版本号、发布时间、更新日志与「下载新版本」入口；
+- 无更新 → 提示已是最新。
+
+前置条件与配置要点：
+
+| 项 | 说明 |
+| --- | --- |
+| 必须有 Release | 仅 tag 无 Release 会提示「尚未发布任何 Release」；Release 需附加 Windows 安装包 |
+| 仓库地址 | `owner/repo` / 完整 URL / `.git` 后缀三种格式均可，应用自动规范化 |
+| Token | 公开仓库**不需要**；私有仓库需**只读 Fine-grained PAT**（Permissions → Contents → Read-only，切勿给写权限） |
+| 限速 | 未认证 60 次/小时·IP，配 Token 后 5000 次/小时；结果缓存 5 分钟 |
+
+完整人工配置手册见 [`docs/GitHub版本更新配置手册.md`](docs/GitHub版本更新配置手册.md)。
+
+### 一键发布（维护者）
+
+桌面端双击 `scripts/一键发布.bat` 即可完成「构建 → 出包 → 发 Release」整链路，内部依次调用：
+
+1. `scripts/构建打包.bat` — 依赖检查 / HEAD 自洽预检 / 类型检查 / 前后端构建 / 版本递增 / 切 Electron ABI / electron-builder 出包 / 还原 ABI（详见 [构建与打包](#构建与打包)）；
+2. `scripts/publish-oneclick.ps1` — 跨 `release*` 目录找最新的 `MTask Setup *.exe`，从文件名解析版本，校验产物版本 == `package.json` 版本（防发旧包），生成 Release 说明；
+3. `scripts/publish-release.py` — 原子化创建 Release + 上传安装包（**幂等**：Release 已存在则复用，资产已存在则跳过上传）。
+
+可用环境变量：
+
+| 变量 | 作用 |
+| --- | --- |
+| `SKIP_BUILD=1` | 跳过构建，复用已有安装包重新发布（此模式下版本校验按设计跳过） |
+| `GH_DRY_RUN=1` | 只打印将执行的操作，不真正写 GitHub，用于预览 |
+| `GH_TOKEN` | GitHub PAT；缺省时回退到本地 `.env` 与 git 凭据库 |
+| `GH_REPO` / `GH_TAG` / `GH_DRAFT` / `GH_PRERELEASE` / `GH_API_BASE` | 均可选，缺省自动从 `git remote` / `git describe` 推断 |
+
+> 发布脚本会扫描**所有** `release*` 目录取最新安装包（因为杀软占用 `app.asar` 时构建会 fallback 到 `release2..9`），并拒绝发布「文件名版本 ≠ package.json 版本」的旧产物，避免把上一版当成新版本发出去。
+
+企业版 / 镜像站可在 `GH_API_BASE` 改 API 域名；国内环境默认走 `npmmirror` 镜像下载 Electron 与 electron-builder 二进制。
+
+### 仓库社交预览图
+
+GitHub 仓库页的社交预览需在 **Settings → Social preview** 上传 [`build/social-preview.png`](build/social-preview.png)（1280×640）。修改文案 / 配色后用 `npx electron scripts/make-social-preview.js` 重新渲染。详见 [品牌与社交预览](#品牌与社交预览)。
+
+### GitHub Actions 自动构建 / 发布
+
+仓库内置 [`.github/workflows/build.yml`](.github/workflows/build.yml)：
+
+- **PR / push 到 main**：跑发布门禁（HEAD 自洽性、server 类型检查与构建、web 构建），不产出安装包；
+- **打 `v*` tag 或手动 `workflow_dispatch`**：在 `windows-latest` 上装依赖、构建、把原生模块 `better-sqlite3` 按 **Electron ABI** 重建、出包，再调用 `scripts/publish-release.py` 发到 GitHub Releases（使用仓库 `GITHUB_TOKEN`）。
+
+> ⚠️ **原生模块 ABI 是 CI 最易踩的坑**：本地构建靠 `scripts/lib/abi-switch.mjs` 在打包前后切换预编译的 Electron ABI 二进制；CI 上用 `npx electron-builder install-app-deps`（或 `npm rebuild better-sqlite3 --runtime=electron --target=<electron版本>`）重建，否则装出来的 `better-sqlite3` 是 Node ABI，运行即崩溃。**一键发布脚本仍是本地发布的主路径**，Actions 适合做门禁校验与 tag 触发的自动出包；首次启用建议在测试仓库先验证一次。
+
+---
+
 ## 品牌与社交预览
 
 - 社交预览图：[`build/social-preview.png`](build/social-preview.png)（1280×640，GitHub 推荐尺寸），矢量源文件为 [`build/social-preview.svg`](build/social-preview.svg)。
-- README 顶部已引用该图；GitHub 仓库页的社交预览需在 **Settings → Social preview** 上传同一张 PNG。
+- README 顶部已引用该图；GitHub 仓库页的社交预览需在 **Settings → Social preview** 上传同一张 PNG；仓库社交预览的配置要点也见 [GitHub 发布与更新](#github-发布与更新) 的对应小节。
 - 修改文案或配色后重新渲染：
 
 ```bash
