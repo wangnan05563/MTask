@@ -9,7 +9,7 @@ import { EXPORT_MIME, saveBlob } from '../utils/download';
 import { aiImportStore } from '../stores/aiImportStore';
 // 2026-11-10 质量复核优化：导入前质量自检（纯函数，只读分析 + 用户确认后才归一化）
 import {
-  analyzeImportQuality, disableConstraintReqs, formatQualitySummary, isConstraintReq, isGapFillPlan,
+  analyzeImportQuality, appendCoverageGapPlans, disableConstraintReqs, formatQualitySummary, isConstraintReq, isGapFillPlan,
   normalizeWbs, type QualitySource, type QualitySummary,
 } from '../utils/prdQuality';
 
@@ -332,7 +332,7 @@ function QualityMetric({ label, value, bad, hint }: {
 }
 
 /** 2026-11-10 质量复核优化①③⑤⑦：预演增强卡片——所有数值只读，处置必须用户显式点按钮 */
-function QualityCard({ s, sources, baselineDoc, onBaseline, previewDocRefs, busy, onNormalize, onDisable, onRefresh, onExport }: {
+function QualityCard({ s, sources, baselineDoc, onBaseline, previewDocRefs, busy, onNormalize, onDisable, onRefresh, onExport, onFillCoverage, allowCoverageGap, onAllowCoverageGap }: {
   readonly s: QualitySummary;
   readonly sources: QualitySource[];
   readonly baselineDoc: string;
@@ -343,6 +343,10 @@ function QualityCard({ s, sources, baselineDoc, onBaseline, previewDocRefs, busy
   readonly onDisable: () => void;
   readonly onRefresh: () => void;
   readonly onExport: () => void;
+  /** T05575：覆盖缺口一键补齐（补 normal 占位行） */
+  readonly onFillCoverage: () => void;
+  readonly allowCoverageGap: boolean;
+  readonly onAllowCoverageGap: (v: boolean) => void;
 }) {
   const severe = s.wbsGroups > 1 || s.versionConflicts > 0 || s.durationIssues > 0 || s.constraintReqs > 0;
   const prdNames = sources.filter((x) => (x.role ?? 'prd') === 'prd').map((x) => x.name);
@@ -375,6 +379,17 @@ function QualityCard({ s, sources, baselineDoc, onBaseline, previewDocRefs, busy
           style={{ fontSize: 'var(--fs-xs)', border: '1px solid var(--danger)', borderRadius: 6, background: 'transparent', color: 'var(--danger)', cursor: busy ? 'default' : 'pointer', padding: '3px 8px' }}>
           取消勾选否定口径（{s.constraintReqs}）
         </button>
+        {/* T05575：覆盖缺口默认阻断导入，处置入口 = 一键补齐占位行 或 显式接受缺口 */}
+        <button onClick={onFillCoverage} disabled={busy || s.coverageGaps === 0} className="tbtn-anim"
+          data-t05575="fill-coverage"
+          title="按源文档缺失编号各补一条 normal 占位计划（description 带「自动补齐：」前缀，不进里程碑工期），补完请改写成有业务语义的任务"
+          style={{ fontSize: 'var(--fs-xs)', border: `1px solid ${s.coverageGaps > 0 ? 'var(--danger)' : 'var(--border-strong)'}`, borderRadius: 6, background: 'transparent', color: s.coverageGaps > 0 ? 'var(--danger)' : 'var(--text-muted)', cursor: busy || s.coverageGaps === 0 ? 'default' : 'pointer', padding: '3px 8px' }}>
+          补齐覆盖缺口（{s.coverageGaps}）
+        </button>
+        <label data-t05575="allow-coverage-gap" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          <input type="checkbox" checked={allowCoverageGap} disabled={busy} onChange={(e) => onAllowCoverageGap(e.target.checked)} />
+          接受缺口
+        </label>
       </div>
       <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', margin: '6px 0' }}>{formatQualitySummary(s)}</div>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
@@ -505,6 +520,14 @@ async function parseOneFile(
   if ((r.wbsGroups ?? 0) > 1) {
     aiImportStore.log(`⚠ ${file.name}：跨片合并后仍有 ${r.wbsGroups} 套并行 WBS 编号——请在导入前点「合并重复 WBS」统一为 M1…Mn，否则同一模块会重复排期`, 'error');
   }
+  // T05571：源文档条目确定性补齐——把「原文有、解析结果无」的编号补成了 normal 行，逐条播报便于核对
+  if ((r.sourceEntryFilled?.length ?? 0) > 0) {
+    const ids = r.sourceEntryFilled!.map((e) => e.id).slice(0, 12).join('、');
+    aiImportStore.log(
+      `${file.name}：源文档有 ${r.sourceEntryFilled!.length} 个编号未被解析结果覆盖（${ids}${r.sourceEntryFilled!.length > 12 ? ' 等' : ''}），已各补一条占位计划——可在表格里改写或取消勾选`,
+      'info',
+    );
+  }
   // T03730：HTML 里被跳过的片段（内嵌页/图表/无 alt 图片）与层级丢失提示——按警示级透出，避免静默丢内容
   for (const w of r.parseWarnings ?? []) aiImportStore.log(`⚠ ${w}`, 'error');
   return {
@@ -515,6 +538,7 @@ async function parseOneFile(
     textMd: r.textMd,
     failedChunks: r.failedChunks,
     failedChunkIds: r.failedChunkIds,
+    sourceEntryFilled: r.sourceEntryFilled,
     wbsGroups: r.wbsGroups,
   };
 }
@@ -660,8 +684,10 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
   const [prdSources, setPrdSources] = useSessionState<{ name: string; text: string }[]>(PERSIST_KEYS.sources, []);
   // T03700+：缺失分片（含原文）——会话级保留，切页后仍可补解析
   const [failedShards, setFailedShards] = useSessionState<FailedShardRow[]>(PERSIST_KEYS.failed, []);
-  // T04897：关联设计/测试文档——不参与 AI 解析，手动选文件读内容后随主 PRD 一起落 prd_docs（docKind 标注类型）
-  const [designDocs, setDesignDocs] = useState<Array<{ name: string; text: string; docKind: 'design' | 'test' }>>([]);
+  // T04897：关联设计/测试文档——默认只归档不参与 AI 解析，手动选文件读内容后随主 PRD 一起落 prd_docs（docKind 标注类型）
+  // T05570：加 includeInParse 开关（默认 false 保留 T04897 行为）——勾选后该 design/test 文档也逐文件送解析接口，
+  // 其 D/R/T/N/代码锚点等独有条目进入 WBS；同时保留 file 对象供勾选参与解析时复用。
+  const [designDocs, setDesignDocs] = useState<Array<{ name: string; text: string; docKind: 'design' | 'test'; includeInParse?: boolean; file?: File }>>([]);
   // 2026-11-10 质量复核优化⑦：质量自检快照只在「解析完成 / 预演」时重算，
   // 避免编辑表格时对每个按键都全文扫描源文档（单次扫描约 10 万字 × 8 组标识符）。
   const [qualitySnapshot, setQualitySnapshot] = useState<QualitySummary | null>(null);
@@ -670,6 +696,9 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
   const [baselineDoc, setBaselineDoc] = useSessionState<string>('prd-import.baselineDoc', '');
   /** 冲突未裁定 → 导入软闸：不静默把矛盾口径一起落库（未检测到冲突时完全不干预既有流程） */
   const baselineRequired = (qualitySnapshot?.versionConflicts ?? 0) > 0 && !baselineDoc.trim();
+  // T05575：覆盖缺口默认阻断（与质量门 B-13 默认 FAIL 同口径）——缺口必须要么补齐、要么显式接受
+  const [allowCoverageGap, setAllowCoverageGap] = useSessionState<boolean>('prd-import.allowCoverageGap', false);
+  const coverageRequired = (qualitySnapshot?.coverageGaps ?? 0) > 0 && !allowCoverageGap;
 
   /** 本次参与质量自检的全部来源（含只归档不解析的关联文档） */
   const currentSources = (): QualitySource[] => qualitySources(prdSources, designDocs);
@@ -736,6 +765,28 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
     aiImportStore.log(`已取消勾选 ${d.disabled} 条否定/已闭环口径需求（只取消勾选，不删行、不改写状态；如需保留可重新勾选）`, 'ok');
   }
 
+  /**
+   * T05575：覆盖缺口一键处置——按缺口编号补 normal 计划行（description 带「自动补齐：」前缀，
+   * 因此不参与同题去重、不计入里程碑工期），补完立即重算快照；仍需人工把占位改写成有业务语义的任务。
+   */
+  function fillCoverageGapsNow() {
+    if (busy) return;
+    const s = refreshQuality();
+    const gapGroups = s.coverage.filter((g) => g.missing.length > 0);
+    if (gapGroups.length === 0) {
+      aiImportStore.log('当前没有覆盖缺口，无需补齐', 'info');
+      return;
+    }
+    const filled = appendCoverageGapPlans(plans, gapGroups);
+    const next = recalcMilestoneDurations(filled.plans.map((p, i) => ({ ...(plans[i] ?? {}), ...p })) as PrdPlan[]);
+    setPlans(next);
+    const s2 = refreshQuality({ planRows: next });
+    aiImportStore.log(
+      `已按源文档条目补齐 ${filled.added} 行计划（占位行，可在表格里改写成有业务语义的任务或取消勾选）；覆盖缺口 ${s.coverageGaps} → ${s2.coverageGaps} 项`,
+      'ok',
+    );
+  }
+
   /** 优化意见⑧：质量报告作为导入附加产物（只读 Markdown 下载，不落库、不改源文档） */
   function downloadQualityReport() {
     const s = refreshQuality();
@@ -753,22 +804,23 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
   const removePickedFile = (idx: number) => setPickedFiles((prev) => prev.filter((_, j) => j !== idx));
   // T04897：读取关联设计/测试文档（不参与 AI 解析，读原文后随主 PRD 落 prd_docs；类型缺省 design，可改）
   const addDesignDocs = useCallback(async (files: File[]) => {
-    const items: Array<{ name: string; text: string; docKind: 'design' | 'test' }> = [];
+    const items: Array<{ name: string; text: string; docKind: 'design' | 'test'; file?: File }> = [];
     for (const f of files) {
       try {
         const text = await f.text();
         if (!text.trim()) continue;
-        items.push({ name: f.name, text, docKind: 'design' });
+        // T05570：保留 File 对象——勾选「参与解析」时据此复用逐文件解析接口
+        items.push({ name: f.name, text, docKind: 'design', file: f });
       } catch (e) {
         aiImportStore.log(`读取设计文档失败（已跳过）：${f.name} —— ${String((e as Error).message ?? e)}`, 'error');
       }
     }
     if (items.length > 0) {
       setDesignDocs((prev) => [...prev, ...items]);
-      aiImportStore.log(`已添加 ${items.length} 份关联文档（类型默认 design，可在列表中修改；随主 PRD 一起导入「PRD 管理」，不参与 AI 解析）`, 'ok');
+      aiImportStore.log(`已添加 ${items.length} 份关联文档（类型默认 design，可在列表中修改；随主 PRD 一起导入「PRD 管理」。默认只归档、不参与 AI 解析；勾选「参与解析」后其 D/R/T/N 等独有条目会进入 WBS）`, 'ok');
     }
   }, []);
-  const patchDesignDoc = (i: number, patch: Partial<{ name: string; docKind: 'design' | 'test' }>) =>
+  const patchDesignDoc = (i: number, patch: Partial<{ name: string; docKind: 'design' | 'test'; includeInParse?: boolean }>) =>
     setDesignDocs((prev) => prev.map((d, j) => (j === i ? { ...d, ...patch } : d)));
   const removeDesignDoc = (i: number) => setDesignDocs((prev) => prev.filter((_, j) => j !== i));
   const { busy, fileName, error } = snap;
@@ -865,6 +917,25 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
       release();
       aiImportStore.patch({ busy: false });
       return;
+    }
+    // T05570：勾选「参与解析」的关联 design/test 文档也逐文件送解析接口，其 D/R/T/N 等独有条目并入 WBS。
+    // 复用 parseOneFile 的既有逐文件机制（单文件失败记录日志并跳过，不影响主 PRD 结果）；解析出的 textMd 并入 sources，
+    // 使质量自检的 buildSourceCoverage 能核到这些编号，B-11/B-13 缺口随勾选而收敛。
+    const parsedDesigns = designDocs.filter((d) => d.includeInParse && d.file);
+    for (const d of parsedDesigns) {
+      if (!d.file || ctrl.signal.aborted) continue;
+      aiImportStore.log(`解析关联文档（参与解析）：${d.name}…`);
+      try {
+        const dr = await parseOneFile(d.file, projectId, toolId, ctrl.signal);
+        results.push(dr);
+        if (dr.textMd) sources.push({ name: d.name, text: dr.textMd });
+      } catch (e) {
+        if (ctrl.signal.aborted) break;
+        aiImportStore.log(`✗ ${d.name} 解析失败（已跳过，主 PRD 结果不受影响）：${String((e as Error).message ?? e)}`, 'error');
+      }
+    }
+    if (parsedDesigns.length > 0 && !ctrl.signal.aborted) {
+      aiImportStore.log(`已并入 ${parsedDesigns.length} 份参与解析的关联文档（design/test）——其 D/R/T/N 等独有条目已进 WBS`, 'ok');
     }
     if (sources.length > 0) setPrdSources(sources);
     setFailedShards(failed);
@@ -984,6 +1055,15 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
     if (baselineRequired) {
       aiImportStore.patch({ error: '存在跨文档版本冲突，请先在「导入前质量自检」指定版本基线' });
       aiImportStore.log('导入已中止：检测到跨文档版本冲突且未指定版本基线——请选定「唯一需求依据」并复核冲突清单后再导入', 'error');
+      return;
+    }
+    // T05575：覆盖缺口默认阻断（与质量门 B-13 默认 FAIL 同口径）——要么补齐、要么显式接受
+    if (coverageRequired) {
+      aiImportStore.patch({ error: '源文档条目存在覆盖缺口，请先补齐或显式接受缺口' });
+      aiImportStore.log(
+        `导入已中止：源文档有 ${qualitySnapshot?.coverageGaps ?? 0} 个编号未在解析结果中承载——请点「补齐覆盖缺口」，或勾选「接受缺口」后再导入`,
+        'error',
+      );
       return;
     }
     const payload = composed.payload;
@@ -1264,12 +1344,19 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
         <div data-t04897="design-docs" style={{ marginBottom: 10, border: '1px solid var(--border-strong)', borderRadius: 8, padding: '8px 10px', background: 'var(--card-bg)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
             <strong style={{ fontSize: 'var(--fs-s)' }}>关联文档（{designDocs.length}）</strong>
-            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>不参与 AI 解析，导入时随主 PRD 落「PRD 管理」；类型可改</span>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>默认不参与 AI 解析，导入时随主 PRD 落「PRD 管理」；勾选「参与解析」让其 D/R/T/N 等独有条目进 WBS</span>
           </div>
           {designDocs.map((d, i) => (
             <div key={`${d.name}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0' }}>
               <FileUp size={12} style={{ color: 'var(--text-secondary)', flexShrink: 0 }} />
               <span style={{ fontSize: 'var(--fs-s)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={d.name}>{d.name}</span>
+              <label data-t05570="design-participate" title="勾选后该文档与主 PRD 一起送 AI 解析，其 D/R/T/N 等独有条目会并入 WBS（默认不勾，保留 T04897 只归档行为）"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', cursor: 'pointer', userSelect: 'none', flexShrink: 0 }}>
+                <input type="checkbox" checked={!!d.includeInParse}
+                  onChange={(e) => patchDesignDoc(i, { includeInParse: e.target.checked })}
+                  style={{ margin: 0, accentColor: 'var(--primary)' }} />
+                参与解析
+              </label>
               <select value={d.docKind} aria-label={`文档类型 ${d.name}`}
                 onChange={(e) => patchDesignDoc(i, { docKind: e.target.value as 'design' | 'test' })}
                 style={{ padding: '1px 4px', fontSize: 'var(--fs-xs)', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
@@ -1297,6 +1384,9 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
           busy={busy}
           onNormalize={normalizeWbsNow}
           onDisable={disableConstraintNow}
+          onFillCoverage={fillCoverageGapsNow}
+          allowCoverageGap={allowCoverageGap}
+          onAllowCoverageGap={setAllowCoverageGap}
           onRefresh={() => refreshQuality({ log: true })}
           onExport={downloadQualityReport}
         />
@@ -1436,10 +1526,11 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
             style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 12px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)', cursor: (busy || submittableReqs === 0) ? 'default' : 'pointer' }}>
             <Eye size={13} /> 预演（只读）
           </button>
-          <button onClick={() => void doImport()} disabled={busy || submittableReqs === 0 || baselineRequired} className="tbtn-anim"
+          <button onClick={() => void doImport()} disabled={busy || submittableReqs === 0 || baselineRequired || coverageRequired} className="tbtn-anim"
             title={submittableReqs === 0 ? '需先勾选至少一条需求 — 计划的需求关联以需求行为锚点，只勾计划会留下悬空关联'
               : baselineRequired ? '存在跨文档版本冲突且未指定版本基线 — 请先在「导入前质量自检」选定唯一需求依据'
-                : '导入勾选的条目——需求进矩阵、计划进甘特（含需求关联）、可选生成待办任务'}
+                : coverageRequired ? '存在源文档条目覆盖缺口 — 请先在「导入前质量自检」点「补齐覆盖缺口」，或显式勾选「接受缺口」'
+                  : '导入勾选的条目——需求进矩阵、计划进甘特（含需求关联）、可选生成待办任务'}
             aria-label="导入 PRD 解析结果"
             style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 14px', borderRadius: 6, border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)', cursor: (busy || submittableReqs === 0) ? 'default' : 'pointer' }}>
             <Save size={13} /> 导入（需求 {includedReqs} 条 / 计划 {includedPlans} 条{createTasks ? ' + 待办' : ''}）
@@ -1453,6 +1544,12 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
           {baselineRequired && (
             <span role="alert" data-qc="baseline-required" style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>
               导入已暂停：存在跨文档版本冲突，请先在上方「导入前质量自检」指定版本基线（唯一需求依据）。预演仍可正常使用。
+            </span>
+          )}
+          {coverageRequired && (
+            <span role="alert" data-t05575="coverage-required" style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>
+              导入已暂停：源文档有 {qualitySnapshot?.coverageGaps ?? 0} 个编号在解析结果里没有任何承载。请先点「补齐覆盖缺口」补占位计划，
+              或在上方勾选「接受缺口」（需承担该内容不进 WBS 的风险）。预演仍可正常使用。
             </span>
           )}
         </div>

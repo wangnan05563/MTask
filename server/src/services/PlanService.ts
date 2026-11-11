@@ -28,7 +28,7 @@ import { touchCompletedAt } from './IterationService'; // T03186（PM-201④）�
 import { WebhookService } from './WebhookService'; // T03196（PM-401）：计划事件外发
 import { isRateLimitError, sleepMs, rateLimitBackoffMs } from '../util/rateLimit'; // T03700：限流识别与退避单源
 import { htmlToMarkdown, decodeHtmlBuffer } from './htmlDoc'; // T03730：HTML 版 PRD → 层级文本（零新依赖）
-import { dedupeDraftsByNormalizedTitle, detectWbsGroups, formatWbsNote, isGapFillPlan } from '../util/prdWbs'; // 2026-11-10：分片 WBS 归一化 / 补齐行判定（质量复核优化）
+import { dedupeDraftsByNormalizedTitle, detectWbsGroups, formatWbsNote, isGapFillPlan, applySourceEntryGapFill, SOURCE_ENTRY_GAP_DESC, normalizeWbsGroups } from '../util/prdWbs'; // 2026-11-10：分片 WBS 归一化 / 补齐行判定（质量复核优化）+ T05571 源文档条目补齐 + T05573 WBS 自动收敛
 
 /** T01361：需求跟踪矩阵行（prd_requirements 全列 + 联表摘要）——具体化类型替代 Record<string, unknown>（Sonar S6551） */
 export interface RequirementRow {
@@ -2670,6 +2670,8 @@ export const PlanService = {
     autoFilledReqNos?: string[];
     /** 2026-11-10 质量复核优化②：合并后检测到的并行 WBS 套数（>1 提示导入前归一化） */
     wbsGroups?: number;
+    /** T05571：源文档条目补齐明细（原文有、解析结果无的 D/R/T/N/O/S/§x.y/Q-xx 编号）——前端播报补齐情况 */
+    sourceEntryFilled?: Array<{ id: string; label: string; title: string; description: string; excerpt: string }>;
   }> {
     const system = [
       '你是 MTask 的 PRD 解析助手：既要拆分 WBS 计划，也要**逐条提取可跟踪需求**（用于生成需求跟踪矩阵）。',
@@ -2699,6 +2701,10 @@ export const PlanService = {
       // 2026-11-10 质量复核优化②：长文档分片时每片都产一套完整 WBS 会拼出多套并行里程碑编号
       '6. **多分片 WBS 一致性（长文档自动分片时必须遵守）**：只有包含原文「里程碑/阶段」定义章节的那一片输出里程碑行；'
       + '其余片只输出 normal 明细任务，禁止另起一套 1/2/3 章号或 M1~Mn 里程碑编号；各片共用同一套全局 WBS，明细标题沿用原文编号、不臆造新阶段。',
+      // T05572：否定口径前移——标题命中"不新增|不变|不改造|不实施|不修正|不实现|不删|不迁移|不做|不得|废止|失效|禁止|仅移除|保持现状|保留不删|不下线|已闭环|已落地|无需开发|不参与|不新增下发"的条目，
+      // 属于"无需开发工作"的约束描述，**不得**生成 WBS 计划行（plans），但仍须提取为 requirements（供矩阵追溯）
+      '7. **否定口径约束（必须遵守）**：标题或需求描述命中以下任一词的条目——「不新增 / 不变 / 不改造 / 不实施 / 不修正 / 不实现 / 不删 / 不迁移 / 不做 / 不得 / 废止 / 失效 / 禁止 / 仅移除 / 保持现状 / 保留不删 / 不下线 / 已闭环 / 已落地 / 无需开发 / 不参与 / 不新增下发」——属于无需新增开发工作的约束描述，**不得为它们生成 plans 计划行**，但仍须逐条提取到 requirements 列表（reqNo 正常编号，title/content/sourceRef/priority 正常填写，用于需求跟踪矩阵追溯）。'
+      + '若某需求确实需要验证/确认其"不变"效果（如回归测试），可补一条 normal 计划行（标题含"验证"或"回归"字样）。',
     ].join('\n');
     // T00707：首轮若被截断/解析失败，重试改用精简提示词（压缩到更小规模，确保能完整闭合）
     const systemCompact = [
@@ -2758,6 +2764,27 @@ export const PlanService = {
       if (requirements.length === 0 && drafts0.length === 0) throw new Error('AI 未能从 PRD 中解析出需求或计划，请确认文档内容或更换模型');
       // T03700+：先由系统为缺口需求确定性补行，再按补齐后的结果算剩余告警（剩余缺口只可能是无标题等无法补齐的极端情况）
       const { drafts, filledReqNos } = applyAutoGapFill(requirements, drafts0);
+      // T05571：源文档条目按编号确定性补齐——设计文档独有的 D/R/T/N/O/S/§x.y/Q-xx 若未进解析结果，各补一条 normal 行。
+      // coveredText 含已解析 reqs + drafts（标题/描述），sourceText 用本轮 docText（主 PRD 全文，含勾选参与解析的 design）。
+      const coveredText = [
+        ...requirements.map((r) => `${r.reqNo} ${r.title} ${r.content}`),
+        ...drafts.map((p) => `${p.title} ${p.description}`),
+      ].join('\n');
+      const sourceEntryRows = applySourceEntryGapFill(docText, coveredText);
+      if (sourceEntryRows.length > 0) {
+        for (const e of sourceEntryRows) {
+          drafts.push({
+            title: e.title,
+            description: e.description,
+            durationDays: 1,
+            startDate: '',
+            reqNos: [],
+            status: 'todo' as PlanStatus,
+            kind: 'normal' as PlanKind,
+            complexity: 1,
+          });
+        }
+      }
       // T01156：反向覆盖检查（collectUncoveredReqNos / buildCoverageWarn）——需求清单中存在、
       // 但未被任何 WBS 计划 reqNos 关联的需求编号即可追溯性缺口。
       const uncoveredReqNos = collectUncoveredReqNos(requirements, drafts);
@@ -2765,6 +2792,7 @@ export const PlanService = {
       return {
         requirements, drafts, coverageWarn, uncoveredReqNos, truncatedNote,
         autoFilledReqNos: filledReqNos.length > 0 ? filledReqNos : undefined,
+        sourceEntryFilled: sourceEntryRows.length > 0 ? sourceEntryRows : undefined,
         wbsGroups: detectWbsGroups(drafts).groups,
       };
     } finally {
@@ -2794,6 +2822,8 @@ export const PlanService = {
     failedChunks?: PrdFailedChunk[];
     /** T03700+：系统自动补齐的计划行对应的需求编号（原缺口需求） */
     autoFilledReqNos?: string[];
+    /** T05571：源文档条目补齐（设计/测试文档独有编号在合并草稿中缺失时生成的 normal 行） */
+    sourceEntryFilled?: Array<{ id: string; label: string; title: string; description: string; excerpt: string }>;
     /** 2026-11-10 质量复核优化②：跨片合并后检测到的并行 WBS 套数 */
     wbsGroups?: number;
   } | null> {
@@ -2892,10 +2922,39 @@ export const PlanService = {
     // 2026-11-10 质量复核优化②：跨片按归一化标题去重（reqNos 取并集，不丢关联）；
     // 结构性的「多套 WBS 合并」不在此静默执行——交给导入前用户确认的一键归一化，避免误删业务不同的同题行。
     const deduped = dedupeDraftsByNormalizedTitle(merged.drafts);
-    const wbsInfo = detectWbsGroups(deduped.drafts);
-    const wbsNote = formatWbsNote(wbsInfo.groups, wbsInfo.milestones, deduped.merged);
+    // T05573：多套并行 WBS 自动收敛——检测到多套时把后续套章号顺延到前一套最大章号之后
+    const wbsNormalized = normalizeWbsGroups(deduped.drafts);
+    const wbsFinal = wbsNormalized.drafts;
+    const wbsInfo = detectWbsGroups(wbsFinal);
+    const wbsNote = wbsNormalized.groups > 1
+      ? `已自动收敛 ${wbsNormalized.groups} 套并行 WBS（${wbsNormalized.renumberedMilestones} 个里程碑、${wbsNormalized.renumberedNormals} 条明细章号顺延）；${deduped.merged > 0 ? `已按归一化标题合并 ${deduped.merged} 条同题计划` : ''}`
+      : formatWbsNote(wbsInfo.groups, wbsInfo.milestones, deduped.merged);
     // T03700+：合并后系统兜底补齐——模型漏挂的横切/非功能需求在此落行，缺口集合不再随每轮解析漂移
-    const { drafts, filledReqNos } = applyAutoGapFill(merged.requirements, deduped.drafts);
+    const wbsFinalTyped: PrdPlanDraft[] = wbsFinal as PrdPlanDraft[];
+    const { drafts: autoFilled, filledReqNos } = applyAutoGapFill(merged.requirements, wbsFinalTyped);
+    // T05571：源文档条目补齐——设计/测试文档独有编号（Q-xx/Sx/Dx/Rx/Tx/N-x/Ox/§x.y）在合并草稿中缺失时生成 normal 行
+    let finalDrafts = autoFilled;
+    let sourceEntryRows: Array<{ id: string; label: string; title: string; description: string; excerpt: string }> = [];
+    if (autoFilled.length > 0) {
+      const coveredText = [
+        ...merged.requirements.map((r) => `${r.reqNo} ${r.title} ${r.content}`),
+        ...autoFilled.map((p) => `${p.title} ${p.description}`),
+      ].join('\n');
+      sourceEntryRows = applySourceEntryGapFill(docText, coveredText);
+      for (const e of sourceEntryRows) {
+        finalDrafts.push({
+          title: e.title,
+          description: e.description,
+          durationDays: 1,
+          startDate: '',
+          reqNos: [],
+          status: 'todo',
+          kind: 'normal',
+          complexity: 1,
+        });
+      }
+    }
+    const drafts = finalDrafts;
     const uncoveredReqNos = collectUncoveredReqNos(merged.requirements, drafts);
     const coverageWarn = buildCoverageWarn(drafts.length, merged.requirements, uncoveredReqNos);
     // T03700+：缺失片统一收集（失败 + 因预算中止而未跑的），并带上原文——前端据此展示/复制/单独补解析。
@@ -2938,6 +2997,7 @@ export const PlanService = {
       parseNote,
       failedChunks: failedChunks.length > 0 ? failedChunks : undefined,
       autoFilledReqNos: filledReqNos.length > 0 ? filledReqNos : undefined,
+      sourceEntryFilled: sourceEntryRows.length > 0 ? sourceEntryRows : undefined,
       wbsGroups: wbsInfo.groups,
     };
   },

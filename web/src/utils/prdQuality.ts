@@ -32,6 +32,9 @@ export interface QualityPlan {
   reqNos?: string[];
   include?: boolean;
   key?: string;
+  /** T05574：排期起止（YYYY-MM-DD）——区间连续性校验用；缺省视为未排期，跳过该项 */
+  startDate?: string;
+  endDate?: string;
 }
 
 export interface QualitySource {
@@ -156,6 +159,103 @@ export function findMilestoneDurationIssues(plans: ReadonlyArray<QualityPlan>): 
     }
     const declared = Math.max(1, Math.round(Number(plans[i].durationDays) || 1));
     if (children > 0 && sum !== declared) out.push({ title: plans[i].title, index: i, declared, computed: sum, children });
+  }
+  return out;
+}
+
+/**
+ * T05574：里程碑区间连续性校验——排期层面的盲区（不是工期 ≠ 明细之和）。
+ *
+ * 背景（BEMP 复盘根因 #5 修正后）：M5 的 178 天**精确等于**其 83 条 normal 明细工期之和，
+ * B-05 是 PASS 的；真正的缺陷是**区间不连续**——M1~M4 集中在 2026-11~2027-01，
+ * M5 却跨 2027-09~2028-05，中间留了 8 个月空档，且里程碑内部有 27 处相邻明细间隔 > 3 天。
+ * 工期相符 ≠ 排期合理，两者必须分开判。
+ *
+ * 判据（只用 startDate/endDate，未排期的行跳过）：
+ *  ① 里程碑声明区间未覆盖其子项实际区间（子项超出上/下界）；
+ *  ② 相邻两个里程碑之间存在 > maxGapDays 的空档（默认 3 天）；
+ *  ③ 同一里程碑内相邻明细之间存在 > maxGapDays 的空档。
+ * 纯函数，只读，不修改入参。
+ */
+export interface MilestoneScheduleGap {
+  /** 问题类型 */
+  kind: 'milestone-span' | 'milestone-gap' | 'child-gap';
+  /** 里程碑（或空档前一条）标题 */
+  title: string;
+  /** 相关行的索引 */
+  index: number;
+  /** 对比对象标题（child-gap 时为下一条明细） */
+  next?: string;
+  /** 空档天数或越界天数 */
+  days: number;
+  detail: string;
+}
+
+const DAY_MS = 86_400_000;
+const toDay = (v?: string): number | null => {
+  if (!v) return null;
+  const t = Date.parse(`${v}T00:00:00Z`);
+  return Number.isFinite(t) ? Math.floor(t / DAY_MS) : null;
+};
+
+export function findMilestoneScheduleGaps(
+  plans: ReadonlyArray<QualityPlan>,
+  options: { maxGapDays?: number } = {},
+): MilestoneScheduleGap[] {
+  const maxGap = Math.max(0, options.maxGapDays ?? 3);
+  const out: MilestoneScheduleGap[] = [];
+  // 收集里程碑区间（自身声明 + 子项实际）
+  interface Ms { index: number; title: string; start: number | null; end: number | null; childStart: number | null; childEnd: number | null }
+  const msList: Ms[] = [];
+  for (let i = 0; i < plans.length; i++) {
+    const p = plans[i];
+    if (p.kind !== 'milestone') continue;
+    const cur: Ms = {
+      index: i, title: p.title, start: toDay(p.startDate), end: toDay(p.endDate), childStart: null, childEnd: null,
+    };
+    let prevChild: { title: string; index: number; end: number } | null = null;
+    for (let j = i + 1; j < plans.length; j++) {
+      const c = plans[j];
+      if (c.kind === 'milestone') break;
+      if (c.include === false || isGapFillPlan(c)) continue;
+      const cs = toDay(c.startDate);
+      const ce = toDay(c.endDate) ?? (cs !== null ? cs + Math.max(1, Math.round(Number(c.durationDays) || 1)) - 1 : null);
+      if (cs === null || ce === null) continue;
+      if (cur.childStart === null || cs < cur.childStart) cur.childStart = cs;
+      if (cur.childEnd === null || ce > cur.childEnd) cur.childEnd = ce;
+      // ③ 同里程碑内相邻明细空档
+      if (prevChild && cs - prevChild.end - 1 > maxGap) {
+        out.push({
+          kind: 'child-gap', title: prevChild.title, index: prevChild.index, next: c.title,
+          days: cs - prevChild.end - 1,
+          detail: `「${prevChild.title}」结束到「${c.title}」开始空 ${cs - prevChild.end - 1} 天`,
+        });
+      }
+      prevChild = { title: c.title, index: j, end: ce };
+    }
+    // ① 声明区间未覆盖子项区间
+    if (cur.start !== null && cur.childStart !== null && cur.childStart < cur.start) {
+      out.push({ kind: 'milestone-span', title: cur.title, index: i, days: cur.start - cur.childStart, detail: `子项早于里程碑开始 ${cur.start - cur.childStart} 天` });
+    }
+    if (cur.end !== null && cur.childEnd !== null && cur.childEnd > cur.end) {
+      out.push({ kind: 'milestone-span', title: cur.title, index: i, days: cur.childEnd - cur.end, detail: `子项晚于里程碑结束 ${cur.childEnd - cur.end} 天` });
+    }
+    msList.push(cur);
+  }
+  // ② 相邻里程碑空档（用实际区间：有子项用子项，否则用声明）
+  for (let k = 1; k < msList.length; k++) {
+    const a = msList[k - 1];
+    const b = msList[k];
+    const aEnd = a.childEnd ?? a.end;
+    const bStart = b.childStart ?? b.start;
+    if (aEnd === null || bStart === null) continue;
+    const gap = bStart - aEnd - 1;
+    if (gap > maxGap) {
+      out.push({
+        kind: 'milestone-gap', title: a.title, index: a.index, next: b.title, days: gap,
+        detail: `「${a.title}」结束到「${b.title}」开始空 ${gap} 天`,
+      });
+    }
   }
   return out;
 }
@@ -399,6 +499,38 @@ export function normalizeWbs(plans: ReadonlyArray<QualityPlan>): {
     groupsAfter: detectWbsGroups(out.filter((p) => p.include !== false)).groups,
     durationIssuesAfter: findMilestoneDurationIssues(out.filter((p) => p.include !== false)).length,
   };
+}
+
+/**
+ * T05575：覆盖缺口一键处置——把「原文有、解析结果无」的编号补成 normal 计划行。
+ * 与 server/src/util/prdWbs.ts 的 applySourceEntryGapFill 同口径（description 以「自动补齐：」开头，
+ * 因此不参与同题去重、不计入里程碑工期、可被质量卡单独统计与取消勾选）。
+ * 返回新数组，不修改入参。
+ */
+export function appendCoverageGapPlans(
+  plans: ReadonlyArray<QualityPlan>,
+  coverage: ReadonlyArray<CoverageGroup>,
+): { plans: QualityPlan[]; added: number } {
+  const out = plans.map((p) => ({ ...p }));
+  const existing = new Set(out.map((p) => p.title ?? ''));
+  let added = 0;
+  for (const g of coverage) {
+    for (const id of g.missing ?? []) {
+      const title = `${id} ${g.label}（源文档条目）`;
+      if (existing.has(title)) continue;
+      out.push({
+        title,
+        description: `自动补齐：源文档条目 ${g.label} ${id}——原文有该编号，解析结果未覆盖，请人工确认是否需要开发或改为验收项`,
+        durationDays: 1,
+        kind: 'normal',
+        reqNos: [],
+        include: true,
+      });
+      existing.add(title);
+      added += 1;
+    }
+  }
+  return { plans: out, added };
 }
 
 /** 一键取消勾选否定口径需求（返回新数组与取消条数） */
