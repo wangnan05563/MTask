@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom'; // T04913：标题 Tooltip 挂 body，绕开列表 overflow 裁剪
-import { Check, ChevronDown, ChevronRight, FolderGit2, GitBranch, Loader2, RefreshCw, Search, Tag, X } from 'lucide-react'; // T03654：折叠箭头统一 lucide · T04527：仓库行用 FolderGit2
+import { Check, ChevronDown, ChevronRight, FolderGit2, GitBranch, Loader2, Maximize2, RefreshCw, Search, Tag, X } from 'lucide-react'; // T03654：折叠箭头统一 lucide · T04527：仓库行用 FolderGit2 · T05556：全屏按钮用 Maximize2
 import { api } from '../api/client';
 import type { Project } from '../api/client';
 import { fullTime, relTime } from '../ui/format';
@@ -156,7 +156,7 @@ function laneCell(lanes: LaneLayout, row: number, lane: number) {
   return <span key={lane}> </span>;
 }
 
-export function GitTreePickerModal({ projects, activeProjectId, selectedByProject, initialRepoView = false, onConfirm, onClose, zIndex = 1000, targetLabel }: {
+export function GitTreePickerModal({ projects, activeProjectId, selectedByProject, initialRepoView = false, onConfirm, onClose, zIndex = 1000, targetLabel, targetQueue = 0 }: {
   readonly projects: Project[];
   readonly activeProjectId: string;
   /** 各项目已选 SHA（确认后由卡片写回；弹窗内改的是当前项目的这一份） */
@@ -169,11 +169,17 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   /** 抽屉内打开时须高于 SlideOver（1100），否则弹窗被抽屉遮住（八期 §3.2.3） */
   readonly zIndex?: number;
   /**
-   * T05078：批量补录入口专用——明示本次「确认选择」会写入哪个任务。
+   * T05078 / T05556：批量补录入口专用——明示本次「确认选择」会写入哪个任务。
    * 不传则完全不渲染（其余三个入口零影响）；根因是目标对用户不可见时，
    * 队列推进会让同一批勾选被误认为「还是刚才那个任务」。
    */
   readonly targetLabel?: string;
+  /**
+   * T05556：队列总条数。targetQueue>0 时 targetLabel 条额外显示「第 1/N 条」进度，
+   * 让用户在弹窗里就知道还有几条待补录，不必靠 flash 消息。
+   * 非批量补录入口不传（保持原样）。
+   */
+  readonly targetQueue?: number;
 }) {
   const [projectId, setProjectId] = useState(activeProjectId || projects[0]?.id || '');
   const [head, setHead] = useState('');
@@ -212,6 +218,31 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [foldRefs, setFoldRefs] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
+  /** T05556：全屏态。打开时弹窗铺满视口（不再限 90vh），Esc 先退出全屏、再按一次才关闭弹窗 */
+  const [fullscreen, setFullscreen] = useState(false);
+  /** T05556：左栏宽度百分比（默认 46，与 T05210 原布局一致；拖拽分隔线时动态更新） */
+  const [leftPanePct, setLeftPanePct] = useState(46);
+  const splitContainerRef = useRef<HTMLDivElement>(null);
+  const dragState = useRef<{ startX: number; startPct: number } | null>(null);
+  /** 拖拽分隔线：mousedown 起记录起点，window mousemove 实时算新百分比（20%~70% 钳制防布局崩坏） */
+  const startDrag = (e: React.MouseEvent) => {
+    e.preventDefault();
+    dragState.current = { startX: e.clientX, startPct: leftPanePct };
+    const onMove = (ev: MouseEvent) => {
+      if (!dragState.current || !splitContainerRef.current) return;
+      const rect = splitContainerRef.current.getBoundingClientRect();
+      const deltaPct = ((ev.clientX - dragState.current.startX) / rect.width) * 100;
+      const next = Math.min(70, Math.max(20, dragState.current.startPct + deltaPct));
+      setLeftPanePct(next);
+    };
+    const onUp = () => {
+      dragState.current = null;
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
   /** T04584：取数序号守卫——切子仓库分支时旧的根仓库请求可能晚到，晚到者不得覆盖新结果。 */
   const loadSeq = useRef(0);
 
@@ -488,11 +519,16 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   censusRef.current = census;
 
   // Esc = 取消（不丢已选：确认后才会写回卡片，取消保持原样）
+  // T05556：全屏时第一次 Esc 先退出全屏，再按一次才关闭弹窗
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (fullscreen) { setFullscreen(false); e.preventDefault(); }
+      else onClose();
+    };
     globalThis.addEventListener('keydown', onKey);
     return () => globalThis.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, fullscreen]);
 
   // T05063：动画窗口内被取消/Esc 关闭时，绝不能把延迟提交漏到关闭之后
   useEffect(() => () => {
@@ -773,11 +809,13 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
     /* 原生 <dialog open>：显隐仍由本组件挂载/卸载控制（父层只在需要时渲染），Esc 仍由上面的监听负责。
        T05210：显式补 role="dialog"——原生 <dialog> 的隐式角色在部分自动化/无障碍工具里取不到
        `getAttribute('role')`，显式声明后「弹窗以 dialog 角色出场」这条可被直接断言，也不再依赖隐式语义。 */
-    <dialog open role="dialog" data-lck="git-tree-modal" aria-modal="true" aria-label="从 Git 树选择评审范围"
+    <dialog open role="dialog" data-lck="git-tree-modal" data-fullscreen={fullscreen ? '1' : '0'} aria-modal="true" aria-label="从 Git 树选择评审范围"
       style={{
-        position: 'fixed', inset: 0, zIndex: 1000, margin: 0, padding: 16, border: 'none',
-        width: 'auto', height: 'auto', maxWidth: 'none', maxHeight: 'none',
-        background: 'rgba(15,23,42,0.45)', color: 'inherit',
+        position: 'fixed', inset: 0, zIndex: 1000, margin: 0,
+        // T05556：全屏时 padding=0、背景铺满；非全屏保持原 16px 收边与半透明遮罩
+        padding: fullscreen ? 0 : 16, border: 'none',
+        width: '100%', height: '100%', maxWidth: 'none', maxHeight: 'none',
+        background: fullscreen ? 'var(--card-bg)' : 'rgba(15,23,42,0.45)', color: 'inherit',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}>
       {/* T05063：只给「确认选择」用的点击反馈关键帧（缩放 + 透明度），不动全局样式，也不影响其它按钮 */}
@@ -785,31 +823,60 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   0% { transform: scale(1); opacity: 1; }
   45% { transform: scale(.93); opacity: .72; }
   100% { transform: scale(1); opacity: 1; }
+  .gt-divider { cursor: col-resize; }
+  .gt-divider:hover { background: var(--accent-soft); }
 }${GIT_TREE_STYLE}`}</style>
-      {/* T05210：双栏后需要更多横向空间（左栏记录 + 右栏文件树）；窄屏仍按 96vw 收边 */}
-      <div style={{ width: 'min(1400px, 97vw)', maxHeight: '90vh', display: 'flex', flexDirection: 'column', background: 'var(--card-bg)', border: '1px solid var(--accent)', borderRadius: 10, padding: 14 }}>
+      {/* T05210/T05556：双栏后需要更多横向空间（左栏记录 + 右栏文件树）；窄屏按 97vw 收边；全屏时铺满视口 */}
+      <div style={{
+        width: fullscreen ? '100%' : 'min(1400px, 97vw)',
+        height: fullscreen ? '100%' : undefined,
+        maxHeight: fullscreen ? undefined : '90vh',
+        display: 'flex', flexDirection: 'column',
+        background: 'var(--card-bg)',
+        border: fullscreen ? 'none' : '1px solid var(--accent)',
+        borderRadius: fullscreen ? 0 : 10,
+        padding: fullscreen ? 8 : 14,
+      }}>
         <header style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <GitBranch size={16} style={{ color: 'var(--accent)' }} />
           <strong style={{ fontSize: 'var(--fs-l)' }}>Git 树选范围</strong>
           <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
             单击=勾选/取消多个提交 · Shift+单击=框选到上一条锚点；确认后按「每个选中提交相对第一父的增量」采集
           </span>
+          {/* T05556：全屏/退出全屏按钮——全屏时铺满视口、非全屏时恢复原尺寸；Esc 先退全屏再关闭 */}
+          <button type="button" data-lck="git-tree-fullscreen" onClick={() => setFullscreen((v) => !v)}
+            aria-label={fullscreen ? '退出全屏' : '全屏显示'}
+            title={fullscreen ? '退出全屏（Esc 或再点此按钮）' : '全屏显示，便于处理大量 Git 树节点'}
+            style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', padding: 0, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+            <Maximize2 size={15} aria-hidden />
+            <span style={{ fontSize: 'var(--fs-xs)' }}>{fullscreen ? '退出全屏' : '全屏'}</span>
+          </button>
           <button type="button" onClick={onClose} aria-label="关闭 Git 树选择"
-            style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>
+            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 0 }}>
             <X size={15} />
           </button>
         </header>
 
-        {/* T05078：目标任务条——只在调用方显式传入时出现，其它入口不渲染 */}
+        {/* T05078/T05556：目标任务条——只在调用方显式传入时出现，其它入口不渲染。
+            T05556：批量补录时额外显示队列进度（第 1/N 条），让用户在弹窗里就知道还有几条待补录 */}
         {targetLabel && (
-          <div data-lck="git-tree-target" title={`本次「确认选择」将把勾选的提交关联到：${targetLabel}`}
+          <div data-lck="git-tree-target"
+            data-queue-total={targetQueue > 0 ? targetQueue : undefined}
+            title={`本次「确认选择」将把勾选的提交关联到：${targetLabel}`}
             style={{
               marginTop: 8, padding: '5px 9px', borderRadius: 6, background: 'var(--surface-2)',
               border: '1px solid var(--border-strong)', fontSize: 'var(--fs-s)', color: 'var(--text)',
               // 任务标题可能很长：在标签条内换行，不用省略号藏掉目标
               overflowWrap: 'anywhere', wordBreak: 'break-word',
+              display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap',
             }}>
-            本次确认将关联到：<strong>{targetLabel}</strong>
+            <span>本次确认将关联到：</span>
+            <strong>{targetLabel}</strong>
+            {targetQueue > 0 && (
+              <span data-lck="git-tree-queue-progress" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+                · 共 {targetQueue} 条待补录
+              </span>
+            )}
           </div>
         )}
 
@@ -964,12 +1031,21 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
           </div>
         )}
 
-        {/* T05210：IDEA 风格双栏——左「记录列表」，右「变更文件树 + 摘要」。
+        {/* T05210/T05556：IDEA 风格双栏——左「记录列表」，右「变更文件树 + 摘要」。
             两栏各自滚动：左栏翻页/搜索、右栏看长文件树时互不牵扯滚动位置。
-            `data-lck="git-tree-rows"` 仍在左栏滚动容器上（既有回归门按它定位行），行锚点一并保留。 */}
-        <div data-lck="git-tree-split"
-          style={{ display: 'flex', gap: 10, alignItems: 'stretch', flex: '1 1 auto', minHeight: 0, maxHeight: '58vh' }}>
-          <div style={{ flex: '0 0 46%', minWidth: 0, maxWidth: '46%', display: 'flex', flexDirection: 'column', maxHeight: '58vh' }}>
+            `data-lck="git-tree-rows"` 仍在左栏滚动容器上（既有回归门按它定位行），行锚点一并保留。
+            T05556：中间加分隔线（可拖拽调整左栏宽度 20%~70%），全屏时容器铺满视口。 */}
+        <div data-lck="git-tree-split" ref={splitContainerRef}
+          style={{ display: 'flex', gap: 0, alignItems: 'stretch', flex: '1 1 auto', minHeight: 0, maxHeight: fullscreen ? '100%' : '58vh' }}>
+          {/* T05556：数据范围标记——左侧提交清单按「当前项目 × 仓库」取数，标签让数据归属清晰 */}
+          {project && (
+            <div data-lck="git-tree-data-scope"
+              title={`数据范围：${project.name} · ${flatRepoSub || '根仓库'}（按当前项目工作空间取数，不跨项目）`}
+              style={{ position: 'absolute', top: 4, left: 8, fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', pointerEvents: 'none', opacity: 0.75 }}>
+              数据范围：{project.name}{flatRepoSub ? ` · ${flatRepoSub}` : ''}
+            </div>
+          )}
+          <div style={{ flex: `0 0 ${leftPanePct}%`, minWidth: 0, display: 'flex', flexDirection: 'column', maxHeight: '100%', position: 'relative' }}>
             {repoView ? (
               <RepoBranchGroupList groups={repoGroups} blocked={blockedRows} activeProjectId={projectId}
                 panes={panes} openBranches={openBranches} openRepos={openRepos} groupExpanded={groupExpanded}
@@ -1000,7 +1076,18 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
               </div>
             )}
           </div>
-          <div style={{ flex: '1 1 auto', minWidth: 0, display: 'flex', flexDirection: 'column', maxHeight: '58vh' }}>
+          {/* T05556：可拖拽分隔线——mousedown 起记录起点，mousemove 实时算左栏百分比（钳制 20%~70% 防布局崩坏） */}
+          <div data-lck="git-tree-divider" className="gt-divider"
+            onMouseDown={startDrag}
+            role="separator" aria-orientation="vertical"
+            aria-label="拖拽调整左右栏宽度" aria-valuenow={Math.round(leftPanePct)}
+            style={{
+              flex: '0 0 4px', minHeight: 0, cursor: 'col-resize', background: 'var(--border)',
+              borderRadius: 2, margin: '0 3px', alignSelf: 'stretch', transition: 'background .15s ease',
+            }}>
+            <style>{`.gt-divider{transition:background .15s ease}.gt-divider:hover{background:var(--accent)}.gt-divider:active{background:var(--accent-soft)}`}</style>
+          </div>
+          <div style={{ flex: '1 1 auto', minWidth: 0, display: 'flex', flexDirection: 'column', maxHeight: '100%' }}>
             <GitTreeFilePanel entries={detailEntries} colorIndex={colorIndex} />
           </div>
         </div>

@@ -1189,12 +1189,25 @@ export function TasksPage() {
   }
 
   /** §3.1.5「手动关联」：跨项目时不批量（工作空间各不相同），提示逐行操作 */
-  function startManualGitLink() {
+  function startManualGitLink(startTask?: Task) {
     if (!singleProjectForGit) { flash('跨项目视图请逐行操作：点击任务行的提交徽标进抽屉「Git」页手动关联'); return; }
     const proj = projects.find((p) => p.id === activeProject);
     if (!proj?.workspace_path) { flash('该项目未绑定工作空间，请先绑定仓库目录'); return; }
     if (unlinkedDone.length === 0) { flash('本页没有未回写的已完成任务'); return; }
-    setGitLinkQueue(unlinkedDone);
+    // T05556：点击某一条时只补录这一条（跳过其余），不点则按全量逐条补录
+    const queue = startTask ? unlinkedDone.filter((t) => t.id === startTask.id) : unlinkedDone;
+    setGitLinkQueue(queue);
+  }
+
+  /** T05556：从未回写队列里移除某条（点击「跳过」时调用），不影响其余条目 */
+  function skipUnlinkedTask(task: Task) {
+    const proj = projects.find((p) => p.id === activeProject);
+    if (!proj?.workspace_path) { flash('该项目未绑定工作空间，请先绑定仓库目录'); return; }
+    // 从当前队列（已打开弹窗时）或未回写列表（未打开时）移除该条
+    if (gitLinkQueue.length > 0) {
+      setGitLinkQueue((prev) => prev.filter((t) => t.id !== task.id));
+      flash(`已跳过 ${task.task_no ?? task.id}，可从提示条重新打开`);
+    }
   }
 
   async function confirmManualGitLink(projectId: string, shas: string[], repoSub: string) {
@@ -5100,30 +5113,64 @@ export function TasksPage() {
         {activeTab === 'done' && (<>
         {/* 八期 §3.1.5（Q8'）：未回写补齐提示条——只统计本页已加载范围，翻页后计数随之更新 */}
         {gitOn && unlinkedDone.length > 0 && (
-          <output data-t03360="unlinked-bar" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', margin: '8px 0', padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--surface)', fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
-            <span>本页已加载 {done.length} 条已完成任务中，{unlinkedDone.length} 条未回写提交 ID</span>
-            {/* T03621：三按钮统一为「无文字、无过渡动画」的图标按钮——语义交给 title/aria-label（悬浮可见） */}
-            <button type="button" data-t03360="copy-instruction" data-t03621="copy"
-              onClick={() => void copyWriteBackInstruction()}
-              title="复制回写指令 — 生成可直接交给外部 AI Agent 的 mtask_link_git_commit 指令文本" aria-label="复制回写指令：生成外部 Agent 可用的回写文本"
-              style={iconOnlyBtn}>
-              <Copy size={13} />
-            </button>
-            <button type="button" data-t03360="manual-link" data-t03621="manual" disabled={gitLinkBusy}
-              onClick={startManualGitLink}
-              title={singleProjectForGit ? MANUAL_LINK_TITLE_SINGLE : MANUAL_LINK_TITLE_CROSS}
-              aria-label="手动关联：逐条打开提交选取弹窗补录关联"
-              style={{ ...iconOnlyBtn, cursor: gitLinkBusy ? 'not-allowed' : 'pointer', opacity: gitLinkBusy ? 0.6 : 1 }}>
-              <GitBranch size={13} />
-            </button>
-            <button type="button" data-t03621="ai" disabled={aiLinkBusy || gitLinkBusy}
-              onClick={() => void startAiGitLink()}
-              title={aiLinkButtonTitle(singleProjectForGit ? AI_LINK_TITLE_SINGLE : AI_LINK_TITLE_CROSS, readiness)}
-              aria-label="AI 智能关联：比对已完成未回写任务与仓库提交，给出候选供确认"
-              style={{ ...iconOnlyBtn, color: 'var(--accent)', borderColor: 'var(--accent)', cursor: aiLinkBusy || gitLinkBusy ? 'not-allowed' : 'pointer', opacity: aiLinkBusy || gitLinkBusy ? 0.6 : 1 }}>
-              {aiLinkBusy ? <Loader2 size={13} className="aispin" /> : <Sparkles size={13} />}
-            </button>
-            <span style={{ color: 'var(--text-muted)' }}>已完成任务归档删除后无法补齐</span>
+          <output data-t03360="unlinked-bar" style={{ display: 'block', margin: '8px 0', padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--surface)', fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
+            {/* 第一行：计数 + 三个操作按钮（复制回写指令 / 手动关联全部 / AI 智能关联） */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span>本页已加载 {done.length} 条已完成任务中，{unlinkedDone.length} 条未回写提交 ID</span>
+              {/* T03621：三按钮统一为「无文字、无过渡动画」的图标按钮——语义交给 title/aria-label（悬浮可见） */}
+              <button type="button" data-t03360="copy-instruction" data-t03621="copy"
+                onClick={() => void copyWriteBackInstruction()}
+                title="复制回写指令 — 生成可直接交给外部 AI Agent 的 mtask_link_git_commit 指令文本" aria-label="复制回写指令：生成外部 Agent 可用的回写文本"
+                style={iconOnlyBtn}>
+                <Copy size={13} />
+              </button>
+              <button type="button" data-t03360="manual-link" data-t03621="manual" disabled={gitLinkBusy}
+                onClick={() => startManualGitLink()}
+                title={singleProjectForGit ? MANUAL_LINK_TITLE_SINGLE : MANUAL_LINK_TITLE_CROSS}
+                aria-label="手动关联：逐条打开提交选取弹窗补录关联"
+                style={{ ...iconOnlyBtn, cursor: gitLinkBusy ? 'not-allowed' : 'pointer', opacity: gitLinkBusy ? 0.6 : 1 }}>
+                <GitBranch size={13} />
+              </button>
+              <button type="button" data-t03621="ai" disabled={aiLinkBusy || gitLinkBusy}
+                onClick={() => void startAiGitLink()}
+                title={aiLinkButtonTitle(singleProjectForGit ? AI_LINK_TITLE_SINGLE : AI_LINK_TITLE_CROSS, readiness)}
+                aria-label="AI 智能关联：比对已完成未回写任务与仓库提交，给出候选供确认"
+                style={{ ...iconOnlyBtn, color: 'var(--accent)', borderColor: 'var(--accent)', cursor: aiLinkBusy || gitLinkBusy ? 'not-allowed' : 'pointer', opacity: aiLinkBusy || gitLinkBusy ? 0.6 : 1 }}>
+                {aiLinkBusy ? <Loader2 size={13} className="aispin" /> : <Sparkles size={13} />}
+              </button>
+              <span style={{ color: 'var(--text-muted)' }}>已完成任务归档删除后无法补齐</span>
+            </div>
+            {/* T05556：未回写任务清单——逐条可点击打开取数弹窗（只补这一条）或跳过；批量补录走上面的「手动关联」按钮 */}
+            {singleProjectForGit && unlinkedDone.length > 0 && (
+              <div data-t05556="unlinked-task-list" style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 160, overflow: 'auto' }}>
+                {unlinkedDone.slice(0, 50).map((t) => {
+                  const inQueue = gitLinkQueue.some((q) => q.id === t.id);
+                  return (
+                    <div key={t.id} data-t05556="unlinked-task-row" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 6px', borderRadius: 4, background: inQueue ? 'var(--accent-soft)' : 'transparent', fontSize: 'var(--fs-xs)' }}>
+                      <button type="button" onClick={() => startManualGitLink(t)}
+                        title={`为 ${t.task_no ?? t.id} 打开提交选取弹窗（只补这一条）`}
+                        aria-label={`手动关联 ${t.task_no ?? t.id}`}
+                        style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text)', padding: 0, textAlign: 'left', font: 'inherit' }}>
+                        <span style={{ fontFamily: 'Consolas, Menlo, monospace', color: 'var(--text-muted)', marginRight: 6 }}>{t.task_no ?? t.id.slice(0, 8)}</span>
+                        {t.title}
+                      </button>
+                      {inQueue && <span style={{ flex: '0 0 auto', color: 'var(--accent)', fontSize: 'var(--fs-2xs)' }}>补录中</span>}
+                      <button type="button" onClick={() => skipUnlinkedTask(t)}
+                        title={`跳过 ${t.task_no ?? t.id}（不补录这一条）`}
+                        aria-label={`跳过 ${t.task_no ?? t.id}`}
+                        style={{ flex: '0 0 auto', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', padding: 0 }}>
+                        <X size={11} aria-hidden />
+                      </button>
+                    </div>
+                  );
+                })}
+                {unlinkedDone.length > 50 && (
+                  <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', padding: '2px 6px' }}>
+                    …共 {unlinkedDone.length} 条，仅显示前 50 条；其余请逐行点开任务徽标补录
+                  </div>
+                )}
+              </div>
+            )}
           </output>
         )}
         {/* T03620：已完成排序 + 验证状态过滤已上移到 tab 行，此处只保留多选全选 */}
@@ -5563,7 +5610,8 @@ export function TasksPage() {
     return (
       <GitTreePickerModal
         key={head.id}
-        targetLabel={`${head.task_no ?? head.id} · ${head.title}${gitLinkQueue.length > 1 ? ` · 第 1/${gitLinkQueue.length} 条` : ''}`}
+        targetLabel={`${head.task_no ?? head.id} · ${head.title}`}
+        targetQueue={gitLinkQueue.length}
         projects={projects.filter((p) => p.id === activeProject)}
         activeProjectId={activeProject}
         selectedByProject={{}}

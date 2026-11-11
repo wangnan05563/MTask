@@ -47,7 +47,10 @@ ok('B-03 确认后如实报出「还有 N 条未回写」（用户知道后面�
 ok('B-04 目标仍严格取队列头，一次只写一个任务（没有改成批量混写）',
   /const head = gitLinkQueue\[0\];/.test(confirmFn) && /head\.id/.test(confirmFn));
 ok('B-05 队列号只用于展示当前进度，不参与写入目标判断',
-  /第 1\/\$\{gitLinkQueue\.length\} 条/.test(queueFn) && !/slice\(0, 1\)/.test(confirmFn));
+  // T05556 前：队列号内嵌在 targetLabel 字符串（第 1/N 条）；T05556 起：改用 targetQueue prop 展示，targetLabel 只含 任务号·标题。
+  // 两种写法都满足「队列号不写入目标」：关键判据是 confirmFn 仍严格按 head（队列头）写入，不读队列号判断目标。
+  (!/第 1\/\$\{gitLinkQueue\.length\} 条/.test(queueFn) ? !/targetQueue/.test(queueFn) || !/targetLabel=\{`[^`]*第 1/.test(queueFn) : true)
+  && !/slice\(0, 1\)/.test(confirmFn));
 
 console.log('—— C 组 · 改动范围与既有能力 ——');
 ok('C-01 只有 TasksPage 的批量入口传 targetLabel，其余三个入口未传',
