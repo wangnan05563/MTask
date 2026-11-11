@@ -38,6 +38,7 @@
 - [配置](#配置)
 - [数据与安全](#数据与安全)
 - [MCP / API 接口](#mcp--api-接口)
+- [MTask 技能与 MCP 使用指南](#mtask-技能与-mcp-使用指南)
 - [开发者指南](#开发者指南)
 - [GitHub 发布与更新](#github-发布与更新)
 - [品牌与社交预览](#品牌与社交预览)
@@ -319,6 +320,83 @@ MTask_DEV=1 npm run electron
 
 ---
 
+## MTask 技能与 MCP 使用指南
+
+MTask 随发行版提供 **技能包 `mtask`**（`skills/mtask`），配合本应用内置的 **MCP 服务** 使用：在外部 AI Coding 平台的对话框里直接用自然语言点名任务，由技能驱动 Agent 读取任务、执行、把结论回写到 MTask，人只负责裁决与验收。技能包与安装包在 [GitHub Release](#github-发布与更新) 中是**两个独立附件**，可只下载技能包做集成。
+
+### 1. 安装技能包
+
+把 `skills/mtask` **整个目录**放到所用平台的技能目录下（保持 `SKILL.md` 在目录根）：
+
+| 平台 | 技能目录 | 平台标识（写入执行会话） |
+| --- | --- | --- |
+| WorkBuddy | 用户级 `~/.workbuddy-ai/skills/`，或项目级 `<workspace>/.workbuddy-ai/skills/` | `workbuddy` |
+| Trae | 按该平台自身的项目级技能目录放置（宿主目录名含 `.trae-cn`） | `trae` |
+| Qoder | 按该平台自身的项目级技能目录放置（宿主目录名含 `.qoder-cn`） | `qoder` |
+
+> 平台标识由 `scripts/mcp-direct-call.py` 按**脚本所在宿主目录**推断：含 `.trae-cn` → `trae`、含 `.qoder-cn` → `qoder`、其余 → `workbuddy`；也可用环境变量 `MTASK_PLATFORM` 显式覆盖。口径声明见 `skills/mtask/config/config.yaml` 的 `exec-session.platform`。
+
+技能包核心文件（清理后仅 15 个）：`SKILL.md`（主文件）、`references/`（分层工作流与踩坑库）、`config/config.yaml`（规则配置）、`assets/result-template.md`（结论模板）、`scripts/`（`mcp-direct-call.py` 直连回传器、`prd_to_plan.py` 计划回写、`list-todo.ps1` 清单解析）。
+
+### 2. 配置 MCP 服务
+
+MTask 桌面端已在本地提供 MCP 端点，**无需另起服务**。在所用平台的 MCP 配置里加入 `mtask` 条目（WorkBuddy 为 `~/.workbuddy/mcp.json`）：
+
+```json
+{
+  "mcpServers": {
+    "mtask": {
+      "url": "http://127.0.0.1:39877/api/mcp",
+      "headers": { "X-Access-Token": "<在 设置 → API Token 中生成的令牌>" }
+    }
+  }
+}
+```
+
+- 端点 `/api/mcp`：**打包版端口 `39877`**，开发版 `39876`；跨机 / 内网穿透时换成实际可达地址。
+- 应用内若已开启访问令牌，请求必须带 `X-Access-Token`，否则返回 `401`；未开启令牌时可省略 `headers`。
+- `skills/mtask/scripts/mcp-direct-call.py` 会自动读取该配置的 `url` 与令牌；也可用 `MTASK_MCP_URL` / `MTASK_MCP_TOKEN` 覆盖，便于指向隔离测试实例。
+
+### 3. 在对话框中调用
+
+技能由自然语言触发，无需记命令。`SKILL.md` 声明的触发语包括：
+
+```
+处理 T05210 任务
+mtask 执行 T05210 并回传
+按顺序处理待办
+处理待办
+回传任务
+```
+
+计划类需求（「编写项目计划 / 拆解 WBS / 输出里程碑工期」）会转去读 `references/7-plan-workflow.md`，把方案回写到「项目计划」菜单，并强制携带需求关联。
+
+### 4. 交互示例：输入「处理 T05210 任务」
+
+| 阶段 | 系统行为 |
+| --- | --- |
+| 定位 | 解析任务号 → `mtask_get_task` 取回标题、描述、历史结论与 PRD 上下文 |
+| 开工 | 显式置 `ai_state=running`，同批 `progress start` 建立执行会话（「执行会话」面板可见） |
+| 执行 | 按 `SKILL.md` 硬规则逐单闭环：判定归属 / 可落地性 → 实际修改 → 自检验证 |
+| 回写 | 独立 Git 提交 → `mtask_link_git_commit` 关联提交 SHA → `mtask_update_task_result` 回传结构化结论（根因 / 影响范围 / 修复 / 验证 / 本次回写） |
+| 收口 | `progress done` 结束会话 → 标注 `done`（派生单归并归档）；回写后自动进入 `unread`，界面提示待查阅 |
+| 复核 | 回传后再 `get` 复核 `status` / `verified` 实际值，避免「标了但没落库」 |
+
+结论固定回写到任务的「处理结果」页签，并保留历史版本可对比；全过程数据与 Git 提交双向留痕，不绕过 `TaskService` 钩子，**严禁 sqlite 直写**。
+
+> MCP 工具在会话里未注册时（部分平台只暴露查询工具），技能会走 `scripts/mcp-direct-call.py` 的 HTTP 降级通道，支持 `get / list / result / done / status / create / merge / raw / progress` 全部子命令。
+
+### 5. 跨平台兼容与配置要点
+
+- **协议**：标准 MCP Streamable HTTP + JSON-RPC 2.0，任何支持该传输的 Agent 平台均可接入，不依赖特定 IDE 插件。
+- **端口**：开发版 `39876` / 打包版 `39877`，由 `MTask_PORT` 控制；改端口需同步改 MCP 配置里的 `url`。
+- **令牌**：只读令牌无法调用写操作（`403`）；需要回写结论的 Agent 请配可写令牌。凭据只存在本地配置，不入库、不随技能包分发。
+- **隔离测试**：变更类验证请用独立实例（`MTask_PORT` + `MTask_DATA_DIR` 指向临时目录），并用 `MTASK_SESSION_FILE` 隔离会话缓存，不要污染生产库。
+- **Windows 注意**：`scripts/list-todo.ps1` 刻意保持纯 ASCII，以兼容 PowerShell 5.1 的 ANSI 代码页；Python 脚本需 UTF-8 环境。
+- 完整 MCP 工具清单与错误码见 [`docs/MCP接口文档.md`](docs/MCP接口文档.md) 及应用内「设置 → 帮助文档 → MCP 接口」。
+
+---
+
 ## 开发者指南
 
 ```bash
@@ -395,7 +473,19 @@ MTask 的「发布」与「更新」都围绕 **GitHub Releases** 展开：维�
 
 1. `scripts/构建打包.bat` — 依赖检查 / HEAD 自洽预检 / 类型检查 / 前后端构建 / 版本递增 / 切 Electron ABI / electron-builder 出包 / 还原 ABI（详见 [构建与打包](#构建与打包)）；
 2. `scripts/publish-oneclick.ps1` — 跨 `release*` 目录找最新的 `MTask Setup *.exe`，从文件名解析版本，校验产物版本 == `package.json` 版本（防发旧包），生成 Release 说明；
-3. `scripts/publish-release.py` — 原子化创建 Release + 上传安装包（**幂等**：Release 已存在则复用，资产已存在则跳过上传）。
+3. `scripts/pack-skill.py` — 把清理后的 `skills/mtask` 打成独立技能包 `MTask_Skill_v<版本>.zip`（zip 内根目录 `mtask/`，只收录 15 个核心文件，过程产物逐条排除）；
+4. `scripts/publish-release.py` — 逐资产上传到**同一个 Release**（**幂等**：Release 已存在则复用，资产已存在则跳过上传）。
+
+**每个 Release 含两个独立附件，可单独下载：**
+
+| 产物 | 文件 | 说明 |
+| --- | --- | --- |
+| 包 A · 安装包 | `MTask Setup <版本>.exe` | Windows 安装程序，应用内自更新直接使用此资产 |
+| 包 B · 技能包 | `MTask_Skill_v<版本>.zip` | 解压后把 `mtask/` 整个目录放进 AI Coding 平台的技能目录，无需安装 MTask 主程序 |
+
+> 安装包**刻意保持裸 `.exe`**：`electron/update-state.js` 按资产名 `setup|installer|.exe` 选中 Windows 资产后直接下载执行，若换成 zip 会导致自更新下载到一个压缩包却当安装程序运行。技能包则独立成 zip，互不干扰。
+>
+> 也可用 `python scripts/pack-skill.py <版本> <输出zip>` 单独生成技能包，不触发构建与发布。
 
 可用环境变量：
 
@@ -419,7 +509,7 @@ GitHub 仓库页的社交预览需在 **Settings → Social preview** 上传 [`b
 仓库内置 [`.github/workflows/build.yml`](.github/workflows/build.yml)：
 
 - **PR / push 到 main**：跑发布门禁（HEAD 自洽性、server 类型检查与构建、web 构建），不产出安装包；
-- **打 `v*` tag 或手动 `workflow_dispatch`**：在 `windows-latest` 上装依赖、构建、把原生模块 `better-sqlite3` 按 **Electron ABI** 重建、出包，再调用 `scripts/publish-release.py` 发到 GitHub Releases（使用仓库 `GITHUB_TOKEN`）。
+- **打 `v*` tag 或手动 `workflow_dispatch`**：在 `windows-latest` 上装依赖、构建、把原生模块 `better-sqlite3` 按 **Electron ABI** 重建、出安装包，再用 `scripts/pack-skill.py` 生成技能包，最后逐资产调用 `scripts/publish-release.py` 把**安装包 + 技能包**发到同一个 GitHub Release（使用仓库 `GITHUB_TOKEN`）。
 
 > ⚠️ **原生模块 ABI 是 CI 最易踩的坑**：本地构建靠 `scripts/lib/abi-switch.mjs` 在打包前后切换预编译的 Electron ABI 二进制；CI 上用 `npx electron-builder install-app-deps`（或 `npm rebuild better-sqlite3 --runtime=electron --target=<electron版本>`）重建，否则装出来的 `better-sqlite3` 是 Node ABI，运行即崩溃。**一键发布脚本仍是本地发布的主路径**，Actions 适合做门禁校验与 tag 触发的自动出包；首次启用建议在测试仓库先验证一次。
 

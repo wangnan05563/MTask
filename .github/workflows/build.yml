@@ -1,0 +1,110 @@
+name: Build & Release (Windows)
+
+# MTask 发布链路围绕 GitHub Releases：本地用 scripts/一键发布.bat 为主路径，
+# 本工作流负责两件事：
+#   1) PR / push 到 main —— 跑发布门禁（HEAD 自洽性、类型检查、前后端构建），不出包；
+#   2) 打 v* tag 或手动 workflow_dispatch —— 在 windows-latest 上构建、按 Electron ABI 重建原生模块、
+#      出安装包，另用 scripts/pack-skill.py 生成独立技能包，再逐资产调用
+#      scripts/publish-release.py 把「安装包 + 技能包」发到同一个 GitHub Release。
+#
+# 注意：原生模块 better-sqlite3 必须匹配 Electron 的 NODE_MODULE_VERSION，否则安装包运行即崩溃。
+# 本地靠 scripts/lib/abi-switch.mjs 切换预编译二进制；CI 用 electron-builder install-app-deps 重建。
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '覆盖版本号（4 段，如 0.1.1110.245；缺省用 tag 名去 v）'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install --no-audit --no-fund
+      - name: HEAD 自洽性预检
+        run: npm run verify:head-selfconsistency
+      - name: 类型检查 + 构建
+        run: |
+          npm run typecheck
+          npm run build:server
+          npm run build:web
+
+  release:
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    permissions:
+      contents: write   # 创建 / 上传 Release 资产需要写权限
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 安装依赖
+        run: npm install --no-audit --no-fund
+
+      - name: 计算版本号
+        id: ver
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            V="${{ github.event.inputs.version }}"
+          else
+            V="${GITHUB_REF_NAME#v}"   # 去掉 tag 前导 v
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "version=$V"
+
+      - name: 类型检查 + 构建前后端
+        run: |
+          npm run typecheck
+          npm run build:server
+          npm run build:web
+
+      - name: 按 Electron ABI 重建原生模块
+        # 默认让 electron-builder 把 better-sqlite3 等原生依赖重建为 Electron 运行时 ABI；
+        # 若失败可改用：npm rebuild better-sqlite3 --runtime=electron --target=<electron版本> --dist-url=https://npmmirror.com/mirrors/electron/
+        run: npx electron-builder install-app-deps
+
+      - name: 出安装包（不自动发布）
+        shell: bash
+        env:
+          ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+          ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
+        run: npx electron-builder --win -c.buildVersion="${{ steps.ver.outputs.version }}" --publish=never
+
+      - name: 生成 Release 说明
+        shell: bash
+        run: python scripts/gen-release-notes.py "${{ steps.ver.outputs.version }}" "release/release-notes-${{ steps.ver.outputs.version }}.md"
+
+      - name: 打包技能包（独立于安装包的第二个资产）
+        shell: bash
+        run: python scripts/pack-skill.py "${{ steps.ver.outputs.version }}" "release/MTask_Skill_v${{ steps.ver.outputs.version }}.zip"
+
+      - name: 发布到 GitHub Releases（安装包 + 技能包）
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TAG: ${{ steps.ver.outputs.version }}
+        # publish-release.py 幂等：Release 已存在则复用、资产已存在则跳过，逐资产调用安全。
+        # 安装包先传，保证它是自更新按名称命中的第一个 Windows 资产。
+        run: |
+          NOTES="release/release-notes-${{ steps.ver.outputs.version }}.md"
+          INSTALLER="release/MTask Setup ${{ steps.ver.outputs.version }}.exe"
+          SKILL="release/MTask_Skill_v${{ steps.ver.outputs.version }}.zip"
+          python scripts/publish-release.py "$INSTALLER" "$NOTES" "$(basename "$INSTALLER")"
+          python scripts/publish-release.py "$SKILL" "$NOTES" "$(basename "$SKILL")"

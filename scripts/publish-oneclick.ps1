@@ -45,6 +45,7 @@ $AssetGlob   = 'MTask Setup *.exe'
 $AssetPrefix = 'MTask Setup '
 $Publisher   = Join-Path $RepoRoot 'scripts\publish-release.py'
 $NotesGen    = Join-Path $RepoRoot 'scripts\gen-release-notes.py'
+$PackSkill   = Join-Path $RepoRoot 'scripts\pack-skill.py'
 $ReleaseDir  = Join-Path $RepoRoot 'release'
 
 Write-Host '============================================'
@@ -120,19 +121,40 @@ if ($LASTEXITCODE -ne 0) {
   exit 1
 }
 
-# [5] Publish to GitHub Releases (idempotent; GH_DRY_RUN=1 for a preview).
+# [4.5] Build the skill bundle as a SECOND, independently downloadable artifact.
+# The installer stays a bare .exe on purpose: electron/update-state.js picks the
+# Windows asset by name (setup|installer|.exe) and downloads it straight to disk
+# to run, so wrapping the exe in a zip would break in-app self-update. The skill
+# bundle is a separate zip users can grab without installing MTask.
+Write-Host '[4.5] Pack skill bundle...'
+$skillZip = Join-Path (Split-Path $asset -Parent) ("MTask_Skill_v" + $APPVER + '.zip')
+& $PY $PackSkill $APPVER $skillZip
+if ($LASTEXITCODE -ne 0) {
+  Write-Host '[ERROR] skill bundle packaging failed'
+  exit 1
+}
+Write-Host "  skill:  $skillZip"
+
+# [5] Publish both assets to the SAME GitHub Release.
+# publish-release.py is idempotent: an existing Release is reused and an already
+# uploaded asset is skipped, so calling it once per asset is safe. The installer
+# goes first so it stays the first matching Windows asset for the updater.
 Write-Host '[5] Publish to GitHub Releases...'
 $env:GH_TAG = $APPVER
-& $PY $Publisher $asset $notes ("MTask Setup " + $APPVER)
-if ($LASTEXITCODE -ne 0) {
-  Write-Host '[ERROR] publish failed'
-  exit 1
+foreach ($item in @($asset, $skillZip)) {
+  Write-Host ("  uploading: " + [System.IO.Path]::GetFileName($item))
+  & $PY $Publisher $item $notes ([System.IO.Path]::GetFileName($item))
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "[ERROR] publish failed for $item"
+    exit 1
+  }
 }
 
 Write-Host ''
 Write-Host '============================================'
 Write-Host ' Publish done'
 Write-Host '============================================'
-Write-Host "  artifact: $asset"
-Write-Host "  version:  $APPVER"
-Write-Host "  notes:    $notes"
+Write-Host "  installer: $asset"
+Write-Host "  skill:     $skillZip"
+Write-Host "  version:   $APPVER"
+Write-Host "  notes:     $notes"

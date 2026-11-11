@@ -1,0 +1,513 @@
+# mtask Skill 配置（config.yaml）
+# 这些是处理待办任务时使用的可配置项；按项目需要修改即可，不用改 SKILL.md。
+
+# 处理范围缺省策略
+scope:
+  # 用户未指定时，是否只处理与「当前工作区 project_id」一致的任务
+  only-current-project: true
+  # 允许的 status 枚举（筛选待办用）
+  todo-status: "todo"
+  # 完成时写入的 status 值
+  done-status: "done"
+
+# 处理顺序
+ordering:
+  field: "task_no"          # 排序字段：task_no | created_at
+  direction: "asc"          # asc | desc
+  # task_no 如果形如 T00224 并含数字，是否按数字而非文本排序
+  numeric-sort: true
+
+# 回传文档（result）结构
+result:
+  template: "../assets/result-template.md"   # 结论文档模板相对路径
+  sections: ["根因", "影响范围", "修复", "验证"]   # 固定章节标题顺序
+  require-verify-section: true               # 是否强制包含「验证」节才可回传
+  # T00479：可选「下一步建议」节（仅存在真实后续动作时填充，无则整节省略不注空值）
+  # T01547：本节不是免建单出口——含后续动作的条目必须建派生子任务并标编号；纯观察才留文本并显式标注
+  next-suggestion:
+    enabled: true
+    max-items: 3
+    section-title: "下一步建议（可选）"
+    action-item-must-derive-task: true          # 动作建议 → 必须按 writeback 规则建派生单（前缀+derivedFrom+必带项目）
+    action-item-ticket-suffix: "—— 已建派生单 {taskNo}"
+    pure-observation-label: "（仅观察不建单）"    # 无动作的纯观察提示才允许留在文本并显式标注
+
+# 完成标注判定（全部置 true 才允许 done）
+completion:
+  require-result: true                       # 必须已回传结论文档
+  require-static-check: true                 # 必须已自检（类型检查/构建/单测）
+  require-git-link: true                     # T03350：本任务独立 commit 必须经 mtask_link_git_commit 回写（归档前；无提交的任务留空说明）
+  require-runtime-verify: false              # 是否必须运行实测（可配置是否强制）
+  force-wait-user-on-verify: true            # 用户要求「先验证」时，先给用户看验证再标注完成
+
+# MCP 连接
+mcp:
+  server: "mcp_mtask"                        # mtask MCP 服务器名
+  # 查询收窄：优先按 projectName 在服务端过滤，避免全量拉取省 Token
+  list-by-project: true                      # 已定位项目时用 mtask_list_tasks({projectName}) 直取
+  # 默认查询范围 = 「待处理(todo) 或 未验证(verified=0)」：未验证任务即便 done，其处理结果也可能有待判断，纳入便于关联决策
+  default-scope: "pending"                   # pending=待处理+未验证（MCP 默认）；all=该范围全部忙 / status 精确过滤
+  # 出现该错误视为「连接不可用」，重试 max-retry 次后停止并提示用户
+  list-tools-error-substring: "list tools failed"
+  max-retry-on-connection-error: 2
+
+# 输出与约定
+conventions:
+  escape-deployed-config: true               # 不擅改生产/共享配置（如 AI 服务真实配置）
+  cross-project-not-done: true               # 跨项目任务不置完成，仅标注不可落地
+  # 跨项目/外部环境等「不可在此环境落地」的高亮标记
+  not-landable-marker: "不可在本环境落地"
+
+# 验证矩阵（四维度验证，命令按技术栈取，避免写死具体工具/端口）
+validation:
+  # 静态自检命令：键=技术栈，值=命令数组；{project_dir} 表示工作区根，运行时替换。
+  # 某栈无该步骤则留空数组 []。
+  static-check-commands:
+    frontend: ["npx vue-tsc --noEmit"]
+    backend: ["npm run typecheck"]
+  # 构建命令（改动涉及打包产物时执行）
+  build-commands:
+    frontend: ["npm run build"]
+    backend: []
+  # 单测命令
+  unit-test-commands:
+    frontend: []
+    backend: []
+  # 静态自检全部失败时，是否允许仅凭运行时证据通过（防伪修复）
+  allow-runtime-only-on-static-fail: false
+  # 本次会话允许启用的验证维度（按序降级：静态 > 运行时 > DOM > 数据链路）
+  enabled-dimensions: ["static", "runtime", "dom", "data-link"]
+  # ---------- 2026-09-13 复盘：验证等级判定表（任务形态 → 最低验证等级） ----------
+  # 编译通过 ≠ 行为正确：任务形态命中的最低验证等级未达到时，禁止 verified:true，
+  # result 必须写明已到达的等级与缺口。等级从低到高：static < build < dist-feature < api-smoke < ui-probe
+  min-verify-level:
+    # 键=任务形态判定关键词（任一命中即应用该等级）；值=最低验证等级
+    levels:
+      style-only: "dist-feature"      # 纯样式/序号/文案显示类：编译 + 构建产物特征 grep
+      data-write: "api-smoke"         # SQL/接口/落库类：调真实接口断言落库结果
+      interaction: "ui-probe"         # 拖拽/悬浮/展开类：浏览器自动化实测关键路径
+      default: "build"                # 未命中任何关键词：至少构建通过
+    # 等级未达标时的处置
+    on-unmet:
+      force-verified-false: true
+      require-gap-note: true          # result 必须写「已到达等级 + 缺口 + 补验步骤」
+    # ui-probe 等级的执行通道（按序降级，禁止写死单一工具名）
+    ui-probe-channels:
+      - "浏览器自动化技能（webapp-testing / Playwright 类）"
+      - "降级：构建产物特征 grep + 人工抽查标注"
+
+# ---------- 2026-09-13 复盘：需求模式识别 → 强制流程映射 ----------
+# 「全站统一/基准对齐」类需求首轮返工率最高的根因是覆盖面失控。执行任何任务前先按
+# markers 匹配需求形态，命中的 required-steps 为强制前置动作（未完成不得进入编码）。
+# 未命中任何模式 → 走默认流程（向后兼容）。关键词与步骤均可按项目增删，保持泛化。
+requirement-patterns:
+  # 2026-09-15 T00589：需求引入新概念时的前置检查（防整轮返工）
+  # 新概念（如"历史资产"）必须先判定与既有概念（归档/删除/标签）的语义边界；
+  # 不同语义 → 独立字段 + 独立视图 + 三区隔离；禁止复用既有字段（复用即返工）。
+  concept-boundary-check: true
+  # 2026-09-15 T00569 二轮：需求含"迁移"时的判定（防"入口跳转"式伪迁移）
+  # 迁移 = 目标位置原生实现完整功能（含执行/预览/保存）+ 原位置移除；
+  # 功能若含长耗时过程，目标位置需提供滚动输出区（阶段+时间戳+自动滚底）。
+  migration-must-be-native: true
+  # 2026-09-15 T00569 三轮：多区块「深度整合去重」原则——
+  # 日志/模型等横切资源统一由主容器承载（控制台 tab 输出日志、统一模型下拉）；
+  # 子面板仅保留业务输入；长过程状态放模块级 store（切页保持）。
+  cross-cutting-resource-unified: true
+  # 2026-09-15 T00589 二轮：写操作后清 TTL 缓存（cacheClear），冒烟须先预热缓存再写。
+  cache-clear-after-write: true
+  # 2026-09-15 T00589 排查：结果回传与状态标注一律走接口（MCP/REST），禁 sqlite 直写——
+  # 直写绕过状态自动驱动与 TaskService 钩子（表现为状态动画失效）。
+  writeback-must-use-api: true
+  # 2026-09-16 T00623：改 UI 元素显隐条件后，用产物字符串常量扫描核实全部渲染点
+  # （同一语义常有多种渲染形态）；同类条件应全部带守卫（数量自检）。
+  verify-renderpoints-via-dist-scan: true
+  # 2026-09-16 T00622：视觉/交互改造先对齐基线（描述/小样/可切换），避免判不符后整轮回滚；
+  # 回滚用 git revert 保留历史，并在回传中明确「未受影响项」。
+  subjective-ui-needs-baseline-first: true
+  rollback-via-git-revert: true
+  # 2026-09-17 T00655：权重/排序类需求先核查 ORDER BY 方向与既有权重惯例，
+  # 置顶态按自己写入的权重值精确判定（防误判系统项目）。
+  weight-sort-check-data-first: true
+  # 2026-09-17 T00658：依赖渲染局部值的 UI 行为（半选态等）封装为小组件（内部 ref+useEffect），
+  # 勿在组件级 effect 引用渲染函数内的局部变量（tsc 会报 Cannot find name / used before declaration）。
+  scope-local-ui-state-in-component: true
+  # 2026-09-17 T00662：MCP raw 输出为转义 JSON——冒烟断言用无引号子串；长响应注意 [:4000] 截断。
+  mcp-smoke-assert-unescaped-substring: true
+  # 2026-09-17 T00663：排除/跳过条件精确匹配自写标记值（勿用 <0 等宽泛范围，防误伤系统数据）；
+  # 跨端魔法值抽常量并保持前后端同源。
+  exclusion-match-exact-marker: true
+  # 2026-09-17 T00704：容器 hover 显隐类（task-op/op-hidden）只用于确实处于 hover 容器内的元素；
+  # 浮出式操作条（批量条等 sticky/fixed 浮层）内的按钮一律常显，否则不可见被误报「功能缺失」。
+  hover-visibility-scope-match: true
+  smoke-warm-cache-first: true
+  long-process-state-in-module-store: true
+  long-running-needs-scroll-output: true
+  # 与既有 task-type-cases 的关系：task-type-cases 判定「任务类型（修复/评估/外部）」，
+  # 本节判定「需求形态 → 额外强制流程」，两者叠加使用。
+  patterns:
+    global-unify:
+      description: "全站/多页面统一某风格或行为"
+      markers: ["各页面", "所有页面", "全站", "统一", "保持一致", "全部按钮", "所有按钮", "所有下拉"]
+      required-steps:
+        - "grep 枚举全部受影响元素，产出改动点清单（页面×元素矩阵）"
+        - "汇报改动点数量后再动手"
+        - "修复后逐清单项 grep 复核，汇报附清单"
+    baseline-align:
+      description: "要求与某基准页面/组件对齐"
+      markers: ["与任务菜单", "参考任务菜单", "与任务菜单一致", "同款", "参考XX页面", "对齐"]
+      required-steps:
+        - "先通读基准实现（样式/结构/类名/交互逐项记录）"
+        - "逐项映射到目标，差异列表驱动修改"
+    data-flow:
+      description: "涉及数据写入/排序/展示逻辑"
+      markers: ["排序", "顺延", "写库", "保存", "同步", "序号", "映射"]
+      required-steps:
+        - "按 dataflow-walkthrough.checkpoints 走查数据链"
+        - "数据写入类做 api-smoke 验证"
+    build-chain:
+      description: "构建/打包/发布链路"
+      markers: ["打包", "构建", "发布", "exe", "安装包"]
+      required-steps:
+        - "失败时先按 env-precheck.checklist 体检环境再查代码"
+    interaction:
+      description: "UI 交互/动效类"
+      markers: ["拖拽", "悬浮", "动画", "展开", "点击", "交互动效"]
+      required-steps:
+        - "确认目标元素的实际类名用法（见 css-safety）"
+        - "按 min-verify-level.interaction 执行 ui-probe"
+
+# ---------- 2026-09-13 复盘：数据流走查（R2 渲染接线 + R6 数据源一致性） ----------
+# 教训：T00527 预计算 seqs 存在但渲染未消费；T00494 dropReorder 用原始数组而非渲染所用的排序后数组。
+dataflow-walkthrough:
+  enabled: true
+  # 三检查点：每处 grep/读码复核，任何一环断裂即为「假修复」
+  checkpoints:
+    compute: "数据计算/预计算处存在且值正确"
+    storage: "落库/存储处参数与 SQL 占位符逐一对照（better-sqlite3 run 参数顺序）；db.transaction(fn) 必须立即调用 fn()——漏 () 则包装函数创建后整个事务体静默不执行（接口仍返回 ok，T00516 实测）"
+    render: "渲染/消费点确实引用了新数据源（grep 渲染处变量引用）"
+  # 数据写入类修复的最强验证：隔离实例端到端冒烟（复制库 + MTask_DATA_DIR + 独立端口 → 调真实接口 → 查库断言），
+  # 优于静态特征 grep（正则宽松时会假绿）；隔离纪律见 isolation-testing 节
+  isolated-instance-smoke: true
+  # 拖拽/重排类专用：orderedIds 必须来自渲染所用数组（排序后），非原始数组
+  reorder-source-must-match-render: true
+
+# ---------- 2026-09-13 复盘：CSS 规则安全（R3 类名用法 + 特异性冲突） ----------
+# 教训：T00513 task-op 被用作按钮自身类名，后代选择器 .task-op button:hover 永不命中；
+# 且高特异性兜底规则 (0,7,1) 覆盖低特异性动画规则 (0,2,1)。
+css-safety:
+  enabled: true
+  # 写/改全局样式规则前，先 grep 类名的两种实际用法
+  check-usage-forms:
+    container-descendant: "类名作为容器，规则需 .cls button:hover 形式"
+    self-marker: "类名作为元素自身标记，规则需 button.cls:hover 形式"
+  # 新规则必须与既有兜底规则比对特异性（:not() 内的类计入特异性），避免被覆盖
+  specificity-conflict-check: true
+  # 命中「全局/所有按钮」类规则时，逐个核对既有排除类（:not(...)）是否需要追加
+  review-existing-exclusions: true
+
+# ---------- 2026-09-13 复盘：环境预检（R5 环境体检先于代码） ----------
+# 教训：T00528 打包失败根因一半是 D 盘 0 字节 ENOSPC，首轮只盯代码逻辑。
+env-precheck:
+  enabled: true
+  # 构建/打包/大量写文件任务，失败时先逐项体检（按序）
+  checklist:
+    - "磁盘可用空间（低于下限先清理再排查代码）"
+    - "目标文件/目录被进程锁定（Restart Manager / 句柄排查）"
+    - "相关进程占用（构建产物被运行中实例锁定）"
+    - "依赖/运行时版本与路径"
+  min-disk-free-gb: 2
+  # 磁盘清理前遵守会话安全规则：只读扫描先行，清理需用户确认
+  disk-cleanup-require-confirm: true
+  # ---------- 2026-09-14 复盘：发布新鲜度判定 ----------
+  # 「验证不通过」先判定验证环境是否包含改动——包旧（打包时间早于修复提交）时
+  # 直接重新打包再复验，禁止在旧包环境做代码修改决策（T00531/537 两例教训）。
+  release-freshness:
+    check-on-verify-fail: true
+    # 判定方式：最新安装包/产物 mtime vs 最新修复 commit 时间（git log）
+    compare: "package-mtime-vs-commit-time"
+    on-stale: "repack-first"       # 包旧 → 先重新打包，再请用户复验
+    repack-command-hint: "scripts/构建打包.bat 或项目等价打包入口" 
+
+# 前端 UI 防护（主题/组件/作用域通用规则，防止主题色冲突类问题）
+frontend-guard:
+  # 通用主题 CSS 变量：组件颜色必须取自这些变量，不得硬编码 rgba/hex 常量
+  theme-css-variables:
+    bg-card: "var(--bg-card)"                    # 卡片/弹层背景
+    text-bright: "var(--text-bright)"            # 亮色主题文字
+    accent-border: "var(--accent-purple-a20)"    # 描边（含透明度）
+    accent-shadow: "var(--accent-purple-a15)"    # 阴影（含透明度）
+  # 易冲突组件的默认修法（键=组件名；值=命中规则与处置）
+  component-fixes:
+    el-tooltip:
+      popper-class: "ctx-tooltip-popper"         # 自定义 popper 类名
+      rules:
+        - "背景改 {bg-card}，文字色随主题 {text-bright}"
+        - "箭头背景与描边跟随 {bg-card} / {accent-border}"
+  # scoped 样式陷阱：弹层/悬浮层渲染在组件外，scoped 样式不命中
+  scoped-pitfall: "弹层/悬浮层需加非 scoped <style> 段 + popper-class 才能命中样式"
+
+# 会话失效恢复（后端重载/密钥轮换导致前端凭据失效）
+session-recovery:
+  # 症状关键词，命中任一即触发恢复流程
+  symptom-keywords: ["401", "会话失效", "重新登录", "登录过期", "token"]
+  # 前端存储登录凭据的 localStorage key（可按项目改）
+  token-storage-key: "auth_token"
+  # 恢复动作序列（按序执行；占位 {token-key} 替换为 token-storage-key）
+  actions:
+    - "clear localStorage {token-key}"
+    - "刷新页面"
+    - "重新登录"
+
+# 任务类型判定（A 真修复 / B 仅评估 / C 外部环境，命中任一特征即按该类型处置）
+task-type-cases:
+  A-real-fix:
+    markers: ["修复", "缺陷", "同步", "脚本", "组件", "样式", "接口"]
+    disposition: "实际修改 + 自检 + 回传结论文档"
+  B-assessment-only:
+    markers: ["评估", "模板", "调研", "建议"]
+    disposition: "输出结构化评估，请求补充上下文，不做伪修复"
+  C-external-env:
+    markers: ["SIT", "外部环境", "另一台机器", "专人测试", "实时数据"]
+    disposition: "标注依赖项，保持 todo，不置 done"
+
+# ---------- 2026-09-14 复盘：验证失败反馈优先处理 ----------
+# 验证失败回退待办的任务，handle_result 中的【验证失败】反馈是修复的第一输入——
+# 优先级高于 description；修复后 result 必须逐条回应反馈（闭环证据）。
+failure-feedback:
+  enabled: true
+  # 反馈段标记（与前端徽标/反馈窗口解析同口径）
+  marker: "【验证失败"
+  # 段提取：从标记行起到下一个【开头行或文末（多段全取）
+  priority: "first-input"          # first-input=反馈优先于 description
+  # 反馈为空（用户未填）时的回退策略
+  empty-fallback: "description-compare"   # 按 description 需求逐项对照排查
+  # result 闭环硬要求：逐条引用反馈并说明处置
+  respond-required: true
+
+# ---------- 2026-09-14 T00577：派生单溯源与结论整合 ----------
+# 派生待办单创建时传 derivedFrom（原任务编号）；处理完成回传时 MCP 自动把结论
+# 追加回原任务处理结果（【派生单 T00xxx 处理结果 日期】段），避免派生单越积越多。
+derived-task:
+  enabled: true
+  create-param: "derivedFrom"          # mtask_create_task 参数名
+  integrate-on-result: true            # update_task_result 时自动整合回原任务
+  origin-not-found: "skip"             # 原任务不存在时静默跳过（仅记日志），不阻断回传
+
+# ---------- 2026-09-14 T00566：AI 处理状态动画 ----------
+# 任务编号前状态动画：Agent 生命周期回写，用户查看后前端自动清空（已读隐藏）
+ai-state:
+  # 2026-09-15 起由**服务端接口自动驱动**（T00566 二轮），Agent/技能无需操作：
+  #   get_task → running ｜ update_task_result → unread ｜ update_task{done} → unread
+  #   update_task{verified:false} → failed ｜ REST PATCH 同规则（显式 aiState 优先）
+  # 前端显示：编号前 running 转圈 / failed 红色脉动 / unread 圆点呼吸；用户查看后清空。
+  # 仅特殊场景才需显式：MCP mtask_write_task_status 或 REST PATCH {aiState}。
+  auto-driven: true
+  explicit-tool: "mtask_write_task_status"
+  # ---------- 写必标未读（2026-09-14 用户硬规则）----------
+  # 凡对某任务发生**任何回写**，该任务必须立即置 `unread`——否则用户在 MTask 里看不到这次改动。
+  # 根因：mtask_create_task / mtask_update_task_result / mtask_update_task **都不接收**
+  # `ai_state` 字段（schema 已核实），不补这一步 = 「写了但没人知道」。
+  # 实测踩坑：T00575 派生单归并回 T00571 后，原单 ai_state 仍为空，用户反馈「归并了但我看不到」。
+  write-must-mark-unread:
+    enabled: true
+    applies-to:
+      - "mtask_create_task（新建待办）"
+      - "mtask_update_task_result（回传处理后结论）"
+      - "mtask_update_task（状态/验证标记变更）"
+      - "派生单归并（步骤 5c：写的是**原单**，不是派生单）"
+    # 标记目标 = 被写入的那个任务；归并场景是原单。派生单自身随归档不强制。
+    target: "被写入的任务（归并时=原单）"
+    script-support: "scripts/mcp-direct-call.py 已内置：create / result / merge / done / raw 全通道自动补标"
+
+# ---------- 执行会话心跳上报（2026-09-30 T01351：平台侧接入观测层 PRD FR-1.2） ----------
+# `exec_sessions` 的唯一写入方是 MCP 工具 mtask_report_progress / mtask_claim_task。
+# skill 此前全程只写任务 ai_state、从不上报会话，导致「执行会话」面板恒空（生产库实测 0 行）。
+# 本节点定义 skill 侧上报口径：开工建立会话 → 长任务周期续心跳 → 完工收口。
+exec-session:
+  enabled: true
+  # 平台标识（写入 exec_sessions.platform，面板首列展示）：取值口径声明。
+  # 脚本实际取值链（T01665 起）：MTASK_PLATFORM 环境变量 → 按脚本所在宿主目录推断
+  # （.trae-cn→trae / .qoder-cn→qoder / 其余→workbuddy）；本脚本不解析 yaml，此项仅是给 Agent 的口径说明。
+  platform: "workbuddy"
+  # 会话建立时机：与「开工先写 running」同批（拿到任务详情后立即上报）
+  start-with-running: true
+  # 续心跳建议间隔（毫秒）：兼作任务侧 running 续期，避免超 MTASK_AI_STATE_STALE_MS（默认 30min）被置 failed
+  heartbeat-interval-ms: 300000
+  # 完工（回传 result + 标注 done）时收口会话：pct=100、done=true
+  close-on-finish: true
+  # 会话标识格式：<platform>-<taskNo>-<yyyymmddHHMMSS>，开工生成一次、全程复用
+  session-id-format: "{platform}-{task_no}-{timestamp}"
+  # 未经 start 直接 ping/done 时脚本直接报错退出（防一个任务分裂成多行会话）
+  require-start-first: true
+
+# ---------- 批量执行策略（2026-09-13 T00465-478 复盘沉淀） ----------
+execution:
+  # 价值重排：bug/数据一致性任务优先于纯 UI 批量（默认 true；用户明确要求「严格按序」时置 false）
+  value-first-ordering: true
+  # 优先级权重：命中关键词的任务排到队首（可按业务增删）
+  priority-keywords: ["bug", "缺陷", "不同步", "数据", "丢失", "阻塞", "失败"]
+  # 任务详情分批读取条数（避免单次工具结果过大撑爆上下文）
+  detail-read-batch-size: 7
+  # 每条任务详情截取长度（字符），超出部分按需再取
+  detail-read-char-limit: 500
+  # 每条任务独立 commit（便于回滚与溯源）；false=按分组合并提交
+  commit-per-task: true
+  # 共用基础设施优先：多任务涉及同类改动（图标/动效/悬浮交互）时，先落公共 CSS/组件类再逐条接入
+  shared-infrastructure-first: true
+  # UI 交互类公共样式类名约定（接入时复用，不重复定义）
+  shared-css-classes: ["tbtn-anim", "toolbar-reveal", "item-dragging", "item-over"]
+  # ---------- 2026-09-13 二轮复盘：loop 模式（单任务闭环门） ----------
+  # 批量处理时严禁并行铺开多个任务的修改——必须单任务全闭环后才允许进入下一条，
+  # 防止上下文串台、验证欠账累积、返工时无法定位是哪个任务引入的问题。
+  loop-mode:
+    enabled: true
+    # 闭环判定清单：全部满足才算本任务闭环，才允许读取下一条任务详情
+    closure-checklist:
+      - "修改完成（代码/文档落盘，无半截编辑）"
+      - "验证等级达标（min-verify-level；未达标已在 result 写明缺口与补验步骤）"
+      - "结论文档已回传 handle_result（含根因/修复/验证，与本次改动一一对应）"
+      - "状态已标注（done/verified 按诚实规则；受阻挡在标注后的下一条不开始）"
+      - "回写判断已做（见 writeback 节：逐项梳理剩余工作 → **全部**建【AI回写待审核】待办并带来源项目 + 回写 unread；「下一步建议」节的动作条目也已建派生单并标编号、纯观察条目显式标「仅观察不建单」（T01547）；派生单已按 derived-merge 归并回原单）"
+      - "独立 commit 已提交（commit-per-task=true 时），且已用 mtask_link_git_commit 回写该 SHA（linked+skipped ≥ 1；errors 非空必须处置；归档单写不进，派生单归并前回写）"
+      - "工作日志/记忆已更新（本条任务的关键教训）"
+    # 门禁失败（清单未过）时的行为：stop=停下等用户；skip-with-note=标注原因后跳过继续
+    on-gate-fail: "stop"
+    # 单任务内发现需要用户决策（范围变更/破坏性操作/需求歧义）时：立即停下该任务，
+    # 不带着疑问继续下一条（疑问会污染后续任务的判断）
+    stop-on-user-decision-needed: true
+    # 禁止行为清单
+    forbidden:
+      - "同时修改多个任务涉及的文件后再分别回传"
+      - "上一个任务验证未跑完就开始下一个任务的分析"
+      - "把多个任务的结论合并成一次回传"
+
+# ---------- 任务收尾：剩余工作梳理 → 待办回写（2026-09-14 规则升级） ----------
+# 每完成一条任务（标记 done 之前）必须做一次「剩余工作梳理」：逐项自问
+# 「还有什么没做完 / 没验证 / 被我发现」，把**有交付物的项**回写成待办，
+# 落到该工作**真正归属的项目**。目的：结论不再埋在 handle_result 文本里没人跟进。
+# 编排顺序固定：回传 result → 梳理剩余工作 → 回写待办 → 标注完成 → 独立 commit。
+writeback:
+  enabled: true
+  # 执行时机（闭环门第 5 项即校验此步是否已做）
+  timing: "完成任务后、标记 done 之前"
+  # 标题前缀：MTask 应用据此渲染审核交互图标；人工审核通过后去掉前缀即转正
+  title-prefix: "【AI回写待审核】"
+  # ---------- 剩余工作提取口径（任一命中即为候选，逐条建单） ----------
+  sources:
+    - key: "unlanded-fix"
+      desc: "未落地的修复建议（本轮只提出、没动手改）"
+      priority: "normal"
+    - key: "verify-gap"
+      desc: "验证缺口：需真机 / 人工 GUI / 外部环境才能收口的验证动作"
+      priority: "normal"
+    - key: "blocked"
+      desc: "被阻断项：依赖外部条件（额度、权限、他人配合）本轮无法落地"
+      priority: "normal"
+    - key: "discovered"
+      desc: "处理过程中发现的其它缺陷 / 技术债（不属原需求范围但有据可查）"
+      priority: "high"
+    - key: "optional-improve"
+      desc: "可选优化点（有明确价值、非阻塞，如性能/体验微调）"
+      priority: "low"
+  # ---------- 排除口径（命中任一即不建单，避免刷单） ----------
+  excludes:
+    - "无动作的结论陈述 / 风险提示"
+    - "已在原任务内落地的改动"
+    - "仅作记录、无交付物的过程说明"
+    - "臆测功能：原需求未提及且无证据支撑的扩展"
+  # ---------- 目标项目 ----------
+  # origin-task-project：默认落原任务所属项目；
+  # 若某条剩余工作实际归属别的项目（跨项目发现），落到该问题真正的 owner 项目。
+  target-project: "origin-task-project"
+  # 必须显式传 projectId / projectName：裸建会被服务端兜底到 sys-inbox 收件箱，
+  # 按 projectName 拉取永远看不到 → 死单（详见 SKILL.md 复盘要点 #35）
+  require-project: true
+  # 单任务回写上限：0 = 不设上限（剩余工作**全部建单**，2026-09-14 用户确认）
+  max-items-per-task: 0
+  # 建单后回写未读状态：mtask_create_task **不接收** ai_state 字段，
+  # 必须在建单成功后单独调 mtask_write_task_status {taskNo, state:'unread'}，
+  # 否则新待办编号前不会出现未读圆点，用户不知道有待审核/待处理的新单
+  mark-unread: true
+  # 回写前先查同项目是否已有同源待办（标题含相同要点，或 description 的「来源：Txxxx」）
+  dedupe-precheck: true
+  # 汇总汇报必须列出本次新建/复用的待办编号
+  report-created-task-nos: true
+  # T01547（口径反转）：「下一步建议」节不再是不建单的动作出口——凡含后续动作的条目
+  # 必须建派生子任务（同 writeback 规则）并在行末标「已建派生单 Txxxx」，与「本次回写」互引编号；
+  # 仅无需再派活的纯观察提示留文本，且必须显式标「（仅观察不建单）」
+  next-suggestion-must-be-ticketed: true
+  # ---------- 派生单归并（2026-09-14：防「回写待办再处理又派生新单」的膨胀） ----------
+  derived-merge:
+    enabled: true
+    # 派生单识别（任一命中即为派生单）：标题带 title-prefix；或 description 首行含「来源：Txxxx」
+    identify-by: ["title-prefix", "source-line"]
+    # 结论归并目标：处理完派生单后，把结论追加回**最初的原单**（不追加到中间层）
+    merge-target: "origin-task"
+    # 归并写法：追加到原单 handle_result 末尾的新节（**merge 动作本身不动原单 status / verified**）
+    merge-section-title: "派生单回填"
+    # 例外（2026-09-14 实测补充）：若派生单结论**正是原单验证缺口的证据**（原单因「需真机/人工复验」而未验证，
+    # 派生单就是那次复验），可在归并后**另行显式**把原单置 verified:true，并在回填节注明「显式决策，非归并副作用」。
+    # 判据：派生单来源指向原单 **且** 原单未验证的原因就是派生单要做的动作；否则一律不动原单状态。
+    allow-explicit-origin-verify: true
+    # 归并后归档派生单（内容已不在派生单上承载，避免任务清单膨胀；保留可追溯）
+    archive-derived: true
+    # 单层派生：派生单处理中产生的新剩余工作，其「来源」仍指向**最初的原单**，
+    # 不再派生出「派生单的派生单」——保证结构恒为单层，链式膨胀从源头掐断
+    no-nested-derivation: true
+    # 无原单可归并时（来源非任务号，如「技能规则检查」）→ 不归档，转为独立待办继续跟踪
+    orphan-policy: "keep-as-standalone"
+
+# 补丁纪律（防「假绿」——T00463 教训：文件级 assert 通过但 JSX 接线未落地）
+patching:
+  # 禁止一次性长锚点大段替换：拆成小锚点、多步替换，每步打印成功计数
+  small-anchor-multi-step: true
+  # 每步替换后立即 grep 复核（计数 + 关键特征），失败即停不静修
+  verify-after-each-step: true
+  # JSX 接线类改动必须产物级验证：构建后 grep dist bundle 特征串（文件级 assert 不足以证明功能接入）
+  require-dist-level-verify: true
+  dist-verify-features: ["className 特征", "API 路径特征", "新增字面量常量"]
+  # ---------- 2026-09-15 复盘：写盘与产物校验纪律（T00569 教训） ----------
+  # ① 批量脚本中任一 assert 失败会整体跳过写盘——改完必须逐项确认「改动是否真的落到文件」
+  #   （读回目标片段 grep 独有文案），不能只看脚本输出的 OK；
+  # ② dist 特征校验必须用「本次改动独有的文案」并做反向校验（旧文案应不在产物），
+  #   禁止用菜单名/通用词等会被既有代码误匹配的关键词；
+  # ③ 涉及「迁移/移除」的改动，必须校验「新位置在 + 旧位置不在」双向特征。
+  verify-write-landed: true
+  dist-verify-must-be-unique: true
+  dist-verify-bidirectional: true
+  # heredoc 陷阱：模板字符串内 \n 会被写成真实换行——TS 多行字符串优先用 Edit 工具而非 python heredoc
+  prefer-edit-tool-for-multiline-ts: true
+  # ---------- 2026-09-14 复盘：工具链纪律（T00546/551 实测） ----------
+  # bash 每次调用 cwd 会漂移——python 文件读写必须绝对路径；写后重读断言（防「打印 OK 但未落盘」）
+  absolute-path-writeback: true
+  verify-after-write: true
+  # heredoc/工具链会把 \n 转义吃成真实换行——TS 源码中的 \n 转义用 chr(92)+'n' 拼接生成
+  escape-newline-via-chr92: true
+  # 同名 props/调用点撞名：replace(…,1) 会打到错误调用点——替换前先 grep 计数确认归属
+  replace-target-check: true
+  # 非受控 input（defaultValue）reload 后 DOM 不刷新——值变化必须配 key 重挂载
+  uncontrolled-input-key: true
+  # 导出列序变更必须同步导入解析器——优先改表头映射（兼容任意列序），禁止固定列序
+  export-import-column-sync: true
+
+# 隔离测试纪律（T00470 教训：PATCH 打到桌面版用户库、查错库导致误判）
+isolation-testing:
+  # 起隔离服务前必须先核对目标端口归属（Get-NetTCPConnection），防止端口被占用后请求打到别的进程
+  port-ownership-precheck: true
+  # 变更类测试先复制库到临时目录，且读写始终指向同一显式路径（每条命令显式 cd，防 cwd 重置写错位置）
+  copy-db-before-mutation: true
+  # 禁止直写 sqlite 回传任务状态（绕过 TaskService 钩子导致关联数据不同步）——一律走 MCP / TaskService.update
+  forbid-direct-sql-writeback: true
+
+# ---------- Token 效率（详见 references/6-token-efficiency.md） ----------
+token-efficiency:
+  # 回传 result 长度上限（字符）；超限优先砍「背景/过程」保「根因/修复/验证」
+  result-max-chars: 1200
+  # 回传格式默认精简版（根因/修复/验证三节）；影响范围仅在跨模块时补
+  result-lite-by-default: true
+  # 汇报用表格（任务|内容|落地|commit），不逐条铺陈
+  summary-as-table: true
+  # 已回传任务的详情不重复读取（首轮已入上下文的直接复用）
+  no-reread-returned-results: true
+  # 工具结果>2000 字符时改用 grep/sed 按需提取，不全量回显
+  grep-extract-over-echo: true

@@ -9,10 +9,11 @@ import { useState } from 'react';
  * 与设置页三分组重排；MCP 工具清单与 server.ts 注册的 44 个工具逐条对齐。
  */
 
-type Sub = 'features' | 'mcp' | 'config' | 'quickstart';
+type Sub = 'features' | 'mcp' | 'skill' | 'config' | 'quickstart';
 const SUBS: { key: Sub; label: string }[] = [
   { key: 'features', label: '功能说明' },
   { key: 'mcp', label: 'MCP 接口' },
+  { key: 'skill', label: '技能与 MCP 使用指南' },
   { key: 'config', label: '配置样例' },
   { key: 'quickstart', label: '快速上手' },
 ];
@@ -559,6 +560,83 @@ const SONAR_FIELDS: string[][] = [
   ['scanLimit', 'number', '可选', '扫描并发上限 1~2（默认 1，超限不排队）'],
 ];
 
+/** 技能包 mtask 与 MCP 服务的配套使用指南：平台名称/端口/令牌/触发语均与实现一致。 */
+function SkillScreen() {
+  return (
+    <div style={{ maxWidth: 860 }}>
+      <p style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }}>
+        MTask 随发行版提供技能包 <strong>mtask</strong>（<code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>skills/mtask</code>），配合本应用内置的 MCP 服务使用：在外部 AI Coding 平台的对话框里直接点名任务，由技能驱动 Agent 读取任务、执行、把结论回写到 MTask。技能包与安装包在 GitHub Release 中是两个独立附件，可只下载技能包做集成。
+      </p>
+
+      <div style={{ fontWeight: 600, fontSize: 'var(--fs-l)', margin: '12px 0 4px' }}>1 · 安装技能包</div>
+      <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 6 }}>
+        把 <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>skills/mtask</code> 整个目录放到所用平台的技能目录下，保持 <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>SKILL.md</code> 在目录根。
+      </div>
+      <FieldTable head={['平台', '技能目录', '平台标识（执行会话）']} rows={[
+        ['WorkBuddy', '用户级 ~/.workbuddy-ai/skills/ 或项目级 <workspace>/.workbuddy-ai/skills/', 'workbuddy'],
+        ['Trae', '按该平台自身的项目级技能目录放置（宿主目录名含 .trae-cn）', 'trae'],
+        ['Qoder', '按该平台自身的项目级技能目录放置（宿主目录名含 .qoder-cn）', 'qoder'],
+      ]} />
+      <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }}>
+        平台标识由 <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>scripts/mcp-direct-call.py</code> 按脚本所在宿主目录推断（.trae-cn → trae / .qoder-cn → qoder / 其余 → workbuddy），也可用 <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>MTASK_PLATFORM</code> 显式覆盖。口径声明见 <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>config/config.yaml</code> 的 <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>exec-session.platform</code>。
+      </div>
+      <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginTop: 6 }}>
+        技能包核心文件：<code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>SKILL.md</code>（主文件）、<code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>references/</code>（分层工作流与踩坑库）、<code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>config/config.yaml</code>、<code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>assets/result-template.md</code>、<code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>scripts/</code>（直连回传器 / 计划回写 / 清单解析）。
+      </div>
+
+      <div style={{ fontWeight: 600, fontSize: 'var(--fs-l)', margin: '16px 0 4px' }}>2 · 配置 MCP 服务</div>
+      <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 6 }}>
+        桌面端已在本地提供 MCP 端点，无需另起服务。在平台的 MCP 配置里加入 mtask 条目（WorkBuddy 为 <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>~/.workbuddy/mcp.json</code>）：
+      </div>
+      <Code lang="JSON" title="mcp.json · mtask 条目" code={`{
+  "mcpServers": {
+    "mtask": {
+      "url": "http://127.0.0.1:39877/api/mcp",
+      "headers": { "X-Access-Token": "<在 设置 → API Token 中生成的令牌>" }
+    }
+  }
+}`} />
+      <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }}>
+        端点 <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>/api/mcp</code>：打包版端口 <strong>39877</strong>，开发版 <strong>39876</strong>。已开启访问令牌时必须带 <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>X-Access-Token</code>（否则 401），未开启时可省略 headers。直连脚本会自动读取此配置，也可用 <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>MTASK_MCP_URL</code> / <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>MTASK_MCP_TOKEN</code> 覆盖。
+      </div>
+
+      <div style={{ fontWeight: 600, fontSize: 'var(--fs-l)', margin: '16px 0 4px' }}>3 · 在对话框中调用</div>
+      <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 6 }}>技能由自然语言触发，无需记命令。SKILL.md 声明的触发语：</div>
+      <Code lang="TEXT" title="触发语示例" code={`处理 T05210 任务
+mtask 执行 T05210 并回传
+按顺序处理待办
+处理待办
+回传任务`} />
+      <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }}>
+        计划类需求（「编写项目计划 / 拆解 WBS / 输出里程碑工期」）转去读 <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>references/7-plan-workflow.md</code>，方案回写「项目计划」菜单并强制携带需求关联。
+      </div>
+
+      <div style={{ fontWeight: 600, fontSize: 'var(--fs-l)', margin: '16px 0 4px' }}>4 · 交互示例：输入「处理 T05210 任务」</div>
+      <FieldTable head={['阶段', '系统行为']} rows={[
+        ['定位', '解析任务号 → mtask_get_task 取回标题、描述、历史结论与 PRD 上下文'],
+        ['开工', '显式置 ai_state=running，同批 progress start 建立执行会话（「执行会话」面板可见）'],
+        ['执行', '按 SKILL.md 硬规则逐单闭环：判定归属 / 可落地性 → 实际修改 → 自检验证'],
+        ['回写', '独立 Git 提交 → mtask_link_git_commit 关联 SHA → mtask_update_task_result 回传结构化结论（根因 / 影响范围 / 修复 / 验证 / 本次回写）'],
+        ['收口', 'progress done 结束会话 → 标注 done（派生单归并归档）；回写后自动进入 unread，界面提示待查阅'],
+        ['复核', '回传后再 get 复核 status / verified 实际值，避免「标了但没落库」'],
+      ]} />
+      <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }}>
+        结论固定回写到任务「处理结果」页签并保留历史版本可对比；全过程不绕过 TaskService 钩子，<strong>严禁 sqlite 直写</strong>。MCP 工具在会话里未注册时，技能走 <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>scripts/mcp-direct-call.py</code> 的 HTTP 降级通道（get / list / result / done / status / create / merge / raw / progress）。
+      </div>
+
+      <div style={{ fontWeight: 600, fontSize: 'var(--fs-l)', margin: '16px 0 4px' }}>5 · 跨平台兼容与配置要点</div>
+      <ul style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', lineHeight: 1.8, paddingLeft: 20 }}>
+        <li><strong>协议</strong>：标准 MCP Streamable HTTP + JSON-RPC 2.0，任何支持该传输的 Agent 平台均可接入，不依赖特定 IDE 插件。</li>
+        <li><strong>端口</strong>：开发版 39876 / 打包版 39877，由 MTask_PORT 控制；改端口需同步改 MCP 配置的 url。</li>
+        <li><strong>令牌</strong>：只读令牌无法调用写操作（403）；需回写结论的 Agent 请配可写令牌。凭据只存本地配置，不入库、不随技能包分发。</li>
+        <li><strong>隔离测试</strong>：变更类验证用独立实例（MTask_PORT + MTask_DATA_DIR 指向临时目录），并用 MTASK_SESSION_FILE 隔离会话缓存。</li>
+        <li><strong>Windows 注意</strong>：scripts/list-todo.ps1 刻意保持纯 ASCII，以兼容 PowerShell 5.1 的 ANSI 代码页；Python 脚本需 UTF-8 环境。</li>
+        <li>完整工具清单与错误码见本页「MCP 接口」子页，或仓库 docs/MCP接口文档.md。</li>
+      </ul>
+    </div>
+  );
+}
+
 function ConfigScreen() {
   return (
     <div style={{ maxWidth: 760 }}>
@@ -666,6 +744,7 @@ export function HelpTab() {
       </nav>
       {sub === 'features' && <FeaturesScreen />}
       {sub === 'mcp' && <McpScreen />}
+      {sub === 'skill' && <SkillScreen />}
       {sub === 'config' && <ConfigScreen />}
       {sub === 'quickstart' && <QuickstartScreen />}
     </div>
