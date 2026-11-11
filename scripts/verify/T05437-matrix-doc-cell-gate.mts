@@ -1,10 +1,9 @@
 /*
- * T05437 门（源码锚）：需求跟踪矩阵「关联PRD / 关联SDD」列单行截断 + 悬浮全文。
+ * T05437 门（源码锚）：需求跟踪矩阵「关联PRD / 关联SDD / 关联计划 / 关联待办」列单行截断 + 悬浮全文。
  *
- * 根因：按钮是 inline-flex，内部 span 只写了 `overflow:hidden/textOverflow:ellipsis`，
- * 但 flex 子项默认 `min-width:auto` 不收缩 → 省略号不生效，长文件名把单元格撑宽并换行，
- * 单条记录高度被抬高。修复：按钮与 span 都补 `minWidth:0`、td 固定列宽 + nowrap，
- * 悬浮用原生 title 给完整文件名（零新依赖）。
+ * 根因（重试 #1）：前次修复 PRD/SDD 列 168px 仍过宽挤占空间，且「关联计划 / 关联待办」
+ * 仍用 flexWrap:'wrap' 的 chip 列表，多 chip 时换行抬升行高。本次进一步收窄：
+ *  PRD/SDD 168→120px；计划/待办改单行 inline-flex + overflow hidden + 悬浮 title 全量。
  *
  * 运行：node node_modules/tsx/dist/cli.mjs scripts/verify/T05437-matrix-doc-cell-gate.mts
  * 无需后端、无需浏览器。
@@ -22,8 +21,8 @@ const src = fs.readFileSync(path.join(ROOT, 'web/src/pages/MatrixTable.tsx'), 'u
 // 注意：签名里有 `}: {`（`}` 在行首），用 `\n}\n` 才不会把类型块误当成函数体结束
 const docCell = (src.match(/function DocCell\([\s\S]*?\n\}\n/) ?? [''])[0];
 console.log('—— A 组 · 单行截断实现 ——');
-ok('A-01 文档列固定列宽且强制单行（td width/maxWidth + nowrap，两列各一处）',
-  (src.match(/'4px 6px', width: 168, maxWidth: 168, whiteSpace: 'nowrap'/g) ?? []).length === 2);
+ok('A-01 文档列固定列宽且强制单行（td width/maxWidth + nowrap，两列各一处，120px）',
+  (src.match(/'4px 6px', width: 120, maxWidth: 120, whiteSpace: 'nowrap'/g) ?? []).length === 2);
 ok('A-02 按钮自身可收缩（inline-flex + minWidth:0 + maxWidth:100%）',
   /display: 'inline-flex'[\s\S]{0,400}maxWidth: '100%', minWidth: 0/.test(docCell));
 ok('A-03 文件名 span 三件套 + flex 收缩（省略号才会真的出现）',
@@ -45,8 +44,8 @@ ok('C-01 两列共用同一个 DocCell（单实现，不会两套口径）',
   /<DocCell doc=\{r\.prdDoc\} kind="prd"/.test(src) && /<DocCell doc=\{r\.sddDoc\} kind="sdd"/.test(src));
 ok('C-02 DocCell 定义在模块级（不是组件内新建函数，避免每次渲染重挂载）',
   /^function DocCell\(/m.test(src) && !/  function DocCell\(/.test(src));
-ok('C-03 只动这两列：关联计划/关联待办仍是无固定宽、无 nowrap 的旧写法',
-  (src.match(/<td style=\{\{ padding: '4px 6px', maxWidth: 200 \}\}>/g) ?? []).length === 2);
+ok('C-03 关联计划/关联待办 列改为单行省略（td 带 whiteSpace nowrap + overflow hidden）',
+  (src.match(/<td style=\{[^}]*maxWidth: 160, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'/g) ?? []).length === 2);
 ok('C-04 表头与其他字段未被改动（关联SDD 表头 title 仍在）',
   /title="主 PRD 显式关联的方案设计文档（SDD）；点击查看原文"/.test(src));
 ok('C-05 未引入第三方 tooltip/表格依赖（零新依赖）',

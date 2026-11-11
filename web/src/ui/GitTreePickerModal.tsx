@@ -221,7 +221,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   /** T05556：全屏态。打开时弹窗铺满视口（不再限 90vh），Esc 先退出全屏、再按一次才关闭弹窗 */
   const [fullscreen, setFullscreen] = useState(false);
   /** T05556：左栏宽度百分比（默认 46，与 T05210 原布局一致；拖拽分隔线时动态更新） */
-  const [leftPanePct, setLeftPanePct] = useState(46);
+  const [leftPanePct, setLeftPanePct] = useState(75);
   const splitContainerRef = useRef<HTMLDivElement>(null);
   const dragState = useRef<{ startX: number; startPct: number } | null>(null);
   /** 拖拽分隔线：mousedown 起记录起点，window mousemove 实时算新百分比（20%~70% 钳制防布局崩坏） */
@@ -232,7 +232,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
       if (!dragState.current || !splitContainerRef.current) return;
       const rect = splitContainerRef.current.getBoundingClientRect();
       const deltaPct = ((ev.clientX - dragState.current.startX) / rect.width) * 100;
-      const next = Math.min(70, Math.max(20, dragState.current.startPct + deltaPct));
+      const next = Math.min(90, Math.max(20, dragState.current.startPct + deltaPct));
       setLeftPanePct(next);
     };
     const onUp = () => {
@@ -1169,14 +1169,14 @@ function dedupe(list: GitTreeCommit[]): GitTreeCommit[] {
  */
 function CommitRefPills({ refs, compact }: { readonly refs: GitRefName[]; readonly compact: boolean }) {
   if (!compact) {
-    return <>{refs.map((r) => <span key={`${r.type}:${r.name}`} style={chipStyle}>{r.name}</span>)}</>;
+    return <>{refs.map((r) => <span key={`${r.type}:${r.name}`} style={{ ...chipStyle, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 100, flexShrink: 1 }}>{r.name}</span>)}</>;
   }
   const { visible, hidden } = simplifyCommitRefs(refs);
   return (
     <>
-      {visible.map((r) => <span key={`${r.type}:${r.name}`} style={chipStyle} title={r.name}>{r.name}</span>)}
+      {visible.map((r) => <span key={`${r.type}:${r.name}`} style={{ ...chipStyle, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 100, flexShrink: 1 }} title={r.name}>{r.name}</span>)}
       {hidden.length > 0 && (
-        <span data-lck="git-tree-refs-more" style={{ ...chipStyle, cursor: 'help' }}
+        <span data-lck="git-tree-refs-more" style={{ ...chipStyle, cursor: 'help', whiteSpace: 'nowrap', flexShrink: 0 }}
           title={`另有 ${hidden.length} 个分支/标签：${hidden.map((r) => r.name).join('、')}`}>
           +{hidden.length}
         </span>
@@ -1283,7 +1283,7 @@ function CommitRows({ commits, selected, expandedSet, keyPrefix, onRowClick, onT
         return (
           /* 行本身只是布局容器；「点选这一条」落到行内的原生 <button> 上（Shift/Ctrl 框选语义不变） */
           <div key={`${keyPrefix}${c.sha}`} data-lck="git-tree-row" data-sha={c.sha} data-selected={checked ? '1' : '0'}
-            style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '2px 8px', borderBottom: '1px solid var(--border)', background: checked ? 'var(--gt-row-selected)' : 'transparent' }}>
+            style={{ display: 'flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap', overflow: 'hidden', padding: '2px 8px', borderBottom: '1px solid var(--border)', background: checked ? 'var(--gt-row-selected)' : 'transparent' }}>
             {/* T05210：仓库色条（IDEA 的变更集色块）——与右栏文件名同色，形成左→右视觉关联 */}
             {tintKey && colorIndex ? <RepoStripe repoKey={tintKey} colorIndex={colorIndex} /> : null}
             {/* 复选框只是勾选态的视觉镜像（真正的控件是右侧按钮）；点它同样落到同一段点选逻辑上 */}
@@ -1319,8 +1319,8 @@ function CommitRows({ commits, selected, expandedSet, keyPrefix, onRowClick, onT
               )}
               <CommitSubject text={c.subject} />
               <CommitRefPills refs={c.refs} compact={compactRefs} />
-              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 90 }} title={fullTime(c.date)}>{relTime(c.date)}</span>
-              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 64 }} title={c.author}>{c.author}</span>
+              <span data-lck="git-tree-date" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flexShrink: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={fullTime(c.date)}>{relTime(c.date)}</span>
+              <span data-lck="git-tree-author" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flexShrink: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.author}>{c.author}</span>
             </button>
             <button type="button" className="row-title-btn" onClick={(e) => { e.stopPropagation(); onToggleRowExpand(c.sha); }} aria-label={open ? '收起提交详情' : '展开提交详情'}
               aria-expanded={open} data-lck="git-tree-expand"

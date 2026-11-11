@@ -4,7 +4,7 @@
  * 背景：GitTreePickerModal 的四项优化——
  *   A 组  数据准确性：数据范围标记（project-scoped 标签）+ targetQueue 进度条；
  *   B 组  点击勾选：未回写任务清单逐条可点击（只补一条）；skipUnlinkedTask 跳过某条；
- *   C 组  可拖拽分隔线：dragState ref + startDrag mousedown handler + 20%~70% 钳制；
+ *   C 组  可拖拽分隔线：dragState ref + startDrag mousedown handler + 20%~90% 钳制；
  *   D 组  全屏：fullscreen state + 全屏按钮 + Esc 先退全屏；
  *   E 组  非回归：确认动画/搜索/混合取数/分组取数/CommitSubject 均未受影响。
  *
@@ -63,8 +63,8 @@ ok('C-01 分隔线 data-lck="git-tree-divider" 存在',
   /data-lck="git-tree-divider"/.test(modal));
 ok('C-02 startDrag 函数存在（mousedown 记录起点）',
   /const startDrag = /.test(modal));
-ok('C-03 钳制 20%~70% 防布局崩坏',
-  /Math\.min\(70, Math\.max\(20, /.test(modal));
+ok('C-03 钳制 20%~90% 防布局崩坏',
+  /Math\.min\(90, Math\.max\(20, /.test(modal));
 ok('C-04 左栏宽度动态（flex: 0 0 ${leftPanePct}%）',
   /flex: `0 0 \$\{leftPanePct\}%`/.test(modal));
 ok('C-05 拖拽容器 ref（splitContainerRef）存在',

@@ -92,19 +92,19 @@ function DocCell({ doc, kind, onOpen, titleDetail }: {
   const label = kind === 'prd' ? 'PRD' : 'SDD';
   const head = kind === 'prd' ? '打开 PRD 原文' : '打开方案设计原文';
   return (
-    <button type="button" onClick={onOpen} className="tbtn-anim"
+      <button type="button" onClick={onOpen} className="tbtn-anim"
       title={`${head}：${doc.filename}${titleDetail ?? ''}`}
       aria-label={`打开关联 ${label} ${doc.filename}`}
       style={{
-        display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)',
+        display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: 'var(--fs-xs)',
         border: 'none', background: 'transparent', color: 'var(--accent)', cursor: 'pointer',
         padding: 0, maxWidth: '100%', minWidth: 0, textAlign: 'left',
       }}>
-      <FileText size={11} style={{ flexShrink: 0 }} />
+      <FileText size={10} style={{ flexShrink: 0 }} />
       <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {doc.filename}
       </span>
-    </button>
+      </button>
   );
 }
 
@@ -163,31 +163,35 @@ export function MatrixTable({ p }: { readonly p: MatrixTableProps }) {
     </div>
   );
 
-  /** 关联计划 chip：标题超 14 字截断（与拆分前一致） */
+  /** 关联计划 chip：单行截断 + 悬浮全文（T05437 重试：避免换行抬升行高，列表显示更多数据） */
   const renderPlanChips = (items: MatrixReq['linkedPlans']) => (
     items.length === 0
       ? <span style={{ color: 'var(--text-muted)' }}>—</span>
       : (
-        <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 3 }}>
+        <span
+          title={items.map((x) => `${x.title}（${x.status}）`).join('\n')}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 3, whiteSpace: 'nowrap', overflow: 'hidden', maxWidth: '100%' }}>
           {items.map((x) => (
             <span key={x.id} title={`计划：${x.title}（${x.status}）`}
-              style={{ fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', color: 'var(--text)' }}>
-              {x.title.length > 14 ? `${x.title.slice(0, 14)}…` : x.title}
+              style={{ fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 80, flexShrink: 1 }}>
+              {x.title}
             </span>
           ))}
         </span>
       )
   );
 
-  /** 关联待办 chip：显示任务号，已完成转 success 色 */
+  /** 关联待办 chip：单行截断 + 悬浮全文（T05437 重试：避免换行抬升行高） */
   const renderTaskChips = (items: MatrixReq['linkedTasks']) => (
     items.length === 0
       ? <span style={{ color: 'var(--text-muted)' }}>—</span>
       : (
-        <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 3 }}>
+        <span
+          title={items.map((x) => `${x.taskNo ?? '—'}（${x.status === 'done' ? '已完成' : '待办'}${x.verified ? '·已验证' : ''}）`).join('\n')}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 3, whiteSpace: 'nowrap', overflow: 'hidden', maxWidth: '100%' }}>
           {items.map((x) => (
             <span key={x.id} title={`待办：${x.title}（${x.status === 'done' ? '已完成' : '待办'}${x.verified ? '·已验证' : ''}）`}
-              style={{ fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', color: x.status === 'done' ? 'var(--success)' : 'var(--text)' }}>
+              style={{ fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', color: x.status === 'done' ? 'var(--success)' : 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 56, flexShrink: 1 }}>
               {x.taskNo ?? '—'}
             </span>
           ))}
@@ -244,20 +248,20 @@ export function MatrixTable({ p }: { readonly p: MatrixTableProps }) {
                   {STATUS_OPTIONS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
                 </select>
               </td>
-              <td style={{ padding: '4px 6px', maxWidth: 200 }}>
+              <td style={{ padding: '4px 6px', maxWidth: 160, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                 {renderPlanChips(r.linkedPlans)}
               </td>
               <MatrixCaseCell reqId={r.id} reqNo={r.req_no} title={r.title}
                 count={caseCounts[r.id] ?? 0} onDrill={p.onDrillCases} />
-              <td style={{ padding: '4px 6px', width: 168, maxWidth: 168, whiteSpace: 'nowrap' }}>
+              <td style={{ padding: '4px 6px', width: 120, maxWidth: 120, whiteSpace: 'nowrap' }}>
                 <DocCell doc={r.prdDoc} kind="prd" titleDetail={`（定位到「${r.title}」章节）`}
                   onOpen={() => p.onOpenPrd(r.prdDoc!, { title: r.title, reqNo: r.req_no })} />
               </td>
               {/* T05208（方案 B）：关联SDD——打开设计文档原文（不带需求定位关键词，SDD 与需求行非一一对应） */}
-              <td style={{ padding: '4px 6px', width: 168, maxWidth: 168, whiteSpace: 'nowrap' }}>
+              <td style={{ padding: '4px 6px', width: 120, maxWidth: 120, whiteSpace: 'nowrap' }}>
                 <DocCell doc={r.sddDoc} kind="sdd" onOpen={() => p.onOpenPrd(r.sddDoc!)} />
               </td>
-              <td style={{ padding: '4px 6px', maxWidth: 200 }}>
+              <td style={{ padding: '4px 6px', maxWidth: 160, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                 {renderTaskChips(r.linkedTasks)}
               </td>
               <td style={{ padding: '4px 6px', whiteSpace: 'nowrap' }}>
