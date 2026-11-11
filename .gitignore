@@ -7,6 +7,9 @@ web/dist/
 /frontend/dist-slides/
 release/
 build/pkg-out/
+# 原生模块构建产物（better-sqlite3 等 .node 由 node-gyp 按本机 Node/Electron ABI 编译，
+# 不应进版本库——换机/升级 Node 即需重建，二进制 blob 会污染历史）
+build/native/
 
 # 运行时数据与数据库（用户数据）
 server/data/
