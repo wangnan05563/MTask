@@ -18,6 +18,7 @@ import { buildCardProvenance, chars, latestCardProvenance, provenanceMarkdown, p
 import { summaryOutline } from '../services/summaryPptOutline'; // T02854（六期 S3）：总结汇报 PPT 大纲段（提示词 + schema 校验）
 import { prepareSummaryPptStream, renderSummaryPptStream } from '../services/summaryPptStream'; // T02856（六期 S5）：总结汇报 PPT 流式装配 + 下载令牌
 import { safeExportName } from '../util/export-name'; // T02104：导出文件名单源（与下载白名单同源）
+import { deckStylePreset, type DeckStyleKey } from '../util/exportStyle'; // T05673：启动会主题预设（商务蓝/墨灰/常青）
 import type { CaseBatchPatch, CaseInput, CasePatch, CaseQuery, CaseStepInput, DraftCaseImport, DraftReqImport } from '../services/TestCaseService';
 import { AIService } from '../services/AIService';
 import { MilestoneForecastService } from '../services/MilestoneForecastService'; // T03194（PM-204）：里程碑达成预测
@@ -553,6 +554,19 @@ planApi.post('/kickoff-ppt-stream', exportGate(REPORT_GATE, undefined, { defer: 
   } catch (e) {
     return res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
+  // T05673（P1-4）：主题在 SSE 头之前校验，非法值给结构化 400 而不是流里一条 error
+  let style: DeckStyleKey;
+  try {
+    style = deckStylePreset(b.style).key;
+  } catch (e) {
+    return res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+  // T05673（P2-8）：品牌色（可选）——只接受 6 位 hex，非法值在流建立前 400
+  const rawBrand = typeof b.brandColor === 'string' ? b.brandColor.trim() : '';
+  if (rawBrand && !/^#?[0-9a-fA-F]{6}$/.test(rawBrand)) {
+    return res.status(400).json({ error: `品牌色需为 6 位十六进制（如 #08409C），当前为「${rawBrand}」` });
+  }
+  const brandColor = rawBrand || undefined;
 
   // T03316（G-3）：整轮生成收口才记样本（大纲接口是中间交付，不在此上报）；
   // jobId 优先用前端会话稳定值，同一次生成的重试合到同一 job
@@ -584,7 +598,7 @@ planApi.post('/kickoff-ppt-stream', exportGate(REPORT_GATE, undefined, { defer: 
   });
 
   try {
-    const r = await kickoffPptStream(projectId, toolId, b.outline, (msg) => send('stage', { msg }), ac.signal);
+    const r = await kickoffPptStream(projectId, toolId, b.outline, (msg) => send('stage', { msg }), ac.signal, style, brandColor);
     issuedToken = r.token;
     // close 可能早于 promise 落地（ac.abort 时 done 还没发）：此时不补删就成孤儿，close 那次已跑完了
     if (closed || res.writableEnded) {
@@ -597,7 +611,7 @@ planApi.post('/kickoff-ppt-stream', exportGate(REPORT_GATE, undefined, { defer: 
       jobId, cardKey: 'ai.kickoff_ppt', status: 'done', mode: 'ai',
       sectionsTotal: outlinePages, sectionsOk: outlinePages, startedAt: jobStartedAt,
     });
-    send('done', { token: r.token, fileName: r.fileName, pageCount: r.pageCount, warnings: r.warnings, warningItems: r.warningItems, provenance: r.provenance, htmlToken: r.htmlToken, htmlFileName: r.htmlFileName });
+    send('done', { token: r.token, fileName: r.fileName, pageCount: r.pageCount, warnings: r.warnings, warningItems: r.warningItems, provenance: r.provenance, htmlToken: r.htmlToken, htmlFileName: r.htmlFileName, style: r.style, brandColor: brandColor ?? '' });
     doneSent = true;
   } catch (e) {
     reportAiJob({ jobId, cardKey: 'ai.kickoff_ppt', status: ac.signal.aborted ? 'aborted' : 'error', mode: 'ai', startedAt: jobStartedAt });

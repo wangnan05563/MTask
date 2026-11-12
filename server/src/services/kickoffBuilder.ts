@@ -37,6 +37,8 @@ import {
   findOverlaps,
   framesFor,
   layoutFamilyOf,
+  paletteOf,
+  runWithPalette,
   safeFrames,
   scaleBox,
   stackY,
@@ -44,6 +46,7 @@ import {
   type DateRange,
   type LayoutFrames,
 } from './kickoff-layout';
+import type { DeckStyleKey } from '../util/exportStyle';
 import { statusToneOf } from './deckDesign'; // 2026-11-06：状态列语义判定与 HTML 版同源（同一份 statusToneOf）；
 // T05075：色值改由 kickoff-layout 的 PALETTE 现取，不再读 deckDesign 固化的 fg 串（避免装配层留第二份抄本）
 import { KICKOFF_ABORT_MSG, KICKOFF_PLACEHOLDER, type KickoffBundle, type KickoffDataKey, type KickoffOutlineItem } from './kickoffService';
@@ -377,7 +380,12 @@ export function blocksForKey(key: KickoffDataKey, b: KickoffBundle): Array<Omit<
     case 'workload':
       return [
         { text: { content: workloadLines(b).join('\n'), pt: MIN_BODY_PT } },
-        ...(b.workload.phases.length >= 2 ? [{ chart: { type: 'bar' as const, name: '阶段人天', labels: b.workload.phases.map((p) => p.phase), values: b.workload.phases.map((p) => p.expected) } }] : []),
+        // T05673（P1-5）：阶段不足 2 段时，用复杂度分布出条形图（原来只有一行「1×44 / 2×94…」文字）
+        ...(b.workload.phases.length >= 2
+          ? [{ chart: { type: 'bar' as const, name: '阶段人天', labels: b.workload.phases.map((p) => p.phase), values: b.workload.phases.map((p) => p.expected) } }]
+          : b.workload.complexity.length >= 2
+            ? [{ chart: { type: 'bar' as const, name: '复杂度分布', labels: b.workload.complexity.map((c) => `复杂度 ${c.level}`), values: b.workload.complexity.map((c) => c.count) } }]
+            : []),
       ];
     case 'workspace':
       return [{ text: { content: workspaceLines(b).join('\n'), pt: MIN_BODY_PT } }];
@@ -1613,6 +1621,10 @@ export interface KickoffBuildOptions {
   onPage?: (pageNo: number, item: KickoffOutlineItem) => void;
   /** 客户端断开/用户取消：每页开头检查，命中即抛错收手，绝不落半成品（验收 9） */
   signal?: AbortSignal;
+  /** T05673（P1-4）：主题预设（商务蓝/墨灰/常青）；缺省 standard */
+  style?: DeckStyleKey;
+  /** T05673（P2-8）：项目品牌色（6 位 hex，可带 #）；缺省用主题主色 */
+  brandColor?: string;
 }
 
 /**
@@ -1820,6 +1832,16 @@ export async function buildKickoffPpt(
   bundle: KickoffBundle,
   outline: KickoffOutlineItem[],
   opts: KickoffBuildOptions = {},
+): Promise<KickoffBuildResult> {
+  // T05673（P1-4）：主题/品牌色在 ALS 内生效，并发生成不串色；PALETTE 的 20+ 个读取点无需改动
+  return runWithPalette(paletteOf(opts.style ?? 'standard', opts.brandColor), () =>
+    buildKickoffPptInner(bundle, outline, opts));
+}
+
+async function buildKickoffPptInner(
+  bundle: KickoffBundle,
+  outline: KickoffOutlineItem[],
+  opts: KickoffBuildOptions,
 ): Promise<KickoffBuildResult> {
   const warnings: string[] = [];
   const paletteIssues = auditPalette();

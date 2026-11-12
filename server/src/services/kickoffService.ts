@@ -24,6 +24,7 @@ import { recordArtifact } from './aiArtifactService'; // T03262（AI-101④）�
 import { buildCardProvenance, recordCardProvenance, type CardProvenance } from './aiCardProvenance'; // T03262（AI-101①）：溯源行
 // T05671：提示分级/归并/去内部术语（warnings 原文契约不变，只新增可读视图）
 import { classifyKickoffWarnings, compactKickoffWarnings, type KickoffWarningItem } from './kickoffWarnings';
+import { DECK_STYLES, type DeckStyleKey } from '../util/exportStyle';
 import { downloadSafeName } from '../util/export-name'; // T02104：下载名洗到必然过白名单
 import { toManMonth, type EstimateSummary } from './estimate-engine';
 
@@ -1419,6 +1420,8 @@ export interface KickoffStreamResult {
   /** 2026-11-06：HTML 版下载令牌（单文件、离线可放映）；生成失败时为 undefined，不影响 PPTX 交付 */
   htmlToken?: string;
   htmlFileName?: string;
+  /** T05673：本次采用的主题（商务蓝/墨灰/常青），面板与溯源可见 */
+  style: DeckStyleKey;
 }
 
 /**
@@ -1432,6 +1435,10 @@ export async function kickoffPptStream(
   rawOutline: unknown,
   onStage: (msg: string) => void,
   signal?: AbortSignal,
+  /** T05673（P1-4）：主题预设；缺省商务蓝 */
+  style: DeckStyleKey = 'standard',
+  /** T05673（P2-8）：项目品牌色（6 位 hex，可带 #），优先于主题主色 */
+  brandColor?: string,
 ): Promise<KickoffStreamResult> {
   const outline = assertOutlineShape(rawOutline);
   onStage('正在采集启动会资料…');
@@ -1473,6 +1480,8 @@ export async function kickoffPptStream(
   const assembled = await buildKickoffPpt(bundleForBuild, built.outline, {
     onPage: (pageNo, item) => onStage(`页 ${pageNo}/${renderTotal} 已装配：${item.section}`),
     signal,
+    style,
+    brandColor,
   });
   const token = saveReportBuffer(assembled.buffer);
   // T02144：中止恰好落在「已落盘、尚未回报」的窗口时，done 事件不会再有人接收，令牌随前端状态归零丢失
@@ -1490,7 +1499,7 @@ export async function kickoffPptStream(
   try {
     const { buildKickoffHtml } = await import('./kickoffHtml');
     const { htmlFileNameOf } = await import('./deckHtml');
-    const html = buildKickoffHtml(bundleForBuild, built.outline);
+    const html = buildKickoffHtml(bundleForBuild, built.outline, style);
     htmlToken = saveReportBuffer(Buffer.from(html, 'utf8'));
     const pptxName = kickoffFileName(bundle.project.name, bundle.dataAsOf);
     htmlFileName = htmlFileNameOf(pptxName);
@@ -1521,6 +1530,7 @@ export async function kickoffPptStream(
       { label: '页数', value: `${assembled.pageCount} 页（大纲 ${built.outline.length} 节）` },
       { label: '数据截止', value: bundle.dataAsOf },
       { label: '风险条目', value: `${built.risks.length} 条` },
+      { label: '版式', value: DECK_STYLES[style]?.label ?? style },
     ],
     truncations: compactKickoffWarnings(allWarnings),
     model: '装配阶段未调用模型（大纲与措辞润色在前序段落完成）',
@@ -1536,5 +1546,6 @@ export async function kickoffPptStream(
     provenance,
     htmlToken,
     htmlFileName,
+    style,
   };
 }

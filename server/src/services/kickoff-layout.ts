@@ -15,6 +15,9 @@
  *   5 动态布局防重叠 → `findOverlaps()`
  *   6 对比度 → `contrastRatio()` / `assertContrast()`，色值取自 `util/exportStyle.ts` 单源
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { deckTheme } from './deckDesign';
+import type { DeckStyleKey } from '../util/exportStyle';
 import {
   ACCENT_FONT,
   BORDER_ARGB,
@@ -211,8 +214,8 @@ export function assertContrast(fg: string, bg: string, min: number = MIN_CONTRAS
   return null;
 }
 
-/** 版式用色单源表（适配层只能从这里取色，散写字面量会绕过门禁 6） */
-export const PALETTE = {
+/** 版式用色基线（默认商务蓝）；运行期经 {@link PALETTE} 读当前任务的调色板 */
+const BASE_PALETTE = {
   ink: INK_FONT,
   paper: PAPER_BG,
   headFill: HEAD_FILL,
@@ -229,6 +232,48 @@ export const PALETTE = {
   brandPale: BRAND_PALE,
   onBrand: ON_BRAND,
 } as const;
+
+export type KickoffPalette = { [K in keyof typeof BASE_PALETTE]: string };
+
+const paletteStore = new AsyncLocalStorage<KickoffPalette>();
+
+/**
+ * T05673（P1-4）：按主题派生一套版式色。
+ * 只换品牌三色（深/亮/浅），纸面、墨色、语义状态色沿用设计系统口径——
+ * 某一档主题不该把「完成绿 / 逾期红」也一起改掉。
+ * `brandColor`（P2-8）是项目配置的 6 位 hex，优先级高于主题主色；非法值回落主题色。
+ */
+export function paletteOf(style: DeckStyleKey = 'standard', brandColor?: string): KickoffPalette {
+  const theme = deckTheme(style);
+  const custom = (brandColor ?? '').replace(/^#/, '').trim();
+  // 默认档必须**逐字取自 BASE_PALETTE**（而不是 deckTheme 的同值常量）：
+  // T02099 X-01 用「单源表改名模拟」验证产物跟随，绕一层常量就会被判成「装配层另有抄本」。
+  const base = style === 'standard';
+  return {
+    ...BASE_PALETTE,
+    brandDeep: /^[0-9a-fA-F]{6}$/.test(custom)
+      ? custom.toUpperCase()
+      : (base ? BASE_PALETTE.brandDeep : theme.brand),
+    brandBright: base ? BASE_PALETTE.brandBright : theme.accent,
+    brandPale: base ? BASE_PALETTE.brandPale : theme.pale,
+  };
+}
+
+/** 在指定调色板下执行装配：ALS 承载，两路并发生成互不串色 */
+export function runWithPalette<T>(palette: KickoffPalette, fn: () => T): T {
+  return paletteStore.run(palette, fn);
+}
+
+/**
+ * 版式用色单源表：读取时取当前任务的调色板（无上下文回落默认商务蓝）。
+ * 装配层 20+ 处 `PALETTE.xxx` 写法保持不变——主题能力对取色点是透明的。
+ */
+export const PALETTE: KickoffPalette = new Proxy(BASE_PALETTE as KickoffPalette, {
+  get(_target, prop) {
+    const active = paletteStore.getStore() ?? (BASE_PALETTE as KickoffPalette);
+    return active[prop as keyof KickoffPalette];
+  },
+});
 
 /** 自检：正文/提示/强调三种前景分别压过 4.5，返回不达标项（装配阶段调用，问题早暴露） */
 export function auditPalette(): string[] {

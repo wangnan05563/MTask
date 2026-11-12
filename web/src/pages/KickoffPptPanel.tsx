@@ -55,6 +55,8 @@ interface PreflightResult {
  */
 const SECTIONS = ['封面', '议程', '项目团队介绍', '项目背景', '项目需求', '项目范围', '项目计划', '工作量评估', '测试与质量策略', '项目风险', '沟通管理', '附录'];
 const LAYOUTS = ['cover', 'toc', 'twoCol', 'table', 'chart', 'timeline', 'list', 'flow', 'chip', 'cards', 'section', 'thanks'];
+/** T05673（P2-8）：三档主题主色，作为品牌色输入框初始值（用户不改则跟随主题） */
+const THEME_BRAND: Record<string, string> = { standard: '#08409C', ink: '#374151', evergreen: '#0B5F4A' };
 
 /** 大纲编辑态会话键（重置入口在 consoleReset 的产物键清单里，与控制台重置等效） */
 const OUTLINE_SESSION_KEY = 'kickoff.outline';
@@ -254,7 +256,7 @@ function OutlinePageList({ rows, streaming, onPatch, onRemove, onMove, onAdd }: 
 }
 
 /** ③ 生成与下载条 */
-function GenerateBar({ streaming, canGenerate, blockReason, result, downloading, onGenerate, onDownload, onPreviewHtml, onDownloadHtml, htmlDownloading }: {
+function GenerateBar({ streaming, canGenerate, blockReason, result, downloading, onGenerate, onDownload, onPreviewHtml, onDownloadHtml, htmlDownloading, style, onStyleChange, brandColor, onBrandColorChange }: {
   readonly streaming: boolean;
   readonly canGenerate: boolean;
   readonly blockReason: string;
@@ -265,9 +267,27 @@ function GenerateBar({ streaming, canGenerate, blockReason, result, downloading,
   readonly onPreviewHtml: () => void;
   readonly onDownloadHtml: () => void;
   readonly htmlDownloading: boolean;
+  /** T05673（P1-4）：主题预设与切换 */
+  readonly style: string;
+  readonly onStyleChange: (value: string) => void;
+  /** T05673（P2-8）：品牌色（空 = 跟随主题） */
+  readonly brandColor: string;
+  readonly onBrandColorChange: (value: string) => void;
 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+      {/* T05673：主题在生成前选，生成后换主题需要重新装配（色值写进原生形状与表格，不是 CSS 覆盖） */}
+      <select value={style} onChange={(e) => onStyleChange(e.target.value)} disabled={streaming}
+        title="演示稿主题（影响品牌色与图表配色，需重新生成生效）" aria-label="演示稿主题"
+        style={{ fontSize: 'var(--fs-s)', padding: '4px 6px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)' }}>
+        <option value="standard">商务蓝</option>
+        <option value="ink">墨灰</option>
+        <option value="evergreen">常青</option>
+      </select>
+      <input type="color" value={brandColor || THEME_BRAND[style] || '#08409C'}
+        onChange={(e) => onBrandColorChange(e.target.value.toUpperCase())}
+        disabled={streaming} title="品牌色（默认跟随主题；改动后需重新生成生效）" aria-label="品牌色"
+        style={{ width: 30, height: 26, padding: 0, border: '1px solid var(--border)', borderRadius: 4, background: 'transparent', cursor: streaming ? 'default' : 'pointer' }} />
       {/* T02402：整按钮呼吸（同上）——逐页装配耗时长，运行态必须可感知 */}
       <button onClick={onGenerate} disabled={!canGenerate} className={`tbtn-anim${streaming ? ' task-breathe' : ''}`}
         title={blockReason || '逐页装配 .pptx 并落盘换下载令牌'} aria-label="开始生成启动会 PPT"
@@ -405,6 +425,8 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard, scopeNot
   const [downloading, setDownloading] = useState(false);
   const [htmlDownloading, setHtmlDownloading] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [style, setStyle] = useState('standard'); // T05673（P1-4）：主题预设
+  const [brandColor, setBrandColor] = useState(''); // T05673（P2-8）：品牌色（空 = 跟随主题）
 
   const flash = useCallback((m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3500); }, []);
 
@@ -518,7 +540,7 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard, scopeNot
     try {
       await streamEvents(
         '/plans/kickoff-ppt-stream',
-        { projectId, toolId, outline: rows, jobId: sessionJobId },
+        { projectId, toolId, outline: rows, jobId: sessionJobId, style, ...(brandColor ? { brandColor } : {}) },
         (name, payload) => {
           if (name === 'stage') {
             const msg = (payload as { msg: string }).msg;
@@ -646,7 +668,8 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard, scopeNot
       {/* ③ 生成与下载 */}
       <GenerateBar streaming={streaming} canGenerate={canGenerate} blockReason={generateBlockReason} result={result}
         downloading={downloading} onGenerate={() => void generate()} onDownload={() => void download()}
-        onPreviewHtml={() => setPreviewOpen(true)} onDownloadHtml={() => void downloadHtml()} htmlDownloading={htmlDownloading} />
+        onPreviewHtml={() => setPreviewOpen(true)} onDownloadHtml={() => void downloadHtml()} htmlDownloading={htmlDownloading}
+        style={style} onStyleChange={(v) => { setStyle(v); setBrandColor(''); }} brandColor={brandColor} onBrandColorChange={setBrandColor} />
 
       <BuildProgressPanel streaming={streaming} pageDone={pageDone} pageTotal={pageTotal} result={result} />
 

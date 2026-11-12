@@ -31,6 +31,7 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 // ---------------- A 组：纯函数 ----------------
 const S = await import('../../server/src/services/kickoffService.ts');
 const B = await import('../../server/src/services/kickoffBuilder.ts');
+const L = await import('../../server/src/services/kickoff-layout.ts');
 
 ok('A-01 KICKOFF_LAYOUTS 含 cards，且前后版式未丢',
   (S.KICKOFF_LAYOUTS as readonly string[]).includes('cards')
@@ -104,6 +105,58 @@ ok('B-02 卡片守「一块一形状一带字」：只产出 shape.label，不�
 ok('B-03 前端版式下拉可选 cards', /'cards'/.test(PANEL.slice(PANEL.indexOf('const LAYOUTS'), PANEL.indexOf('const LAYOUTS') + 200)));
 ok('B-04 前端标题输入提示「写结论，不写栏目名」',
   /标题写结论，不写栏目名/.test(PANEL));
+
+// ---------------- P1/P2：主题、复杂度图表、品牌色 ----------------
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+const std = L.paletteOf('standard').brandDeep;
+const ink = L.paletteOf('ink').brandDeep;
+const evg = L.paletteOf('evergreen').brandDeep;
+ok('A-11 三档主题主色互不相同，自定义品牌色优先，非法值回落主题',
+  std !== ink && ink !== evg && std !== evg
+  && L.paletteOf('standard', '#C2703A').brandDeep === 'C2703A'
+  && L.paletteOf('standard', 'not-a-color').brandDeep === std,
+  { std, ink, evg });
+
+const seen: Record<string, string> = {};
+await Promise.all([
+  L.runWithPalette(L.paletteOf('ink'), async () => { await sleep(25); seen.ink = L.PALETTE.brandDeep; await sleep(8); seen.inkAfter = L.PALETTE.brandDeep; }),
+  L.runWithPalette(L.paletteOf('evergreen'), async () => { await sleep(8); seen.evg = L.PALETTE.brandDeep; await sleep(28); seen.evgAfter = L.PALETTE.brandDeep; }),
+]);
+ok('A-12 ALS 并发隔离：两路主题互不串色，退出后回落默认',
+  seen.ink === ink && seen.inkAfter === ink && seen.evg === evg && seen.evgAfter === evg
+  && L.PALETTE.brandDeep === std, seen);
+
+const wb = {
+  workload: {
+    noData: false, counted: 204, manDays: { expected: 120, optimistic: 90, pessimistic: 160 },
+    manMonth: 5.52, quote: null, footer: '口径：工期推导', manDaysPerManMonth: 21.75,
+    phases: [], complexity: [{ level: 1, count: 44 }, { level: 2, count: 94 }, { level: 3, count: 73 }],
+  },
+} as never;
+const wBlocks = B.blocksForKey('workload', wb);
+ok('A-13 阶段不足 2 段时复杂度分布出条形图（原来只有一行文字）',
+  wBlocks.some((d) => d.chart?.type === 'bar' && /复杂度分布/.test(d.chart.name) && d.chart.values.length === 3),
+  wBlocks.map((d) => (d.chart ? d.chart.name : d.table ? 'table' : 'text')));
+
+const ROUTE_SRC = readFileSync(join(ROOT, 'server/src/routes/plans.ts'), 'utf8');
+const SVC_SRC = readFileSync(join(ROOT, 'server/src/services/kickoffService.ts'), 'utf8');
+const HTML_SRC = readFileSync(join(ROOT, 'server/src/services/kickoffHtml.ts'), 'utf8');
+
+ok('B-05 启动会路由在 SSE 头前校验主题与品牌色（非法值结构化 400）',
+  /deckStylePreset\(b\.style\)/.test(ROUTE_SRC) && /品牌色需为 6 位十六进制/.test(ROUTE_SRC)
+  && /ac\.signal, style, brandColor\)/.test(ROUTE_SRC));
+ok('B-06 builder 用 runWithPalette 包裹装配（并发生成不串色）',
+  /return runWithPalette\(paletteOf\(opts\.style \?\? 'standard', opts\.brandColor\),/.test(BUILDER));
+ok('B-07 服务层透传主题/品牌色，done 负载带 style',
+  /style: DeckStyleKey = 'standard'/.test(SVC_SRC) && /brandColor\?: string/.test(SVC_SRC)
+  && /send\('done', \{[^}]*style: r\.style/.test(ROUTE_SRC));
+ok('B-08 HTML 版同主题（PPTX 与 HTML 不各走一套）',
+  /buildKickoffHtml\(bundleForBuild, built\.outline, style\)/.test(SVC_SRC)
+  && /style: DeckStyleKey = 'standard'/.test(HTML_SRC));
+ok('B-09 前端有主题下拉与品牌色输入，品牌色空则不发（跟随主题）',
+  /aria-label="演示稿主题"/.test(PANEL) && /aria-label="品牌色"/.test(PANEL)
+  && /\.\.\.\(brandColor \? \{ brandColor \} : \{\}\)/.test(PANEL));
 
 const body2 = [(`T05673 P0 门：PASS ${pass} / FAIL ${fail}`), ...lines].join('\n');
 mkdirSync(OUT_DIR, { recursive: true });

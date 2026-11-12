@@ -11,6 +11,7 @@
 import type { KickoffBundle, KickoffOutlineItem } from './kickoffService';
 import { renderDeckHtml, type DeckHtmlBlock, type DeckHtmlModel, type DeckHtmlPage } from './deckHtml';
 import { PLACEHOLDER, statusToneOf } from './deckDesign';
+import type { DeckStyleKey } from '../util/exportStyle';
 
 /** 单页最多承载的数据块：再多会挤掉正文，宁可让读者翻到下一页（页脚会注明被省略的键） */
 const MAX_BLOCKS_PER_PAGE = 2;
@@ -200,7 +201,7 @@ function toPage(item: KickoffOutlineItem, b: KickoffBundle): DeckHtmlPage {
  * 启动会 HTML 模型。封面导语优先取大纲封面页的第一条 bullet（AI 已经写过一句定位语），
  * 没有再回落一句不含数字的默认描述——封面不编造指标。
  */
-export function buildKickoffDeckModel(b: KickoffBundle, outline: KickoffOutlineItem[]): DeckHtmlModel {
+export function buildKickoffDeckModel(b: KickoffBundle, outline: KickoffOutlineItem[], style: DeckStyleKey = 'standard'): DeckHtmlModel {
   const cover = outline.find((o) => o.layout === 'cover');
   const lead = cover?.bullets.find((x) => String(x ?? '').trim()) ?? `本次启动会同步项目目标、范围、计划与风险，形成可执行的开工共识。`;
   const pages = outline.map((item) => toPage(item, b));
@@ -217,12 +218,12 @@ export function buildKickoffDeckModel(b: KickoffBundle, outline: KickoffOutlineI
     pages,
     chromeLeft: '项目启动会',
     chromeRight: b.dataAsOf.replaceAll('-', '.'),
-    style: 'standard',
+    style,
   };
 }
 
 /** 启动会 HTML 单文件 */
-export function buildKickoffHtml(b: KickoffBundle, outline: KickoffOutlineItem[]): string {
-  return renderDeckHtml(buildKickoffDeckModel(b, outline));
+export function buildKickoffHtml(b: KickoffBundle, outline: KickoffOutlineItem[], style: DeckStyleKey = 'standard'): string {
+  return renderDeckHtml(buildKickoffDeckModel(b, outline, style));
 }
 

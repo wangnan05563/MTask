@@ -41,6 +41,9 @@ export interface KickoffStreamResult {
   /** 2026-11-06：HTML 版令牌（单文件演示）；服务端生成失败时缺省 */
   htmlToken?: string;
   htmlFileName?: string;
+  /** T05673：本次采用的主题（standard/ink/evergreen）与品牌色 */
+  style?: string;
+  brandColor?: string;
 }
 
 export interface KickoffPptState {
