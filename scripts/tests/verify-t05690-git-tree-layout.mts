@@ -35,10 +35,13 @@ const TASKS = readFileSync(join(ROOT, 'web/src/pages/TasksPage.tsx'), 'utf8');
 ok('A-01 说明文字单独成行（flex-basis 100% + order 3），不再与标题争宽叠字',
   /flex: '1 1 100%', order: 3/.test(MODAL)
   && /单击=勾选\/取消多个提交/.test(MODAL));
-ok('A-02 容器裁溢出（全屏内容高于视口时不会压住顶栏）',
-  /display: 'flex', flexDirection: 'column',[\s\S]{0,160}overflow: 'hidden'/.test(MODAL));
+ok('A-02 容器超高可滚动（overflow auto）——不静默裁掉底部按钮，也不压住顶栏（T05691 修正：hidden 会丢内容）',
+  /display: 'flex', flexDirection: 'column',[\s\S]{0,400}overflow: 'auto'/.test(MODAL));
 ok('A-03 全屏仍铺满视口（修复不牺牲 T05556 的全屏语义）',
   /width: fullscreen \? '100%'/.test(MODAL) && /height: fullscreen \? '100%'/.test(MODAL));
+ok('A-04 header 与底部操作行 flexShrink: 0——flex 收缩只压中部列表，按钮行永不被裁（T05691）',
+  /<header style=\{\{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', flexShrink: 0 \}\}>/.test(MODAL)
+  && /flexWrap: 'wrap', marginTop: 8, flexShrink: 0 \}\}>/.test(MODAL));
 
 ok('B-01 已选提交 ID 列表渲染在范围确认区，且只展示前 8 个 + 折叠计数',
   /data-lck="git-tree-picked-ids"/.test(MODAL)

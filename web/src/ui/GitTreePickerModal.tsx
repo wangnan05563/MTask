@@ -833,13 +833,15 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
         maxHeight: fullscreen ? undefined : '90vh',
         display: 'flex', flexDirection: 'column',
         background: 'var(--card-bg)',
-        // T05690：全屏时内容可能高于视口，裁在容器内，避免顶栏被溢出的列表压住造成叠字
-        overflow: 'hidden',
+        // T05690：全屏时内容可能高于视口，避免顶栏被溢出的列表压住造成叠字。
+        // T05691：hidden 会把超出部分**静默裁掉**（底部「取消/确认」按钮行不可达），改 auto——
+        // 超高时出滚动条而不是丢内容，初始/全屏两态下边缘内容都可滚动到达。
+        overflow: 'auto',
         border: fullscreen ? 'none' : '1px solid var(--accent)',
         borderRadius: fullscreen ? 0 : 10,
         padding: fullscreen ? 8 : 14,
       }}>
-        <header style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <header style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', flexShrink: 0 }}>
           <GitBranch size={16} style={{ color: 'var(--accent)' }} />
           <strong style={{ fontSize: 'var(--fs-l)' }}>Git 树选范围</strong>
           <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flex: '1 1 100%', order: 3, lineHeight: 1.5 }}>
@@ -869,7 +871,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
               marginTop: 8, padding: '5px 9px', borderRadius: 6, background: 'var(--surface-2)',
               border: '1px solid var(--border-strong)', fontSize: 'var(--fs-s)', color: 'var(--text)',
               // 任务标题可能很长：在标签条内换行，不用省略号藏掉目标
-              overflowWrap: 'anywhere', wordBreak: 'break-word',
+              overflowWrap: 'anywhere', wordBreak: 'break-word', flexShrink: 0,
               display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap',
             }}>
             <span>本次确认将关联到：</span>
@@ -886,7 +888,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
             不必回到左侧列表逐条数；超过 8 个折叠成「另 N 个」 */}
         {selected.length > 0 && (
           <div data-lck="git-tree-picked-ids"
-            style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', marginTop: 8, fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
+            style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', marginTop: 8, fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', flexShrink: 0 }}>
             <span>已选提交（{selected.length}）：</span>
             {selected.slice(0, 8).map((sha) => (
               <code key={sha} style={{ padding: '1px 4px', borderRadius: 3, background: 'var(--surface-2)', border: '1px solid var(--border)', fontFamily: 'Consolas, Menlo, monospace' }}>
@@ -897,7 +899,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
           </div>
         )}
 
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', margin: '10px 0' }}>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', margin: '10px 0', flexShrink: 0 }}>
           {projects.length > 1 && (
             <select data-lck="git-tree-project" value={projectId} onChange={(e) => setProjectId(e.target.value)} style={boxStyle} aria-label="选择项目仓库">
               {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -1007,7 +1009,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
         </div>
 
         {!foldRefs && visibleRefs.length > 0 && (
-          <div data-lck="git-tree-refs" style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 8 }}>
+          <div data-lck="git-tree-refs" style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 8, flexShrink: 0 }}>
             <button type="button" onClick={() => setFoldRefs(true)} style={{ ...chipStyle, cursor: 'pointer', background: 'var(--surface)' }} aria-label="收起分支列表">收起分支</button>
             {refs.length > 0 && <button type="button" data-lck="git-tree-ref-all" onClick={() => { setAllBranches(true); setHead(''); }} style={{ ...chipStyle, cursor: 'pointer', background: 'var(--surface)' }}>全部分支</button>}
             {visibleRefs.slice(0, 24).map((r) => {
@@ -1109,7 +1111,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 8 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 8, flexShrink: 0 }}>
           {!repoView && !mixActive && hasMore && (
             <button type="button" data-lck="git-tree-load-more" onClick={() => void load(true)} disabled={loading} style={boxStyle}>
               加载更多（已显示 {commits.length} 条）
