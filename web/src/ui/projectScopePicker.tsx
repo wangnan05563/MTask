@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { ChevronDown, X } from 'lucide-react';
 import type { Project } from '../api/client';
+import { projectPickability } from './gitScopePicker';
+import { wsBasename } from './WorkspaceSelect';
 
 /**
  * T02165：项目范围多选器（原实现内联在 `ReportPage.tsx`）。
@@ -34,10 +36,16 @@ const scopeRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', ga
 /** 触发钮样式：与报表页其余字段控件同口径（原 ReportPage 的 fieldStyle） */
 const pickerFieldStyle: CSSProperties = { padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-m)' };
 
-export function ProjectScopePicker({ projects, value, onChange }: {
+export function ProjectScopePicker({ projects, value, onChange, workspaceConstraint }: {
   readonly projects: Project[];
   readonly value: string[];
   readonly onChange: (ids: string[]) => void;
+  /**
+   * T05694：同工作空间约束——与「Git 增量资产提取 / Sonar 质量扫描」的 GitScopePicker 对齐。
+   * 开启后，与已选项目工作空间不同的候选项目置灰禁勾（判据单源 projectPickability）。
+   * 默认关闭：报表/总结聚合等既有调用方行为逐字不变。
+   */
+  readonly workspaceConstraint?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const hostRef = useRef<HTMLDivElement>(null);
@@ -99,12 +107,24 @@ export function ProjectScopePicker({ projects, value, onChange }: {
             const idx = value.indexOf(p.id);
             const checked = idx >= 0;
             // 已达上限时未勾选项置灰而非静默失效（后端同上限会 400，前端提前拦住更直观）
-            const blocked = !checked && value.length >= REPORT_PROJECT_MAX;
+            // T05694：讲稿卡片开启同工作空间约束后，跨空间候选同样置灰并写明原因
+            const capBlocked = !checked && value.length >= REPORT_PROJECT_MAX;
+            const pick = workspaceConstraint ? projectPickability(p, value, projects) : { ok: true, reason: '' };
+            const blocked = capBlocked || (!pick.ok && !checked);
             return (
-              <label key={p.id} style={{ ...scopeRowStyle, opacity: blocked ? 0.45 : 1, cursor: blocked ? 'not-allowed' : 'pointer' }}>
+              <label key={p.id} title={blocked && pick.reason ? pick.reason : (p.workspace_path || '未绑定工作空间')}
+                style={{ ...scopeRowStyle, opacity: blocked ? 0.45 : 1, cursor: blocked ? 'not-allowed' : 'pointer' }}>
                 <input type="checkbox" checked={checked} disabled={blocked} onChange={() => toggle(p.id)}
-                  aria-label={`纳入项目 ${p.name}`} style={{ flexShrink: 0, cursor: 'pointer' }} />
+                  aria-label={`纳入项目 ${p.name}`} style={{ flexShrink: 0, cursor: blocked ? 'not-allowed' : 'pointer' }} />
                 <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
+                {workspaceConstraint && (
+                  <span style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+                    {p.workspace_path ? wsBasename(p.workspace_path) : '未绑定工作空间'}
+                  </span>
+                )}
+                {blocked && pick.reason && (
+                  <span style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--warn)' }}>{pick.reason}</span>
+                )}
                 {checked && (
                   <span title="勾选顺序（报表按此顺序分块）" style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--accent)' }}>{idx + 1}</span>
                 )}
@@ -113,7 +133,7 @@ export function ProjectScopePicker({ projects, value, onChange }: {
           })}
           <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', padding: '4px 6px 0' }}>
             {value.length === 0 ? '未勾选任何项目：按全部项目聚合（与单选「全部项目」一致）'
-              : `已选 ${value.length} 个，最多 ${REPORT_PROJECT_MAX} 个；报表头部与 AI 提示会标注该范围`}
+              : `已选 ${value.length} 个，最多 ${REPORT_PROJECT_MAX} 个${workspaceConstraint ? '；多项目必须同一工作空间' : ''}；报表头部与 AI 提示会标注该范围`}
           </div>
         </div>
       )}

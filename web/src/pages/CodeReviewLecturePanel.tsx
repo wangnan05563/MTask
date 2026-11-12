@@ -901,7 +901,8 @@ function LectureScopeSection(props: ScopeSectionProps) {
     <section aria-label="采集范围" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', border: '1px solid var(--border)', borderRadius: 8, padding: 10, marginBottom: 10 }}>
       {/* T03311：不再只读——改选直接写回顶部「报表范围」（空数组=全部项目），两处始终同一份数据 */}
       <div data-lck="scope-picker" style={{ width: 240, maxWidth: '100%' }}>
-        <ProjectScopePicker projects={projects} value={projectIds} onChange={onProjectIdsChange} />
+        {/* T05694：与 Git 提取/Sonar 卡对齐——多项目必须同一工作空间，跨空间候选置灰并写明原因 */}
+        <ProjectScopePicker projects={projects} value={projectIds} onChange={onProjectIdsChange} workspaceConstraint />
       </div>
       <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>
         已选 {selectedIds.length} 个{projectIds.length === 0 ? '（全部项目）' : ''}，与顶部「报表范围」联动

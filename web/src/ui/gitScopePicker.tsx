@@ -404,7 +404,9 @@ export function GitScopePicker({ projects, value, onChange }: {
         </button>
       </div>
 
-      {/* ③ 任务勾选：未回写 commit id 的行置灰并写明原因 */}
+      {/* ③ 任务勾选：未回写 commit id 的项置灰并写明原因。
+          T05694：组内布局对齐讲稿卡「已完成任务」的紧凑 chip 流式（同一份 PILL 单源样式），
+          一屏可见条数显著增加；分组头/置灰/禁勾/悬浮说明全部保留 */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 1, maxHeight: 220, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6, padding: 4 }}>
         {loading && <div style={{ ...ROW, color: 'var(--text-muted)' }}><Loader2 size={12} className="aispin" /> 任务取数中…</div>}
         {!loading && !value.projectIds.length && (
@@ -422,25 +424,27 @@ export function GitScopePicker({ projects, value, onChange }: {
                 <FolderOpen size={11} style={{ flexShrink: 0 }} />
                 <span>{p?.name ?? g.projectId}（{g.tasks.length}）</span>
               </div>
-              {g.tasks.map((t) => {
-                const linked = linkedCountOf(t);
-                const checked = pickedSet.has(t.id);
-                return (
-                  <label
-                    key={t.id}
-                    title={linked ? `已回写 ${linked} 条提交关联` : '未回写 commit id，无可提取内容'}
-                    style={{ ...ROW, opacity: linked ? 1 : 0.5, cursor: linked ? 'pointer' : 'not-allowed' }}
-                  >
-                    <input type="checkbox" checked={checked} disabled={!linked} onChange={() => toggleTask(t.id)}
-                      aria-label={`纳入任务 ${t.task_no ?? t.title}`} style={{ flexShrink: 0, cursor: 'inherit' }} />
-                    <span style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontFamily: 'Consolas, Menlo, monospace' }}>{t.task_no ?? '—'}</span>
-                    <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</span>
-                    {linked
-                      ? <span style={{ ...PILL, flexShrink: 0 }}><GitCommitHorizontal size={11} /> {linked}</span>
-                      : <span style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--warn)' }}>未回写 commit id</span>}
-                  </label>
-                );
-              })}
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {g.tasks.map((t) => {
+                  const linked = linkedCountOf(t);
+                  const checked = pickedSet.has(t.id);
+                  return (
+                    <label
+                      key={t.id}
+                      title={linked ? `已回写 ${linked} 条提交关联` : '未回写 commit id，无可提取内容'}
+                      style={{ ...PILL, display: 'inline-flex', gap: 4, alignItems: 'center', opacity: linked ? 1 : 0.5, cursor: linked ? 'pointer' : 'not-allowed', maxWidth: 300 }}
+                    >
+                      <input type="checkbox" checked={checked} disabled={!linked} onChange={() => toggleTask(t.id)}
+                        aria-label={`纳入任务 ${t.task_no ?? t.title}`} style={{ flexShrink: 0, cursor: 'inherit' }} />
+                      <span style={{ flexShrink: 0, fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', fontFamily: 'Consolas, Menlo, monospace' }}>{t.task_no ?? '—'}</span>
+                      <span style={{ flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</span>
+                      <span style={{ flexShrink: 0, fontSize: 'var(--fs-2xs)', color: linked ? 'var(--text-muted)' : 'var(--warn)' }}>
+                        {linked ? `${linked} 提交` : '未回写'}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
             </div>
           );
         })}
