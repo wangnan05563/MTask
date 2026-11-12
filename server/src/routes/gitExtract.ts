@@ -89,6 +89,8 @@ gitExtractApi.post('/git-extract/plan', async (req, res) => {
       workspacePath: plan.workspacePath,
       projects: plan.projects.length,
       tasks: plan.tasks.length,
+      // T05680：摘要面板要显示「手动提交 N 条」，此前漏了这个字段 → 前端渲染出 undefined
+      manualCommits: plan.manualCommits.length,
       commits: plan.commits.length,
       files: plan.uniquePaths,
       manifestRows: plan.manifestRows,
