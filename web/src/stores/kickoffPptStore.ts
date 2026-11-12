@@ -48,6 +48,8 @@ export interface KickoffStreamResult {
 
 export interface KickoffPptState {
   streaming: boolean;
+  /** T05683：大纲请求进行中——放 store，切卡片卸载后回来仍显示运行态 */
+  outlineBusy: boolean;
   logs: string[];
   /** 大纲（AI 产出 + 用户就地编辑的当前态；面板与「开始生成」共用同一份） */
   outline: KickoffOutlineItem[];
@@ -59,7 +61,7 @@ export interface KickoffPptState {
 }
 
 const initialState = (): KickoffPptState => ({
-  streaming: false, logs: [], outline: [], outlineWarnings: [], result: null,
+  streaming: false, outlineBusy: false, logs: [], outline: [], outlineWarnings: [], result: null,
 });
 
 // 模块初始化时水合刷新前持久化的最终耗时（与 prdGenStore/tcGenStore 同款）
@@ -104,6 +106,11 @@ export const kickoffPptStore = {
   },
   pushLog(msg: string) {
     state = { ...state, logs: [...state.logs, msg] };
+    emit();
+  },
+  /** T05683：大纲运行态（跨卡片切换保持；abort/reset 随 initialState 归零） */
+  setOutlineBusy(busy: boolean) {
+    state = { ...state, outlineBusy: busy };
     emit();
   },
   setOutline(outline: KickoffOutlineItem[], warnings: string[] = []) {

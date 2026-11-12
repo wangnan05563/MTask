@@ -50,6 +50,8 @@ export interface SummaryStreamResult {
 
 export interface SummaryPptState {
   streaming: boolean;
+  /** T05683：大纲请求进行中——放 store 而不是组件 state，切卡片卸载后回来仍能显示运行态 */
+  outlineBusy: boolean;
   logs: string[];
   /** 大纲（AI 产出 + 用户就地编辑的当前态；面板与「开始生成」共用同一份） */
   outline: SummaryOutlineItem[];
@@ -61,7 +63,7 @@ export interface SummaryPptState {
 }
 
 const initialState = (): SummaryPptState => ({
-  streaming: false, logs: [], outline: [], outlineWarnings: [], result: null,
+  streaming: false, outlineBusy: false, logs: [], outline: [], outlineWarnings: [], result: null,
 });
 
 // 模块初始化时水合刷新前持久化的最终耗时（与 prdGenStore/tcGenStore/kickoffPptStore 同款）
@@ -106,6 +108,11 @@ export const summaryPptStore = {
   },
   pushLog(msg: string) {
     state = { ...state, logs: [...state.logs, msg] };
+    emit();
+  },
+  /** T05683：大纲运行态（跨卡片切换保持；abort/reset 会随 initialState 归零） */
+  setOutlineBusy(busy: boolean) {
+    state = { ...state, outlineBusy: busy };
     emit();
   },
   setOutline(outline: SummaryOutlineItem[], warnings: string[] = []) {

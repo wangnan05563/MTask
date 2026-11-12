@@ -626,7 +626,7 @@ export function SummaryPptPanel({ projectIds: topIds, projects, toolId, onClose,
 }) {
   const snap = useSummaryPpt();
   // store 快照里的 outline 本面板从不读取（编辑态用本地 rows + store 镜像），故不解构它
-  const { streaming, result } = snap;
+  const { streaming, result, outlineBusy } = snap;
 
   const [period, setPeriod] = useSessionState<PeriodKey>('report.summaryPpt.period', 'week');
   const [start, setStart] = useSessionState('report.summaryPpt.start', daysAgoYmd(29));
@@ -643,7 +643,6 @@ export function SummaryPptPanel({ projectIds: topIds, projects, toolId, onClose,
   const [preError, setPreError] = useState('');
   const [rows, setRows] = useState<SummaryOutlineItem[]>([]);
   const [extraNote, setExtraNote] = useState('');
-  const [outlineBusy, setOutlineBusy] = useState(false);
   const [outlineWarnings, setOutlineWarnings] = useState<string[]>([]);
   /** 生成本稿时的周期/范围签名：与当前不一致即要求重新生成，避免「A 范围的大纲 + B 范围的数据」 */
   const [outlineScope, setOutlineScope] = useState('');
@@ -761,7 +760,7 @@ export function SummaryPptPanel({ projectIds: topIds, projects, toolId, onClose,
     if (startBlockReason) { flash(startBlockReason); return; }
     if (!activePre) return;
     if (rows.length > 0 && !(await askConfirm('已有大纲稿，重新生成会覆盖当前编辑内容。继续？'))) return;
-    setOutlineBusy(true);
+    summaryPptStore.setOutlineBusy(true);
     const pre = activePre;
     const modeText = outlineModeText(isMerged, effectiveMode, pre.projectIds.length);
     summaryPptStore.pushLog(outlineStartLog(pre.periodLabel, pre.projectNames, modeText, !!extraNote));
@@ -777,12 +776,12 @@ export function SummaryPptPanel({ projectIds: topIds, projects, toolId, onClose,
       flash(`大纲已生成 ${r.outline.length} 页——请确认后开始生成`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setOutlineBusy(false);
+      summaryPptStore.setOutlineBusy(false);
       summaryPptStore.pushLog(`大纲生成失败：${msg}`);
       flash(`大纲生成失败：${msg}`);
       return;
     }
-    setOutlineBusy(false);
+    summaryPptStore.setOutlineBusy(false);
   }
 
   /** ④ 逐页装配：SSE stage 驱动进度，done 换下载令牌；断连即 abort（服务端不留半成品） */

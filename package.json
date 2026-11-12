@@ -136,7 +136,8 @@
     "verify:t05679-swimlane": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05679-swimlane.mts",
     "verify:t05678-image-slot": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05678-image-slot.mts",
     "verify:t05682-lecture-task-scope": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05682-lecture-task-scope.mts",
-    "verify:t05686-json-punct": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05686-json-punct.mts"
+    "verify:t05686-json-punct": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05686-json-punct.mts",
+    "verify:t05683-card-busy-store": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05683-card-busy-store.mts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

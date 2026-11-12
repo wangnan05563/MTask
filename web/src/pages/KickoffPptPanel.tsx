@@ -431,13 +431,12 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard, scopeNot
 }) {
   const snap = useKickoffPpt();
   // store 快照里的 outline 本面板从不读取（大纲编辑态一律用本地 rows + store），故不解构它
-  const { streaming, result } = snap;
+  const { streaming, result, outlineBusy } = snap;
   const [pre, setPre] = useState<PreflightResult | null>(null);
   const [preLoading, setPreLoading] = useState(false);
   const [preError, setPreError] = useState('');
   const [rows, setRows] = useState<KickoffOutlineItem[]>([]);
   const [extraNote, setExtraNote] = useState('');
-  const [outlineBusy, setOutlineBusy] = useState(false);
   const [outlineWarnings, setOutlineWarnings] = useState<string[]>([]);
   const [pageDone, setPageDone] = useState(0);
   const [pageTotal, setPageTotal] = useState(0);
@@ -542,7 +541,7 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard, scopeNot
     if (!projectId) { flash('请先在页面顶部选择项目范围'); return; }
     if (!toolId) { flash('请先在右侧控制台选择 AI 模型工具'); return; }
     if (rows.length > 0 && !(await askConfirm('已有大纲稿，重新生成会覆盖当前编辑内容。继续？'))) return;
-    setOutlineBusy(true);
+    kickoffPptStore.setOutlineBusy(true);
     kickoffPptStore.pushLog(`大纲段：项目 ${pre?.projectName ?? projectId}，补充说明 ${extraNote ? '已附加' : '无'}…`);
     try {
       const r = await api.post<{ outline: KickoffOutlineItem[]; warnings: string[]; truncated: boolean; projectName: string }>(
@@ -559,12 +558,12 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard, scopeNot
       flash(`大纲已生成 ${r.outline.length} 页——请确认后开始装配`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setOutlineBusy(false);
+      kickoffPptStore.setOutlineBusy(false);
       kickoffPptStore.pushLog(`大纲生成失败：${msg}`);
       flash(`大纲生成失败：${msg}`);
       return;
     }
-    setOutlineBusy(false);
+    kickoffPptStore.setOutlineBusy(false);
   }
 
   /** ③ 逐页装配：SSE stage 驱动进度，done 换下载令牌；断连即 abort（服务端不留半成品） */
