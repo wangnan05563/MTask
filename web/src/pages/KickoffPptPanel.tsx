@@ -25,6 +25,7 @@ import { CONSOLE_RESET_EVENT } from '../ui/consoleReset'; // T02109：工作台�
 import { finishMaterialTiming } from '../ui/materialTiming'; // T03189（G-1）：成品下载即收口本轮材料准备耗时
 import { AiProvenanceSection } from '../components/AiProvenance'; // T03262（AI-101①④）：溯源面板 + 产物找回
 import { DeckHtmlPreview } from '../ui/DeckHtmlPreview'; // 2026-11-06：HTML 版演示稿面板内预览
+import { htmlArtifactUrl, saveBlob } from '../utils/download'; // T05670：HTML 版只读交付（预览/下载不消费令牌）
 import { ChevronDown, ChevronUp, CircleAlert, CircleCheck, CircleX, Download, Eye, FileText, Loader2, Plus, Sparkles, Trash2, X } from 'lucide-react';
 
 /** 服务端 `PreflightItem` 的前端镜像（单源：`server/src/services/kickoffService.ts`） */
@@ -525,18 +526,15 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard, scopeNot
     }
   }
 
-  /** HTML 版下载：令牌与文件名都取服务端 done 原值，前端不重组命名 */
+  /** HTML 版下载：令牌与文件名都取服务端 done 原值；T05670 改走只读附件交付，下载后可再次预览/下载 */
   async function downloadHtml(): Promise<void> {
     if (!result?.htmlToken) return;
     setHtmlDownloading(true);
     try {
-      const { blob, filename } = await api.download('/report/ai-download', { token: result.htmlToken, filename: result.htmlFileName ?? '项目启动会.html' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      a.click();
-      URL.revokeObjectURL(url);
+      const { blob, filename } = await api.getDownload(htmlArtifactUrl(result.htmlToken, {
+        download: true, filename: result.htmlFileName ?? '项目启动会.html',
+      }));
+      saveBlob(blob, filename);
       flash(`已下载 ${filename}`);
       await finishMaterialTiming('kickoff-ppt');
     } catch (e) {

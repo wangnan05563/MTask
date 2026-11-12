@@ -14,9 +14,11 @@
  * 下载端点文件名白名单（T02103 起为启动会 PPT 复用周报链路，A-2 裁决：零改动复用）。
  * T02856（六期 S5 / PRD 裁决 A-2）：加 `zip`——分别独立版多项目打包的交付扩展名；
  * T02874（六期 3.3）：加 `md`——代码评审讲稿的纯文本导出。
+ * T05670：加 `html`——启动会/阶段总结的单文件演示稿。`ai-download` 的 MIME 表自 2026-11-06 起
+ *   已含 html，白名单却漏了，导致点「下载 .html」被静默兜回 `MTask-ai-report.xlsx`（内容对、名字错）。
  * 正文可字符集不变，生成侧仍须经 {@link downloadSafeName} 洗到能过这里，不新开校验口子。
  */
-export const DOWNLOAD_NAME_RE = /^[\w\-.()·\u4e00-\u9fa5 ]+\.(xlsx|docx|pdf|pptx|zip|md)$/i;
+export const DOWNLOAD_NAME_RE = /^[\w\-.()·\u4e00-\u9fa5 ]+\.(xlsx|docx|pdf|pptx|zip|md|html)$/i;
 
 /** 白名单允许的正文字符（去掉扩展名后逐字判定）：ASCII 字母数字下划线、`- . ( ) ·`、空格、CJK 基本区 */
 const BODY_CHAR_RE = /[\w\-().·\u4e00-\u9fa5]/;

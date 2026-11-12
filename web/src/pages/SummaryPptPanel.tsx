@@ -33,6 +33,7 @@ import { CONSOLE_RESET_EVENT } from '../ui/consoleReset';
 import { finishMaterialTiming } from '../ui/materialTiming'; // T03189（G-1）：成品下载即收口本轮材料准备耗时
 import { AiProvenanceSection } from '../components/AiProvenance'; // T03262（AI-101①④）：溯源面板 + 产物找回
 import { DeckHtmlPreview } from '../ui/DeckHtmlPreview'; // 2026-11-06：HTML 版演示稿面板内预览
+import { htmlArtifactUrl, saveBlob } from '../utils/download'; // T05670：HTML 版只读交付（预览/下载不消费令牌）
 import { ChevronDown, ChevronUp, CircleAlert, CircleCheck, CircleX, Download, Eye, FileChartColumn, Loader2, Plus, Sparkles, Trash2, X } from 'lucide-react';
 
 /** 服务端 `SummaryPreflightItem` 的前端镜像（单源：`server/src/services/summaryPptService.ts`） */
@@ -854,18 +855,16 @@ export function SummaryPptPanel({ projectIds: topIds, projects, toolId, onClose,
     }
   }
 
-  /** HTML 版下载：令牌与文件名取服务端 done 原值（separate 模式无独立 HTML，按钮不渲染） */
+  /** HTML 版下载：令牌与文件名取服务端 done 原值（separate 模式无独立 HTML，按钮不渲染）；
+   *  T05670 改走只读附件交付，下载后可再次预览/下载 */
   async function downloadHtml(): Promise<void> {
     if (!result?.htmlToken) return;
     setHtmlDownloading(true);
     try {
-      const { blob, filename } = await api.download('/report/ai-download', { token: result.htmlToken, filename: result.htmlFileName ?? '阶段性总结.html' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      a.click();
-      URL.revokeObjectURL(url);
+      const { blob, filename } = await api.getDownload(htmlArtifactUrl(result.htmlToken, {
+        download: true, filename: result.htmlFileName ?? '阶段性总结.html',
+      }));
+      saveBlob(blob, filename);
       flash(`已下载 ${filename}`);
       await finishMaterialTiming('summary-ppt');
     } catch (e) {

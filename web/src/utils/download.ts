@@ -33,6 +33,23 @@ export function safeExportName(name: string, fallback = 'export'): string {
 }
 
 /**
+ * T05670：HTML 版演示稿的读取 URL 单源。
+ *
+ * 预览与下载**共用同一个只读令牌端点**：`download=1` 只让服务端加
+ * `Content-Disposition: attachment`，不删令牌文件。此前下载走 `/report/ai-download`
+ * （读即删），一次下载后同一 htmlToken 再预览/再下载都 404「文件已过期，请重新生成」。
+ * 文件名取服务端 done 原值，由端点用 DOWNLOAD_NAME_RE 白名单裁定，前端不重组命名。
+ */
+export function htmlArtifactUrl(token: string, opts?: { download?: boolean; filename?: string }): string {
+  const q = new URLSearchParams({ token });
+  if (opts?.download) {
+    q.set('download', '1');
+    if (opts.filename) q.set('filename', opts.filename);
+  }
+  return `/report/ai-preview?${q.toString()}`;
+}
+
+/**
  * T01485：保存 Blob 为文件——用于 `api.postDownload()` 这类「POST 换文件流」的导出。
  *
  * 与 `saveBinary` 的差别只在于输入：后者接 ArrayBuffer（GET 二进制），

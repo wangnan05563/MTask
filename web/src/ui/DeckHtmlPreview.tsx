@@ -7,10 +7,13 @@
  * 也不会把令牌暴露在 iframe 地址栏里。
  *
  * 令牌是**只读**的（服务端 ai-preview 不删文件）：预览之后用户仍能点「下载 .html」。
+ * T05670：本组件内的「下载 .html」也曾走 `ai-download`（读即删），下载一次后同一 token
+ * 再预览/再下载都提示「文件已过期」。现在预览与下载共用只读端点（download=1 仅换响应头）。
  */
 import { useCallback, useEffect, useState } from 'react';
 import { Download, Loader2, X } from 'lucide-react';
 import { api } from '../api/client';
+import { htmlArtifactUrl, saveBlob } from '../utils/download';
 
 export interface DeckHtmlPreviewProps {
   readonly token: string;
@@ -29,7 +32,7 @@ export function DeckHtmlPreview({ token, fileName, onClose, onDownloaded }: Deck
     let revoked = '';
     let cancelled = false;
     setError('');
-    void api.getBinary(`/report/ai-preview?token=${encodeURIComponent(token)}`)
+    void api.getBinary(htmlArtifactUrl(token))
       .then((buf) => {
         if (cancelled) return;
         const blob = new Blob([buf], { type: 'text/html;charset=utf-8' });
@@ -53,13 +56,9 @@ export function DeckHtmlPreview({ token, fileName, onClose, onDownloaded }: Deck
   const download = useCallback(async () => {
     setDownloading(true);
     try {
-      const { blob, filename } = await api.download('/report/ai-download', { token, filename: fileName });
-      const href = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = href;
-      a.download = filename;
-      a.click();
-      URL.revokeObjectURL(href);
+      // T05670：走只读附件交付，不消费令牌——下载后仍可再次预览或再次下载
+      const { blob, filename } = await api.getDownload(htmlArtifactUrl(token, { download: true, filename: fileName }));
+      saveBlob(blob, filename);
       onDownloaded?.(filename);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

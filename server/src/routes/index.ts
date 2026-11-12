@@ -2443,11 +2443,18 @@ api.post('/report/ai-download', (req, res) => {
 });
 
 /**
- * 2026-11-06：HTML 版演示稿的面板内预览。
+ * 2026-11-06：HTML 版演示稿的面板内预览；T05670 起同时承担「下载 .html」的只读交付。
  * - **只读令牌**（`readReportBuffer` 不删文件）：预览之后用户还要能下载同一份；
  * - 用 `sandbox allow-scripts` 而非 `allow-same-origin`：演示稿里的脚本只做翻页，
  *   不需要访问本站存储/接口，隔离住就等于把「生成内容」的风险面压到最小；
  * - 不允许被 iframe 嵌入到第三方站点（`frame-ancestors 'self'`），避免令牌被别人挂到外站。
+ *
+ * T05670：此前「下载 .html」走 `/report/ai-download`（`readAndDeleteReport`，下载即删）。
+ *   同一个 htmlToken 被消费一次后，再次预览或再次下载都只能拿到 404「文件已过期，请重新生成」。
+ *   现在 HTML 版的预览与下载统一走本端点的只读通道：`download=1` 只多一个
+ *   Content-Disposition: attachment，字节与令牌生命周期不变（仍由 6h TTL 统一回收）。
+ *   `/report/ai-download` 的一次性语义保持不动——AI 周报 / PPTX / zip / md / 讲座导出等
+ *   全部既有调用方零回归，T02144 的资源清理口径也不被打开缺口。
  */
 api.get('/report/ai-preview', (req, res) => {
   const token = typeof req.query.token === 'string' ? req.query.token : '';
@@ -2457,6 +2464,12 @@ api.get('/report/ai-preview', (req, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Content-Security-Policy', "sandbox allow-scripts; frame-ancestors 'self'");
+  // T05670：附件交付只改响应头，不吃掉令牌；文件名沿用令牌链路同一把白名单（html 已入列）
+  if (req.query.download === '1') {
+    const raw = typeof req.query.filename === 'string' ? req.query.filename : '';
+    const safe = DOWNLOAD_NAME_RE.test(raw) ? raw : '演示稿.html';
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(safe)}`);
+  }
   res.send(buf);
 });
 
