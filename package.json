@@ -131,7 +131,8 @@
     "verify:t02943-name-uniqueness": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t02943-name-uniqueness.mts",
     "verify:t02945-import-name-uniqueness": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t02945-import-name-uniqueness.mts",
     "verify:t05670-html-replay": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05670-html-replay.mts",
-    "verify:t05671-warning-digest": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05671-warning-digest.mts"
+    "verify:t05671-warning-digest": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05671-warning-digest.mts",
+    "verify:t05673-kickoff-quality": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05673-kickoff-quality.mts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

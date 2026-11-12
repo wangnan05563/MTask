@@ -1039,6 +1039,92 @@ export function chipBlocks(b: KickoffBundle, frame: Box): DiagramResult {
   return { blocks: out, drawn, overflow, notes, violations: diagramViolations(out, frame) };
 }
 
+/** T05673：可画成卡片网格的数据键（表格型数据块的「图解」形态） */
+const CARD_KEYS: readonly KickoffDataKey[] = ['reqList', 'risks', 'assignees', 'planRows', 'milestones'];
+const CARD_COLS = 3;
+const CARD_MAX = 6;
+const CARD_GAP = 0.16;
+/** 整块进入堆叠预算的最小高度（1 行卡 + 标题带） */
+const CARD_MIN_H = 1.7;
+/** 单卡可读最小高度：低于它只排 1 行，不把两行文字压成一条 */
+const CARD_ROW_MIN_H = 0.75;
+
+interface CardModel {
+  /** 卡片主标题（一条实体：需求名/风险项/人名/任务名） */
+  title: string;
+  /** 副信息：编号、状态、日期等，一行内说完 */
+  meta: string;
+}
+
+function clipText(s: string, n: number): string {
+  const t = (s ?? '').trim();
+  return t.length <= n ? t : `${t.slice(0, n - 1)}…`;
+}
+
+/** 卡片内容与表格同源：只是把「一行五列」拆成「标题 + 副信息」，不改任何数值 */
+function cardModelsOf(b: KickoffBundle, key: KickoffDataKey): CardModel[] {
+  switch (key) {
+    case 'reqList':
+      return b.requirements.map((r) => ({
+        title: clipText(r.title ?? r.req_no ?? '', 20),
+        meta: [r.req_no, r.priority, statusMark(r.status ?? 'todo')].filter(Boolean).join(' · '),
+      }));
+    case 'risks':
+      return b.risks.map((r) => ({ title: clipText(r.item, 20), meta: clipText(r.impact, 24) }));
+    case 'assignees':
+      return b.assignees.map((a) => ({ title: clipText(a.name || KICKOFF_PLACEHOLDER, 12), meta: `${a.planCount} 项任务` }));
+    case 'planRows':
+      return b.plans.map((p) => ({
+        title: clipText(p.title, 20),
+        meta: `${cell(p.start_date)}~${cell(p.end_date)} · ${statusMark(p.status)}`,
+      }));
+    case 'milestones':
+      return b.milestones.map((m) => ({
+        title: clipText(m.title, 20),
+        meta: `${cell(m.start_date)}~${cell(m.end_date)} · ${m.progress}%`,
+      }));
+    default:
+      return [];
+  }
+}
+
+/**
+ * T05673：卡片网格（最多 2×3）。表格型数据块在「3~6 条、每列短」时画成卡片——
+ * 表格高度刚性，同页要点会被挤掉（T05671 那 4 条「表格让位压缩」提示的根因），
+ * 视觉上也像 Excel 截屏。卡片仍守 `Block` 的「一块一形状一带字」约束（避免 findOverlaps 误判），
+ * 标题与副信息用换行放在同一个 label 里。
+ */
+export function cardGridBlocks(b: KickoffBundle, key: KickoffDataKey, frame: Box): DiagramResult {
+  const out: Block[] = [];
+  const notes: string[] = [];
+  const models = cardModelsOf(b, key).filter((c) => c.title.trim().length > 0);
+  if (models.length === 0) return { blocks: out, drawn: 0, overflow: 0, notes, violations: [] };
+
+  const cols = Math.min(CARD_COLS, models.length);
+  const maxRows = frame.h >= CARD_ROW_MIN_H * 2 + CARD_GAP ? 2 : 1;
+  const cap = Math.min(CARD_MAX, cols * maxRows);
+  const rows = Math.min(maxRows, Math.ceil(models.length / cols));
+  const cardW = (frame.w - CARD_GAP * (cols - 1)) / cols;
+  const cardH = (frame.h - CARD_GAP * (rows - 1)) / rows;
+
+  models.slice(0, cap).forEach((c, i) => {
+    const r = Math.floor(i / cols);
+    const col = i % cols;
+    out.push({
+      box: { x: frame.x + col * (cardW + CARD_GAP), y: frame.y + r * (cardH + CARD_GAP), w: cardW, h: cardH },
+      shape: {
+        kind: 'roundRect',
+        tone: 'chip',
+        label: { text: `${c.title}\n${c.meta}`, pt: 10, color: PALETTE.brandDeep },
+      },
+    });
+  });
+
+  const overflow = models.length - out.length;
+  if (overflow > 0) notes.push(`本页卡片只排得下 ${out.length} 条，其余 ${overflow} 条见明细表（一条不丢）`);
+  return { blocks: out, drawn: out.length, overflow, notes, violations: diagramViolations(out, frame) };
+}
+
 /**
  * 正文块 + 数据块的排布（单栏纵向堆叠走 stackY 单源；双栏按 6:4 左右分）。
  * 排不下的块**省略并如实回报**，不硬塞——硬塞就是越界页，静默丢就是假数据页，
@@ -1099,6 +1185,12 @@ interface DiagramPlan {
 }
 
 function planDiagram(item: KickoffRenderPage, b: KickoffBundle): DiagramPlan {
+  // T05673：cards 页把「表格型」数据块画成卡片网格，同样不进堆叠预算
+  if (item.layout === 'cards') {
+    const cardKey = CARD_KEYS.find((k) => item.dataKeys.includes(k)) ?? null;
+    const on = cardKey !== null && cardModelsOf(b, cardKey).some((c) => c.title.trim().length > 0);
+    return { key: cardKey, on, minH: CARD_MIN_H };
+  }
   // T02198：flow/chip 页由组件自己绘制，其数据块（里程碑链 / 人员标签）不进堆叠预算
   const chipKey: KickoffDataKey | null = item.layout === 'chip' ? 'assignees' : null;
   const key: KickoffDataKey | null = item.layout === 'flow' ? 'milestones' : chipKey;
@@ -1188,7 +1280,11 @@ function tryDiagramPage(
   const { body, cursor, bottom } = frame;
   const { out, dropped, notes } = sink;
   const area: Box = { x: body.x, y: cursor, w: body.w, h: bottom - cursor };
-  const pass = item.layout === 'flow' ? flowBlocks(b, area) : chipBlocks(b, area);
+  const pass = item.layout === 'flow'
+    ? flowBlocks(b, area)
+    : item.layout === 'cards'
+      ? cardGridBlocks(b, diagram.key, area)
+      : chipBlocks(b, area);
   if (pass.drawn > 0) {
     out.push(...pass.blocks);
     notes.push(...pass.notes);
@@ -1197,7 +1293,9 @@ function tryDiagramPage(
   notes.push(
     item.layout === 'flow'
       ? `阶段链回落表格版：剩余高度 ${area.h.toFixed(2)}" 排不下节点与截止日注`
-      : `人员标签回落表格版：库内无可排的负责人标签`
+      : item.layout === 'cards'
+        ? `卡片网格回落表格版：剩余高度 ${area.h.toFixed(2)}" 排不下卡片`
+        : `人员标签回落表格版：库内无可排的负责人标签`
   );
   return null;
 }
@@ -1497,6 +1595,11 @@ export function drawBlock(slide: any, block: Block): void {
  */
 export function footerOf(item: KickoffOutlineItem, b: KickoffBundle, pageNo: number, total: number): string {
   const parts = [b.project.name, item.section || '正文', `数据截至 ${b.dataAsOf}`];
+  // T05673：封面把「资料待补」前置——会上被问「负责人呢」时，稿子自己先说了
+  if (item.layout === 'cover') {
+    const pending = b.preflight.items.filter((i) => i.status === 'warn').length;
+    if (pending > 0) parts.push(`待补 ${pending} 项`);
+  }
   if (item.dataKeys.includes('workload')) {
     parts.push(b.workload.footer);
     if (b.workload.reviewTrace) parts.push(b.workload.reviewTrace);

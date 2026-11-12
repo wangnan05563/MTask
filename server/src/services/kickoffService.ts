@@ -549,7 +549,27 @@ export const KICKOFF_SECTIONS = [
   '沟通管理',
   '附录',
 ] as const;
-export const KICKOFF_LAYOUTS = ['cover', 'toc', 'twoCol', 'table', 'chart', 'timeline', 'list', 'flow', 'chip', 'section', 'thanks'] as const;
+export const KICKOFF_LAYOUTS = ['cover', 'toc', 'twoCol', 'table', 'chart', 'timeline', 'list', 'flow', 'chip', 'cards', 'section', 'thanks'] as const;
+
+/**
+ * T05673：栏目名黑名单——标题只写这些词，说明模型把 section 复述成了 title。
+ * 只用于提示词约束、前端提示与验收门断言；**不做运行时改写**（替用户改标题等于替他下判断）。
+ * 章节页/封面/结束页不参与该判据（它们本来就只写章节名/项目名/致谢语）。
+ */
+export const KICKOFF_TITLE_ANTIPATTERNS = [
+  '会议议程', '议程',
+  '项目背景', '背景',
+  '需求基线', '需求概况',
+  '项目范围', '范围边界', '项目范围边界',
+  '项目计划', '计划与状态', '项目计划与状态',
+  '工作量评估', '工作量',
+  '测试与质量策略', '测试策略', '质量策略',
+  '项目风险', '风险',
+  '沟通管理', '沟通机制',
+  '项目团队', '项目团队介绍', '团队介绍',
+  '里程碑时间线', '时间线', '里程碑',
+  '附录',
+] as const;
 export const KICKOFF_DATA_KEYS = [
   'prdDoc',
   'reqList',
@@ -1004,6 +1024,10 @@ export const OUTLINE_SYSTEM = `你是项目启动会 PPT 的大纲编排器。�
 1. 页数 ${PAGE_MIN}~${PAGE_MAX}；
 2. section 只能取：${KICKOFF_SECTIONS.join(' / ')}；
 3. layout 只能取：${KICKOFF_LAYOUTS.join(' / ')}；
+   ⚠ 标题铁律（T05673，先于版式选型自查）：title 必须是**一句可被反驳的结论**，不得只写栏目名。
+   以下词单独作标题一律不合格：${KICKOFF_TITLE_ANTIPATTERNS.join(' / ')}；
+   合格示例：「三条需求未关联计划，开工前需定归属」「里程碑集中在 9 月，10 月无交付」。
+   栏目名放 section，标题写这一页的判断；写不出判断就说明这页该合并到相邻页。
 4. dataKeys 只能取：${KICKOFF_DATA_KEYS.join(' / ')}；一页可多个，但**最多 2 个**（3 个数据块加要点必然挤爆版面，装配层只能整块省略，页面就缺内容）；
    ⚠ 同一 dataKey **全稿只能挂一页**——同一数据块出现在两页，两页就是几乎一样的表格（T02156 实测踩坑）。想再讲这个维度就写 bullets 结论，不要再挂数据块；
 5. 每页 bullets ≤${BULLET_MAX_LINES} 条，每条 ≤${BULLET_MAX_CHARS} 字；
@@ -1045,7 +1069,8 @@ bullets 每条≤${BULLET_MAX_CHARS}字；必须至少一页 dataKeys 含 "timel
 每页至少 1 条 bullets 用「」照抄输入里出现过的具体名称，全稿带「」指代的 bullets ≥6 成；
 「」内只放 ≤12 字的名称本体（不放整段原文、路径、代码标识符），整条仍≤${BULLET_MAX_CHARS}字——放不下就删废话，别加长句子；「待补充」不计入指代配额；
 空源写「待补充」，不写「0 人」这类像结论的数。
-每页只讲一个判断：标题写成一句结论而不是栏目名；相邻两页不得重复同一件事。`;
+每页只讲一个判断：标题写成一句结论而不是栏目名；相邻两页不得重复同一件事。
+标题不得是这些栏目名之一：${KICKOFF_TITLE_ANTIPATTERNS.join('/')}。`;
 
 /** 齐备性摘要 + 真实计数：喂给模型的是口径与可用源，数字仍由装配层覆盖（FR-3.4） */
 export function outlineFacts(b: KickoffBundle): string {

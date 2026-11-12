@@ -54,7 +54,7 @@ interface PreflightResult {
  * 两份清单的一致性由 `verify-t02111` 的源码守卫断言，不靠人记。
  */
 const SECTIONS = ['封面', '议程', '项目团队介绍', '项目背景', '项目需求', '项目范围', '项目计划', '工作量评估', '测试与质量策略', '项目风险', '沟通管理', '附录'];
-const LAYOUTS = ['cover', 'toc', 'twoCol', 'table', 'chart', 'timeline', 'list', 'flow', 'chip', 'section', 'thanks'];
+const LAYOUTS = ['cover', 'toc', 'twoCol', 'table', 'chart', 'timeline', 'list', 'flow', 'chip', 'cards', 'section', 'thanks'];
 
 /** 大纲编辑态会话键（重置入口在 consoleReset 的产物键清单里，与控制台重置等效） */
 const OUTLINE_SESSION_KEY = 'kickoff.outline';
@@ -224,7 +224,7 @@ function OutlinePageList({ rows, streaming, onPatch, onRemove, onMove, onAdd }: 
                 {SECTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
               <input value={r.title} onChange={(e) => onPatch(idx, { title: e.target.value })} disabled={streaming}
-                placeholder="页标题（≤30 字）" aria-label={`第${idx + 1}页标题`} style={{ ...cellInput, flex: 1, minWidth: 160 }} />
+                placeholder="标题写结论，不写栏目名（≤30 字）" aria-label={`第${idx + 1}页标题`} style={{ ...cellInput, flex: 1, minWidth: 160 }} />
               <select value={r.layout} onChange={(e) => onPatch(idx, { layout: e.target.value })} disabled={streaming}
                 title="版式" aria-label={`第${idx + 1}页版式`} style={cellInput}>
                 {LAYOUTS.map((l) => <option key={l} value={l}>{l}</option>)}
