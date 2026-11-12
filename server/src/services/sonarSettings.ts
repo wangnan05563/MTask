@@ -27,6 +27,7 @@ import { randomUUID } from 'node:crypto';
 import { getDb } from '../db/connection';
 import { getSetting, setSetting } from './AppSettings';
 import { encrypt, decrypt, maskSecret } from '../util/crypto';
+import { sonarBasicAuth } from '../util/sonarAuth'; // T05689：Basic 头单源（token 作用户名、密码留空）
 
 const SERVER_URL_KEY = 'sonar.serverUrl';
 const TOKEN_ENC_KEY = 'sonar.tokenEnc';
@@ -708,7 +709,8 @@ interface StatusResponse {
 
 async function getJson(url: string, token: string | null): Promise<{ res: Response; json: unknown }> {
   const headers: Record<string, string> = { Accept: 'application/json' };
-  if (token) headers.Authorization = `Basic ${Buffer.from(token).toString('base64')}`;
+  // T05689：必须经 sonarBasicAuth 补 `token:` 的冒号——裸 token 的 base64 会被 Sonar 判成 401
+  if (token) headers.Authorization = sonarBasicAuth(token);
   const res = await fetch(url, { headers, signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
   const json = await res.json().catch(() => null);
   return { res, json };

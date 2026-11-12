@@ -37,6 +37,7 @@ import {
   projectKeyFor, readScanSettings, resolveScannerBin,
 } from './sonarSettings';
 import type { SonarProbe } from './sonarSettings';
+import { sonarBasicAuth } from '../util/sonarAuth'; // T05689：与设置页共用同一份 Basic 头构造
 import { scalarText } from '../util/scalarText';
 
 /** 严重度内部口径（新旧两套 API 归一到这五档，PRD §3.4.2） */
@@ -280,14 +281,14 @@ export function sweepSonarFps(days = FP_TTL_DAYS, now = Date.now()): number {
 async function sonarGet(url: string, token: string): Promise<{ status: number; json: any }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
-  const credentials = `${token}:`;
   try {
     const res = await fetch(url, {
       method: 'GET',
       signal: controller.signal,
       headers: {
         Accept: 'application/json',
-        ...(token ? { Authorization: `Basic ${Buffer.from(credentials).toString('base64')}` } : {}),
+        // T05689：与设置页共用同一份 Basic 头构造（token: 冒号不能少）
+        ...(token ? { Authorization: sonarBasicAuth(token) } : {}),
       },
     });
     const text = await res.text();
