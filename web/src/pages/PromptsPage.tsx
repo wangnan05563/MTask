@@ -10,6 +10,7 @@ import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：AI 
 import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
 import { FavoriteToggle } from '../ui/FavoriteToggle'; // T03683：收藏切换（与置顶正交，两页共用同一组件）
+import { ALL_FAV, isAllFav } from '../ui/favScope'; // T05687：分类下拉「全部收藏」哨兵
 import { OPTIMIZE_SCOPE_PROMPTS, busyScope, runOptimize, useOptimizeStore } from '../stores/optimizeStore'; // T03684：提示词优化运行态切页保持
 import { relTime } from '../ui/format';
 import { OPTIMIZE_EMPTY_MESSAGE, resolveOptimizeInput } from '../ui/optimizeInput'; // T04808：与通用需求菜单共用输入源判定
@@ -337,9 +338,12 @@ function describeEmptyList(args: {
   readonly search: string;
   readonly reqFilter: string;
   readonly viewScope: 'all' | 'fav';
+  /** T05687：是否「全部收藏」跨分组视图 */
+  readonly allFav: boolean;
 }): string {
   const keyword = args.search.trim();
   if (args.categoryCount === 0) return '暂无分类，请先用上方常驻的「新建分类」建一个分类。';
+  if (args.allFav) return '还没有收藏任何提示词 —— 点标题左侧的星标加入收藏，这里会跨分类汇总。';
   // UX-04⑤：搜索无结果 ≠ 分类里没东西——两者文案必须能分辨，否则用户会以为数据丢了
   if (keyword && args.reqFilter === '') return `没有匹配「${keyword}」的提示词 —— 换个关键词或清空搜索框。`;
   if (keyword) return `没有匹配「${keyword}」的提示词 —— 当前还叠加了「通用需求分类」筛选，可一并清掉。`;
@@ -557,7 +561,7 @@ export function PromptsPage() {
   const categoriesView = useResource<PromptCategory[]>(async () => {
     const cats = await api.get<PromptCategory[]>('/prompt-categories');
     // 保持当前选中；选中项被删除或首次加载时回落到第一个分类
-    setActiveCat((cur) => (cats.some((c) => c.id === cur) ? cur : cats[0]?.id ?? ''));
+    setActiveCat((cur) => (isAllFav(cur) || cats.some((c) => c.id === cur) ? cur : cats[0]?.id ?? ''));
     return cats;
   });
   const categories = categoriesView.data ?? [];
@@ -571,7 +575,10 @@ export function PromptsPage() {
   // 语义一致，避免挂载时重复请求）；关键词取实时 search，防抖只推迟触发时机
   const promptsView = useResource<Prompt[]>(async () => {
     if (!activeCat) return [];
-    const qs = new URLSearchParams({ categoryId: activeCat });
+    const qs = new URLSearchParams();
+    // T05687：「全部收藏」不带 categoryId，只传 favorited=1 —— 后端跨分组聚合
+    if (isAllFav(activeCat)) qs.set('favorited', '1');
+    else qs.set('categoryId', activeCat);
     if (search.trim()) qs.set('keyword', search.trim());
     return api.get<Prompt[]>(`/prompts?${qs.toString()}`);
   }, { enabled: false });
@@ -887,7 +894,7 @@ export function PromptsPage() {
   const sortedPrompts = [...scopePrompts].sort((a, b) => comparePrompts(a, b, sortKey, sortDir));
   const listFailed = categoriesView.phase === 'error' || promptsView.phase === 'error';
   const emptyListHint = describeEmptyList({
-    categoryCount: categories.length, search, reqFilter, viewScope,
+    categoryCount: categories.length, search, reqFilter, viewScope, allFav: isAllFav(activeCat),
   });
   return (
     <section>
@@ -917,6 +924,8 @@ export function PromptsPage() {
         <select value={activeCat} onChange={(e) => setActiveCat(e.target.value)}
           aria-label="提示词分类：切换要查看的分类" title="分类切换 — 切换要查看的提示词分类"
           style={{ padding: 6, fontSize: 'var(--fs-s)', minWidth: 180, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          {/* T05687：首项固定「全部收藏」，跨分组聚合；主题色底与普通分类区分 */}
+          <option value={ALL_FAV} style={{ background: 'var(--accent)', color: 'var(--accent-text)', fontWeight: 600 }}>★ 全部收藏</option>
           {categories.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.promptCount ?? 0}）</option>)}
         </select>
         {/* T02283：断供时给出原因与重试入口，而不是让下拉静默变空 */}
@@ -1081,6 +1090,11 @@ export function PromptsPage() {
               onDrop={dropRowFor(p.id)}
               className={rowCls(p.id)}
               style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginBottom: 10, cursor: 'grab' }}>
+              {isAllFav(activeCat) && (
+                <div data-t05687="fav-source" style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginBottom: 4 }}>
+                  来源：{categories.find((c) => c.id === p.category_id)?.name ?? '未分类'}
+                </div>
+              )}
               {editing ? (
                 <>
                   <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>

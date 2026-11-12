@@ -10,6 +10,7 @@ import { NotOpenButton } from '../ui/notOpen'; // T03185（UX-05⑤）：未开�
 import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
 import { FavoriteToggle } from '../ui/FavoriteToggle'; // T03683：收藏切换（与提示词页共用同一组件）
+import { ALL_FAV, isAllFav } from '../ui/favScope'; // T05687：分类下拉「全部收藏」哨兵
 import { focusSettingsTab } from '../ui/settingsTabs'; // T03685：工具条「归档」直达归档管理页
 import { applyDeepLink } from '../ui/deepLink'; // T03685：focusSettingsTab 只落页签，切一级菜单要靠 deepLink（与 SonarScanPanel.goSettings 同口径）
 import { AiPolishButton } from '../ui/AiPolishButton'; // T00796 二轮：通用需求正文 AI 美化
@@ -60,9 +61,10 @@ function reqRowClass(
   return cls;
 }
 
-/** 空态文案：分类为空 / 收藏筛选下无收藏 / 分类下确实没有数据，三种情形分别说清 */
-function reqEmptyHint(categoryCount: number, total: number, viewScope: 'all' | 'fav'): string {
+/** 空态文案：分类为空 / 全部收藏为空 / 收藏筛选下无收藏 / 分类下确实没有数据，四种情形分别说清 */
+function reqEmptyHint(categoryCount: number, total: number, viewScope: 'all' | 'fav', allFav = false): string {
   if (categoryCount === 0) return '暂无分类，请先新建分类。';
+  if (allFav) return '还没有收藏任何通用需求 —— 点标题左侧星标加入收藏，这里会跨分类汇总。';
   if (viewScope === 'fav' && total > 0) {
     return `该分类下有 ${total} 条通用需求，但都未收藏 —— 点标题左侧星标加入收藏，或把「显示范围」切回「全部显示」。`;
   }
@@ -176,12 +178,15 @@ export function ReqPage() {
     const cats = await api.get<ReqCategory[]>('/req-categories');
     setCategories(cats);
     // 保持当前选中；选中项被删除或首次加载时回落到第一个分类
-    setActiveCat((cur) => (cats.some((c) => c.id === cur) ? cur : cats[0]?.id ?? ''));
+    setActiveCat((cur) => (isAllFav(cur) || cats.some((c) => c.id === cur) ? cur : cats[0]?.id ?? ''));
   }, []);
 
   const loadEntries = useCallback(async (categoryId: string, keyword: string) => {
     if (!categoryId) { setEntries([]); return; }
-    const qs = new URLSearchParams({ categoryId });
+    const qs = new URLSearchParams();
+    // T05687：「全部收藏」不传 categoryId，只带 favorited=1 —— 后端据此跨分组聚合
+    if (isAllFav(categoryId)) qs.set('favorited', '1');
+    else qs.set('categoryId', categoryId);
     if (keyword.trim()) qs.set('keyword', keyword.trim());
     setEntries(await api.get<ReqEntry[]>(`/req-entries?${qs.toString()}`));
   }, []);
@@ -483,6 +488,8 @@ export function ReqPage() {
       {/* 工具栏：分类切换与管理 */}
       <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <select value={activeCat} aria-label="需求分类筛选" onChange={(e) => setActiveCat(e.target.value)} style={{ padding: 6, fontSize: 'var(--fs-s)', minWidth: 180, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          {/* T05687：首项固定「全部收藏」，跨分组聚合；主题色底与普通分类区分 */}
+          <option value={ALL_FAV} style={{ background: 'var(--accent)', color: 'var(--accent-text)', fontWeight: 600 }}>★ 全部收藏</option>
           {categories.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.reqCount ?? 0}）</option>)}
         </select>
         {/* T00510 调整：分类管理三按钮与任务菜单项目按钮组同款——纯图标+边框、同组紧跟下拉、悬浮显示 */}
@@ -642,7 +649,7 @@ export function ReqPage() {
       {/* 条目列表 */}
       {visibleEntries.length === 0 && (
         <p style={{ color: 'var(--text-muted)' }}>
-          {reqEmptyHint(categories.length, sortedEntries.length, viewScope)}
+          {reqEmptyHint(categories.length, sortedEntries.length, viewScope, isAllFav(activeCat))}
         </p>
       )}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
@@ -661,6 +668,11 @@ export function ReqPage() {
               onDrop={(e) => { e.preventDefault(); dropReorder(p.id); }}
               className={rowCls(p.id)}
               style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginBottom: 10, cursor: 'grab' }}>
+              {isAllFav(activeCat) && (
+                <div data-t05687="fav-source" style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginBottom: 4 }}>
+                  来源：{categories.find((c) => c.id === p.category_id)?.name ?? '未分类'}
+                </div>
+              )}
               {editing ? (
                 <>
                   <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
