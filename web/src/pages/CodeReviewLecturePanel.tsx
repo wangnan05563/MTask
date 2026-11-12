@@ -1050,37 +1050,62 @@ function LectureStatusFooter({ stage, streaming, result, followupCount, ignoredC
   readonly canExport: boolean;
 }) {
   const stageText = stage?.msg ?? (streaming ? '准备中…' : '未开始（可先「加载 diff」或「只出大纲」）');
+  /* T05701：原实现是「单行 flex 塞 10 个子项」——容器一窄，所有子项被 flex 压成竖排
+     （截图里「停止 / 从第 3 节继续 / 导出」变窄条、计数文字竖排），展开的溯源面板长文本
+     又被挤成一列溢出。改为 Header 状态行 / Body 溯源行 / Footer 操作行三层：
+     行内 flexWrap 自然折行，不可压缩元素显式 flexShrink:0，溯源独占整行且超高可滚动。 */
   return (
-    <footer data-lck="status-bar" style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
-      <span data-lck="stage" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', minWidth: 0, flex: '1 1 auto' }}>{stageText}</span>
-      <div style={{ width: 150 }}>
-        <FlowProgress value={stage?.progress ?? 0} aria-label="讲稿生成进度" />
+    <footer data-lck="status-bar"
+      style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0, marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
+      {/* ① 状态行：阶段文案弹性伸展，进度/计数不压缩；窄容器自动折行而不是挤字 */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', minWidth: 0 }}>
+        <span data-lck="stage"
+          style={{ flex: '1 1 260px', minWidth: 0, fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', lineHeight: 1.5, overflowWrap: 'anywhere' }}>
+          {stageText}
+        </span>
+        <div style={{ width: 150, flexShrink: 0 }}>
+          <FlowProgress value={stage?.progress ?? 0} aria-label="讲稿生成进度" />
+        </div>
+        <span data-lck="anchor-count" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>
+          锚点 {result?.stats.anchors ?? 0}
+        </span>
+        {result?.deviation && <DeviationNotice deviation={result.deviation} />}
+        <span data-lck="mark-count" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>
+          跟进 {followupCount} · 忽略 {ignoredCount}
+        </span>
       </div>
-      <span data-lck="anchor-count" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>锚点 {result?.stats.anchors ?? 0}</span>
-      {result?.deviation && <DeviationNotice deviation={result.deviation} />}
-      <span data-lck="mark-count" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>跟进 {followupCount} · 忽略 {ignoredCount}</span>
-      <FlowButton onClick={onStop} disabled={!streaming} title="中止当前生成（已生成的节次保留）">
-        <Ban size={13} style={{ marginRight: 4 }} />停止
-      </FlowButton>
-      {canResume && (
-        <FlowButton data-lck="resume-btn" onClick={onResume} disabled={streaming}
-          title={`跳过已生成的前 ${resumeIndex - 1} 节，从第 ${resumeIndex} 节开始补生成`}>
-          <RefreshCw size={13} style={{ marginRight: 4 }} />从第 {resumeIndex} 节继续
-        </FlowButton>
-      )}
+      {/* ② 溯源行：独占整行，长文本（尤其超预算「截断」说明）按任意字符换行，超高内部滚动不撑破布局 */}
       {!streaming && (
-        <AiProvenanceSection cardKey="ai.code_review_lecture" projectId={provenanceProjectId} refreshKey={result?.title ?? ''} />
+        <div data-lck="provenance-wrap"
+          style={{ flexBasis: '100%', minWidth: 0, maxWidth: '100%', overflowWrap: 'anywhere', wordBreak: 'break-word', maxHeight: 220, overflowY: 'auto' }}>
+          <AiProvenanceSection cardKey="ai.code_review_lecture" projectId={provenanceProjectId} refreshKey={result?.title ?? ''} />
+        </div>
       )}
-      <select data-lck="export-format" value={exportFormat} onChange={(e) => setExportFormat(e.target.value as ExportFormat)}
-        style={fieldStyle} aria-label="导出格式" disabled={exporting}>
-        <option value="md">md 讲稿</option>
-        <option value="docx">docx 文稿</option>
-        <option value="pptx">pptx 投屏（一页一节 + 讲者备注）</option>
-      </select>
-      <FlowButton data-lck="export-btn" onClick={onExport} disabled={!canExport}
-        loading={exporting} loadingText="导出中" title="按当前标记过滤后导出（忽略项不出现在稿中，会后跟进另列清单）">
-        <Download size={13} style={{ marginRight: 4 }} />导出
-      </FlowButton>
+      {/* ③ 操作行：右对齐 + 不压缩，按钮文字不再竖排 */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', justifyContent: 'flex-end', minWidth: 0 }}>
+        <FlowButton onClick={onStop} disabled={!streaming} title="中止当前生成（已生成的节次保留）"
+          style={{ flexShrink: 0, whiteSpace: 'nowrap' }}>
+          <Ban size={13} style={{ marginRight: 4 }} />停止
+        </FlowButton>
+        {canResume && (
+          <FlowButton data-lck="resume-btn" onClick={onResume} disabled={streaming}
+            style={{ flexShrink: 0, whiteSpace: 'nowrap' }}
+            title={`跳过已生成的前 ${resumeIndex - 1} 节，从第 ${resumeIndex} 节开始补生成`}>
+            <RefreshCw size={13} style={{ marginRight: 4 }} />从第 {resumeIndex} 节继续
+          </FlowButton>
+        )}
+        <select data-lck="export-format" value={exportFormat} onChange={(e) => setExportFormat(e.target.value as ExportFormat)}
+          style={{ ...fieldStyle, minWidth: 0, maxWidth: '100%', flexShrink: 1 }} aria-label="导出格式" disabled={exporting}>
+          <option value="md">md 讲稿</option>
+          <option value="docx">docx 文稿</option>
+          <option value="pptx">pptx 投屏（一页一节 + 讲者备注）</option>
+        </select>
+        <FlowButton data-lck="export-btn" onClick={onExport} disabled={!canExport}
+          style={{ flexShrink: 0, whiteSpace: 'nowrap' }}
+          loading={exporting} loadingText="导出中" title="按当前标记过滤后导出（忽略项不出现在稿中，会后跟进另列清单）">
+          <Download size={13} style={{ marginRight: 4 }} />导出
+        </FlowButton>
+      </div>
     </footer>
   );
 }
@@ -1324,13 +1349,14 @@ function LectureSections({ outline, sections, live, streaming, marks, onMark, on
         const expanded = open.has(r.key);
         const markable = MARKABLE_SECTIONS.has(r.key) && r.text.trim().length > 0;
         return (
-          <div key={r.key} data-lck={`section-${r.key}`} style={{ marginBottom: 6, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
-            <div style={{ display: 'flex', alignItems: 'center', background: 'var(--surface-2)' }}>
+          <div key={r.key} data-lck={`section-${r.key}`}
+            style={{ marginBottom: 6, minWidth: 0, maxWidth: '100%', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+            <div style={{ display: 'flex', alignItems: 'center', minWidth: 0, background: 'var(--surface-2)' }}>
               <button type="button" onClick={() => setOpen((prev) => toggleInSet(prev, r.key))}
                 aria-expanded={expanded}
-                style={{ flex: '1 1 auto', display: 'flex', gap: 6, alignItems: 'center', background: 'none', border: 'none', color: 'var(--text)', cursor: 'pointer', fontSize: 'var(--fs-s)', padding: '6px 8px', textAlign: 'left' }}>
+                style={{ flex: '1 1 auto', minWidth: 0, display: 'flex', gap: 6, alignItems: 'center', background: 'none', border: 'none', color: 'var(--text)', cursor: 'pointer', fontSize: 'var(--fs-s)', padding: '6px 8px', textAlign: 'left' }}>
                 <span style={{ color: 'var(--text-muted)', display: 'inline-flex' }}>{expanded ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}</span>
-                <strong>{r.title}</strong>
+                <strong style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{r.title}</strong>
                 {r.pending && !r.text && <span style={{ color: 'var(--text-muted)' }}>等待生成…</span>}
                 {r.failed && <span data-lck="section-failed" style={{ color: 'var(--danger)' }}>部分未生成{r.error ? `：${r.error}` : ''}</span>}
               </button>
@@ -1340,7 +1366,8 @@ function LectureSections({ outline, sections, live, streaming, marks, onMark, on
               )}
             </div>
             {expanded && (
-              <div style={{ padding: '6px 8px' }}>
+              /* T05701：正文区允许任意字符换行 + 放宽行高，长代码/URL/Unicode 不撑破卡片 */
+              <div style={{ padding: '6px 8px', minWidth: 0, maxWidth: '100%', overflowWrap: 'anywhere', lineHeight: 1.7 }}>
                 <SectionBody row={r} markable={markable} marks={marks} onMark={onMark} onAnchorClick={onAnchorClick} />
               </div>
             )}
