@@ -1913,7 +1913,7 @@ async function collectCommitsOneByOne(
 function missingCommitsMessage(missing: readonly string[]): string {
   const head = missing.slice(0, 5).map((s) => s.slice(0, 7)).join('、');
   const more = missing.length > 5 ? ` 等 ${missing.length} 个` : '';
-  return `选中的提交在仓库里不存在（分支被 rebase/force-push 丢弃？）：${head}${more}，请在 Git 树里重新选择`;
+  return `选中的提交在仓库里不存在：${head}${more}。常见原因：分支被 rebase/force-push 丢弃，或提交属于工作空间内的子仓库但未按仓库分批选择；请在 Git 树里重新选择`;
 }
 
 /** 一次 `--no-walk` 拿齐选中提交的 parents 与元信息（逐条 spawn 按 200 选在 Windows 上就是几十秒） */
@@ -2017,7 +2017,9 @@ export async function collectCommitsUnion(
     const missing = shas.filter((s) => !matched.has(s) && ![...matched].some((full) => full.startsWith(s)));
     // T05693：部分失效降级为 warning + 可用子集采集；全部失效才维持失败（避免空采集静默通过）。
     if (entries.length === 0) {
-      throw new GitCollectError('failed', `选中的提交在仓库里都不存在（分支被 rebase/force-push 丢弃？）：${missing.slice(0, 5).map((s) => s.slice(0, 7)).join('、')}，请在 Git 树里重新选择`);
+      // T05700：补充第二种成因——提交其实存在，只是来自工作空间内的子仓库而 range 未带 repoSub。
+      // 只改提示不动判定：T05693 的「部分失效降级 / 全部失效失败」链路逐字保留。
+      throw new GitCollectError('failed', `选中的提交在仓库里都不存在：${missing.slice(0, 5).map((s) => s.slice(0, 7)).join('、')}。常见原因：分支被 rebase/force-push 丢弃，或提交属于工作空间内的子仓库但未按仓库分批选择；请在 Git 树里重新选择`);
     }
     missingNote = `跳过 ${missing.length} 条仓库里已不存在的提交（可能被 rebase/force-push 丢弃）：${missing.slice(0, 5).map((s) => s.slice(0, 7)).join('、')}${missing.length > 5 ? ' 等' : ''}；其余 ${entries.length} 条照常采集`;
   }

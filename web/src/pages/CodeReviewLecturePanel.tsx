@@ -472,10 +472,52 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
     });
   };
 
+  /**
+   * T05700：勾选「已完成任务」时，提交来自哪个子仓库（repoSub）必须跟着走。
+   * 旧实现 mergedCommits 只取 `c.sha` 并按 projectId 合成一维数组，repoSub 全丢 ——
+   * 服务端按工作空间根仓库解析子仓库 SHA，整批 --no-walk fatal，被误报成「rebase/force-push 丢弃」。
+   */
+  const repoScopePlan = useMemo(() => {
+    // 先按项目聚合「所有已勾选任务」涉及的仓库——逐个任务判定会漏掉「三个任务分属三个仓库」这类冲突
+    const byProject = new Map<string, Set<string>>();
+    for (const t of doneTasks) {
+      if (!checkedTaskIds.includes(t.id)) continue;
+      const set = byProject.get(t.projectId) ?? new Set<string>();
+      for (const c of t.commits) {
+        const sub = (c.repoSub ?? '').trim();
+        set.add(sub === '.' ? '' : sub);
+      }
+      byProject.set(t.projectId, set);
+    }
+    const subs: Record<string, string> = { ...selectedRepoSubs };
+    const conflicts: string[] = [];
+    for (const [pid, set] of byProject) {
+      const fromTree = (selectedRepoSubs[pid] ?? '').trim();
+      if (fromTree && fromTree !== '.') set.add(fromTree);
+      const uniq = [...set];
+      if (uniq.length > 1) {
+        const names = uniq.map((s) => s || '根仓库').join('、');
+        conflicts.push(`项目下勾选的提交跨了 ${uniq.length} 个 Git 仓库（${names}）`);
+      } else if (uniq.length === 1) {
+        subs[pid] = uniq[0];
+      }
+    }
+    // 服务端一个项目只允许一个 range / 一个 repoSub（lectureScope 禁止重复 projectId），
+    // 跨仓库混合无法在一个 range 表达 —— 明确阻断并给出分批办法，优于让 Git 报误导性「提交不存在」。
+    return {
+      subs,
+      error: conflicts.length
+        ? `${[...new Set(conflicts)].join('；')}。一次只能采集同一仓库的提交，请按仓库分批勾选已完成任务后分别「加载 diff」`
+        : '',
+    };
+  }, [selectedRepoSubs, doneTasks, checkedTaskIds]);
+
   /** 采集入参：一次评审共用一份区间；patch 模式单项目（E-1 降级通道） */
   const scopeBody = useMemo(
-    () => buildScopeBody({ selectedIds, selectedCommits: mergedCommits, selectedRepoSubs }),
-    [selectedIds, mergedCommits, selectedRepoSubs],
+    () => (repoScopePlan.error
+      ? { error: repoScopePlan.error }
+      : buildScopeBody({ selectedIds, selectedCommits: mergedCommits, selectedRepoSubs: repoScopePlan.subs })),
+    [selectedIds, mergedCommits, repoScopePlan],
   );
 
   useEffect(() => () => {
