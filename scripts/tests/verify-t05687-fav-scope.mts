@@ -9,7 +9,7 @@
  *   A 组 后端条件——两个列表端点在 categoryId 缺省时不做分类收窄，favorited=1 时收窄到收藏。
  *   B 组 共用哨兵——只在一处定义；两页都用 `isAllFav` 判定，不再各写字面量。
  *   C 组 两页行为——下拉首项是「全部收藏」且带主题色；取数按视图切换；选择恢复不把 `__fav__` 重置掉；
- *        空态与来源分组标识存在；现有「单分组内看收藏」能力保留。
+ *        空态与来源分组标识存在（标识须在标题同行、时间字段前，不另占一行）；现有「单分组内看收藏」能力保留。
  *
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05687-fav-scope.mts
  */
@@ -62,8 +62,14 @@ for (const [name, src, store] of [['需求页', REQ, '/req-entries'], ['提示�
     /isAllFav\(cur\) \|\| cats\.some\(/.test(src));
   ok(`C-04 ${name}：空态有「还没有收藏」分支（与「该分类下暂无」区分）`,
     /还没有收藏任何(提示词|通用需求)/.test(src));
-  ok(`C-05 ${name}：全部收藏视图下行内标注来源分组`,
-    /data-t05687="fav-source"/.test(src) && /来源：\{categories\.find\(\(c\) => c\.id === p\.category_id\)/.test(src));
+  // T05687 二轮：验证失败意见要求「来源放到标题同行末尾、时间字段前，记录一行呈现」。
+  // 因此除了字面量，还要锁死 DOM 位置：不得是独占一行的 div，且必须夹在标题按钮与时间字段之间。
+  ok(`C-05 ${name}：来源分组标在标题同行、时间字段之前（不另占一行）`,
+    !/<div data-t05687="fav-source"/.test(src)
+    && /data-t05687="fav-source"/.test(src)
+    && /来源：\{categories\.find\(\(c\) => c\.id === p\.category_id\)/.test(src)
+    && /row-title-btn[\s\S]{0,1400}data-t05687="fav-source"[\s\S]{0,700}relTime\(p\.updated_at\)/.test(src)
+    && /maxWidth: 120[\s\S]{0,240}whiteSpace: 'nowrap'/.test(src));
 }
 
 ok('C-06 单分组内「只看收藏」能力保留（未被新视图取代）',

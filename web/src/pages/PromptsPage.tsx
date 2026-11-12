@@ -1090,11 +1090,6 @@ export function PromptsPage() {
               onDrop={dropRowFor(p.id)}
               className={rowCls(p.id)}
               style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginBottom: 10, cursor: 'grab' }}>
-              {isAllFav(activeCat) && (
-                <div data-t05687="fav-source" style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginBottom: 4 }}>
-                  来源：{categories.find((c) => c.id === p.category_id)?.name ?? '未分类'}
-                </div>
-              )}
               {editing ? (
                 <>
                   <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
@@ -1157,6 +1152,14 @@ export function PromptsPage() {
                       {/* 展开/收起箭头：与任务页统一使用 lucide 图标，蓝色 13px */}
                       <span style={{ color: 'var(--accent)', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}>{expandedIds[p.id] ? <ChevronUp size={13} /> : <ChevronDown size={13} />}</span>
                     </button>
+                    {/* T05687 二轮（验证失败回填）：来源不再独占一行，改为标题同行末尾、时间字段之前，
+                        长分组名截断并保留悬浮全文，保证记录始终单行列示 */}
+                    {isAllFav(activeCat) && (
+                      <span data-t05687="fav-source" title={`来源分组：${categories.find((c) => c.id === p.category_id)?.name ?? '未分类'}`}
+                        style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flexShrink: 1, minWidth: 0, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        来源：{categories.find((c) => c.id === p.category_id)?.name ?? '未分类'}
+                      </span>
+                    )}
                     <span className="abtn" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flexShrink: 0 }} title={`更新于 ${p.updated_at}`}>{relTime(p.updated_at)}</span>
                     {/* T03248（AI-104③）：累计使用次数常驻可见——「用了几次」不该藏在悬浮里 */}
                     <span data-t03248="usage-chip" title="累计成功发起次数（发起失败/预检拦截不计；可用右侧「归零」重置）"
