@@ -944,6 +944,8 @@ export function TasksPage() {
   const titleDrafts = beautifySnap.drafts; // taskId -> 标题编辑草稿（美化结果/手动编辑共用，切页保留）
   const [imgDrafts, setImgDrafts] = useState<Record<string, ImageDraft>>({}); // taskId -> 图片增删草稿
   const [previewId, setPreviewId] = useState(''); // 当前放大预览的图片 id
+  // T05708：预览来源标记——大图跟随点击位置原位渲染（描述区 / 验证失败反馈窗各自一份挂载点，不同时双渲染）
+  const [previewSrc, setPreviewSrc] = useState<'desc' | 'failback'>('desc');
   // T03214（UX-02 ③）：提示改走分级通道——info 2.5 秒、error ≥6 秒且可关闭/复制
   const { notice, flash, dismiss: dismissNotice } = useNotice();
   // 刚完成"复制"的任务 id，用于按钮短暂显示"已复制✓"反馈
@@ -3783,7 +3785,7 @@ export function TasksPage() {
                   type="button"
                   title="放大预览 — 点击放大或收起截图"
                   aria-label="任务截图：点击放大预览"
-                  onClick={() => setPreviewId(previewId === img.id ? '' : img.id)}
+                  onClick={() => { setPreviewId(previewId === img.id ? '' : img.id); setPreviewSrc('desc'); }}
                   style={{ padding: 0, background: 'none', border: 'none', cursor: 'pointer', display: 'block', lineHeight: 0 }}
                 >
                 <img
@@ -3815,10 +3817,10 @@ export function TasksPage() {
     );
   }
 
-  /** 大图预览：点击缩略图后展示，附复制入口 */
-  function renderTaskPreview(t: Task) {
+  /** 大图预览：点击缩略图后展示，附复制入口；T05708 支持 flushLeft——反馈窗内原位渲染时不叠加卡片级 32 缩进 */
+  function renderTaskPreview(t: Task, opts?: { flushLeft?: boolean }) {
     return (
-      <div style={{ marginLeft: 32, marginTop: 6 }}>
+      <div style={{ marginLeft: opts?.flushLeft ? 0 : 32, marginTop: 6 }}>
         <img
           src={imageUrl(previewId)}
           alt="任务截图预览"
@@ -4154,13 +4156,16 @@ export function TasksPage() {
                 <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 4 }}>反馈截图（{t.images.length}）— 点击放大；AI 可经 MCP 读取识别</div>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {t.images.map((img) => (
-                    <button key={img.id} type="button" onClick={() => setPreviewId(img.id)}
-                      title="放大预览该反馈截图" aria-label="放大预览反馈截图"
-                      style={{ padding: 0, background: 'none', border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', lineHeight: 0 }}>
+                    <button key={img.id} type="button"
+                      onClick={() => { setPreviewId(previewId === img.id ? '' : img.id); setPreviewSrc('failback'); }}
+                      title="放大预览该反馈截图 — 再次点击收起" aria-label="放大预览反馈截图"
+                      style={{ padding: 0, background: 'none', border: previewId === img.id ? '2px solid var(--accent)' : '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', lineHeight: 0 }}>
                       <img src={imageUrl(img.id)} alt="反馈截图" style={{ height: 64, borderRadius: 3, display: 'block' }} />
                     </button>
                   ))}
                 </div>
+                {/* T05708：大图跟随反馈窗原位渲染（原实现只在描述板块挂载且要求描述展开，描述收起时点击缩略图无反应） */}
+                {previewId && previewSrc === 'failback' && t.images.some((i) => i.id === previewId) && renderTaskPreview(t, { flushLeft: true })}
               </div>
             )}
           </div>
@@ -4230,7 +4235,7 @@ export function TasksPage() {
         <div style={{ minHeight: 0, overflow: 'hidden' }}>
           {descExpanded[t.id] && renderTaskDescView(t)}
           {descExpanded[t.id] && <TaskEventTimeline taskId={t.id} />}
-          {previewId && descExpanded[t.id] && t.images.some((i) => i.id === previewId) && renderTaskPreview(t)}
+          {previewId && previewSrc === 'desc' && descExpanded[t.id] && t.images.some((i) => i.id === previewId) && renderTaskPreview(t)}
         </div>
       </section>
     );
