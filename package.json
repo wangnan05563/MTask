@@ -146,7 +146,8 @@
     "verify:t05695-outline-budget": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05695-outline-budget.mts",
     "verify:t05696-card-busy-persist": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05696-card-busy-persist.mts",
     "verify:t05700-reposub-link": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05700-reposub-link.mts",
-    "verify:t05701-lecture-layout": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05701-lecture-layout.mts"
+    "verify:t05701-lecture-layout": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05701-lecture-layout.mts",
+    "verify:t0570x-round2": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t0570x-round2.mts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

@@ -156,15 +156,16 @@ function laneCell(lanes: LaneLayout, row: number, lane: number) {
   return <span key={lane}> </span>;
 }
 
-export function GitTreePickerModal({ projects, activeProjectId, selectedByProject, initialRepoView = false, onConfirm, onClose, zIndex = 1000, targetLabel, targetQueue = 0 }: {
+export function GitTreePickerModal({ projects, activeProjectId, selectedByProject, initialRepoView = false, onConfirm, onClose, zIndex = 1000, targetLabel, targetQueue = 0, targetTasks }: {
   readonly projects: Project[];
   readonly activeProjectId: string;
   /** 各项目已选 SHA（确认后由卡片写回；弹窗内改的是当前项目的这一份） */
   readonly selectedByProject: Record<string, string[]>;
   /** T04553：独立的多仓库入口直接落在聚合视图，省略时保持单仓库列表的既有默认 */
   readonly initialRepoView?: boolean;
-  /** T04576：第三个参数是确认来自工作空间目录内的哪个仓库（空串 = 项目根仓库） */
-  readonly onConfirm: (projectId: string, shas: string[], repoSub: string) => void;
+  /** T04576：第三个参数是确认来自工作空间目录内的哪个仓库（空串 = 项目根仓库）。
+   *  T05690：第四个参数是本次要关联的任务 id 列表（批量补录勾选）；其余入口忽略即可。 */
+  readonly onConfirm: (projectId: string, shas: string[], repoSub: string, targetIds?: string[]) => void;
   readonly onClose: () => void;
   /** 抽屉内打开时须高于 SlideOver（1100），否则弹窗被抽屉遮住（八期 §3.2.3） */
   readonly zIndex?: number;
@@ -180,6 +181,9 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
    * 非批量补录入口不传（保持原样）。
    */
   readonly targetQueue?: number;
+  /** T05690：批量补录队列的全部任务——在「本次确认将关联到」条内可点击展开勾选，
+   *  勾中的任务在本次「确认选择」时一并关联（默认全选，队列语义仍可按条推进）。 */
+  readonly targetTasks?: ReadonlyArray<{ readonly id: string; readonly label: string }>;
 }) {
   const [projectId, setProjectId] = useState(activeProjectId || projects[0]?.id || '');
   const [head, setHead] = useState('');
@@ -220,6 +224,12 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   const listRef = useRef<HTMLDivElement>(null);
   /** T05556：全屏态。打开时弹窗铺满视口（不再限 90vh），Esc 先退出全屏、再按一次才关闭弹窗 */
   const [fullscreen, setFullscreen] = useState(false);
+  /** T05690：「本次确认将关联到」条内的批量任务勾选（默认全选，点击说明条展开/收起） */
+  const [targetPickerOpen, setTargetPickerOpen] = useState(false);
+  const [checkedTargetIds, setCheckedTargetIds] = useState<string[]>(() => (targetTasks ?? []).map((t) => t.id));
+  useEffect(() => {
+    setCheckedTargetIds((targetTasks ?? []).map((t) => t.id));
+  }, [targetTasks?.map((t) => t.id).join('|')]);
   /** T05556：左栏宽度百分比（默认 46，与 T05210 原布局一致；拖拽分隔线时动态更新） */
   const [leftPanePct, setLeftPanePct] = useState(75);
   const splitContainerRef = useRef<HTMLDivElement>(null);
@@ -751,11 +761,11 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
           return;
         }
         setError('');
-        onConfirm(projectId, orderSelected(commits, selected), out.repoSub);
+        onConfirm(projectId, orderSelected(commits, selected), out.repoSub, checkedTargetIds);
         return;
       }
       // T04584：平铺视图也可能正看着某个子仓库，确认时把 repoSub 一起交出去（空串 = 根仓库，与改造前一致）
-      onConfirm(projectId, orderSelected(commits, selected), flatRepoSub);
+      onConfirm(projectId, orderSelected(commits, selected), flatRepoSub, checkedTargetIds);
       return;
     }
     // 分组视图：确认口径由 `resolveRepoConfirmation` 把关——多仓库有勾选就拒，不做假的跨仓库合并
@@ -770,7 +780,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
     const pickedKey = repoKeyOf(out.projectId, out.repoSub);
     const paneCommits = Object.values(panes).filter((p) => p.repoKey === pickedKey).flatMap((p) => p.commits);
     // T04576：把仓库维度一起交出去——只回 SHA 的话，子仓库的提交会在回写/提取时按根仓库解析并判 missing
-    onConfirm(out.projectId, orderSelected(dedupe(paneCommits), out.shas), out.repoSub);
+    onConfirm(out.projectId, orderSelected(dedupe(paneCommits), out.shas), out.repoSub, checkedTargetIds);
   }
 
   // 分组视图：勾选跨多个仓库时按钮保持**可点**——拒绝由 `confirm()` 给明原因（-disabled 只会让人对着
@@ -780,8 +790,10 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   const canConfirm = repoView
     ? paneSelectedCount > 0 && !paneBusy && !scanning
     : selected.length > 0 && !loading && (!error || mixActive);
-  /** 动画窗口内按钮置灰（需求允许），但对外仍用「还能不能确认」这一条判据表达原因 */
-  const confirmEnabled = canConfirm && !confirming;
+  /** 动画窗口内按钮置灰（需求允许），但对外仍用「还能不能确认」这一条判据表达原因；
+   *  T05690：批量补录展开勾选后一个都没勾时不许确认（避免空关联白跑一趟） */
+  const confirmEnabled = canConfirm && !confirming
+    && (!targetTasks || targetTasks.length === 0 || checkedTargetIds.length > 0);
 
   /**
    * T05063：点击先播 250ms 动画，动画结束才真正 `confirm()`。
@@ -836,7 +848,8 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
         // T05690：全屏时内容可能高于视口，避免顶栏被溢出的列表压住造成叠字。
         // T05691：hidden 会把超出部分**静默裁掉**（底部「取消/确认」按钮行不可达），改 auto——
         // 超高时出滚动条而不是丢内容，初始/全屏两态下边缘内容都可滚动到达。
-        overflow: 'auto',
+        // T05691 二轮：滚动条出现会挤占右侧空间，stable 预留滚动条槽位，避免右栏内容被压到边缘截断。
+        overflow: 'auto', scrollbarGutter: 'stable',
         border: fullscreen ? 'none' : '1px solid var(--accent)',
         borderRadius: fullscreen ? 0 : 10,
         padding: fullscreen ? 8 : 14,
@@ -880,6 +893,33 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
               <span data-lck="git-tree-queue-progress" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
                 · 共 {targetQueue} 条待补录
               </span>
+            )}
+            {/* T05690：说明条不再只是文字——点击展开队列任务勾选列表，本次确认按勾选集一并关联 */}
+            {targetTasks && targetTasks.length > 0 && (
+              <>
+                <button type="button" data-lck="git-tree-target-toggle"
+                  onClick={() => setTargetPickerOpen((v) => !v)}
+                  title="展开/收起可关联的任务列表；勾选后本次确认会把这些提交写入所有勾中的任务"
+                  style={{ ...chipStyle, cursor: 'pointer', background: 'var(--surface)', color: 'var(--accent)' }}>
+                  {targetPickerOpen ? '收起关联任务' : `点击勾选关联任务（已选 ${checkedTargetIds.length}/${targetTasks.length}）`}
+                </button>
+                {targetPickerOpen && (
+                  <div data-lck="git-tree-target-list"
+                    style={{ flexBasis: '100%', display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4, maxHeight: 140, overflowY: 'auto' }}>
+                    {targetTasks.map((t) => (
+                      <label key={t.id} data-lck="git-tree-target-item" title={t.label}
+                        style={{ ...chipStyle, display: 'inline-flex', gap: 4, alignItems: 'center', maxWidth: 280, cursor: 'pointer' }}>
+                        <input type="checkbox" checked={checkedTargetIds.includes(t.id)}
+                          onChange={(e) => setCheckedTargetIds((prev) => (e.target.checked
+                            ? [...new Set([...prev, t.id])] : prev.filter((x) => x !== t.id)))} />
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.label}</span>
+                      </label>
+                    ))}
+                    <button type="button" onClick={() => setCheckedTargetIds(targetTasks.map((t) => t.id))} style={{ ...chipStyle, cursor: 'pointer' }}>全选</button>
+                    <button type="button" onClick={() => setCheckedTargetIds([])} style={{ ...chipStyle, cursor: 'pointer' }}>清空</button>
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
@@ -1106,7 +1146,8 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
             }}>
             <style>{`.gt-divider{transition:background .15s ease}.gt-divider:hover{background:var(--accent)}.gt-divider:active{background:var(--accent-soft)}`}</style>
           </div>
-          <div style={{ flex: '1 1 auto', minWidth: 0, display: 'flex', flexDirection: 'column', maxHeight: '100%' }}>
+          {/* T05691 二轮：右栏与左栏一样保留边缘留白，滚动条/下拉条不再把内容压到外框边缘截断 */}
+          <div style={{ flex: '1 1 auto', minWidth: 0, maxWidth: '100%', paddingRight: 12, display: 'flex', flexDirection: 'column', maxHeight: '100%' }}>
             <GitTreeFilePanel entries={detailEntries} colorIndex={colorIndex} />
           </div>
         </div>

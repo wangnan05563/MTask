@@ -821,7 +821,27 @@ export async function listSonarProjects(input?: {
       if (!retryToken) throw new SonarConfigError('no-token', `SonarQube 要求认证（HTTP ${response.res.status}）`);
       response = await getJson(url, retryToken);
       if (response.res.status === 401 || response.res.status === 403) {
-        throw new SonarConfigError('sonar-auth', `读取项目列表被拒绝（HTTP ${response.res.status}）`);
+        // T05689 二轮：401 修好后出现 403 —— 多为「项目分析令牌」无权浏览 api/projects/search。
+        // 降级到 components/search（部分部署对该端点放行，TRK 结果同义）；仍被拒就给可操作指引，
+        // 而不是把裸 403 丢给用户——projectKey 输入框本就允许手输，读取列表只提供候选。
+        if (response.res.status === 403) {
+          const altQuery = new URLSearchParams({ ps: '500', qualifiers: 'TRK' });
+          if (search) altQuery.set('q', search);
+          const altUrl = `${serverUrl}/api/components/search?${altQuery.toString()}`;
+          let alt = await getJson(altUrl, null);
+          if ((alt.res.status === 401 || alt.res.status === 403) && retryToken) alt = await getJson(altUrl, retryToken);
+          if (alt.res.ok) {
+            const json = alt.json as { components?: Array<{ key?: string; name?: string }>; paging?: { total?: number } } | null;
+            const list = (json?.components ?? [])
+              .filter((c): c is { key: string; name?: string } => typeof c.key === 'string' && c.key.length > 0)
+              .map((c) => ({ key: c.key, name: c.name ?? c.key }));
+            return { serverUrl, projects: list, total: json?.paging?.total ?? list.length };
+          }
+        }
+        throw new SonarConfigError('sonar-auth', `读取项目列表被拒绝（HTTP ${response.res.status}）`
+          + (response.res.status === 403
+            ? '：当前 Token 多半是「项目分析令牌」，无浏览项目列表的权限。请在 SonarQube「我的账号 → 安全」改用 User Token，或在下方 projectKey 输入框手动填写（读取列表只提供候选，不影响扫描）'
+            : '：请检查 Token 是否有效'));
       }
     }
     if (!response.res.ok) {

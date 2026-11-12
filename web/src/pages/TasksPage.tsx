@@ -714,8 +714,9 @@ function readImageFiles(files: Iterable<File>, onImages: (url: string) => void):
   }
 }
 
-/** 从剪贴板读取图片；有图片时阻止默认粘贴并回调 dataURL，无图片则放行文本粘贴（纯函数，提到组件外避免闭包重创建） */
-function readClipboardImages(e: ClipboardEvent<HTMLTextAreaElement>, onImages: (url: string) => void): boolean {
+/** 从剪贴板读取图片；有图片时阻止默认粘贴并回调 dataURL，无图片则放行文本粘贴（纯函数，提到组件外避免闭包重创建）。
+ *  T05704：入参泛化到 HTMLElement——标题 input 与描述 textarea 共用同一条粘贴通道。 */
+function readClipboardImages(e: ClipboardEvent<HTMLElement>, onImages: (url: string) => void): boolean {
   const files = Array.from(e.clipboardData.items)
     .filter((i) => i.type.startsWith('image/'))
     .map((i) => i.getAsFile())
@@ -1210,27 +1211,36 @@ export function TasksPage() {
     }
   }
 
-  async function confirmManualGitLink(projectId: string, shas: string[], repoSub: string) {
+  async function confirmManualGitLink(projectId: string, shas: string[], repoSub: string, targetIds?: string[]) {
     const head = gitLinkQueue[0];
     if (!head) return;
+    // T05690：弹窗里勾了哪些任务就给哪些任务写关联；未传勾选集时维持原来的「只写队首」语义
+    const targets = targetIds && targetIds.length > 0
+      ? gitLinkQueue.filter((t) => targetIds.includes(t.id))
+      : [head];
+    if (targets.length === 0) return;
+    const handled = new Set(targets.map((t) => t.id));
     setGitLinkBusy(true);
     const failed: string[] = [];
-    for (const sha of shas) {
-      try {
-        await api.post(`/tasks/${head.id}/git/links`, repoSub ? { sha, repoSub } : { sha });
-      } catch (e) {
-        failed.push(`${head.task_no ?? head.id} ← ${sha.slice(0, 7)}：${e instanceof Error ? e.message : String(e)}`);
+    for (const target of targets) {
+      for (const sha of shas) {
+        try {
+          await api.post(`/tasks/${target.id}/git/links`, repoSub ? { sha, repoSub } : { sha });
+        } catch (e) {
+          failed.push(`${target.task_no ?? target.id} ← ${sha.slice(0, 7)}：${e instanceof Error ? e.message : String(e)}`);
+        }
       }
     }
     setGitLinkBusy(false);
     // T05078：把「本次写给谁」「还剩几条」一起说清；队列用函数式更新，避免异步期间被
     // onClose 清空后旧闭包又把已清掉的队列写回来（那会让用户以为还有任务待补录）。
-    const remaining = Math.max(0, gitLinkQueue.length - 1);
+    const remaining = gitLinkQueue.filter((t) => !handled.has(t.id)).length;
     const tail = remaining > 0 ? `；还有 ${remaining} 条未回写，可继续补录` : '';
+    const who = targets.length === 1 ? (targets[0].task_no ?? targets[0].id) : `${targets.length} 个任务`;
     if (failed.length) flash(`部分关联失败：${failed.join('；')}${tail}`, 'error');
-    else flash(`已为 ${head.task_no ?? head.id} 手动关联 ${shas.length} 个提交${repoSub ? `（仓库 ${repoSub}）` : ''}${tail}`);
+    else flash(`已为 ${who} 手动关联 ${shas.length} 个提交${repoSub ? `（仓库 ${repoSub}）` : ''}${tail}`);
     const last = remaining === 0;
-    setGitLinkQueue((prev) => (prev.length <= 1 ? [] : prev.slice(1)));
+    setGitLinkQueue((prev) => prev.filter((t) => !handled.has(t.id)));
     if (last) {
       // 整条补录队列收尾才重载列表：逐条重载会把同一页拉 N 次
       gitSummaries.refresh();
@@ -4825,7 +4835,13 @@ export function TasksPage() {
             value={newTitle}
             onChange={(e) => { setNewTitle(e.target.value); dismissNewSuggestion(); }}
             onKeyDown={(e) => { if (e.key === 'Enter' && !creating) void createTask(); }}
-            placeholder="输入任务标题，回车创建"
+            // T05704：标题输入框直接粘贴图片——自动展开描述/截图区并落草稿，无需先点「描述/截图」按钮
+            onPaste={(e) => {
+              if (!readClipboardImages(e, addNewImage)) return;
+              setNewDescOpen(true);
+              flash('已粘贴截图，创建任务时会自动上传（可继续在描述框补充文字）');
+            }}
+            placeholder="输入任务标题，回车创建（可直接 Ctrl+V 粘贴截图）"
             aria-label="新建任务标题"
             // T02277：min-width 给到 80 而非 0——0 时本项可缩到零，行内永不触发换行，
             // 容器 flexWrap 兜底形同虚设（极窄窗口下输入框塌成一条）；80 让 ≤340px 时按钮换行回视口
@@ -5456,6 +5472,8 @@ export function TasksPage() {
             <div style={{ color: 'var(--text-muted)' }}>
               请描述验证失败的原因（可粘贴或选择截图辅助说明）；提交后任务将回退待办，截图可由 AI 通过 MCP 读取识别。
             </div>
+            {/* T05706：border-box + 左右对称 padding —— 旧版 width:100% 叠加 8px padding 与 1px border
+                实际宽度超出父容器 18px，右侧与弹窗边缘重叠并裁字；现在两侧留白相等且随弹窗自适应 */}
             <textarea
               autoFocus
               value={failDialog.text}
@@ -5464,7 +5482,7 @@ export function TasksPage() {
               placeholder="请描述验证失败的原因…（可直接 Ctrl+V 粘贴截图）"
               aria-label="验证失败反馈内容"
               rows={5}
-              style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)', resize: 'vertical' }}
+              style={{ width: '100%', minWidth: 0, maxWidth: '100%', boxSizing: 'border-box', padding: 8, borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)', resize: 'vertical' }}
             />
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <label className="tbtn-anim" title="选择截图文件（可多选）"
@@ -5581,10 +5599,12 @@ export function TasksPage() {
         key={head.id}
         targetLabel={`${head.task_no ?? head.id} · ${head.title}`}
         targetQueue={gitLinkQueue.length}
+        // T05690：把整条补录队列交给弹窗勾选，确认时按勾选集一并关联
+        targetTasks={gitLinkQueue.map((t) => ({ id: t.id, label: `${t.task_no ?? t.id} · ${t.title}` }))}
         projects={projects.filter((p) => p.id === activeProject)}
         activeProjectId={activeProject}
         selectedByProject={{}}
-        onConfirm={(projectId, shas, repoSub) => void confirmManualGitLink(projectId, shas, repoSub)}
+        onConfirm={(projectId, shas, repoSub, targetIds) => void confirmManualGitLink(projectId, shas, repoSub, targetIds)}
         onClose={() => {
           const left = gitLinkQueue.length - 1;
           setGitLinkQueue([]);

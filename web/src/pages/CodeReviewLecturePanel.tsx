@@ -747,7 +747,7 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
       <header style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <Sparkles size={16} style={{ color: 'var(--accent)' }} />
         <strong style={{ fontSize: 'var(--fs-l)' }}>代码评审讲稿生成</strong>
-        <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>左 diff · 右讲稿 · 底状态条（锚点可点击定位）</span>
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>左 diff · 右讲稿 · 底状态条（锚点可点击定位）</span>
         <button type="button" onClick={onClose} title="收起面板" aria-label="收起代码评审讲稿面板"
           style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>
           <X size={16} />
@@ -778,7 +778,7 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
       <div style={{ display: 'flex', gap: 10, alignItems: 'stretch', minHeight: 320 }}>
         <aside data-lck="diff-pane" ref={leftRef} aria-label="变更 diff 面板"
           style={{ flex: '1 1 46%', minWidth: 0, maxHeight: 460, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 8, padding: 8, background: 'var(--surface)' }}>
-          {snap.diffError && <p data-lck="diff-error" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', margin: '4px 0' }}>diff 加载失败：{snap.diffError}</p>}
+          {snap.diffError && <p data-lck="diff-error" style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)', margin: '4px 0' }}>diff 加载失败：{snap.diffError}</p>}
           <LectureDiffPane projects={snap.diff} openFiles={openFiles} foldedHunks={foldedHunks}
             flashRows={flashRows} hoverRows={hoverRows}
             onToggleFile={(k) => setOpenFiles((prev) => toggleInSet(prev, k))}
@@ -850,8 +850,8 @@ function JournalRestoreBanner({ journal, streaming, onRetry, onDismiss }: {
     <section data-t03245="journal-restore" aria-label="未完成的生成任务"
       style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', border: '1px solid var(--warn)', borderRadius: 8, padding: 10, marginBottom: 10 }}>
       <RefreshCw size={14} style={{ color: 'var(--warn)' }} aria-hidden="true" />
-      <strong style={{ fontSize: 'var(--fs-s)' }}>上次生成未完成</strong>
-      <span data-t03245="journal-progress" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
+      <strong style={{ fontSize: 'var(--fs-xs)' }}>上次生成未完成</strong>
+      <span data-t03245="journal-progress" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
         {JOURNAL_STATUS_LABEL[journal.status]}：已生成 {journal.progress.segmentsDone}/{journal.progress.segmentsTotal} 段
         {failed > 0 ? `，${failed} 段失败` : ''}
         （{journal.progress.sectionsDone}/{journal.progress.sectionsTotal} 节完成）
@@ -947,7 +947,7 @@ function LectureScopeSection(props: ScopeSectionProps) {
         {/* T05694：与 Git 提取/Sonar 卡对齐——多项目必须同一工作空间，跨空间候选置灰并写明原因 */}
         <ProjectScopePicker projects={projects} value={projectIds} onChange={onProjectIdsChange} workspaceConstraint />
       </div>
-      <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>
+      <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
         已选 {selectedIds.length} 个{projectIds.length === 0 ? '（全部项目）' : ''}，与顶部「报表范围」联动
       </span>
       {/* T05682：区间 / base / head / 提交人 / 粘贴 patch 入口已移除；
@@ -970,7 +970,7 @@ function LectureScopeSection(props: ScopeSectionProps) {
       )}
       {doneTasks.length > 0 && (
         <div data-lck="done-tasks" style={{ width: '100%', borderTop: '1px dashed var(--border)', paddingTop: 8, marginTop: 2 }}>
-          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 4 }}>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', marginBottom: 4 }}>
             已完成任务（勾选后按其关联提交生成；{checkedTaskIds.length} / {doneTasks.length} 已选）
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 168, overflow: 'auto' }}>
@@ -1022,7 +1022,7 @@ function DeviationNotice({ deviation }: { readonly deviation: LectureRunUsageDev
   const parts = dims.filter(([, d]) => d.expected > 0).map(([n, d]) => deviationPart(n, d)).join(' / ');
   return (
     <span data-lck={notice ? 'usage-deviation-notice' : 'usage-deviation-ok'}
-      style={{ fontSize: 'var(--fs-s)', color: notice ? 'var(--warn)' : 'var(--text-muted)', fontWeight: notice ? 600 : 400 }}
+      style={{ fontSize: 'var(--fs-xs)', color: notice ? 'var(--warn)' : 'var(--text-muted)', fontWeight: notice ? 600 : 400 }}
       title="预估偏差仅明示、不阻断（AI-102③）；实际值可在 AI 用量记录回看（④）">
       {notice ? '⚠ 实测与预估偏差>50%：' : '用量偏差在阈值内：'}
       {parts}
@@ -1060,17 +1060,17 @@ function LectureStatusFooter({ stage, streaming, result, followupCount, ignoredC
       {/* ① 状态行：阶段文案弹性伸展，进度/计数不压缩；窄容器自动折行而不是挤字 */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', minWidth: 0 }}>
         <span data-lck="stage"
-          style={{ flex: '1 1 260px', minWidth: 0, fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', lineHeight: 1.5, overflowWrap: 'anywhere' }}>
+          style={{ flex: '1 1 260px', minWidth: 0, fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', lineHeight: 1.5, overflowWrap: 'anywhere' }}>
           {stageText}
         </span>
         <div style={{ width: 150, flexShrink: 0 }}>
           <FlowProgress value={stage?.progress ?? 0} aria-label="讲稿生成进度" />
         </div>
-        <span data-lck="anchor-count" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>
+        <span data-lck="anchor-count" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>
           锚点 {result?.stats.anchors ?? 0}
         </span>
         {result?.deviation && <DeviationNotice deviation={result.deviation} />}
-        <span data-lck="mark-count" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>
+        <span data-lck="mark-count" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>
           跟进 {followupCount} · 忽略 {ignoredCount}
         </span>
       </div>
@@ -1160,18 +1160,18 @@ function PreflightOverlay({ preflight, continueLabel, onCancel, onContinue }: {
         </div>
 
         {!preflight.ok && (
-          <p data-lck="preflight-blocked" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', margin: '4px 0' }}>
+          <p data-lck="preflight-blocked" style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)', margin: '4px 0' }}>
             没有可采集的项目：请补配工作空间路径、调整区间，或改用「粘贴 patch」后重新预检。
           </p>
         )}
-        {preflight.warnings.map((w) => <p key={w} style={{ fontSize: 'var(--fs-s)', color: 'var(--warn)', margin: '2px 0' }}>{w}</p>)}
+        {preflight.warnings.map((w) => <p key={w} style={{ fontSize: 'var(--fs-xs)', color: 'var(--warn)', margin: '2px 0' }}>{w}</p>)}
 
         <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
           {preflight.projects.map((p) => (
             <section key={p.projectId} data-lck={`preflight-project-${p.projectId}`}
               style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 8, background: 'var(--surface)' }}>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
-                <strong style={{ fontSize: 'var(--fs-m)' }}>{p.projectName}</strong>
+                <strong style={{ fontSize: 'var(--fs-s)' }}>{p.projectName}</strong>
                 <span style={chipStyle}>{p.mode === 'patch' ? '粘贴 patch' : p.rangeLabel}</span>
                 <span data-lck={`preflight-git-${p.projectId}`} style={{ ...chipStyle, color: p.git.available && p.git.isRepo ? 'var(--success)' : 'var(--danger)' }}>
                   {gitStatusText(p)}
@@ -1180,14 +1180,14 @@ function PreflightOverlay({ preflight, continueLabel, onCancel, onContinue }: {
                 <span style={chipStyle}>排除 {p.excluded.count}</span>
                 <span style={chipStyle}>保留 {p.kept.files} 文件 / {p.kept.chars} 字符</span>
               </div>
-              {p.blocked && <p style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', margin: '4px 0' }}>{p.blocked}</p>}
+              {p.blocked && <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)', margin: '4px 0' }}>{p.blocked}</p>}
               {p.budget.dropped > 0 && (
-                <p data-lck="preflight-dropped" style={{ fontSize: 'var(--fs-s)', color: 'var(--warn)', margin: '4px 0' }}>
+                <p data-lck="preflight-dropped" style={{ fontSize: 'var(--fs-xs)', color: 'var(--warn)', margin: '4px 0' }}>
                   超预算已按优先级丢弃 {p.budget.dropped} 个文件：{p.budget.droppedNames.join('、')}
                   {p.budget.truncated ? '（列表已截断）' : ''}
                 </p>
               )}
-              {p.warnings.map((w) => <p key={w} style={{ fontSize: 'var(--fs-s)', color: 'var(--warn)', margin: '2px 0' }}>{w}</p>)}
+              {p.warnings.map((w) => <p key={w} style={{ fontSize: 'var(--fs-xs)', color: 'var(--warn)', margin: '2px 0' }}>{w}</p>)}
             </section>
           ))}
         </div>
@@ -1247,26 +1247,26 @@ function LectureDiffPane({ projects, openFiles, foldedHunks, flashRows, hoverRow
   readonly onToggleHunk: (key: string) => void;
 }) {
   if (projects.length === 0) {
-    return <p data-lck="diff-empty" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', margin: 6 }}>左栏为空：点「加载 diff」按当前范围采集。</p>;
+    return <p data-lck="diff-empty" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', margin: 6 }}>左栏为空：点「加载 diff」按当前范围采集。</p>;
   }
   return (
     <>
       {projects.map((p) => (
         <section key={p.projectId} data-lck={`diff-project-${p.projectId}`} style={{ marginBottom: 10 }}>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-            <strong style={{ fontSize: 'var(--fs-m)' }}>{p.projectName}</strong>
+            <strong style={{ fontSize: 'var(--fs-s)' }}>{p.projectName}</strong>
             <span style={chipStyle}>{p.mode === 'patch' ? '粘贴 patch' : p.rangeLabel}</span>
             <span style={chipStyle}>{p.files.length} 文件 +{p.kept.additions}/-{p.kept.deletions}</span>
             {p.excluded.count > 0 && <span style={chipStyle}>排除 {p.excluded.count}</span>}
             {p.budget.dropped > 0 && <span data-lck="budget-dropped" style={chipStyle}>预算丢弃 {p.budget.dropped}</span>}
           </div>
-          {p.blocked && <p data-lck="blocked" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', margin: '4px 0' }}>{p.blocked}</p>}
-          {p.warnings.map((w) => <p key={w} style={{ fontSize: 'var(--fs-s)', color: 'var(--warn)', margin: '2px 0' }}>{w}</p>)}
+          {p.blocked && <p data-lck="blocked" style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)', margin: '4px 0' }}>{p.blocked}</p>}
+          {p.warnings.map((w) => <p key={w} style={{ fontSize: 'var(--fs-xs)', color: 'var(--warn)', margin: '2px 0' }}>{w}</p>)}
           {p.budget.droppedNames.length > 0 && (
-            <p style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', margin: '2px 0' }}>超预算未进讲稿：{p.budget.droppedNames.join('、')}</p>
+            <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', margin: '2px 0' }}>超预算未进讲稿：{p.budget.droppedNames.join('、')}</p>
           )}
           {!p.blocked && p.files.length === 0 && (
-            <p style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', margin: '4px 0' }}>区间内没有可讲解的变更（或全部被排除规则命中）。</p>
+            <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', margin: '4px 0' }}>区间内没有可讲解的变更（或全部被排除规则命中）。</p>
           )}
           {groupFilesByModule(p.files).map((group) => (
             <div key={group.module} style={{ marginTop: 6 }}>
@@ -1319,7 +1319,7 @@ function SectionBody({ row, markable, marks, onMark, onAnchorClick }: {
   readonly onAnchorClick: (href: string) => void;
 }) {
   if (!row.text) {
-    return <p style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', margin: 0 }}>{row.pending ? '（本节尚未流出）' : '（本节无内容）'}</p>;
+    return <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', margin: 0 }}>{row.pending ? '（本节尚未流出）' : '（本节无内容）'}</p>;
   }
   if (markable) {
     return <MarkedLectureBody sectionKey={row.key} text={row.text} marks={marks} onMark={onMark} onAnchorClick={onAnchorClick} />;
@@ -1341,7 +1341,7 @@ function LectureSections({ outline, sections, live, streaming, marks, onMark, on
   const rows = sectionRows(sections, outline, live, streaming);
 
   if (rows.length === 0) {
-    return <p data-lck="lecture-empty" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', margin: 6 }}>讲稿为空：先「只出大纲」确认结构，或直接「开始生成」。</p>;
+    return <p data-lck="lecture-empty" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', margin: 6 }}>讲稿为空：先「只出大纲」确认结构，或直接「开始生成」。</p>;
   }
   return (
     <>
@@ -1354,7 +1354,7 @@ function LectureSections({ outline, sections, live, streaming, marks, onMark, on
             <div style={{ display: 'flex', alignItems: 'center', minWidth: 0, background: 'var(--surface-2)' }}>
               <button type="button" onClick={() => setOpen((prev) => toggleInSet(prev, r.key))}
                 aria-expanded={expanded}
-                style={{ flex: '1 1 auto', minWidth: 0, display: 'flex', gap: 6, alignItems: 'center', background: 'none', border: 'none', color: 'var(--text)', cursor: 'pointer', fontSize: 'var(--fs-s)', padding: '6px 8px', textAlign: 'left' }}>
+                style={{ flex: '1 1 auto', minWidth: 0, display: 'flex', gap: 6, alignItems: 'center', background: 'none', border: 'none', color: 'var(--text)', cursor: 'pointer', fontSize: 'var(--fs-xs)', padding: '6px 8px', textAlign: 'left' }}>
                 <span style={{ color: 'var(--text-muted)', display: 'inline-flex' }}>{expanded ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}</span>
                 <strong style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{r.title}</strong>
                 {r.pending && !r.text && <span style={{ color: 'var(--text-muted)' }}>等待生成…</span>}
