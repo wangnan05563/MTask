@@ -181,6 +181,19 @@ export function blocksForKey(key: string, b: KickoffBundle): DeckHtmlBlock[] {
 
 /** 大纲页 → HTML 页：dataKeys 展开成块，超出单页承载量的键在页脚注明 */
 function toPage(item: KickoffOutlineItem, b: KickoffBundle): DeckHtmlPage {
+  // T05678：图片页只放一张（用户上传的第一张），与 PPTX 版同源
+  if (item.layout === 'image') {
+    const img = b.images?.[0];
+    return {
+      section: item.section,
+      title: item.title,
+      bullets: [],
+      layout: 'image',
+      blocks: [img
+        ? { type: 'image', src: `data:${img.mime};base64,${img.base64}`, alt: item.title, note: '图片由项目组提供，未做内容改写' }
+        : { type: 'note', text: '本页未上传图片（生成前在面板选择图片）' }],
+    };
+  }
   const keys = item.dataKeys.slice(0, MAX_BLOCKS_PER_PAGE);
   const omitted = item.dataKeys.slice(MAX_BLOCKS_PER_PAGE);
   const blocks = keys.flatMap((k) => blocksForKey(k, b));

@@ -1893,10 +1893,53 @@ function appendBrandPage({
   });
 }
 
+/**
+ * T05678：图片页（标题 + 整图 + 脚注）。
+ * 图片按 contain 落进内容框，不裁切、不拉伸；未上传图片时输出占位说明并记 warning，
+ * 绝不静默出一页空白（那会被当成「渲染失败」）。
+ */
+function appendImagePage(input: PageAppendInput): void {
+  const { pptx, bundle, item, pageNo, total, warnings } = input;
+  const slide = pptx.addSlide({ masterName: BG_LAYOUT_NAMES[bgKindOf('list')] });
+  slide.addText(item.title, {
+    x: 0.5, y: 0.35, w: 9, h: 0.62, fontSize: 22, bold: true, color: PALETTE.brandDeep, fontFace: FONT.face,
+  });
+  const area = { x: 0.85, y: 1.08, w: 8.3, h: 3.52 };
+  const img = bundle.images?.[0];
+  if (!img) {
+    warnings.push(`第 ${pageNo} 页是图片页但未上传图片，已输出占位说明`);
+    slide.addText('本页未上传图片（生成前在面板选择图片）', {
+      ...area, align: 'center', valign: 'middle', fontSize: 12, color: PALETTE.ink, fontFace: FONT.face,
+    });
+  } else {
+    slide.addImage({
+      data: `${img.mime};base64,${img.base64}`,
+      x: area.x, y: area.y, w: area.w, h: area.h,
+      sizing: { type: 'contain', w: area.w, h: area.h },
+    });
+  }
+  slide.addText(footerOf(item, bundle, pageNo, total), {
+    x: 0.5,
+    y: KICKOFF_LAYOUT_DEF.height - FOOTER_H - 0.08,
+    w: 9,
+    h: FOOTER_H,
+    fontSize: 9,
+    color: PALETTE.brandDeep,
+    align: 'right',
+    wrap: false,
+    fontFace: FONT.face,
+  });
+}
+
 function appendOutlinePage(input: PageAppendInput): void {
   const { pptx, bundle, item, pageNo, total, warnings, degradedPages } = input;
   if (item.layout === 'section' || item.layout === 'thanks') {
     appendBrandPage(input);
+    return;
+  }
+  // T05678：图片页自带版式（标题 + 整图），不参与数据块堆叠
+  if (item.layout === 'image') {
+    appendImagePage(input);
     return;
   }
   const bullets = sanitizeBullets(item.bullets, bundle, pageNo, warnings);

@@ -26,7 +26,7 @@ import { finishMaterialTiming } from '../ui/materialTiming'; // T03189（G-1）�
 import { AiProvenanceSection } from '../components/AiProvenance'; // T03262（AI-101①④）：溯源面板 + 产物找回
 import { DeckHtmlPreview } from '../ui/DeckHtmlPreview'; // 2026-11-06：HTML 版演示稿面板内预览
 import { htmlArtifactUrl, saveBlob } from '../utils/download'; // T05670：HTML 版只读交付（预览/下载不消费令牌）
-import { ChevronDown, ChevronUp, CircleAlert, CircleCheck, CircleX, Download, Eye, FileText, Loader2, Plus, Sparkles, Trash2, X } from 'lucide-react';
+import { ChevronDown, ChevronUp, CircleAlert, CircleCheck, CircleX, Download, Eye, FileText, Image as ImageIcon, Loader2, Plus, Sparkles, Trash2, X } from 'lucide-react';
 
 /** 服务端 `PreflightItem` 的前端镜像（单源：`server/src/services/kickoffService.ts`） */
 type PreflightStatus = 'ok' | 'warn' | 'fail';
@@ -54,7 +54,7 @@ interface PreflightResult {
  * 两份清单的一致性由 `verify-t02111` 的源码守卫断言，不靠人记。
  */
 const SECTIONS = ['封面', '议程', '项目团队介绍', '项目背景', '项目需求', '项目范围', '项目计划', '工作量评估', '测试与质量策略', '项目风险', '沟通管理', '附录'];
-const LAYOUTS = ['cover', 'toc', 'twoCol', 'table', 'chart', 'timeline', 'list', 'flow', 'chip', 'cards', 'section', 'thanks'];
+const LAYOUTS = ['cover', 'toc', 'twoCol', 'table', 'chart', 'timeline', 'list', 'flow', 'chip', 'cards', 'image', 'section', 'thanks'];
 /** T05673（P2-8）：三档主题主色，作为品牌色输入框初始值（用户不改则跟随主题） */
 const THEME_BRAND: Record<string, string> = { standard: '#08409C', ink: '#374151', evergreen: '#0B5F4A' };
 
@@ -256,7 +256,7 @@ function OutlinePageList({ rows, streaming, onPatch, onRemove, onMove, onAdd }: 
 }
 
 /** ③ 生成与下载条 */
-function GenerateBar({ streaming, canGenerate, blockReason, result, downloading, onGenerate, onDownload, onPreviewHtml, onDownloadHtml, htmlDownloading, style, onStyleChange, brandColor, onBrandColorChange }: {
+function GenerateBar({ streaming, canGenerate, blockReason, result, downloading, onGenerate, onDownload, onPreviewHtml, onDownloadHtml, htmlDownloading, style, onStyleChange, brandColor, onBrandColorChange, imageCount, onUploadImage, onClearImages }: {
   readonly streaming: boolean;
   readonly canGenerate: boolean;
   readonly blockReason: string;
@@ -273,6 +273,10 @@ function GenerateBar({ streaming, canGenerate, blockReason, result, downloading,
   /** T05673（P2-8）：品牌色（空 = 跟随主题） */
   readonly brandColor: string;
   readonly onBrandColorChange: (value: string) => void;
+  /** T05678：已上传图片数与上传/清空 */
+  readonly imageCount: number;
+  readonly onUploadImage: (file: File) => void;
+  readonly onClearImages: () => void;
 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -288,6 +292,22 @@ function GenerateBar({ streaming, canGenerate, blockReason, result, downloading,
         onChange={(e) => onBrandColorChange(e.target.value.toUpperCase())}
         disabled={streaming} title="品牌色（默认跟随主题；改动后需重新生成生效）" aria-label="品牌色"
         style={{ width: 30, height: 26, padding: 0, border: '1px solid var(--border)', borderRadius: 4, background: 'transparent', cursor: streaming ? 'default' : 'pointer' }} />
+      {/* T05678：图片先上传换令牌，生成时只传短 token；需在大纲里有一页 image 版式才会上稿 */}
+      <label title="上传图片（PNG/JPEG ≤3MB，最多 2 张；需在大纲加一页 image 版式）" aria-label="上传图片"
+        style={{ ...opBtn, padding: '4px 10px', cursor: streaming ? 'default' : 'pointer', opacity: streaming ? 0.6 : 1 }}>
+        <input type="file" accept="image/png,image/jpeg" disabled={streaming} style={{ display: 'none' }}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) onUploadImage(f);
+            e.currentTarget.value = '';
+          }} />
+        <ImageIcon size={12} /> 图片 {imageCount}/2
+      </label>
+      {imageCount > 0 && !streaming && (
+        <button onClick={onClearImages} className="tbtn-anim" title="清空已选图片" aria-label="清空图片" style={{ ...opBtn, padding: '4px 8px' }}>
+          <X size={12} /> 清空
+        </button>
+      )}
       {/* T02402：整按钮呼吸（同上）——逐页装配耗时长，运行态必须可感知 */}
       <button onClick={onGenerate} disabled={!canGenerate} className={`tbtn-anim${streaming ? ' task-breathe' : ''}`}
         title={blockReason || '逐页装配 .pptx 并落盘换下载令牌'} aria-label="开始生成启动会 PPT"
@@ -427,8 +447,29 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard, scopeNot
   const [previewOpen, setPreviewOpen] = useState(false);
   const [style, setStyle] = useState('standard'); // T05673（P1-4）：主题预设
   const [brandColor, setBrandColor] = useState(''); // T05673（P2-8）：品牌色（空 = 跟随主题）
+  const [images, setImages] = useState<Array<{ token: string; name: string }>>([]); // T05678：已上传图片令牌
 
   const flash = useCallback((m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3500); }, []);
+
+  /** T05678：图片先走独立上传端点换令牌（数据不塞进 SSE 请求），生成时只带 token */
+  const uploadImage = useCallback(async (file: File) => {
+    if (images.length >= 2) { flash('最多 2 张图片'); return; }
+    if (!/^image\/(png|jpeg)$/.test(file.type)) { flash('仅支持 PNG / JPEG'); return; }
+    if (file.size > 3 * 1024 * 1024) { flash(`图片 ${(file.size / 1024 / 1024).toFixed(1)}MB 超过 3MB 上限`); return; }
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result ?? ''));
+        reader.onerror = () => reject(new Error('读取图片失败'));
+        reader.readAsDataURL(file);
+      });
+      const r = await api.post<{ ok: boolean; token: string }>('/plans/kickoff-image', { dataUrl });
+      setImages((prev) => [...prev, { token: r.token, name: file.name }]);
+      flash(`已上传 ${file.name}（大纲需有一页 image 版式才会上稿）`);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }, [images.length, flash]);
 
   // ① 校验：项目变更即重拉（只读、零配额，FR-2.3——切来切去不烧模型）
   useEffect(() => {
@@ -540,7 +581,7 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard, scopeNot
     try {
       await streamEvents(
         '/plans/kickoff-ppt-stream',
-        { projectId, toolId, outline: rows, jobId: sessionJobId, style, ...(brandColor ? { brandColor } : {}) },
+        { projectId, toolId, outline: rows, jobId: sessionJobId, style, ...(brandColor ? { brandColor } : {}), ...(images.length ? { imageTokens: images.map((i) => i.token) } : {}) },
         (name, payload) => {
           if (name === 'stage') {
             const msg = (payload as { msg: string }).msg;
@@ -669,7 +710,8 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard, scopeNot
       <GenerateBar streaming={streaming} canGenerate={canGenerate} blockReason={generateBlockReason} result={result}
         downloading={downloading} onGenerate={() => void generate()} onDownload={() => void download()}
         onPreviewHtml={() => setPreviewOpen(true)} onDownloadHtml={() => void downloadHtml()} htmlDownloading={htmlDownloading}
-        style={style} onStyleChange={(v) => { setStyle(v); setBrandColor(''); }} brandColor={brandColor} onBrandColorChange={setBrandColor} />
+        style={style} onStyleChange={(v) => { setStyle(v); setBrandColor(''); }} brandColor={brandColor} onBrandColorChange={setBrandColor}
+        imageCount={images.length} onUploadImage={(f) => void uploadImage(f)} onClearImages={() => setImages([])} />
 
       <BuildProgressPanel streaming={streaming} pageDone={pageDone} pageTotal={pageTotal} result={result} />
 

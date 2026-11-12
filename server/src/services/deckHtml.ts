@@ -37,7 +37,9 @@ export type DeckHtmlBlock =
   | { type: 'chips'; groups: Array<{ label: string; items: string[] }> }
   | { type: 'bars'; items: Array<{ label: string; value: number; text?: string }>; note?: string }
   | { type: 'progress'; items: Array<{ label: string; value: number; text?: string; tone?: StatusTone }> }
-  | { type: 'note'; text: string };
+  | { type: 'note'; text: string }
+  /** T05678：整页图片（单文件 HTML 内联 dataURL，离线可看） */
+  | { type: 'image'; src: string; alt: string; note?: string };
 
 export interface DeckHtmlPage {
   section: string;
@@ -258,6 +260,14 @@ function emptyBlock(msg: string): string {
   return `<div class="empty anim" style="--i:2">${escapeHtml(msg)}</div>`;
 }
 
+/** T05678：整页图片。内联 dataURL 而非外链——下载的单文件 HTML 必须离线可放映 */
+function imageBlock(block: Extract<DeckHtmlBlock, { type: 'image' }>): string {
+  return `<figure style="margin:0;display:flex;flex-direction:column;align-items:center;gap:8px;height:100%">
+    <img src="${block.src}" alt="${escapeHtml(block.alt)}" style="max-width:100%;max-height:100%;object-fit:contain;border:1px solid var(--hair);border-radius:6px;background:var(--surface)">
+    ${block.note ? `<figcaption style="font-size:${TYPE_SCALE.micro}px;color:var(--ink-muted)">${escapeHtml(block.note)}</figcaption>` : ''}
+  </figure>`;
+}
+
 function renderBlock(block: DeckHtmlBlock): string {
   switch (block.type) {
     case 'metrics': return metricsBlock(block);
@@ -269,6 +279,7 @@ function renderBlock(block: DeckHtmlBlock): string {
     case 'bars': return barsBlock(block);
     case 'progress': return progressBlock(block);
     case 'note': return noteBlock(block);
+    case 'image': return imageBlock(block);
     default: return '';
   }
 }
@@ -591,7 +602,7 @@ export function htmlFileNameOf(pptxFileName: string): string {
 }
 
 /** 供门做结构断言：11 种版式是否都被渲染器覆盖（新增 layout 忘了实现会在这里露出来） */
-export const HTML_LAYOUT_SUPPORT = ['cover', 'toc', 'twoCol', 'table', 'chart', 'timeline', 'list', 'flow', 'chip', 'section', 'thanks'] as const;
+export const HTML_LAYOUT_SUPPORT = ['cover', 'toc', 'twoCol', 'table', 'chart', 'timeline', 'list', 'flow', 'chip', 'cards', 'image', 'section', 'thanks'] as const;
 
 /** 三档主题的可用键（HTML 与 PPTX 同一份，避免 HTML 多认一档） */
 export const HTML_STYLE_KEYS = Object.keys(DECK_STYLES) as DeckStyleKey[];

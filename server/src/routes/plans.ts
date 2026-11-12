@@ -542,6 +542,28 @@ planApi.post('/kickoff-ppt-outline', (req, res) => {
  * T02103 §2.3：启动会 PPT 流式生成（第 2 段）。事件形态与 `/report/ai-generate-stream`
  * （`routes/index.ts:1636`）逐字同构：`stage {msg}` / `done {token, fileName, pageCount, warnings[]}` / `error {error}`。
  */
+/**
+ * T05678：启动会图片上传。图片不随生成请求走（SSE 请求体只放短 token）——
+ * 先落令牌（复用 6h TTL 的 ReportService），生成时按 token 读回；只认 png/jpeg 魔数，扩展名不作数。
+ */
+planApi.post('/kickoff-image', (req, res) => {
+  const rawUrl = (req.body as { dataUrl?: unknown })?.dataUrl;
+  const hit = typeof rawUrl === 'string'
+    ? /^data:(image\/(?:png|jpeg));base64,([A-Za-z0-9+/=\s]+)$/.exec(rawUrl)
+    : null;
+  if (!hit) return res.status(400).json({ error: '仅支持 PNG / JPEG 的 dataURL（data:image/png;base64,…）' });
+  const buf = Buffer.from(hit[2].replace(/\s+/g, ''), 'base64');
+  if (buf.length === 0) return res.status(400).json({ error: '图片内容为空' });
+  if (buf.length > 3 * 1024 * 1024) {
+    return res.status(400).json({ error: `图片 ${(buf.length / 1024 / 1024).toFixed(1)}MB 超过 3MB 上限` });
+  }
+  const isPng = buf[0] === 0x89 && buf[1] === 0x50;
+  const isJpeg = buf[0] === 0xff && buf[1] === 0xd8;
+  if (!isPng && !isJpeg) return res.status(400).json({ error: '文件内容不是 PNG / JPEG（扩展名不作数）' });
+  const token = saveReportBuffer(buf);
+  res.json({ ok: true, token, bytes: buf.length });
+});
+
 planApi.post('/kickoff-ppt-stream', exportGate(REPORT_GATE, undefined, { defer: true }), async (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
   const projectId = toStr(b.projectId);
@@ -567,6 +589,10 @@ planApi.post('/kickoff-ppt-stream', exportGate(REPORT_GATE, undefined, { defer: 
     return res.status(400).json({ error: `品牌色需为 6 位十六进制（如 #08409C），当前为「${rawBrand}」` });
   }
   const brandColor = rawBrand || undefined;
+  // T05678：图片令牌（最多 2 个，UUID 形态）；读不到或非图片时由服务层静默跳过
+  const imageTokens = Array.isArray(b.imageTokens)
+    ? b.imageTokens.filter((t): t is string => typeof t === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(t)).slice(0, 2)
+    : [];
 
   // T03316（G-3）：整轮生成收口才记样本（大纲接口是中间交付，不在此上报）；
   // jobId 优先用前端会话稳定值，同一次生成的重试合到同一 job
@@ -598,7 +624,7 @@ planApi.post('/kickoff-ppt-stream', exportGate(REPORT_GATE, undefined, { defer: 
   });
 
   try {
-    const r = await kickoffPptStream(projectId, toolId, b.outline, (msg) => send('stage', { msg }), ac.signal, style, brandColor);
+    const r = await kickoffPptStream(projectId, toolId, b.outline, (msg) => send('stage', { msg }), ac.signal, style, brandColor, imageTokens);
     issuedToken = r.token;
     // close 可能早于 promise 落地（ac.abort 时 done 还没发）：此时不补删就成孤儿，close 那次已跑完了
     if (closed || res.writableEnded) {

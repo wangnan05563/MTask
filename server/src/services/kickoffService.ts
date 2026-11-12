@@ -19,7 +19,7 @@ import { TestCaseService } from './TestCaseService';
 import { AIService } from './AIService';
 import { estimatesSnapshot } from '../routes/estimates';
 import { PLACEHOLDER } from './deckDesign'; // 占位词与 HTML 适配器同源（避免为常量把数据库层拖进渲染门）
-import { saveReportBuffer, discardReport } from './ReportService'; // T02103：生成物落盘/下载令牌单源（纠偏 C3）；T02144：放弃即回收
+import { saveReportBuffer, discardReport, readReportBuffer } from './ReportService'; // T02103：生成物落盘/下载令牌单源（纠偏 C3）；T02144：放弃即回收
 import { recordArtifact } from './aiArtifactService'; // T03262（AI-101④）：产物持久副本
 import { buildCardProvenance, recordCardProvenance, type CardProvenance } from './aiCardProvenance'; // T03262（AI-101①）：溯源行
 // T05671：提示分级/归并/去内部术语（warnings 原文契约不变，只新增可读视图）
@@ -330,6 +330,8 @@ export interface KickoffRisk {
 
 export interface KickoffBundle {
   project: { id: string; name: string; workspacePath: string };
+  /** T05678：用户上传的图片（最多 2 张，已按魔数校验为 png/jpeg；PPTX 与 HTML 共用） */
+  images?: KickoffImageAsset[];
   /** 全部 PRD 文档的轻量元数据（正文只取最新一篇，见 prdDoc） */
   prdDocs: Array<{ id: string; filename: string; updatedAt: string; contentChars: number }>;
   prdDoc: { id: string; filename: string; updatedAt: string; contentMd: string } | null;
@@ -550,7 +552,7 @@ export const KICKOFF_SECTIONS = [
   '沟通管理',
   '附录',
 ] as const;
-export const KICKOFF_LAYOUTS = ['cover', 'toc', 'twoCol', 'table', 'chart', 'timeline', 'list', 'flow', 'chip', 'cards', 'section', 'thanks'] as const;
+export const KICKOFF_LAYOUTS = ['cover', 'toc', 'twoCol', 'table', 'chart', 'timeline', 'list', 'flow', 'chip', 'cards', 'image', 'section', 'thanks'] as const;
 
 /**
  * T05673：栏目名黑名单——标题只写这些词，说明模型把 section 复述成了 title。
@@ -1424,6 +1426,27 @@ export interface KickoffStreamResult {
   style: DeckStyleKey;
 }
 
+/** T05678：图片资产——只认魔数，扩展名与 Content-Type 都不作数 */
+export interface KickoffImageAsset {
+  mime: 'image/png' | 'image/jpeg';
+  base64: string;
+}
+
+/** 上传令牌 → 图片资产：读不到 / 非 png|jpeg 的一律丢弃（不让坏图把整份稿拖死） */
+function toImageAssets(tokens: readonly string[] | undefined): KickoffImageAsset[] {
+  const out: KickoffImageAsset[] = [];
+  for (const token of tokens ?? []) {
+    const buf = readReportBuffer(String(token));
+    if (!buf || buf.length === 0) continue;
+    const isPng = buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+    const isJpeg = buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+    if (!isPng && !isJpeg) continue;
+    out.push({ mime: isPng ? 'image/png' : 'image/jpeg', base64: buf.toString('base64') });
+    if (out.length >= 2) break;
+  }
+  return out;
+}
+
 /**
  * 启动会 PPT 流式生成（§2.3）：采集 → 第 2 段措辞 → 逐页装配（每页一条 `stage`）→ 落盘换令牌。
  * 中止语义（验收 9）：`signal` 命中即抛错收手，全程只有一个落盘点（令牌），
@@ -1439,6 +1462,8 @@ export async function kickoffPptStream(
   style: DeckStyleKey = 'standard',
   /** T05673（P2-8）：项目品牌色（6 位 hex，可带 #），优先于主题主色 */
   brandColor?: string,
+  /** T05678：图片令牌（先走 /plans/kickoff-image 上传，最多 2 个） */
+  imageTokens?: readonly string[],
 ): Promise<KickoffStreamResult> {
   const outline = assertOutlineShape(rawOutline);
   onStage('正在采集启动会资料…');
@@ -1473,7 +1498,7 @@ export async function kickoffPptStream(
   }
 
   const { buildKickoffPpt, expandTimelinePages } = await import('./kickoffBuilder'); // 动态加载：builder 静态引用本模块常量，两侧都静态 import 会成环
-  const bundleForBuild = { ...bundle, risks: built.risks };
+  const bundleForBuild = { ...bundle, risks: built.risks, images: toImageAssets(imageTokens) };
   // T02171：计划排不下一页会展开成续页——进度按真实渲染页数计，否则出现「页 12/11」
   const renderTotal = expandTimelinePages(bundleForBuild, built.outline).length;
   onStage(`开始逐页装配 ${renderTotal} 页…`);
