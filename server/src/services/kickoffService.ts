@@ -686,7 +686,9 @@ interface QuoteRepairState {
 function needCommaAfter(raw: string, from: number): boolean {
   for (let j = from; j < raw.length; j++) {
     if (/\s/.test(raw[j])) continue;
-    return !',]}:'.includes(raw[j]);
+    // T05686：全角冒号/逗号也是合法分隔位（后续由 normalizeJsonPunct 归一）。
+    // 不认它们就会把 `"title"：` 当成「缺逗号」补成 `"title",：`，反而造出语法错误。
+    return !',]}:，：'.includes(raw[j]);
   }
   return false;
 }
@@ -762,11 +764,46 @@ export function repairChineseJsonQuotes(raw: string): { text: string; fixed: num
   return { text: st.out, fixed: st.fixed };
 }
 
+/**
+ * T05686：结构位的全角标点归一到 ASCII（`：`→`:`、`，`→`,`、全角空格→空格）。
+ * 中文模型在长 bullet 里写惯了全角逗号，会把它带到 JSON 结构位——
+ * `{"title"："x"，"bullets"：[…]}` 的报错是「Expected double-quoted property name」，
+ * 看着像引号问题，实际是 `"title"` 后面那个全角冒号。
+ *
+ * 只改**字符串外**的字符；字符串内的全角标点原样保留（那是内容）。
+ * 必须在 `repairChineseJsonQuotes` **之后**调用：那一步才把「」“” 变成 ASCII 引号，
+ * 字符串边界此时才可识别。
+ */
+export function normalizeJsonPunct(raw: string): { text: string; fixed: number } {
+  let out = '';
+  let fixed = 0;
+  let inStr = false;
+  let esc = false;
+  for (const c of raw) {
+    if (inStr) {
+      out += c;
+      if (esc) esc = false;
+      else if (c === '\\') esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') { inStr = true; out += c; continue; }
+    if (c === '：') { out += ':'; fixed += 1; continue; }
+    if (c === '，') { out += ','; fixed += 1; continue; }
+    if (c === '\u3000') { out += ' '; fixed += 1; continue; }
+    out += c;
+  }
+  return { text: out, fixed };
+}
+
 /** 剥围栏 + 修中文引号 + 修尾逗号后的安全解析；三处 askJson parse 回调共用 */
 export function parseAiJson(content: string, hits?: string[]): unknown {
   const quotes = repairChineseJsonQuotes(stripFence(content));
   noteEscapeHits(hits, quotes.fixed, 'JSON 非 ASCII 引号/漏分隔符');
-  const relaxed = relaxIllegalEscapes(quotes.text);
+  // T05686：引号已 ASCII 化，此时才能可靠区分「结构位」与「字符串内」，再做全角标点归一
+  const punct = normalizeJsonPunct(quotes.text);
+  noteEscapeHits(hits, punct.fixed, 'JSON 结构位全角标点');
+  const relaxed = relaxIllegalEscapes(punct.text);
   noteEscapeHits(hits, relaxed.fixed, 'JSON');
   return JSON.parse(stripJsonTrailingCommas(relaxed.text));
 }
