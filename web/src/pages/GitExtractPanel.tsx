@@ -10,6 +10,7 @@ import { GIT_DEGRADED_HINT } from '../ui/gitBadge';
 import { FlowButton } from '../ui/FlowButton';
 import { FlowProgress } from '../ui/FlowProgress';
 import { useSessionState } from '../ui/session';
+import { gitExtractStore } from '../stores/gitExtractStore';
 import { saveBlob } from '../utils/download';
 
 /**
@@ -57,7 +58,7 @@ interface PlanView {
 }
 
 /** 执行结果（server `gitExtract.ExtractResult`） */
-interface ExtractView {
+export interface ExtractView {
   jobId: string;
   volumes: { token: string; fileName: string; bytes: number; files: number }[];
   bytes: number;
@@ -114,14 +115,12 @@ export function GitExtractPanel({ projects, scope, onScopeChange, onClose, onEnv
   const [degraded, setDegraded] = useState('');
   const [planBusy, setPlanBusy] = useState(false);
 
-  const [running, setRunning] = useState(false);
-  const [stageIdx, setStageIdx] = useState(-1);
-  const [jobId, setJobId] = useState('');
-  const [result, setResult] = useState<ExtractView | null>(null);
-  const [runError, setRunError] = useState('');
-  const [aborted, setAborted] = useState(false);
+  // T05696：运行态提升到模块级 store——SSE 回调写 store（组件卸载也不丢），
+  // 切回时「运行中/阶段/结果/错误」从快照恢复；卸载掐流语义保留（见下方 effect）。
+  const [snap, setSnap] = useState(gitExtractStore.get());
+  useEffect(() => gitExtractStore.subscribe(() => setSnap(gitExtractStore.get())), []);
+  const { running, stageIdx, jobId, result, runError, aborted } = snap;
   const [downloaded, setDownloaded] = useState<string[]>([]);
-  const controllerRef = useRef<AbortController | null>(null);
 
   /** 交给后端的任务集：会话里存的是历史勾选，去重即可——「未回写」的任务由服务端按关联表判定并点名 */
   const taskIds = useMemo(() => [...new Set(scope.taskIds)], [scope.taskIds]);
@@ -176,8 +175,14 @@ export function GitExtractPanel({ projects, scope, onScopeChange, onClose, onEnv
     return () => clearTimeout(t);
   }, [refreshPlan, taskIdsKey, scope.projectIds.length]);
 
-  // 卸载（切页/收起卡片）即掐流：服务端 res.close 会 abort 子进程并回收 tmp，不留半个包在跑
-  useEffect(() => () => controllerRef.current?.abort(), []);
+  // 卸载（切页/收起卡片）即掐流：服务端 res.close 会 abort 子进程并回收 tmp，不留半个包在跑。
+  // T05696：掐流语义保留（磁盘重操作不留后台包），但「已中止」状态进 store——切回能看到
+  // 「已中止」而不是一块干净面板误以为没跑过。
+  useEffect(() => () => {
+    const ctrl = gitExtractStore.getAbortCtrl();
+    ctrl?.abort();
+    if (gitExtractStore.get().running) gitExtractStore.markAborted();
+  }, []);
 
   // 环境不可用（勾了项目没共同空间 / 取数发现非仓库·无 git）上抛给页面层驱动卡片 blocked 视觉
   useEffect(() => {
@@ -203,21 +208,19 @@ export function GitExtractPanel({ projects, scope, onScopeChange, onClose, onEnv
 
   async function start() {
     if (!hasExtractScope) { flash?.('请先勾选任务关联记录，或打开“允许勾选未关联记录”后选择 Git 提交'); return; }
-    setRunning(true);
-    setResult(null); setRunError(''); setAborted(false); setDownloaded([]); setStageIdx(-1); setJobId('');
+    setDownloaded([]);
     const controller = new AbortController();
-    controllerRef.current = controller;
+    gitExtractStore.startRun(controller);
     const onEvent = (name: string, payload: unknown) => {
       const p = (payload ?? {}) as Record<string, unknown>;
-      if (name === 'job') setJobId(typeof p.jobId === 'string' ? p.jobId : '');
+      if (name === 'job') gitExtractStore.patch({ jobId: typeof p.jobId === 'string' ? p.jobId : '' });
       else if (name === 'stage') {
         const idx = STAGES.findIndex((s) => s.key === p.stage);
-        if (idx >= 0) setStageIdx(idx);
+        if (idx >= 0) gitExtractStore.patch({ stageIdx: idx });
       } else if (name === 'done') {
-        setResult(p as unknown as ExtractView);
-        setStageIdx(STAGES.length - 1);
-      } else if (name === 'aborted') setAborted(true);
-      else if (name === 'error') setRunError(describeError(p as ErrorPayload));
+        gitExtractStore.patch({ result: p as unknown as ExtractView, stageIdx: STAGES.length - 1 });
+      } else if (name === 'aborted') gitExtractStore.patch({ aborted: true });
+      else if (name === 'error') gitExtractStore.patch({ runError: describeError(p as ErrorPayload) });
     };
     try {
       await streamEvents('/git-extract', {
@@ -229,21 +232,20 @@ export function GitExtractPanel({ projects, scope, onScopeChange, onClose, onEnv
       }, onEvent, controller.signal);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (controller.signal.aborted) setAborted(true);
+      if (controller.signal.aborted) gitExtractStore.markAborted();
       // 被闸拒不算「提取失败」：语气与其余导出卡一致（PRD §3.3.2 明确不排队）
-      else setRunError(msg.includes(GATE_BUSY_MSG) ? '已有 2 个导出在跑，请稍后重试（并发超限不排队，避免同时打满磁盘）' : msg);
+      else gitExtractStore.patch({ runError: msg.includes(GATE_BUSY_MSG) ? '已有 2 个导出在跑，请稍后重试（并发超限不排队，避免同时打满磁盘）' : msg });
     } finally {
-      setRunning(false);
-      controllerRef.current = null;
+      gitExtractStore.finishRun();
     }
   }
 
   async function stop() {
-    controllerRef.current?.abort();
+    gitExtractStore.getAbortCtrl()?.abort();
     if (jobId) {
       try { await api.post('/git-extract/stop', { jobId }); } catch { /* 中止指令送不到也不影响前端收口：断开连接同样触发服务端回收 */ }
     }
-    setAborted(true);
+    gitExtractStore.markAborted();
   }
 
   async function download(v: { token: string; fileName: string }) {
@@ -322,7 +324,7 @@ export function GitExtractPanel({ projects, scope, onScopeChange, onClose, onEnv
             <label key={m.key} data-t03366={`mode-${m.key}`}
               style={{ ...FIELD_QUIET, display: 'flex', alignItems: 'flex-start', gap: 6, cursor: 'pointer', padding: '6px 8px', width: '100%', boxSizing: 'border-box', border: `1px solid ${mode === m.key ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 6 }}>
               <input type="radio" name="git-extract-mode" checked={mode === m.key}
-                onChange={() => { setMode(m.key); setResult(null); setRunError(''); setAborted(false); setStageIdx(-1); }}
+                onChange={() => { setMode(m.key); gitExtractStore.resetRun(); }}
                 aria-label={m.label} style={{ marginTop: 2, flexShrink: 0 }} />
               <span style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 1 }} aria-hidden="true">{m.icon}</span>
               <span style={{ minWidth: 0 }}>

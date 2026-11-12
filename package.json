@@ -143,7 +143,8 @@
     "verify:t05690-git-tree-layout": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05690-git-tree-layout.mts",
     "verify:t05693-lecture-diff-degrade": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05693-lecture-diff-degrade.mts",
     "verify:t05694-cards-consistency": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05694-cards-consistency.mts",
-    "verify:t05695-outline-budget": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05695-outline-budget.mts"
+    "verify:t05695-outline-budget": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05695-outline-budget.mts",
+    "verify:t05696-card-busy-persist": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05696-card-busy-persist.mts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

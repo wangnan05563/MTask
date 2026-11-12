@@ -357,10 +357,11 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
   const [patchMode, setPatchMode] = useSessionState('lecture.patchMode', false);
   const [patchText, setPatchText] = useState('');
   const [exportFormat, setExportFormat] = useSessionState<ExportFormat>('lecture.exportFormat', 'md');
-  const [exporting, setExporting] = useState(false);
+  // T05696：导出/预检运行态改从 store 快照读——卡片切走再切回，按钮 loading 不再丢
+  const exporting = snap.exporting;
   /** T02875：预检覆盖层 + 「裁剪继续」要接着跑的意图 */
   const [preflight, setPreflight] = useState<LecturePreflight | null>(null);
-  const [preflightLoading, setPreflightLoading] = useState(false);
+  const preflightLoading = snap.preflightLoading;
   const pendingRun = useRef<{ extra: Record<string, unknown>; label: string } | null>(null);
   const [notice, setNotice] = useState('');
   const [openFiles, setOpenFiles] = useState<Set<string>>(new Set());
@@ -578,7 +579,7 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
   async function openPreflight(extra: Record<string, unknown>, label: string) {
     if (scopeBody.error) return flash(scopeBody.error);
     if (!toolId) return flash('请先在右侧控制台选择 AI 工具');
-    setPreflightLoading(true);
+    codeReviewLectureStore.setPreflightLoading(true);
     try {
       const p = await api.post<LecturePreflight>('/plans/code-review-lecture/preflight', scopeBody.body);
       pendingRun.current = { extra, label };
@@ -586,7 +587,7 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
     } catch (e) {
       flash(`预检失败：${e instanceof Error ? e.message : String(e)}`);
     } finally {
-      setPreflightLoading(false);
+      codeReviewLectureStore.setPreflightLoading(false);
     }
   }
 
@@ -661,7 +662,7 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
       marks: snap.marks,
       generatedAt,
     });
-    setExporting(true);
+    codeReviewLectureStore.setExporting(true);
     try {
       const created = await api.post<{ token: string; filename: string }>('/plans/code-review-lecture/export', {
         format: exportFormat,
@@ -681,7 +682,7 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
     } catch (e) {
       flash(`导出失败：${e instanceof Error ? e.message : String(e)}`);
     } finally {
-      setExporting(false);
+      codeReviewLectureStore.setExporting(false);
     }
   }
 

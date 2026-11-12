@@ -139,6 +139,10 @@ export interface CodeReviewLectureState {
   diff: LectureDiffProject[];
   diffLoading: boolean;
   diffError: string;
+  /** T05696：预检进行中——原为面板局部 useState，卡片切走再切回即丢，按钮恢复可点 */
+  preflightLoading: boolean;
+  /** T05696：讲稿导出进行中 */
+  exporting: boolean;
   startedAt?: number;
   finalElapsed?: number;
 }
@@ -155,6 +159,8 @@ const initialState = (): CodeReviewLectureState => ({
   diff: [],
   diffLoading: false,
   diffError: '',
+  preflightLoading: false,
+  exporting: false,
 });
 
 let state: CodeReviewLectureState = (() => {
@@ -246,6 +252,15 @@ export const codeReviewLectureStore = {
   },
   setDiffLoading(loading: boolean) {
     state = { ...state, diffLoading: loading, ...(loading ? { diffError: '' } : {}) };
+    emit();
+  },
+  /** T05696：预检/导出运行态进 store——与 diffLoading 同口径，卡片切换不再丢按钮态 */
+  setPreflightLoading(loading: boolean) {
+    state = { ...state, preflightLoading: loading };
+    emit();
+  },
+  setExporting(exporting: boolean) {
+    state = { ...state, exporting };
     emit();
   },
   setDiff(projects: LectureDiffProject[], error = '') {
