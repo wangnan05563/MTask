@@ -1016,6 +1016,102 @@ export function flowBlocks(b: KickoffBundle, frame: Box): DiagramResult {
   return { blocks: out, drawn: nodes.length, overflow, notes, violations: diagramViolations(out, frame) };
 }
 
+// ---------- T05679：里程碑季度泳道（里程碑 > 5 时的承载形态） ----------
+
+const SWIMLANE_MAX_QUARTERS = 4;
+const SWIMLANE_HEADER_H = 0.3;
+const SWIMLANE_NODE_H = 0.42;
+const SWIMLANE_GAP = 0.06;
+const SWIMLANE_COL_GAP = 0.14;
+const SWIMLANE_MAX_ROWS = 5;
+/** 整块进入堆叠预算的最小高度（列头 + 至少 2 行） */
+const SWIMLANE_MIN_H = 1.5;
+
+/** 里程碑归季：优先截止日，缺则起始日；都没有归「未排期」（如实标注，不伪造日期） */
+function quarterKeyOf(m: KickoffBundle['milestones'][number]): string {
+  const d = m.end_date || m.start_date || '';
+  const hit = /^(\d{4})-(\d{2})/.exec(d);
+  if (!hit) return '未排期';
+  return `${hit[1]} Q${Math.floor((Number(hit[2]) - 1) / 3) + 1}`;
+}
+
+/** 里程碑是否该改画季度泳道：数量超一页链容量**且**至少跨 2 个季度（单季度分列没有分组价值，反而少画） */
+export function shouldUseSwimlane(b: KickoffBundle): boolean {
+  if (b.milestones.length <= FLOW_MAX_NODES) return false;
+  return new Set(b.milestones.map(quarterKeyOf)).size >= 2;
+}
+
+/**
+ * T05679：季度泳道。横向阶段链一页只放得下 5 个节点（54 个里程碑里只画 5 个）；
+ * 按季度分列后可放 4 列 × 最多 5 行 = 20 个，且**页数不变**（不触发 PAGE_MAX 18 的上限）。
+ * 每列只列该季前 N 个（按截止日排序），其余计数并指向时间线页——不静默丢、也不谎称画全。
+ */
+export function quarterSwimlaneBlocks(b: KickoffBundle, frame: Box): DiagramResult {
+  const chain = milestoneChain(b);
+  if (chain.length === 0 || frame.h < SWIMLANE_MIN_H) {
+    return { blocks: [], drawn: 0, overflow: chain.length, notes: [], violations: [] };
+  }
+  const groups = new Map<string, KickoffBundle['milestones']>();
+  for (const m of chain) {
+    const key = quarterKeyOf(m);
+    const list = groups.get(key);
+    if (list) list.push(m);
+    else groups.set(key, [m]);
+  }
+  // 季度字典序即时间序；「未排期」永远放最后，避免被当成最早的一段
+  const quarters = [...groups.keys()].filter((k) => k !== '未排期').sort();
+  if (groups.has('未排期')) quarters.push('未排期');
+  const cols = quarters.slice(0, SWIMLANE_MAX_QUARTERS);
+  const restCount = quarters.slice(SWIMLANE_MAX_QUARTERS).reduce((s, k) => s + (groups.get(k)?.length ?? 0), 0);
+
+  const colW = (frame.w - SWIMLANE_COL_GAP * (cols.length - 1)) / cols.length;
+  const rowsMax = Math.max(1, Math.min(
+    SWIMLANE_MAX_ROWS,
+    Math.floor((frame.h - SWIMLANE_HEADER_H - SWIMLANE_GAP) / (SWIMLANE_NODE_H + SWIMLANE_GAP) + 1e-6),
+  ));
+
+  const out: Block[] = [];
+  const notes: string[] = [];
+  let drawn = 0;
+  let hidden = 0;
+  let clipped = 0;
+
+  cols.forEach((key, c) => {
+    const list = groups.get(key) ?? [];
+    const x = frame.x + c * (colW + SWIMLANE_COL_GAP);
+    out.push({
+      box: { x, y: frame.y, w: colW, h: SWIMLANE_HEADER_H },
+      text: { content: `${key} · ${list.length} 个`, pt: 10, bold: true, color: PALETTE.brandDeep },
+    });
+    list.slice(0, rowsMax).forEach((m, i) => {
+      const label = fitLabel(m.title, colW, 9);
+      if (label.clipped) clipped++;
+      const due = (m.end_date || m.start_date || '').slice(5);
+      out.push({
+        box: {
+          x,
+          y: frame.y + SWIMLANE_HEADER_H + SWIMLANE_GAP + i * (SWIMLANE_NODE_H + SWIMLANE_GAP),
+          w: colW,
+          h: SWIMLANE_NODE_H,
+        },
+        shape: {
+          kind: 'roundRect',
+          tone: 'chip',
+          label: { text: `${label.text}\n${due ? `截止 ${due}` : '未排截止日'}`, pt: 9, color: PALETTE.brandDeep },
+        },
+      });
+      drawn++;
+    });
+    hidden += Math.max(0, list.length - rowsMax);
+  });
+
+  const shownQuarters = cols.length;
+  if (hidden > 0) notes.push(`季度泳道每列只列前 ${rowsMax} 个里程碑，其余 ${hidden} 个见时间线页（一条不丢）`);
+  if (restCount > 0) notes.push(`另有 ${restCount} 个里程碑在其他季度（本页只画最近 ${shownQuarters} 个季度），见时间线页`);
+  if (clipped > 0) notes.push(`${clipped} 个里程碑名超出列宽，已截断显示（完整名称见里程碑页）`);
+  return { blocks: out, drawn, overflow: hidden + restCount, notes, violations: diagramViolations(out, frame) };
+}
+
 /** 人员标签流：宽度按 `estimateTextWidthIn` 实算、超宽换行，排不下的如实计数不硬画 */
 export function chipBlocks(b: KickoffBundle, frame: Box): DiagramResult {
   const labels = b.assignees.map((a) => `${a.name}·${a.planCount} 项`);
@@ -1199,6 +1295,10 @@ function planDiagram(item: KickoffRenderPage, b: KickoffBundle): DiagramPlan {
     const on = cardKey !== null && cardModelsOf(b, cardKey).some((c) => c.title.trim().length > 0);
     return { key: cardKey, on, minH: CARD_MIN_H };
   }
+  // T05679：里程碑超过一页链容量且跨季度时改画季度泳道（页数不变，绘制量 5 → 最多 4×5）
+  if (item.layout === 'flow' && shouldUseSwimlane(b)) {
+    return { key: 'milestones', on: true, minH: SWIMLANE_MIN_H };
+  }
   // T02198：flow/chip 页由组件自己绘制，其数据块（里程碑链 / 人员标签）不进堆叠预算
   const chipKey: KickoffDataKey | null = item.layout === 'chip' ? 'assignees' : null;
   const key: KickoffDataKey | null = item.layout === 'flow' ? 'milestones' : chipKey;
@@ -1289,7 +1389,9 @@ function tryDiagramPage(
   const { out, dropped, notes } = sink;
   const area: Box = { x: body.x, y: cursor, w: body.w, h: bottom - cursor };
   const pass = item.layout === 'flow'
-    ? flowBlocks(b, area)
+    ? (shouldUseSwimlane(b)
+      ? quarterSwimlaneBlocks(b, area)
+      : flowBlocks(b, area))
     : item.layout === 'cards'
       ? cardGridBlocks(b, diagram.key, area)
       : chipBlocks(b, area);
