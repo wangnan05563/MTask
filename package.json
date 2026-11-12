@@ -134,7 +134,8 @@
     "verify:t05671-warning-digest": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05671-warning-digest.mts",
     "verify:t05673-kickoff-quality": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05673-kickoff-quality.mts",
     "verify:t05679-swimlane": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05679-swimlane.mts",
-    "verify:t05678-image-slot": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05678-image-slot.mts"
+    "verify:t05678-image-slot": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05678-image-slot.mts",
+    "verify:t05682-lecture-task-scope": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05682-lecture-task-scope.mts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

@@ -190,68 +190,23 @@ function toggleInSet(prev: ReadonlySet<string>, key: string): Set<string> {
   return next;
 }
 
-/** 采集入参（区间/作者过滤/patch/Git 树点选）——纯函数入参，便于单测与 S3776 下沉 */
+/** 采集入参（T05682：只剩「按提交清单」一条路径——Git 树点选 ∪ 已完成任务勾选） */
 interface ScopeInput {
-  readonly patchMode: boolean;
   readonly selectedIds: readonly string[];
-  readonly patchText: string;
-  readonly shape: RangeShape;
-  readonly since: string;
-  readonly until: string;
-  readonly base: string;
-  readonly head: string;
-  readonly authorFilter: string;
   readonly selectedCommits: Readonly<Record<string, string[]>>;
   /** T04576：每个项目这批提交来自工作空间目录内的哪个仓库（缺省 = 项目根仓库） */
   readonly selectedRepoSubs: Readonly<Record<string, string>>;
 }
 
-/** patch 模式（E-1 降级通道）：一次只支持单项目 */
-function buildPatchBody(input: ScopeInput): { body?: Record<string, unknown>; error?: string } {
-  if (input.selectedIds.length !== 1) return { error: '粘贴 patch 模式一次只支持 1 个项目，请在顶部报表范围里只选一个' };
-  if (!input.patchText.trim()) return { error: '请粘贴 unified diff 全文（git diff / git format-patch 输出均可）' };
-  return { body: { projects: [{ projectId: input.selectedIds[0], patch: input.patchText }] } };
-}
-
-/** T03590：时间窗形态——日期范围控件产出起止两个原始值；单起始时与原 `since` 取值逐字一致 */
-function fillSinceRange(input: ScopeInput, range: Record<string, string>): string | null {
-  const win = buildSinceWindow(input.since, input.until);
-  if (win.error) return win.error;
-  if (!win.since) return '时间窗形态需要起始时间（如 2026-10-01 或 "14 days ago"）';
-  range.since = win.since;
-  if (win.until) range.until = win.until;
-  return null;
-}
-
-/** base..head / 首末 SHA 形态 */
-function fillRefRange(input: ScopeInput, range: Record<string, string>): string | null {
-  if (!input.base.trim()) return '需要填写 base（分支/标签/SHA），或在 Git 树里点选提交';
-  range.base = input.base.trim();
-  if (input.shape === 'first-last' && !input.head.trim()) return '首末 SHA 形态需要同时填写两个 SHA';
-  if (input.head.trim()) range.head = input.head.trim();
-  return null;
-}
-
-function buildRange(input: ScopeInput): { range?: Record<string, string>; error?: string } {
-  const range: Record<string, string> = { shape: input.shape };
-  const error = input.shape === 'since' ? fillSinceRange(input, range) : fillRefRange(input, range);
-  if (error) return { error };
-  if (input.authorFilter.trim()) range.authorFilter = input.authorFilter.trim();
-  return { range };
-}
-
-/** 采集入参：一次评审共用一份区间；patch 模式单项目（E-1 降级通道） */
+/** 采集入参：T05682 起只有一条路径——按项目提交清单采集（Git 树点选 ∪ 已完成任务勾选） */
 function buildScopeBody(input: ScopeInput): { body?: Record<string, unknown>; error?: string } {
-  if (input.patchMode) return buildPatchBody(input);
-  // T03302：Git 树点过提交的项目按 `shape='commits'` 采集（点选本身就是清单，不再叠作者过滤）；
-  // 没点过的项目继续用下面的手填区间——两者可以在同一次评审里按项目混用。
-  const needsRange = input.selectedIds.some((projectId) => (input.selectedCommits[projectId] ?? []).length === 0);
-  // 区间校验只对「仍要走区间」的项目有意义：全部项目都点过提交时，不该再逼用户填 base
-  const built: { range?: Record<string, string>; error?: string } = needsRange ? buildRange(input) : {};
-  if (built.error) return { error: built.error };
+  if (input.selectedIds.length === 0) return { error: '请先选择项目' };
+  const missing = input.selectedIds.filter((projectId) => (input.selectedCommits[projectId] ?? []).length === 0);
+  if (missing.length > 0) {
+    return { error: `${missing.length} 个项目还没有选择提交——请用「从 Git 树选范围」或勾选「已完成任务」` };
+  }
   const projects = input.selectedIds.map((projectId) => {
     const picked = input.selectedCommits[projectId] ?? [];
-    if (picked.length === 0) return { projectId, range: built.range };
     // T04576：`shape='commits'` 带上仓库维度——子仓库的 SHA 若按根仓库下发，服务端会整批判 missing
     const repoSub = (input.selectedRepoSubs[projectId] ?? '').trim();
     return { projectId, range: { shape: 'commits', commits: picked, ...(repoSub ? { repoSub } : {}) } };
@@ -393,6 +348,9 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
   const authorsRequested = useRef(false);
   /** T03302：Git 树点选的提交（按项目分别存）——非空即该项目走 `shape='commits'`，优先于手填区间 */
   const [selectedCommits, setSelectedCommits] = useSessionState<Record<string, string[]>>('lecture.selectedCommits', {});
+  // T05682：已完成任务勾选——每个任务带自己的关联提交，与 Git 树点选可叠加
+  const [doneTasks, setDoneTasks] = useState<DoneTask[]>([]);
+  const [checkedTaskIds, setCheckedTaskIds] = useState<string[]>([]);
   /** T04576：Git 树确认时一并记住仓库维度（与 selectedCommits 同生命周期；空串 = 项目根仓库） */
   const [selectedRepoSubs, setSelectedRepoSubs] = useSessionState<Record<string, string>>('lecture.selectedRepoSubs', {});
   const [gitTreeOpen, setGitTreeOpen] = useState(false);
@@ -426,6 +384,28 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
   };
 
   const selectedIds = projectIds.length > 0 ? projectIds : projects.map((p) => p.id);
+  // T05682：已完成任务勾选——每个任务带自己的关联提交，与 Git 树点选可叠加
+  const selectedKey = selectedIds.join(',');
+  useEffect(() => {
+    if (!selectedKey) { setDoneTasks([]); setCheckedTaskIds([]); return undefined; }
+    let alive = true;
+    void api.get<{ ok: boolean; tasks: DoneTask[] }>(`/git/done-task-commits?projectIds=${encodeURIComponent(selectedKey)}`)
+      .then((r) => { if (alive) setDoneTasks(r.tasks ?? []); })
+      .catch(() => { if (alive) setDoneTasks([]); });
+    return () => { alive = false; };
+  }, [selectedKey]);
+  /** 勾选任务的提交并入 Git 树点选集（同项目取并集），下游仍走既有 commits 协议 */
+  const mergedCommits = useMemo(() => {
+    const out: Record<string, string[]> = { ...selectedCommits };
+    for (const t of doneTasks) {
+      if (!checkedTaskIds.includes(t.id)) continue;
+      out[t.projectId] = [...new Set([...(out[t.projectId] ?? []), ...t.commits.map((c) => c.sha)])];
+    }
+    return out;
+  }, [selectedCommits, doneTasks, checkedTaskIds]);
+  const toggleTask = useCallback((id: string, checked: boolean) => {
+    setCheckedTaskIds((prev) => (checked ? [...new Set([...prev, id])] : prev.filter((x) => x !== id)));
+  }, []);
   const projectKey = selectedIds.join('|');
 
   // 项目集合变了：上一批候选可能来自别的仓库，作废缓存（真正取数推迟到展开下拉时）
@@ -493,8 +473,8 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
 
   /** 采集入参：一次评审共用一份区间；patch 模式单项目（E-1 降级通道） */
   const scopeBody = useMemo(
-    () => buildScopeBody({ patchMode, selectedIds, patchText, shape, since, until, base, head, authorFilter, selectedCommits, selectedRepoSubs }),
-    [patchMode, patchText, selectedIds, shape, since, until, base, head, authorFilter, selectedCommits, selectedRepoSubs],
+    () => buildScopeBody({ selectedIds, selectedCommits: mergedCommits, selectedRepoSubs }),
+    [selectedIds, mergedCommits, selectedRepoSubs],
   );
 
   useEffect(() => () => {
@@ -749,7 +729,8 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
         patchMode={patchMode} setPatchMode={setPatchMode} patchText={patchText} setPatchText={setPatchText}
         streaming={snap.streaming} diffLoading={snap.diffLoading} preflightLoading={preflightLoading}
         onLoadDiff={() => void loadDiff()} onPreflight={openPreflight} onOpenGitTree={() => setGitTreeOpen(true)}
-        outline={outline} onOpenOutline={() => void openPreflight({ outlineOnly: true }, '只出大纲')} />
+        outline={outline} onOpenOutline={() => void openPreflight({ outlineOnly: true }, '只出大纲')}
+        doneTasks={doneTasks} checkedTaskIds={checkedTaskIds} onToggleTask={toggleTask} />
 
       <div style={{ display: 'flex', gap: 10, alignItems: 'stretch', minHeight: 320 }}>
         <aside data-lck="diff-pane" ref={leftRef} aria-label="变更 diff 面板"
@@ -857,6 +838,15 @@ function JournalRestoreBanner({ journal, streaming, onRetry, onDismiss }: {
   );
 }
 
+/** T05682：已完成任务（含其关联提交）——勾选后按任务范围生成讲稿 */
+interface DoneTask {
+  readonly id: string;
+  readonly taskNo: string;
+  readonly title: string;
+  readonly projectId: string;
+  readonly commits: ReadonlyArray<{ readonly sha: string; readonly repoSub: string }>;
+}
+
 interface ScopeSectionProps {
   readonly projects: Project[];
   readonly projectIds: string[];
@@ -892,6 +882,10 @@ interface ScopeSectionProps {
   readonly onOpenGitTree: () => void;
   readonly onOpenOutline: () => void;
   readonly outline?: LectureOutline;
+  /** T05682：已完成任务勾选 */
+  readonly doneTasks: DoneTask[];
+  readonly checkedTaskIds: string[];
+  readonly onToggleTask: (id: string, checked: boolean) => void;
 }
 
 /** 采集范围区：项目范围 + 区间形态 + 提交人 + Git 树点选摘要 + patch 降级通道 + 采集/预检入口 */
@@ -901,6 +895,7 @@ function LectureScopeSection(props: ScopeSectionProps) {
     since, until, setSince, setUntil, authorFilter, setAuthorFilter, branchOptions, authorOptions,
     loadBranchOptions, loadAuthorOptions, pickedProjects, clearPicked, patchMode, setPatchMode, patchText,
     setPatchText, streaming, diffLoading, preflightLoading, onLoadDiff, onPreflight, onOpenGitTree, onOpenOutline, outline,
+    doneTasks, checkedTaskIds, onToggleTask,
   } = props;
   return (
     <section aria-label="采集范围" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', border: '1px solid var(--border)', borderRadius: 8, padding: 10, marginBottom: 10 }}>
@@ -911,51 +906,42 @@ function LectureScopeSection(props: ScopeSectionProps) {
       <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>
         已选 {selectedIds.length} 个{projectIds.length === 0 ? '（全部项目）' : ''}，与顶部「报表范围」联动
       </span>
-      {!patchMode && (
-        <>
-          <select value={shape} onChange={(e) => setShape(e.target.value as RangeShape)} style={fieldStyle} aria-label="Git 区间形态">
-            {RANGE_SHAPES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
-          </select>
-          {/* T03590：文本框升级为可展开下拉（模糊过滤 + 选中回填 + 清除）；仍可直接手输，SHA/标签不受限 */}
-          {shape !== 'since' && (
-            <BranchPicker value={base} onChange={setBase} options={branchOptions} testId="lecture-base"
-              onOpen={() => void loadBranchOptions()}
-              placeholder={shape === 'base-head' ? 'base（如 main）' : '首个 SHA'} ariaLabel="区间起点" />
-          )}
-          {shape === 'since' ? (
-            <DateRangeField start={since} end={until} onChange={(s, e) => { setSince(s); setUntil(e); }}
-              testId="lecture-since" />
-          ) : (
-            <BranchPicker value={head} onChange={setHead} options={branchOptions} testId="lecture-head"
-              onOpen={() => void loadBranchOptions()}
-              placeholder={shape === 'first-last' ? '末个 SHA' : 'head（留空=HEAD）'} ariaLabel="区间终点" />
-          )}
-          <AuthorMultiSelect value={authorFilter} onChange={setAuthorFilter} authors={authorOptions}
-            onRequestAuthors={() => void loadAuthorOptions()} testId="lecture-author-filter" />
-          {/* T03302：IDEA 风格 Git 树选范围——区间是「一对版本号」，点选是「一组提交」，两者互补 */}
-          <FlowButton data-lck="git-tree-btn" onClick={onOpenGitTree} disabled={streaming}
-            title="打开 Git 树挑提交：单击=勾选/取消（可连点多条）、Shift+单击=框选一段；确认后按选中提交采集">
-            <GitBranch size={13} style={{ marginRight: 4 }} />从 Git 树选范围
-          </FlowButton>
-          {pickedProjects.length > 0 && (
-            <span data-lck="git-tree-picked" style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', width: '100%' }}>
-              {pickedProjects.map((p) => (
-                <span key={p.projectId} style={chipStyle}>
-                  {p.projectName}：Git 树已选 {p.shas.length} 个提交
-                  <button type="button" onClick={() => clearPicked(p.projectId)} aria-label={`清除 ${p.projectName} 的 Git 树选择`}
-                    title="清除后该项目回到上面的手填区间"
-                    style={{ marginLeft: 4, background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 0, fontSize: 'var(--fs-xs)' }}>×</button>
-                </span>
-              ))}
-              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>点选优先于手填区间；未点选的项目仍按区间采集</span>
+      {/* T05682：区间 / base / head / 提交人 / 粘贴 patch 入口已移除；
+          采集范围只来自「从 Git 树选范围」或下方「已完成任务勾选」，两者可混用 */}
+      <FlowButton data-lck="git-tree-btn" onClick={onOpenGitTree} disabled={streaming}
+        title="打开 Git 树挑提交：单击=勾选/取消（可连点多条）、Shift+单击=框选一段；确认后按选中提交采集">
+        <GitBranch size={13} style={{ marginRight: 4 }} />从 Git 树选范围
+      </FlowButton>
+      {pickedProjects.length > 0 && (
+        <span data-lck="git-tree-picked" style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', width: '100%' }}>
+          {pickedProjects.map((p) => (
+            <span key={p.projectId} style={chipStyle}>
+              {p.projectName}：Git 树已选 {p.shas.length} 个提交
+              <button type="button" onClick={() => clearPicked(p.projectId)} aria-label={`清除 ${p.projectName} 的 Git 树选择`}
+                title="清除该项目在 Git 树里的选择"
+                style={{ marginLeft: 4, background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 0, fontSize: 'var(--fs-xs)' }}>×</button>
             </span>
-          )}
-        </>
+          ))}
+        </span>
       )}
-      <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 'var(--fs-s)' }}>
-        <input type="checkbox" checked={patchMode} onChange={(e) => setPatchMode(e.target.checked)} />
-        <span>粘贴 patch（无 git 时的降级通道）</span>
-      </label>
+      {doneTasks.length > 0 && (
+        <div data-lck="done-tasks" style={{ width: '100%', borderTop: '1px dashed var(--border)', paddingTop: 8, marginTop: 2 }}>
+          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 4 }}>
+            已完成任务（勾选后按其关联提交生成；{checkedTaskIds.length} / {doneTasks.length} 已选）
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 168, overflow: 'auto' }}>
+            {doneTasks.map((t) => (
+              <label key={t.id} title={t.commits.length ? `关联 ${t.commits.length} 个提交` : '该任务未回写 commit，勾选后不会产生采集范围'}
+                style={{ ...chipStyle, display: 'inline-flex', gap: 4, alignItems: 'center', opacity: t.commits.length ? 1 : 0.55 }}>
+                <input type="checkbox" checked={checkedTaskIds.includes(t.id)}
+                  onChange={(e) => onToggleTask(t.id, e.target.checked)} />
+                <span>{t.taskNo} {t.title}</span>
+                <span style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-2xs)' }}>{t.commits.length} 提交</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
       <FlowButton onClick={onLoadDiff} disabled={streaming} loading={diffLoading} loadingText="采集中"
         title="按当前范围采集 diff 并渲染到左栏">
         <RefreshCw size={13} style={{ marginRight: 4 }} />加载 diff
@@ -973,11 +959,6 @@ function LectureScopeSection(props: ScopeSectionProps) {
         title={outline ? '按已确认大纲生成八段正文（跳过大纲调用）' : '直接生成八段正文（含一次大纲调用）'}>
         <Sparkles size={13} style={{ marginRight: 4 }} />{outline ? '按大纲生成正文' : '开始生成'}
       </FlowButton>
-      {patchMode && (
-        <textarea value={patchText} onChange={(e) => setPatchText(e.target.value)} rows={5}
-          placeholder="粘贴 unified diff（git diff base..head 或 format-patch 全文）"
-          style={{ ...fieldStyle, width: '100%', fontFamily: FONT_MONO, resize: 'vertical' }} aria-label="粘贴 patch 全文" />
-      )}
     </section>
   );
 }

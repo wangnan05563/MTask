@@ -22,6 +22,7 @@ import { queryGitLog, queryGitRepos, type GitLogRequest } from '../services/lect
 import { queryCommitFiles } from '../services/gitCommitFiles';
 import { suggestGitLinks } from '../services/gitAiLink';
 import { cacheGet, cacheSet } from '../util/ttl-cache';
+import { getDb } from '../db/connection';
 import { createHash } from 'node:crypto';
 import { scalarText } from '../util/scalarText';
 
@@ -94,6 +95,44 @@ function taskGitViewCacheKey(taskId: string): string {
 }
 
 /** 抽屉首屏：该任务全部关联提交的摘要 + 统计（时间倒序） */
+/**
+ * T05682：讲稿卡片「已完成任务」选择器——一次返回所选项目下全部已完成任务及其关联提交。
+ * 前端勾选任务后把 sha 合并进既有 `projects[].range.commits` 协议，不新增采集协议；
+ * 任务没有关联提交时 `commits` 为空，前端据此提示「该任务未回写 commit」。
+ */
+gitLinksApi.get('/git/done-task-commits', (req, res) => {
+  const projectIds = String(req.query.projectIds ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 20);
+  if (projectIds.length === 0) return res.status(400).json({ error: 'projectIds 必填（逗号分隔）' });
+  const marks = projectIds.map(() => '?').join(',');
+  const rows = getDb().prepare(
+    `SELECT t.id, t.task_no, t.title, t.project_id, l.sha, l.repo_sub
+       FROM tasks t
+       LEFT JOIN task_git_links l ON l.task_id = t.id
+      WHERE t.project_id IN (${marks}) AND t.status = 'done'
+      ORDER BY t.task_no, l.created_at`,
+  ).all(...projectIds) as Array<{
+    id: string; task_no: string | null; title: string; project_id: string;
+    sha: string | null; repo_sub: string | null;
+  }>;
+  const map = new Map<string, {
+    id: string; taskNo: string; title: string; projectId: string;
+    commits: Array<{ sha: string; repoSub: string }>;
+  }>();
+  for (const r of rows) {
+    let task = map.get(r.id);
+    if (!task) {
+      task = { id: r.id, taskNo: r.task_no ?? '', title: r.title, projectId: r.project_id, commits: [] };
+      map.set(r.id, task);
+    }
+    if (r.sha) task.commits.push({ sha: r.sha, repoSub: r.repo_sub ?? '' });
+  }
+  res.json({ ok: true, tasks: [...map.values()] });
+});
+
 gitLinksApi.get('/tasks/:id/git', async (req, res) => {
   try {
     const key = taskGitViewCacheKey(req.params.id);
