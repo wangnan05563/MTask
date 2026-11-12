@@ -17,7 +17,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
 import { describeStreamFailure } from '../api/streamError'; // T03999：传输层断连不再只透出裸文案
-import { kickoffPptStore, useKickoffPpt, type KickoffOutlineItem, type KickoffStreamResult } from '../stores/kickoffPptStore';
+import { kickoffPptStore, useKickoffPpt, type KickoffOutlineItem, type KickoffStreamResult, type KickoffWarningItem } from '../stores/kickoffPptStore';
 import { sessionJobId } from '../util/jobId'; // T03316（G-3）：会话稳定 jobId，重试合到同一 job
 import { FlowProgress } from '../ui/FlowProgress';
 import { askConfirm } from '../ui/dialogs';
@@ -302,6 +302,63 @@ function GenerateBar({ streaming, canGenerate, blockReason, result, downloading,
   );
 }
 
+const WARN_LEVEL_META = {
+  error: { label: '未完成', color: 'var(--danger)' },
+  warn: { label: '已降级', color: 'var(--warn)' },
+  info: { label: '说明', color: 'var(--text-muted)' },
+} as const;
+
+/**
+ * T05671：一行摘要 + 默认折叠的分级详情。
+ * 旧形态把「自然高 2.71" → 实排 2.67"」「pptxgenjs 截字」「PRD 文档 UUID」直接平铺 8 行，
+ * 用户既读不懂也分不清哪条要管；这里只把「结果」放一行，页码与原始串进折叠区。
+ */
+function WarningDigest({ result }: { readonly result: KickoffStreamResult }) {
+  // 旧后端/旧会话快照没有 warningItems：回退成原列表（不当成「无提示」）
+  const items: KickoffWarningItem[] = result.warningItems?.length
+    ? result.warningItems
+    : result.warnings.map((w) => ({ code: 'raw', level: 'warn' as const, title: w }));
+  const errorCount = items.filter((i) => i.level === 'error').length;
+  const warnCount = items.filter((i) => i.level === 'warn').length;
+  const infoCount = items.length - errorCount - warnCount;
+  const tone = errorCount > 0 ? 'var(--danger)' : warnCount > 0 ? 'var(--warn)' : 'var(--text-muted)';
+  const headline = errorCount > 0
+    ? `${errorCount} 条未能完成${warnCount > 0 ? ` · ${warnCount} 条已降级` : ''}${infoCount > 0 ? ` · ${infoCount} 条排版说明` : ''}`
+    : warnCount > 0
+      ? `${warnCount} 条已自动降级处理${infoCount > 0 ? ` · ${infoCount} 条排版说明` : ''}`
+      : `${infoCount} 条排版/分页说明`;
+  return (
+    <details data-t05671="warning-digest" style={{ marginTop: 10, fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
+      <summary style={{ cursor: 'pointer', color: tone, fontWeight: 600 }}>
+        版式/降级提示：{headline}（已如实写进稿内，未静默改数）
+      </summary>
+      <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {items.map((it, i) => (
+          <div key={`${it.code}-${i}`} style={{ borderLeft: `2px solid ${WARN_LEVEL_META[it.level].color}`, paddingLeft: 8 }}>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
+              <span style={{ flexShrink: 0, fontSize: 'var(--fs-2xs)', color: WARN_LEVEL_META[it.level].color }}>{WARN_LEVEL_META[it.level].label}</span>
+              <span>
+                {it.pages && it.pages.length > 0 && (
+                  <span style={{ color: 'var(--text-muted)' }}>
+                    {it.pages.length === 1 ? `第 ${it.pages[0]} 页` : `第 ${it.pages.join('、')} 页`} ·{' '}
+                  </span>
+                )}
+                {it.title}
+              </span>
+            </div>
+            {it.detail && it.detail !== it.title && (
+              <details style={{ marginTop: 2 }}>
+                <summary style={{ cursor: 'pointer', fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>技术细节</summary>
+                <div style={{ marginTop: 2, fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{it.detail}</div>
+              </details>
+            )}
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 /** ③ 装配进度与降级提示区 */
 function BuildProgressPanel({ streaming, pageDone, pageTotal, result }: {
   readonly streaming: boolean;
@@ -319,12 +376,7 @@ function BuildProgressPanel({ streaming, pageDone, pageTotal, result }: {
           <FlowProgress value={pageTotal ? (pageDone / pageTotal) * 100 : 0} aria-label="逐页装配进度" />
         </div>
       )}
-      {result && result.warnings.length > 0 && (
-        <div style={{ marginTop: 10, fontSize: 'var(--fs-xs)', color: 'var(--warn)' }}>
-          版式/降级提示 {result.warnings.length} 条（已如实写进稿内，未静默改数）：
-          {result.warnings.map((w, i) => <div key={`${w}-${i}`}>• {w}</div>)}
-        </div>
-      )}
+      {result && result.warnings.length > 0 && <WarningDigest result={result} />}
     </>
   );
 }
@@ -487,8 +539,11 @@ export function KickoffPptPanel({ projectId, toolId, onClose, openCard, scopeNot
       if (done) {
         setPageTotal(done.pageCount);
         setPageDone(done.pageCount);
-        // 嵌套模板串拆成中间变量：拼接结果与原实现逐字一致
-        const degradedMark = done.warnings.length ? ` · 降级 ${done.warnings.length} 条` : '';
+        // T05671：日志只报「需要人管的条数」，纯排版说明另计——不再把 8 条内部术语统称「降级」
+        const noticeCount = done.warningItems?.filter((w) => w.level !== 'info').length ?? 0;
+        const degradedMark = noticeCount > 0
+          ? ` · ${noticeCount} 条需注意`
+          : (done.warnings.length > 0 ? ` · ${done.warnings.length} 条排版说明` : '');
         kickoffPptStore.pushLog(`装配完成：${done.pageCount} 页 · ${done.fileName}${degradedMark}`);
         flash('已生成，点「下载 .pptx」取回（下载即删令牌）');
       }

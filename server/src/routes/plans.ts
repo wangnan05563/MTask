@@ -597,7 +597,7 @@ planApi.post('/kickoff-ppt-stream', exportGate(REPORT_GATE, undefined, { defer: 
       jobId, cardKey: 'ai.kickoff_ppt', status: 'done', mode: 'ai',
       sectionsTotal: outlinePages, sectionsOk: outlinePages, startedAt: jobStartedAt,
     });
-    send('done', { token: r.token, fileName: r.fileName, pageCount: r.pageCount, warnings: r.warnings, provenance: r.provenance, htmlToken: r.htmlToken, htmlFileName: r.htmlFileName });
+    send('done', { token: r.token, fileName: r.fileName, pageCount: r.pageCount, warnings: r.warnings, warningItems: r.warningItems, provenance: r.provenance, htmlToken: r.htmlToken, htmlFileName: r.htmlFileName });
     doneSent = true;
   } catch (e) {
     reportAiJob({ jobId, cardKey: 'ai.kickoff_ppt', status: ac.signal.aborted ? 'aborted' : 'error', mode: 'ai', startedAt: jobStartedAt });

@@ -22,6 +22,8 @@ import { PLACEHOLDER } from './deckDesign'; // 占位词与 HTML 适配器同源
 import { saveReportBuffer, discardReport } from './ReportService'; // T02103：生成物落盘/下载令牌单源（纠偏 C3）；T02144：放弃即回收
 import { recordArtifact } from './aiArtifactService'; // T03262（AI-101④）：产物持久副本
 import { buildCardProvenance, recordCardProvenance, type CardProvenance } from './aiCardProvenance'; // T03262（AI-101①）：溯源行
+// T05671：提示分级/归并/去内部术语（warnings 原文契约不变，只新增可读视图）
+import { classifyKickoffWarnings, compactKickoffWarnings, type KickoffWarningItem } from './kickoffWarnings';
 import { downloadSafeName } from '../util/export-name'; // T02104：下载名洗到必然过白名单
 import { toManMonth, type EstimateSummary } from './estimate-engine';
 
@@ -1383,7 +1385,10 @@ export interface KickoffStreamResult {
   token: string;
   fileName: string;
   pageCount: number;
+  /** 原始提示串：逐字保留（既有门与旧前端消费它，T05671 不改写） */
   warnings: string[];
+  /** T05671：同一批提示的分级可读视图；面板摘要与折叠详情消费它 */
+  warningItems: KickoffWarningItem[];
   /** T03262（AI-101①）：溯源行（面板与产物登记同源） */
   provenance: CardProvenance;
   /** 2026-11-06：HTML 版下载令牌（单文件、离线可放映）；生成失败时为 undefined，不影响 PPTX 交付 */
@@ -1481,6 +1486,8 @@ export async function kickoffPptStream(
   onStage(htmlToken ? 'PPTX 与 HTML 均已生成，可在左侧下载或预览。' : '文件已生成，可在左侧下载。');
   const fileName = kickoffFileName(bundle.project.name, bundle.dataAsOf);
   const allWarnings = [...warnings, ...assembled.warnings, ...htmlWarnings];
+  // T05671：面板摘要用分级视图；溯源行用短文案（条数不减少、只说人话，历史如实性不变）
+  const warningItems = classifyKickoffWarnings(allWarnings);
   // T03262（AI-101①）：来源=采集口径；降级/截断走 warnings（排不下的页、缺料降级都在里面）
   const provenance = buildCardProvenance({
     cardKey: 'ai.kickoff_ppt',
@@ -1490,7 +1497,7 @@ export async function kickoffPptStream(
       { label: '数据截止', value: bundle.dataAsOf },
       { label: '风险条目', value: `${built.risks.length} 条` },
     ],
-    truncations: allWarnings,
+    truncations: compactKickoffWarnings(allWarnings),
     model: '装配阶段未调用模型（大纲与措辞润色在前序段落完成）',
   });
   try { recordArtifact({ cardKey: 'ai.kickoff_ppt', filename: fileName, buffer: assembled.buffer, provenance }); } catch { /* 登记失败不影响下载 */ }
@@ -1500,6 +1507,7 @@ export async function kickoffPptStream(
     fileName,
     pageCount: assembled.pageCount,
     warnings: allWarnings,
+    warningItems,
     provenance,
     htmlToken,
     htmlFileName,

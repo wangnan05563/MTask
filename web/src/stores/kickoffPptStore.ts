@@ -21,12 +21,23 @@ export interface KickoffOutlineItem {
   layout: string;
 }
 
+/** T05671：服务端分级后的可读提示（warnings 原文仍在，二者同批同源；旧快照可缺省） */
+export interface KickoffWarningItem {
+  code: string;
+  level: 'error' | 'warn' | 'info';
+  title: string;
+  detail?: string;
+  pages?: number[];
+}
+
 /** SSE `done` 负载：token 即下载令牌（服务端 saveReportBuffer 落盘的单源产物标识） */
 export interface KickoffStreamResult {
   token: string;
   fileName: string;
   pageCount: number;
   warnings: string[];
+  /** T05671：分级提示视图；旧后端/旧会话快照没有这个字段，面板回退成纯 warnings 列表 */
+  warningItems?: KickoffWarningItem[];
   /** 2026-11-06：HTML 版令牌（单文件演示）；服务端生成失败时缺省 */
   htmlToken?: string;
   htmlFileName?: string;
