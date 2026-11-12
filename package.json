@@ -142,7 +142,8 @@
     "verify:t05689-sonar-basic-auth": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05689-sonar-basic-auth.mts",
     "verify:t05690-git-tree-layout": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05690-git-tree-layout.mts",
     "verify:t05693-lecture-diff-degrade": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05693-lecture-diff-degrade.mts",
-    "verify:t05694-cards-consistency": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05694-cards-consistency.mts"
+    "verify:t05694-cards-consistency": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05694-cards-consistency.mts",
+    "verify:t05695-outline-budget": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05695-outline-budget.mts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

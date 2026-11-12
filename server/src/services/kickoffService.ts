@@ -1233,6 +1233,11 @@ export async function kickoffOutline(projectId: string, toolId: string, extraNot
       retrySystemFromError: (lastError) => `${OUTLINE_SYSTEM_RETRY}\n\n【上一轮输出被拒的原因，必须逐条修正后重新输出】\n${lastError}`,
       temperature: 0,
       cardKey: 'ai.kickoff_ppt', // T03296（G-2）：显式归属卡片
+      // T05695：大纲是 12~18 页的结构化 JSON，工具默认 max_tokens（≈4096）扛不住——真链路实测
+      // 「已输出 5050 字符被截断」直接判死重试轮。按 PRD 解析先例托底 8192（下限语义：工具配得
+      // 更高时不砍回，配得更低时托到 8192）；首轮超长 bullet 仍走「硬拒→重试自纠→lenient 裁剪」链，
+      // 预算抬够后重试轮能完整输出，裁剪兜底即可收口。
+      minMaxTokens: 8192,
     },
   );
   if (!ai.ok || ai.data === undefined) throw new Error(`AI 未返回合规大纲：${ai.error ?? '未知原因'}`);
