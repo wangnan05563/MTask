@@ -145,7 +145,7 @@ const HTML_SRC = readFileSync(join(ROOT, 'server/src/services/kickoffHtml.ts'), 
 
 ok('B-05 启动会路由在 SSE 头前校验主题与品牌色（非法值结构化 400）',
   /deckStylePreset\(b\.style\)/.test(ROUTE_SRC) && /品牌色需为 6 位十六进制/.test(ROUTE_SRC)
-  && /ac\.signal, style, brandColor\)/.test(ROUTE_SRC));
+  && /ac\.signal, style, brandColor(?:, imageTokens)?\)/.test(ROUTE_SRC));
 ok('B-06 builder 用 runWithPalette 包裹装配（并发生成不串色）',
   /return runWithPalette\(paletteOf\(opts\.style \?\? 'standard', opts\.brandColor\),/.test(BUILDER));
 ok('B-07 服务层透传主题/品牌色，done 负载带 style',
