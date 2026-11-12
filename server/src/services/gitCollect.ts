@@ -1995,17 +1995,31 @@ export async function collectCommitsUnion(
   opts: GitCollectionOptions = {},
 ): Promise<GitCollection> {
   const shas = normalizeSelectedCommits(selected);
-  const info = await resolveCommitsInfo(cwd, shas);
+  let info: Map<string, GitGraphEntry>;
+  try {
+    info = await resolveCommitsInfo(cwd, shas);
+  } catch {
+    // T05693：批量 --no-walk 整体失败多半是「个别 SHA 已被 rebase/force-push 丢弃」。
+    // 不再整批拒绝——逐条复跑点名，缺失项跳过、可用项照常采集（缺失名单进 warnings）。
+    // 降级路径才会逐条 spawn，常态仍走批量；resolveCommitsInfo 对外报错语义不变（gitCommitFiles 单条链路依赖它）。
+    info = new Map();
+    await collectCommitsOneByOne(cwd, shas, info, opts);
+  }
   const entries: GitGraphEntry[] = [];
   for (const s of shas) {
     const full = info.has(s) ? s : [...info.keys()].find((k) => k.startsWith(s));
     const entry = full ? info.get(full) : undefined;
     if (entry) entries.push(entry);
   }
+  let missingNote = '';
   if (entries.length !== shas.length) {
     const matched = new Set(entries.map((e) => e.sha));
     const missing = shas.filter((s) => !matched.has(s) && ![...matched].some((full) => full.startsWith(s)));
-    throw new GitCollectError('failed', `选中的提交在仓库里不存在：${missing.slice(0, 5).map((s) => s.slice(0, 7)).join('、')}，请在 Git 树里重新选择`);
+    // T05693：部分失效降级为 warning + 可用子集采集；全部失效才维持失败（避免空采集静默通过）。
+    if (entries.length === 0) {
+      throw new GitCollectError('failed', `选中的提交在仓库里都不存在（分支被 rebase/force-push 丢弃？）：${missing.slice(0, 5).map((s) => s.slice(0, 7)).join('、')}，请在 Git 树里重新选择`);
+    }
+    missingNote = `跳过 ${missing.length} 条仓库里已不存在的提交（可能被 rebase/force-push 丢弃）：${missing.slice(0, 5).map((s) => s.slice(0, 7)).join('、')}${missing.length > 5 ? ' 等' : ''}；其余 ${entries.length} 条照常采集`;
   }
   const runs = planCommitRuns(entries);
   const chunks: GitFileChange[] = [];
@@ -2020,11 +2034,13 @@ export async function collectCommitsUnion(
   const oldest = [...entries].sort((a, b) => a.date.localeCompare(b.date))[0];
   const range: GitCollection['range'] = {
     shape: 'commits',
-    label: `已选 ${shas.length} 个提交（${runs.length} 段）`,
+    // T05693：有失效项被跳过时，label 如实反映「实采/勾选」口径，不让用户误以为全采到了
+    label: missingNote ? `已选 ${entries.length}/${shas.length} 个提交（${runs.length} 段，失效项已跳过）` : `已选 ${shas.length} 个提交（${runs.length} 段）`,
     base: oldest.parents[0] ?? GIT_EMPTY_TREE_SHA1,
     head: newest.sha,
   };
   const collection = finalizeCollection(mergeChangesByPath(chunks), commits, range, 'git', opts);
+  if (missingNote) collection.warnings.unshift(missingNote);
   const merges = entries.filter((e) => e.parents.length > 1);
   if (merges.length > 0) {
     collection.warnings.unshift(`选中 ${merges.length} 个合并提交（${merges.slice(0, 3).map((e) => e.sha.slice(0, 7)).join('、')}${merges.length > 3 ? ' 等' : ''}）：`

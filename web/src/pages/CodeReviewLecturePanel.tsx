@@ -930,10 +930,11 @@ function LectureScopeSection(props: ScopeSectionProps) {
             已完成任务（勾选后按其关联提交生成；{checkedTaskIds.length} / {doneTasks.length} 已选）
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 168, overflow: 'auto' }}>
+            {/* T05693：未回写 commit 的任务灰显且禁止勾选——勾了也不产生采集范围，只会让「加载 diff」白跑一趟 */}
             {doneTasks.map((t) => (
-              <label key={t.id} title={t.commits.length ? `关联 ${t.commits.length} 个提交` : '该任务未回写 commit，勾选后不会产生采集范围'}
-                style={{ ...chipStyle, display: 'inline-flex', gap: 4, alignItems: 'center', opacity: t.commits.length ? 1 : 0.55 }}>
-                <input type="checkbox" checked={checkedTaskIds.includes(t.id)}
+              <label key={t.id} title={t.commits.length ? `关联 ${t.commits.length} 个提交` : '该任务未回写 commit，不可勾选（勾了也不会产生采集范围）'}
+                style={{ ...chipStyle, display: 'inline-flex', gap: 4, alignItems: 'center', opacity: t.commits.length ? 1 : 0.55, cursor: t.commits.length ? undefined : 'not-allowed' }}>
+                <input type="checkbox" checked={checkedTaskIds.includes(t.id)} disabled={!t.commits.length}
                   onChange={(e) => onToggleTask(t.id, e.target.checked)} />
                 <span>{t.taskNo} {t.title}</span>
                 <span style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-2xs)' }}>{t.commits.length} 提交</span>
