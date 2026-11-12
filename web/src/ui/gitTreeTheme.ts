@@ -93,6 +93,8 @@ export const GIT_TREE_STYLE = `
 }
 .gt-row { height: var(--gt-row-h); }
 .gt-row:hover { background: var(--gt-row-hover); }
+/* T05690：悬停记录不应用任何倾斜/旋转动画（全站按钮的 rotate(8deg) 不能漏进记录行） */
+.gt-row:hover, .gt-row:hover * { transform: none !important; }
 .gt-row[data-active='1'] { background: var(--gt-row-selected); }
 .gt-tree-scroll { scrollbar-width: thin; }
 .gt-tree-scroll::-webkit-scrollbar { width: 10px; height: 10px; }

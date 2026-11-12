@@ -139,7 +139,8 @@
     "verify:t05686-json-punct": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05686-json-punct.mts",
     "verify:t05683-card-busy-store": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05683-card-busy-store.mts",
     "verify:t05687-fav-scope": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05687-fav-scope.mts",
-    "verify:t05689-sonar-basic-auth": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05689-sonar-basic-auth.mts"
+    "verify:t05689-sonar-basic-auth": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05689-sonar-basic-auth.mts",
+    "verify:t05690-git-tree-layout": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05690-git-tree-layout.mts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

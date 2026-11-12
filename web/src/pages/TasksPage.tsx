@@ -5140,37 +5140,6 @@ export function TasksPage() {
               </button>
               <span style={{ color: 'var(--text-muted)' }}>已完成任务归档删除后无法补齐</span>
             </div>
-            {/* T05556：未回写任务清单——逐条可点击打开取数弹窗（只补这一条）或跳过；批量补录走上面的「手动关联」按钮 */}
-            {singleProjectForGit && unlinkedDone.length > 0 && (
-              <div data-t05556="unlinked-task-list" style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 160, overflow: 'auto' }}>
-                {unlinkedDone.slice(0, 50).map((t) => {
-                  const inQueue = gitLinkQueue.some((q) => q.id === t.id);
-                  return (
-                    <div key={t.id} data-t05556="unlinked-task-row" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 6px', borderRadius: 4, background: inQueue ? 'var(--accent-soft)' : 'transparent', fontSize: 'var(--fs-xs)' }}>
-                      <button type="button" onClick={() => startManualGitLink(t)}
-                        title={`为 ${t.task_no ?? t.id} 打开提交选取弹窗（只补这一条）`}
-                        aria-label={`手动关联 ${t.task_no ?? t.id}`}
-                        style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text)', padding: 0, textAlign: 'left', font: 'inherit' }}>
-                        <span style={{ fontFamily: 'Consolas, Menlo, monospace', color: 'var(--text-muted)', marginRight: 6 }}>{t.task_no ?? t.id.slice(0, 8)}</span>
-                        {t.title}
-                      </button>
-                      {inQueue && <span style={{ flex: '0 0 auto', color: 'var(--accent)', fontSize: 'var(--fs-2xs)' }}>补录中</span>}
-                      <button type="button" onClick={() => skipUnlinkedTask(t)}
-                        title={`跳过 ${t.task_no ?? t.id}（不补录这一条）`}
-                        aria-label={`跳过 ${t.task_no ?? t.id}`}
-                        style={{ flex: '0 0 auto', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', padding: 0 }}>
-                        <X size={11} aria-hidden />
-                      </button>
-                    </div>
-                  );
-                })}
-                {unlinkedDone.length > 50 && (
-                  <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', padding: '2px 6px' }}>
-                    …共 {unlinkedDone.length} 条，仅显示前 50 条；其余请逐行点开任务徽标补录
-                  </div>
-                )}
-              </div>
-            )}
           </output>
         )}
         {/* T03620：已完成排序 + 验证状态过滤已上移到 tab 行，此处只保留多选全选 */}

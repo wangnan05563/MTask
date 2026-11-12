@@ -833,6 +833,8 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
         maxHeight: fullscreen ? undefined : '90vh',
         display: 'flex', flexDirection: 'column',
         background: 'var(--card-bg)',
+        // T05690：全屏时内容可能高于视口，裁在容器内，避免顶栏被溢出的列表压住造成叠字
+        overflow: 'hidden',
         border: fullscreen ? 'none' : '1px solid var(--accent)',
         borderRadius: fullscreen ? 0 : 10,
         padding: fullscreen ? 8 : 14,
@@ -840,7 +842,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
         <header style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <GitBranch size={16} style={{ color: 'var(--accent)' }} />
           <strong style={{ fontSize: 'var(--fs-l)' }}>Git 树选范围</strong>
-          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flex: '1 1 100%', order: 3, lineHeight: 1.5 }}>
             单击=勾选/取消多个提交 · Shift+单击=框选到上一条锚点；确认后按「每个选中提交相对第一父的增量」采集
           </span>
           {/* T05556：全屏/退出全屏按钮——全屏时铺满视口、非全屏时恢复原尺寸；Esc 先退全屏再关闭 */}
@@ -877,6 +879,21 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
                 · 共 {targetQueue} 条待补录
               </span>
             )}
+          </div>
+        )}
+
+        {/* T05690：把「可选提交 ID 列表」放到范围确认处——勾了哪些提交一目了然，
+            不必回到左侧列表逐条数；超过 8 个折叠成「另 N 个」 */}
+        {selected.length > 0 && (
+          <div data-lck="git-tree-picked-ids"
+            style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', marginTop: 8, fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
+            <span>已选提交（{selected.length}）：</span>
+            {selected.slice(0, 8).map((sha) => (
+              <code key={sha} style={{ padding: '1px 4px', borderRadius: 3, background: 'var(--surface-2)', border: '1px solid var(--border)', fontFamily: 'Consolas, Menlo, monospace' }}>
+                {sha.slice(0, 8)}
+              </code>
+            ))}
+            {selected.length > 8 && <span>… 另 {selected.length - 8} 个</span>}
           </div>
         )}
 
