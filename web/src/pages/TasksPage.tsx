@@ -30,8 +30,9 @@ import { arrangeTaskTree, makeTaskMatcher, matchVerified, sortOptions, sortTasks
 import { useTaskListWindow } from '../utils/taskListWindow'; // T03215（PM-304）：文档滚动 + 变高行的窗口化
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin as togglePinShared, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
 import { useBusy, setBusy } from '../ui/busy';
-import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, CheckCheck, ChevronDown, ChevronUp, Circle, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, Download, FolderPlus, GitBranch, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, MoreHorizontal, PanelRightOpen, Pin, Plus, Save, ScanSearch, MessageSquareText, Sparkle, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
+import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, CheckCheck, ChevronDown, ChevronUp, Circle, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, Download, FolderPlus, GitBranch, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, MoreHorizontal, Palette, PanelRightOpen, Pin, Plus, Save, ScanSearch, MessageSquareText, Sparkle, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
+import { TaskMoreMenu, type TaskMoreMenuItem } from '../ui/TaskMoreMenu'; // T05712：低频功能「...」下拉
 import { CopyButton } from '../ui/CopyButton'; // T04544：项目下拉条右缘的项目名复制按钮（复用全站统一按钮，动画/交互一致）
 import { WorkspaceSelect } from '../ui/WorkspaceSelect'; // T00771：工作空间选择器（项目上下文根路径）
 import { WorkspaceSearchPanel } from '../ui/WorkspaceSearchPanel'; // T00786：工作空间全文检索面板（partial 提示）
@@ -3387,6 +3388,80 @@ export function TasksPage() {
     // 勾选框 x ≈ 标题行任务编号 x（置顶图标 21 + gap 8 ≈ 29），两者几乎垂直对齐——
     // 双击编号复制时鼠标稍下移就命中勾选框，误把任务标成完成。
     // 整行贴到行首后勾选框与编号水平错开约 30px，误触消除；不影响右侧优先级/分类/按钮组。
+    // T05712：7 项低频功能归入「...」下拉。onClick / title / aria-label / disabled / 显隐口径
+    // 全部沿用迁移前各独立按钮的原值，只换承载容器；菜单为纯静态渲染，不依赖网络请求。
+    const moreItems: TaskMoreMenuItem[] = [
+      {
+        key: 'subtask', label: '创建子任务',
+        title: '创建子任务 — 在该任务下创建子任务（层级展示）',
+        ariaLabel: '创建子任务',
+        icon: <ListTodo size={14} />,
+        onClick: () => void createSubTask(t),
+      },
+      {
+        key: 'export', label: '文件导出',
+        title: '文件导出 — 将该任务导出为 Word / Markdown / Excel',
+        ariaLabel: `文件导出：${t.title}`,
+        icon: <Download size={14} />,
+        disabled: exportBusy,
+        onClick: (e) => { const r = (e.currentTarget as HTMLElement).getBoundingClientRect(); setExportMenu({ taskId: t.id, x: r.left, y: r.bottom + 4 }); },
+      },
+      {
+        key: 'font-color', label: '字体颜色',
+        title: '字体颜色 — 点击 A 应用当前颜色，点右侧箭头展开 16 色板',
+        ariaLabel: '字体颜色：点击应用当前颜色或展开颜色面板',
+        icon: <Palette size={14} />,
+        // 「字体颜色」是文本属性设置：下拉内嵌原色板入口，onApply 回调与迁移前逐字一致
+        trailing: <FontColorButton current={t.color ?? ''} onApply={(c) => { void api.patch(`/tasks/${t.id}`, { color: c }).then(() => { flash(c ? '字体颜色已应用' : '已恢复默认颜色'); void loadTasks(activeProject); }); }} />,
+      },
+      {
+        key: 'shelve', label: t.shelved ? '恢复' : '搁置',
+        title: t.shelved ? '恢复 — 将该任务恢复到待办/已完成列表' : '搁置 — 将该任务移入搁置列表（AI 处理待办时自动忽略）',
+        ariaLabel: t.shelved ? '恢复任务' : '搁置任务',
+        icon: t.shelved ? <RotateCcw size={14} /> : <CirclePause size={14} />,
+        onClick: () => void toggleShelve(t),
+      },
+      {
+        key: 'suggest', label: '分类建议',
+        // 迁移后仍保留原回归锚，既有 UI 门展开「...」后可按原选择器探测
+        dataAttrs: { 'data-t03255': 'row-trigger', 'data-t03257': suggestEntry },
+        title: suggestEntry === 'disabled'
+          ? aiBlockedTitle(readiness, '分类建议 — 按标题/描述与同项目历史给出分类、优先级和一句理由（不会自动保存）')
+          : '分类建议 — 按标题/描述与同项目历史给出分类、优先级和一句理由（不会自动保存）',
+        ariaLabel: '获取该任务的分类与优先级建议',
+        icon: rowSuggestBusy === t.id ? <Loader2 size={14} className="aispin" /> : <Sparkles size={14} />,
+        disabled: rowSuggestBusy === t.id || suggestEntry === 'disabled',
+        hidden: suggestEntry === 'hidden',
+        onClick: () => void suggestForTask(t),
+      },
+      {
+        key: 'result', label: resultBtnLbl.aria.split('：')[0],
+        title: resultBtnLbl.title,
+        ariaLabel: resultBtnLbl.aria,
+        icon: t.handle_result ? <ClipboardEdit size={14} /> : <ClipboardList size={14} />,
+        onClick: () => {
+          // 未在编辑中：展开编辑器并读取已保存值；否则取消并丢弃草稿，无已保存值则收起零占位
+          if (resultDrafts[t.id] === undefined) {
+            setResultOpen((p) => ({ ...p, [t.id]: true }));
+            startEditResult(t);
+          } else {
+            setResultDrafts((prev) => {
+              const next = { ...prev };
+              delete next[t.id];
+              return next;
+            });
+            if (!t.handle_result) setResultOpen((p) => ({ ...p, [t.id]: false }));
+          }
+        },
+      },
+      {
+        key: 'reuse', label: '复用此任务',
+        title: '复用此任务 — 将该任务复制到其他项目，或打包为资产复制到提示词/通用需求页',
+        ariaLabel: '复用此任务：将该任务复制到其他项目或资产页',
+        icon: <CopyPlus size={14} />,
+        onClick: () => { setReuseOpen(t.id); setReuseProjectId(''); setReuseSearch(''); setReuseCategoryId(''); void loadPromptCats(); void loadReqCats(); },
+      },
+    ];
     return (
       <div className="task-op task-toolbar" style={{ marginLeft: 0, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
         {/* T00547：完成状态/验证结果控件——与工具栏同行、靠左显示（marginRight auto 分隔左右两组）
@@ -3425,30 +3500,7 @@ export function TasksPage() {
           <option value="">未分类</option>
           {taskCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
-        {/* T03255（AI-203①）：该任务的分类/优先级建议——只读获取，采纳才写回；
-            T03256 关闭时隐藏；T03257 未启用隐藏、配置失效禁用并给原因（D-14） */}
-        {suggestEntry !== 'hidden' && (
-          <button
-            onClick={() => void suggestForTask(t)}
-            disabled={rowSuggestBusy === t.id || suggestEntry === 'disabled'}
-            className="task-op"
-            data-t03255="row-trigger"
-            data-t03257={suggestEntry}
-            title={suggestEntry === 'disabled'
-              ? aiBlockedTitle(readiness, '分类建议 — 按标题/描述与同项目历史给出分类、优先级和一句理由（不会自动保存）')
-              : '分类建议 — 按标题/描述与同项目历史给出分类、优先级和一句理由（不会自动保存）'}
-            aria-label="获取该任务的分类与优先级建议"
-            style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: 'var(--text-muted)' }}
-          >
-            {rowSuggestBusy === t.id ? <Loader2 size={13} className="aispin" /> : <Sparkles size={13} />}
-          </button>
-        )}
-        {/* T00450/T00512：创建子任务——移到分类下拉条之后 */}
-        <button onClick={() => void createSubTask(t)} title="创建子任务 — 在该任务下创建子任务（层级展示）" aria-label="创建子任务"
-          className="task-op" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: 'var(--text-muted)' }}>
-          <ListTodo size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
-        </button>
-        {/* 待办/已完成任务：AI 美化 + 重命名（编辑中保留保存/取消收尾） */}
+        {/* 待办/已完成任务：AI 美化 + 重命名（编辑中保留保存/取消收尾）——高频，保留在主工具栏 */}
         {renderTitleActions(t, titleEditing, true)}
         <button
           onClick={() => void copyTaskContent(t)}
@@ -3460,64 +3512,10 @@ export function TasksPage() {
           {copiedId === t.id ? <Check size={13} /> : <Copy size={13} />}
         </button>
         <button onClick={() => toggleDescEdit(t)} title={descEditing ? '收起描述 — 收起描述编辑区' : '描述 — 编辑该任务描述'} aria-label={descEditing ? '收起描述' : '编辑该任务描述'} className="task-op" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{descEditing ? <ChevronUp size={13} /> : <AlignLeft size={13} />}</button>
-        {/* 处理结果编辑入口：与描述按钮保持一致的交互样式（点按展开编辑器，再点取消）。
-        已录入（有 handle_result）→ 剪贴板编辑「修改」，未录入 → 剪贴板「添加」。
-        仅做录入/修改；纯查看用标题区「处理结果展开图标」，此处不做收起，避免与查看态冲突 */}
-        <button
-          onClick={() => {
-            // 未在编辑中：展开编辑器并读取已保存值；否则取消并丢弃草稿，无已保存值则收起零占位
-            if (resultDrafts[t.id] === undefined) {
-              setResultOpen((p) => ({ ...p, [t.id]: true }));
-              startEditResult(t);
-            } else {
-              setResultDrafts((prev) => {
-                const next = { ...prev };
-                delete next[t.id];
-                return next;
-              });
-              if (!t.handle_result) setResultOpen((p) => ({ ...p, [t.id]: false }));
-            }
-          }}
-          title={resultBtnLbl.title}
-          aria-label={resultBtnLbl.aria}
-          className="task-op"
-          style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-        >
-          {t.handle_result ? <ClipboardEdit size={13} /> : <ClipboardList size={13} />}
-        </button>
-        {/* T01480：单条导出——点击弹出三格式菜单（Word/Markdown/Excel），动效与 Tooltip 内建 */}
-        <button
-          onClick={(e) => { const r = (e.currentTarget as HTMLElement).getBoundingClientRect(); setExportMenu({ taskId: t.id, x: r.left, y: r.bottom + 4 }); }}
-          disabled={exportBusy}
-          title="文件导出 — 将该任务导出为 Word / Markdown / Excel"
-          aria-label={`文件导出：${t.title}`}
-          className="task-op export-anim"
-          style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-        >
-          <Download size={13} />
-        </button>
-        <button
-          onClick={() => { setReuseOpen(t.id); setReuseProjectId(''); setReuseSearch(''); setReuseCategoryId(''); void loadPromptCats(); void loadReqCats(); }}
-          title="复用此任务 — 将该任务复制到其他项目，或打包为资产复制到提示词/通用需求页"
-          aria-label="复用此任务：将该任务复制到其他项目或资产页"
-          className="task-op"
-          style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-        >
-          <CopyPlus size={13} />
-        </button>
-        {/* T00531 布局调整：验证失败反馈按钮已移至标题行「展开处理结果」图标后方 */}
-        {/* T00501：字体颜色按钮置于按钮栏最前 */}
-        <span className="task-op" style={{ display: 'inline-flex', alignItems: 'center' }}>
-          <FontColorButton current={t.color ?? ''} onApply={(c) => { void api.patch(`/tasks/${t.id}`, { color: c }).then(() => { flash(c ? '字体颜色已应用' : '已恢复默认颜色'); void loadTasks(activeProject); }); }} />
-        </span>
-        {/* T00719：搁置/恢复按钮——位于归档按钮之前；搁置后任务进搁置列表（MCP 处理待办自动忽略） */}
-        <button onClick={() => void toggleShelve(t)}
-          title={t.shelved ? '恢复 — 将该任务恢复到待办/已完成列表' : '搁置 — 将该任务移入搁置列表（AI 处理待办时自动忽略）'}
-          aria-label={t.shelved ? '恢复任务' : '搁置任务'}
-          className="task-op" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
-          {t.shelved ? <RotateCcw size={13} /> : <CirclePause size={13} />}
-        </button>
         <button onClick={() => void archive(t)} title="归档 — 将该任务移入归档" aria-label="归档：将该任务移入归档" className="task-op" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Archive size={13} /></button>
+        {/* T05712：7 项低频功能不再直接显示，统一收进「...」下拉；
+            原按钮的回调/参数/禁用/显隐全部原样迁移至 moreItems，主工具栏只留高频操作。 */}
+        <TaskMoreMenu items={moreItems} taskTitle={t.title} />
         {/* 记录时间：与操作按钮同行的最右侧，紧凑格式，创建/编辑并排 */}
         <span style={{ display: 'inline-flex', gap: 10 }}>
           <span>{fmtShort(t.created_at)} 创建</span>
