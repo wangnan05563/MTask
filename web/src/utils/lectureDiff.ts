@@ -33,6 +33,8 @@ export interface LectureDiffFile {
 export interface LectureDiffProject {
   projectId: string;
   projectName: string;
+  /** T05715：提交所属的子仓库（空串 = 项目根仓库）；同项目多仓库时用于区分渲染块 */
+  repoSub?: string;
   mode: 'git' | 'patch';
   rangeLabel: string;
   revision?: string;

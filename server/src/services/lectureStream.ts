@@ -337,9 +337,15 @@ function buildUnits(
   warnings: string[],
 ): SectionUnit[] {
   if (sectionKey === 'walkthrough') {
-    const byId = new Map(projects.map((p) => [p.projectId, p]));
+    // T05715：同项目多仓库时按「文件归属」定位条目，避免按 projectId 折叠丢数据/错归属
+    const entryForGroup = (g: { projectId: string; files: string[] }): LectureCollectedProject | undefined => {
+      const candidates = projects.filter((p) => p.projectId === g.projectId);
+      if (candidates.length <= 1) return candidates[0];
+      const fileSet = new Set(g.files);
+      return candidates.find((p) => p.files.some((f) => fileSet.has(f.path))) ?? candidates[0];
+    };
     return context.groups.map((g) => {
-      const project = byId.get(g.projectId)!;
+      const project = entryForGroup(g)!;
       return {
         projectId: g.projectId,
         projectName: g.projectName,
@@ -394,39 +400,36 @@ async function attachAnchors(
   projects: readonly LectureCollectedProject[],
   warnings: string[],
 ): Promise<Array<LectureAnchor & { section: LectureSectionKey; projectId: string }>> {
-  const owners = new Map<string, LectureCollectedProject[]>();
-  for (const project of projects) {
-    for (const file of project.files) {
-      const list = owners.get(file.path) ?? [];
-      list.push(project);
-      owners.set(file.path, list);
-    }
-  }
-  const flat = sections.flatMap((section) => section.segments.flatMap((segment) => segment.anchors.map((a) => ({
-    ...a,
-    section: section.key,
-    projectId: segment.projectId === 'all' ? (owners.get(a.file)?.[0]?.projectId ?? 'all') : segment.projectId,
-  }))));
+  // T05715：每个锚点归属到「拥有该文件的条目」(projectId + repoSub 维度)，避免同项目多仓库锚点错位。
+  // 同文件相对路径跨仓库罕见碰撞时，归属首个匹配条目，保证每条锚点只解析一次。
+  const flat = sections.flatMap((section) => section.segments.flatMap((segment) => segment.anchors.map((a) => {
+    const owner = projects.find(
+      (p) => (segment.projectId === 'all' || p.projectId === segment.projectId) && p.files.some((f) => f.path === a.file),
+    );
+    return {
+      ...a,
+      section: section.key,
+      projectId: owner?.projectId ?? (segment.projectId === 'all' ? 'all' : segment.projectId),
+    };
+  })));
 
-  const byProject = new Map<string, Array<(typeof flat)[number]>>();
-  for (const anchor of flat) {
-    const list = byProject.get(anchor.projectId) ?? [];
-    list.push(anchor);
-    byProject.set(anchor.projectId, list);
-  }
-  for (const [projectId, list] of byProject) {
-    const project = projects.find((p) => p.projectId === projectId);
-    if (!project) continue;
-    if (!project.revision) {
-      warnings.push(`项目「${project.projectName}」为粘贴 patch 模式，锚点未记录 blob SHA（代码变动后无法复核）`);
+  const attachedSet = new Set<(typeof flat)[number]>();
+  for (const entry of projects) {
+    const list = flat.filter(
+      (a) => !attachedSet.has(a) && a.projectId === entry.projectId && entry.files.some((f) => f.path === a.file),
+    );
+    if (list.length === 0) continue;
+    if (!entry.revision) {
+      warnings.push(`项目「${entry.projectName}」为粘贴 patch 模式，锚点未记录 blob SHA（代码变动后无法复核）`);
       continue;
     }
-    const attached = await attachLectureAnchorBlobs(project.workspacePath, list, project.revision);
-    warnings.push(...attached.warnings.map((w) => `项目「${project.projectName}」：${w}`));
+    const attached = await attachLectureAnchorBlobs(entry.workspacePath, list, entry.revision);
+    warnings.push(...attached.warnings.map((w) => `项目「${entry.projectName}」：${w}`));
     attached.anchors.forEach((a, i) => {
       list[i].blobSha = a.blobSha;
       list[i].baseCommit = a.baseCommit;
     });
+    list.forEach((a) => attachedSet.add(a));
   }
   return flat;
 }

@@ -9,6 +9,7 @@ import { ProjectScopePicker } from '../ui/projectScopePicker';
 import { GitTreePickerModal } from '../ui/GitTreePickerModal';
 import { AuthorMultiSelect, BranchPicker, DateRangeField } from '../ui/GitScopeControls';
 import { buildSinceWindow, type BranchOption } from '../utils/scopeControls';
+import { checkLectureScopeWorkspaces } from '../utils/lectureScopeCheck';
 import { FlowButton } from '../ui/FlowButton';
 import { FlowProgress } from '../ui/FlowProgress';
 import { Markdown } from '../ui/Markdown';
@@ -82,6 +83,8 @@ const fileKey = (projectId: string, path: string) => `${projectId}|${path}`;
 interface LecturePreflightProject {
   projectId: string;
   projectName: string;
+  /** T05715：提交所属的子仓库（空串 = 项目根仓库）；同项目多仓库时用于区分渲染块 */
+  repoSub?: string;
   workspacePath: string;
   mode: 'git' | 'patch';
   rangeLabel: string;
@@ -190,27 +193,48 @@ function toggleInSet(prev: ReadonlySet<string>, key: string): Set<string> {
   return next;
 }
 
+/** 一条已选提交：来自哪个子仓库（repoSub，空串 = 项目根仓库） */
+interface SelectedCommit {
+  readonly repoSub: string;
+  readonly sha: string;
+}
+
 /** 采集入参（T05682：只剩「按提交清单」一条路径——Git 树点选 ∪ 已完成任务勾选） */
 interface ScopeInput {
   readonly selectedIds: readonly string[];
-  readonly selectedCommits: Readonly<Record<string, string[]>>;
-  /** T04576：每个项目这批提交来自工作空间目录内的哪个仓库（缺省 = 项目根仓库） */
-  readonly selectedRepoSubs: Readonly<Record<string, string>>;
+  /** T05715：每个项目下按 (projectId, repoSub) 归组的提交——同空间多仓库各自带 repoSub 下发 */
+  readonly mergedCommits: Readonly<Record<string, readonly SelectedCommit[]>>;
 }
 
-/** 采集入参：T05682 起只有一条路径——按项目提交清单采集（Git 树点选 ∪ 已完成任务勾选） */
+/**
+ * T05715：把每个项目的已选提交按子仓库(repoSub)拆成独立的 range 条目。
+ * 同一 projectId 可出现多条（每仓库一条），后端按各自 repoSub 解析 cwd 采集，互不干扰——
+ * 子仓库 SHA 必须随其 repoSub 下发，否则按根仓库采集会整批判 missing。
+ */
 function buildScopeBody(input: ScopeInput): { body?: Record<string, unknown>; error?: string } {
   if (input.selectedIds.length === 0) return { error: '请先选择项目' };
-  const missing = input.selectedIds.filter((projectId) => (input.selectedCommits[projectId] ?? []).length === 0);
+  const missing = input.selectedIds.filter((projectId) => (input.mergedCommits[projectId] ?? []).length === 0);
   if (missing.length > 0) {
     return { error: `${missing.length} 个项目还没有选择提交——请用「从 Git 树选范围」或勾选「已完成任务」` };
   }
-  const projects = input.selectedIds.map((projectId) => {
-    const picked = input.selectedCommits[projectId] ?? [];
-    // T04576：`shape='commits'` 带上仓库维度——子仓库的 SHA 若按根仓库下发，服务端会整批判 missing
-    const repoSub = (input.selectedRepoSubs[projectId] ?? '').trim();
-    return { projectId, range: { shape: 'commits', commits: picked, ...(repoSub ? { repoSub } : {}) } };
-  });
+  // 按 (projectId, repoSub) 归组：子仓库 SHA 必须随其 repoSub 下发，否则按根仓库采集会整批判 missing
+  const groups = new Map<string, { projectId: string; repoSub: string; shas: string[] }>();
+  for (const projectId of input.selectedIds) {
+    for (const c of input.mergedCommits[projectId] ?? []) {
+      const key = `${projectId} ${c.repoSub}`;
+      const g = groups.get(key) ?? { projectId, repoSub: c.repoSub, shas: [] };
+      g.shas.push(c.sha);
+      groups.set(key, g);
+    }
+  }
+  const projects = [...groups.values()].map((g) => ({
+    projectId: g.projectId,
+    range: {
+      shape: 'commits' as const,
+      commits: [...new Set(g.shas)],
+      ...(g.repoSub ? { repoSub: g.repoSub } : {}),
+    },
+  }));
   return { body: { projects } };
 }
 
@@ -395,15 +419,24 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
       .catch(() => { if (alive) setDoneTasks([]); });
     return () => { alive = false; };
   }, [selectedKey]);
-  /** 勾选任务的提交并入 Git 树点选集（同项目取并集），下游仍走既有 commits 协议 */
+  /** T05715：勾选任务的提交并入 Git 树点选集，并保留每条提交所属的子仓库(repoSub) */
   const mergedCommits = useMemo(() => {
-    const out: Record<string, string[]> = { ...selectedCommits };
+    const out: Record<string, SelectedCommit[]> = {};
+    for (const projectId of selectedIds) {
+      const treeSub = (selectedRepoSubs[projectId] ?? '').trim();
+      const sub = treeSub === '.' ? '' : treeSub;
+      out[projectId] = (selectedCommits[projectId] ?? []).map((sha) => ({ repoSub: sub, sha }));
+    }
     for (const t of doneTasks) {
       if (!checkedTaskIds.includes(t.id)) continue;
-      out[t.projectId] = [...new Set([...(out[t.projectId] ?? []), ...t.commits.map((c) => c.sha)])];
+      const list = out[t.projectId] ?? (out[t.projectId] = []);
+      for (const c of t.commits) {
+        const sub = (c.repoSub ?? '').trim();
+        list.push({ repoSub: sub === '.' ? '' : sub, sha: c.sha });
+      }
     }
     return out;
-  }, [selectedCommits, doneTasks, checkedTaskIds]);
+  }, [selectedIds, selectedCommits, selectedRepoSubs, doneTasks, checkedTaskIds]);
   const toggleTask = useCallback((id: string, checked: boolean) => {
     setCheckedTaskIds((prev) => (checked ? [...new Set([...prev, id])] : prev.filter((x) => x !== id)));
   }, []);
@@ -473,50 +506,21 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
   };
 
   /**
-   * T05700：勾选「已完成任务」时，提交来自哪个子仓库（repoSub）必须跟着走。
-   * 旧实现 mergedCommits 只取 `c.sha` 并按 projectId 合成一维数组，repoSub 全丢 ——
-   * 服务端按工作空间根仓库解析子仓库 SHA，整批 --no-walk fatal，被误报成「rebase/force-push 丢弃」。
+   * T05715：前置校验维度从「跨 Git 仓库」改为「跨工作空间(projectId)」。
+   * 同一工作空间下允许勾选多个不同 Git 仓库的提交（如 BEMP 的 frontend 与 deploy 子目录仓库）；
+   * 仅当勾选的已完成任务跨越不同工作空间时才拦截，并提示按工作空间分批（见需求文案）。
+   * 纯逻辑抽到 `utils/lectureScopeCheck`，便于单测（用例 A/B）。
    */
-  const repoScopePlan = useMemo(() => {
-    // 先按项目聚合「所有已勾选任务」涉及的仓库——逐个任务判定会漏掉「三个任务分属三个仓库」这类冲突
-    const byProject = new Map<string, Set<string>>();
-    for (const t of doneTasks) {
-      if (!checkedTaskIds.includes(t.id)) continue;
-      const set = byProject.get(t.projectId) ?? new Set<string>();
-      for (const c of t.commits) {
-        const sub = (c.repoSub ?? '').trim();
-        set.add(sub === '.' ? '' : sub);
-      }
-      byProject.set(t.projectId, set);
-    }
-    const subs: Record<string, string> = { ...selectedRepoSubs };
-    const conflicts: string[] = [];
-    for (const [pid, set] of byProject) {
-      const fromTree = (selectedRepoSubs[pid] ?? '').trim();
-      if (fromTree && fromTree !== '.') set.add(fromTree);
-      const uniq = [...set];
-      if (uniq.length > 1) {
-        const names = uniq.map((s) => s || '根仓库').join('、');
-        conflicts.push(`项目下勾选的提交跨了 ${uniq.length} 个 Git 仓库（${names}）`);
-      } else if (uniq.length === 1) {
-        subs[pid] = uniq[0];
-      }
-    }
-    // 服务端一个项目只允许一个 range / 一个 repoSub（lectureScope 禁止重复 projectId），
-    // 跨仓库混合无法在一个 range 表达 —— 明确阻断并给出分批办法，优于让 Git 报误导性「提交不存在」。
-    return {
-      subs,
-      error: conflicts.length
-        ? `${[...new Set(conflicts)].join('；')}。一次只能采集同一仓库的提交，请按仓库分批勾选已完成任务后分别「加载 diff」`
-        : '',
-    };
-  }, [selectedRepoSubs, doneTasks, checkedTaskIds]);
+  const repoScopePlan = useMemo(
+    () => ({ error: checkLectureScopeWorkspaces(doneTasks, checkedTaskIds) }),
+    [doneTasks, checkedTaskIds],
+  );
 
   /** 采集入参：一次评审共用一份区间；patch 模式单项目（E-1 降级通道） */
   const scopeBody = useMemo(
     () => (repoScopePlan.error
       ? { error: repoScopePlan.error }
-      : buildScopeBody({ selectedIds, selectedCommits: mergedCommits, selectedRepoSubs: repoScopePlan.subs })),
+      : buildScopeBody({ selectedIds, mergedCommits })),
     [selectedIds, mergedCommits, repoScopePlan],
   );
 
@@ -1168,7 +1172,7 @@ function PreflightOverlay({ preflight, continueLabel, onCancel, onContinue }: {
 
         <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
           {preflight.projects.map((p) => (
-            <section key={p.projectId} data-lck={`preflight-project-${p.projectId}`}
+            <section key={`${p.projectId}::${p.repoSub ?? ''}`} data-lck={`preflight-project-${p.projectId}${p.repoSub ? `-${p.repoSub}` : ''}`}
               style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 8, background: 'var(--surface)' }}>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
                 <strong style={{ fontSize: 'var(--fs-s)' }}>{p.projectName}</strong>
@@ -1252,7 +1256,7 @@ function LectureDiffPane({ projects, openFiles, foldedHunks, flashRows, hoverRow
   return (
     <>
       {projects.map((p) => (
-        <section key={p.projectId} data-lck={`diff-project-${p.projectId}`} style={{ marginBottom: 10 }}>
+        <section key={`${p.projectId}::${p.repoSub ?? ''}`} data-lck={`diff-project-${p.projectId}${p.repoSub ? `-${p.repoSub}` : ''}`} style={{ marginBottom: 10 }}>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
             <strong style={{ fontSize: 'var(--fs-s)' }}>{p.projectName}</strong>
             <span style={chipStyle}>{p.mode === 'patch' ? '粘贴 patch' : p.rangeLabel}</span>

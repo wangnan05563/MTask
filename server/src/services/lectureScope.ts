@@ -313,14 +313,13 @@ export function parseLectureScopeRequest(body: unknown): { projects: LectureProj
   const b = body as Record<string, unknown>;
   if (!Array.isArray(b.projects) || b.projects.length === 0) throw new LectureScopeError('projects 必填（至少选一个项目）');
   if (b.projects.length > LECTURE_MAX_PROJECTS) throw new LectureScopeError(`一次最多预检 ${LECTURE_MAX_PROJECTS} 个项目`);
-  const seen = new Set<string>();
+  // T05715：允许同一 projectId 出现多次（每个子仓库一条 range），以支撑「同工作空间多 Git 仓库」采集。
+  // 校验维度在上游前端按工作空间(projectId)把关，服务端不再因重复 projectId 拒绝。
   const projects = b.projects.map((raw, i) => {
     if (!raw || typeof raw !== 'object') throw new LectureScopeError(`projects[${i}] 必须是对象`);
     const row = raw as Record<string, unknown>;
     const projectId = typeof row.projectId === 'string' ? row.projectId.trim() : '';
     if (!projectId) throw new LectureScopeError(`projects[${i}].projectId 必填`);
-    if (seen.has(projectId)) throw new LectureScopeError(`项目「${projectId}」被重复选择`);
-    seen.add(projectId);
     if (row.patch !== undefined) {
       if (typeof row.patch !== 'string') throw new LectureScopeError(`projects[${i}].patch 必须是字符串`);
       if (row.range !== undefined) throw new LectureScopeError(`projects[${i}] 只能选 git 区间或粘贴 patch 之一`);
@@ -349,6 +348,8 @@ function rangeLabelOf(range: GitRangeInput): string {
 export interface LectureProjectPreview {
   projectId: string;
   projectName: string;
+  /** T05715：提交所属的子仓库（空串 = 项目根仓库）；同项目多仓库时用于区分条目，避免前端渲染折叠 */
+  repoSub?: string;
   workspacePath: string;
   mode: 'git' | 'patch';
   rangeLabel: string;
@@ -382,10 +383,11 @@ export interface LectureScopePreview {
   warnings: string[];
 }
 
-function blankPreview(projectId: string, projectName: string, workspacePath: string, rangeLabel: string): LectureProjectPreview {
+function blankPreview(projectId: string, projectName: string, workspacePath: string, rangeLabel: string, repoSub = ''): LectureProjectPreview {
   return {
     projectId,
     projectName,
+    repoSub,
     workspacePath,
     mode: 'git',
     rangeLabel,
@@ -534,7 +536,13 @@ async function scanProject(
   resolveRevision: boolean,
 ): Promise<LectureCollectedProject> {
   const workspacePath = (project?.workspace_path ?? '').trim();
-  const base = blankPreview(item.projectId, project?.name ?? item.projectId, workspacePath, item.patch === undefined ? rangeLabelOf(item.range!) : '粘贴 patch');
+  const base = blankPreview(
+    item.projectId,
+    project?.name ?? item.projectId,
+    workspacePath,
+    item.patch === undefined ? rangeLabelOf(item.range!) : '粘贴 patch',
+    (item.range?.repoSub ?? '').trim(),
+  );
   if (!project) return { ...base, files: [], commits: [], blocked: '项目不存在或已归档（请刷新项目列表）' };
 
   // 粘贴 patch 不依赖工作空间与 git，先于 git 探测处理（FR-1.3 降级通道）
