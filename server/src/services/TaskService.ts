@@ -1150,11 +1150,16 @@ export const TaskService = {
    * 快照，依赖可能在其后又被回退成未完成。
    * T01284（FR-3.7）：返回顺序按 deps 拓扑序（前置优先），同层级保持优先级/创建时间原序。
    */
-  listMonitorReady(opts: { platform?: string; limit?: number } = {}): TaskView[] {
+  listMonitorReady(opts: { platform?: string; projectId?: string; limit?: number } = {}): TaskView[] {
     const db = getDb();
     const limit = Math.min(200, Math.max(1, opts.limit ?? 20));
     const where = ["status = 'todo'", 'archived = 0', 'shelved = 0', "ai_state = ''", 'monitor_ready = 1'];
     const values: unknown[] = [];
+    // T05741：多项目共用同一 WorkBuddy 实例时，按项目过滤避免 A 通道把别的项目任务拉走
+    if (opts.projectId) {
+      where.push('project_id = ?');
+      values.push(opts.projectId);
+    }
     // 平台缺省=不限平台（不能退化成 platform='' 的等值匹配，否则有平台偏好的任务会被整体排除）
     // T01288：两侧都归一化——请求侧过 normalizePlatform，存量列值用 LOWER/TRIM 兜底，
     // 否则「Trae 自称 Trae、偏好存成 trae」会静默漏取（排水停滞却无告警）。

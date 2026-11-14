@@ -1335,14 +1335,15 @@ ${a.result}`;
   // T01280（PRD FR-3.1 / §6.1）：外部平台拉取就绪待办——执行层入口（拉取式）
   server.registerTool('mtask_list_ready_tasks', {
     title: '拉取就绪任务',
-    description: '外部 AI 平台拉取可执行的就绪待办。仅返回：未被认领（ai_state 为空）、status=todo、monitor_ready=1（Supervisor 已判定无未完成前置依赖）、且平台偏好匹配（monitor_preferred_platform 为空或等于 platform）的任务，并按优先级排序。注意：monitor_ready 由监督器 tick 标记，需 supervisor.enabled=1 才会产生就绪任务。',
+    description: '外部 AI 平台拉取可执行的就绪待办。仅返回：未被认领（ai_state 为空）、status=todo、monitor_ready=1（监督器已判定无未完成前置依赖）、且平台偏好匹配（monitor_preferred_platform 为空或等于 platform）的任务，并按优先级排序。T05741 起 supervisor.enabled=0 时仍会标记就绪（readyMarkEnabled 默认 true），A 兜底不再恒空；readyMarkEnabled=0 才完全停排水。',
     inputSchema: {
       platform: z.string().optional().describe("请求方平台标识（如 'workbuddy' | 'trae'）；只返回无平台偏好或偏好等于该值的任务，缺省则不按平台过滤。大小写/空白不敏感（内部统一归一为小写）"),
+      projectId: z.string().optional().describe('T05741：只返回指定项目的就绪任务（任务内部 projectId）；多项目共用一个 WorkBuddy 时用它隔离，缺省则不限项目'),
       limit: z.number().optional().describe('返回条数上限（默认 20，上限 200）'),
     },
   }, async (a) => {
     try {
-      const tasks = TaskService.listMonitorReady({ platform: a.platform?.trim() || undefined, limit: a.limit });
+      const tasks = TaskService.listMonitorReady({ platform: a.platform?.trim() || undefined, projectId: a.projectId?.trim() || undefined, limit: a.limit });
       return ok(json(tasks), { tasks });
     } catch (e) { return err((e as Error).message); }
   });
@@ -1383,7 +1384,7 @@ ${a.result}`;
   // T01286（PRD FR-5.2 / §6.1）：监督状态查询——外部平台在拉取任务前先判断监督器是否开启、当前是否可执行
   server.registerTool('mtask_supervisor_status', {
     title: '查询监督状态',
-    description: '查询 AI 监督器的当前运行态：熔断开关（enabled，关闭时不产生就绪任务，拉取接口会返空）、tick 周期与下次 tick 时刻、token 预算占用、活跃/停滞会话、以及最近一轮决策的动作与所用模型。只读接口，不触发决策。',
+    description: '查询 AI 监督器的当前运行态：熔断开关（enabled，关闭时决策层停摆，但 T05741 起 readyMarkEnabled 默认 true 仍会标记就绪任务）、就绪排水开关、tick 周期与下次 tick 时刻、token 预算占用、活跃/停滞会话、以及最近一轮决策的动作与所用模型。只读接口，不触发决策。',
   }, async () => {
     try {
       const s = SupervisorService.getStatus();

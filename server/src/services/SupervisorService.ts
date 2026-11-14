@@ -37,10 +37,14 @@ import type { TokenUsage } from '../adapters/types'; // T01289：决策用量的
 const DEFAULT_INTERVAL_MS = 30_000;
 /** tick 周期配置键（FR-2.1） */
 const INTERVAL_KEY = 'supervisor.intervalMs';
+/** T05741：就绪排水与决策层解耦开关（默认 true）——关闭 supervisor.enabled 不再连带停掉 monitor_ready 标记 */
+const READY_MARK_KEY = 'supervisor.readyMarkEnabled';
 
 export interface SupervisorConfig {
   /** 熔断开关：默认关闭，自动动作需用户显式开启（FR-4.5） */
   enabled: boolean;
+  /** T05741：就绪排水开关（默认开启）；只控制 monitor_ready 标记，不影响决策层 */
+  readyMarkEnabled: boolean;
   intervalMs: number;
   /** T01311：审计保留天数（0 = 不清理），配置键 supervisor.auditRetentionDays */
   auditRetentionDays: number;
@@ -72,7 +76,7 @@ export interface SupervisorTickResult {
   guard?: GuardResult<SupervisorAction>;
   /** T01278：本轮因决策 LLM 不可用而走异常降级——decision.actions 由 buildDegradedActions 生成而非 LLM 产出 */
   degraded?: boolean;
-  /** T01280：本轮新标记就绪（monitor_ready=1）的待办数；熔断轮次不标记，故为 undefined */
+  /** T01280：本轮新标记就绪（monitor_ready=1）的待办数；T05741 起熔断轮次也可能 >0（仅排水模式） */
   readyMarked?: number;
   /** T01282：本轮护栏放行动作的落地结果（FR-3.3~3.5）；未进入决策流程时为 undefined，供 T01285 写 monitor_runs */
   executed?: ApplyOutcome[];
@@ -87,6 +91,8 @@ export interface SupervisorTickResult {
  */
 export interface SupervisorStatusView {
   enabled: boolean;
+  /** T05741：就绪排水是否开启（enabled=false 时仍可能为 true） */
+  readyMarkEnabled: boolean;
   intervalMs: number;
   /** T01311：审计保留天数（0 = 不清理）——面板与 tick 周期同处展示，便于对照「节奏 vs 留痕」两项运行参数 */
   auditRetentionDays: number;
@@ -379,6 +385,13 @@ function readIntervalMs(): number {
   return Number.isFinite(n) && n >= INTERVAL_MIN_MS ? n : DEFAULT_INTERVAL_MS;
 }
 
+/** T05741：就绪标记开关，缺失/空串默认 true（保持 A 兜底可用）；仅显式 0/false/off/no 关闭 */
+function readReadyMarkEnabled(): boolean {
+  const raw = getSetting(READY_MARK_KEY);
+  if (raw == null || raw.trim() === '') return true;
+  return !['0', 'false', 'off', 'no'].includes(raw.trim().toLowerCase());
+}
+
 /**
  * 单轮 tick 的统一入口（T01311 收拢，启动轮与周期轮共用）。
  * 异常必须留痕：console.error 会被 LogService 环形缓冲捕获，否则「监督器已挂」与「无监督对象」
@@ -455,7 +468,7 @@ export const SupervisorService = {
   },
 
   getConfig(): SupervisorConfig {
-    return { enabled: readEnabled(), intervalMs: readIntervalMs(), auditRetentionDays: readRetentionDays() };
+    return { enabled: readEnabled(), readyMarkEnabled: readReadyMarkEnabled(), intervalMs: readIntervalMs(), auditRetentionDays: readRetentionDays() };
   },
 
   /**
@@ -468,6 +481,7 @@ export const SupervisorService = {
     const last = listMonitorRuns(1)[0];
     return {
       enabled: readEnabled(),
+      readyMarkEnabled: readReadyMarkEnabled(),
       intervalMs,
       auditRetentionDays: readRetentionDays(),
       lastTickAt: lastTickAtMs ? new Date(lastTickAtMs).toISOString() : null,
@@ -663,11 +677,13 @@ export const SupervisorService = {
     // 内部按 1h 节流并自行兜错，故可每轮无脑调用；放在决策之前，避免被下方任何 early return 跳过。
     pruneMonitorRuns();
     const probe = this.probe();
-    if (!readEnabled()) return { ran: false, reason: 'disabled', stalledMarked, probe };
+    // T05741（A 兜底 FR-3.1）：就绪排水与决策层解耦——supervisor.enabled=false 只停决策 LLM，
+    // 默认仍执行 markMonitorReady，否则 mtask_list_ready_tasks 恒空、A 兜底不可用。
+    // readyMarkEnabled=0 时保持旧语义（完全停摆），供「只关排水」的显式场景使用。
+    const readyMarked = readReadyMarkEnabled() ? TaskService.markMonitorReady() : 0;
+    if (!readEnabled()) return { ran: false, reason: 'disabled', stalledMarked, probe, readyMarked };
     // T01280（FR-3.1）：就绪标记必须早于 hasWork 空转判定——积压里全是就绪待办、但无活跃会话/无 running 时，
     // probe.hasWork 为假会直接空转返回，就绪任务永远标不上、拉取接口永远返空（排水死锁）。
-    // 位置在 readEnabled 之后，遵守 FR-4.5「开关关闭则监督器完全停摆」。
-    const readyMarked = TaskService.markMonitorReady();
     if (!probe.hasWork) return { ran: false, reason: 'idle', stalledMarked, probe, readyMarked };
     if (ticking) return { ran: false, reason: 'busy', stalledMarked, probe, readyMarked };
     ticking = true;

@@ -26,6 +26,8 @@ const ENABLED_KEY = 'supervisor.enabled';
 /** 中继兜底通道配置键（与 RelayDispatchService 同口径） */
 const RELAY_PLATFORMS_KEY = 'supervisor.relayPlatforms';
 const RELAY_TOOL_KEY = 'supervisor.relayToolId';
+/** T05741：就绪排水与决策层解耦开关（默认 true） */
+const READY_MARK_KEY = 'supervisor.readyMarkEnabled';
 
 export const supervisorApi = Router();
 
@@ -34,6 +36,7 @@ function readConfig() {
   const cfg = SupervisorService.getConfig();
   return {
     enabled: cfg.enabled,
+    readyMarkEnabled: cfg.readyMarkEnabled,
     intervalMs: cfg.intervalMs,
     auditRetentionDays: cfg.auditRetentionDays,
     relayPlatforms: getSetting(RELAY_PLATFORMS_KEY) ?? '',
@@ -66,6 +69,7 @@ supervisorApi.get('/config', (_req, res) => res.json(readConfig()));
 /** POST /config 的请求体结构（全部可选：未提供的字段保持原值） */
 interface SupervisorConfigPatch {
   enabled?: unknown;
+  readyMarkEnabled?: unknown;
   relayPlatforms?: unknown;
   relayToolId?: unknown;
   intervalMs?: unknown;
@@ -80,6 +84,14 @@ const writeEnabled: ConfigWriter = (b) => {
   if (typeof b.enabled !== 'boolean') return false;
   setSetting(ENABLED_KEY, b.enabled ? '1' : '0');
   logService.log('WARN', 'supervisor', `熔断开关${b.enabled ? '已开启（自动动作生效）' : '已关闭（自动动作停摆，人工接管）'}`);
+  return true;
+};
+
+/** T05741：就绪排水开关单独可写——关掉它才让 monitor_ready 完全停更，不影响决策层 */
+const writeReadyMarkEnabled: ConfigWriter = (b) => {
+  if (typeof b.readyMarkEnabled !== 'boolean') return false;
+  setSetting(READY_MARK_KEY, b.readyMarkEnabled ? '1' : '0');
+  logService.log('WARN', 'supervisor', `就绪排水${b.readyMarkEnabled ? '已开启（A 兜底可拉取）' : '已关闭（仅排水停更，决策层不受影响）'}`);
   return true;
 };
 
@@ -119,7 +131,7 @@ const writeRelayToolId: ConfigWriter = (b) => {
 /** 按序执行全部写入器，返回是否有字段实际落库 */
 function writeSupervisorConfig(b: SupervisorConfigPatch): boolean {
   let changed = false;
-  for (const write of [writeEnabled, writeIntervalMs, writeRetentionDays, writeRelayPlatforms, writeRelayToolId]) {
+  for (const write of [writeEnabled, writeReadyMarkEnabled, writeIntervalMs, writeRetentionDays, writeRelayPlatforms, writeRelayToolId]) {
     if (write(b)) changed = true;
   }
   return changed;
@@ -133,7 +145,7 @@ supervisorApi.post('/config', (req, res) => {
   const body = (req.body ?? {}) as SupervisorConfigPatch;
   try {
     if (!writeSupervisorConfig(body)) {
-      return res.status(400).json({ error: '无可写字段（支持 enabled / intervalMs / auditRetentionDays / relayPlatforms / relayToolId）' });
+      return res.status(400).json({ error: '无可写字段（支持 enabled / readyMarkEnabled / intervalMs / auditRetentionDays / relayPlatforms / relayToolId）' });
     }
     res.json(readConfig());
   } catch (e) {
