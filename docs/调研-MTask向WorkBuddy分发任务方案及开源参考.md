@@ -11,11 +11,14 @@
 > **2026-11-14 需求澄清：以「MTask 主动推送」为硬约束。**
 > 用户明确期望由 MTask 端直接推送任务给外部 AI Agent 平台，而不是等待平台来拉取。因此推荐顺序修正为 **推送优先**：桌面端首选方案 B0（CodeBuddy Remote Control 本地网关 `/api/v1/runs`），企业版选方案 B，通用平台选方案 C；原方案 A（MCP 拉取）降为「平台无推送 API 时的兜底」。详见 §4 方案 B0。
 
+> **2026-11-14 选型：A + B0 + D 组合。**
+> **B0 主链路（主动推送）+ A 兜底（MCP 拉取）+ D 应急（GUI 直驱，人工确认）**；B/C/E 本轮不纳入。目标是「能推就推、推不动就拉、拉不动才人工 GUI」。详见 §4「方案组合」。
+
 1. **桌面端直推首选方案 B0：CodeBuddy Remote Control 本地网关。**
    2026-11-14 本机实测：WorkBuddy 桌面进程在 `127.0.0.1` 上监听多个 CodeBuddy Remote Control 端口，`/api/v1/auth/status` 返回 `authEnabled:true`，页面列出 `POST /api/v1/runs`、`GET /api/v1/runs/:runId/stream`、`/api/v1/acp`。MTask 可直接 POST 任务 → 拿 `runId` → SSE/轮询取结果；无需企业版、无需自建中继。代价：接口为 Beta/桌面内部网关，端口动态、默认密码鉴权，需做端点发现与口令管理。
 
-2. **企业版选方案 B：Managed Agents OpenAPI + ACP 直连。**
-   WorkBuddy Enterprise 已提供 `CreateAgentSession`、`message-events`、ACP（`/api/v1/acp/connect` + SSE + JSON-RPC `prompt`）等接口，能做到秒级下发与流式回传；代价是企业席位、云沙箱、API Key 与 Beta 接口风险。
+2. **企业版方案 B：Managed Agents OpenAPI + ACP 直连（本轮暂缓）。**
+   WorkBuddy Enterprise 已提供 `CreateAgentSession`、`message-events`、ACP（`/api/v1/acp/connect` + SSE + JSON-RPC `prompt`）等接口，能做到秒级下发与流式回传；代价是企业席位、云沙箱、API Key 与 Beta 接口风险。本轮 A+B0+D 不采购企业版，保留 T05742 预研。
 
 3. **方案 A（MCP 拉取 + WorkBuddy Automation/Skill）降为兜底。**
    MTask 已有 `list_ready_tasks → claim_task → report_progress → update_task_result → write_task_status` 闭环；但就绪池默认恒空（`SupervisorService.ts:666-670` 在 `readEnabled()` 为 false 时直接返回，`markMonitorReady()` 永不执行），且它本质是「平台来拉」而非「MTask 推」。仅当目标平台没有推送 API、但支持 MCP 时使用。
@@ -23,11 +26,11 @@
 4. **方案 C（HTTP 中继/Webhook 推送）用于只提供 Webhook/HTTP 的平台。**
    现有 `WorkBuddyAdapter` / `RelayDispatchService` 可作为中继骨架；中继本身不收费，但多一跳运维，且最终仍要落到 B0/B/Webhook 之一。
 
-5. **方案 D（computer-use / use computer 类 GUI 直驱）仅应急或演示。**
-   慢、脆、不可结构化观测，且需要屏幕/键鼠权限；适合没有 API 的黑盒场景，不适合作为九期主干。
+5. **方案 D（computer-use / use computer 类 GUI 直驱）定为应急通道。**
+   慢、脆、不可结构化观测，且需要屏幕/键鼠权限；只在 B0/A 都不可用时由人工确认后执行，不作为无人值守主干。
 
 6. **方案 E（A2A）是企业版已支持 A2AEnabled / 外部 Agent 绑定后的标准化方向。**
-   建议作为 P2 储备，不建议九期首发；MTask 需要补 A2A Server（Agent Card + tasks/send + tasks/get + SSE）。
+   建议作为 P2 储备，本轮不纳入；MTask 需要补 A2A Server（Agent Card + tasks/send + tasks/get + SSE）。
 
 ---
 
@@ -716,6 +719,116 @@ browser_snapshot()                      // 读取结果区域
 
 ---
 
+### 方案组合：A + B0 + D（2026-11-14 选型）
+
+> 选型结论：**B0 主链路（主动推送）+ A 兜底（MCP 拉取）+ D 应急（GUI 直驱）**；B/C/E 本轮不纳入。目标是「能推就推、推不动就拉、拉不动才人工 GUI」。
+
+#### 组合.1 角色分工
+
+| 通道 | 角色 | 触发条件 | 无人值守 | 主要风险 |
+|---|---|---|---|---|
+| **B0** CodeBuddy 本地网关 | 主链路（推送） | WorkBuddy 桌面端网关健康、鉴权通过 | 是（Beta） | 端口/口令动态、版本变更、接口非公开承诺 |
+| **A** MCP 拉取 | 兜底（拉取） | B0 连接失败、401、5xx、run 失败/超时、版本不兼容 | 手动可；自动需排水解耦 | `supervisor.enabled=false` 时就绪池恒空；Automation 最小间隔未实测 |
+| **D** GUI 直驱 | 应急（人工） | B0/A 都不可用，且必须操作桌面 UI | **否**，必须人工确认 | UI 改版、坐标偏移、凭据/屏幕泄漏、不可观测 |
+
+#### 组合.2 架构图
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                     MTask PushDispatcher                     │
+│  ├─ HealthProbe：B0 /api/v1/auth/status + 认证探针           │
+│  │                 A supervisor_status + ready/claim 探测     │
+│  │                 D WorkBuddy 窗口 + Playwright MCP 可用性    │
+│  ├─ Router：B0 → A → D（记录 channel / attempt / fallback）  │
+│  └─ Audit：monitor_runs + exec_sessions + handle_result      │
+└───────────────┬──────────────────────────────────────────────┘
+                │
+      ┌─────────┼──────────────────┐
+      ▼         ▼                  ▼
+  B0 HTTP     A MCP              D GUI
+  POST        list_ready_tasks    Playwright MCP
+  /api/v1/    claim_task          accessibility snapshot
+  runs        report_progress     click/type/re-snapshot
+  SSE/poll    update_task_result  人工确认 + 截图留证
+```
+
+#### 组合.3 路由与降级链
+
+```ts
+// server/src/services/PushDispatcher.ts（骨架）
+async function dispatch(task: TaskContext): Promise<DispatchResult> {
+  // 1) 主链路：B0 本地网关
+  if (await b0.healthy()) {
+    const r = await b0.submit(task);
+    if (r.accepted) return monitorB0(r.ticket, task); // SSE/轮询；失败/超时抛 FallbackSignal
+  }
+
+  // 2) 兜底：A MCP 拉取
+  if (await a.canHandle(task)) {
+    await a.ensureReady(task);          // 标记 monitor_ready / 或人工指定
+    const claimed = await a.waitForClaim(task, a.claimTimeoutMs);
+    if (claimed) return monitorA(task);  // progress → result → done
+  }
+
+  // 3) 应急：D GUI 直驱（必须人工批准）
+  if (d.enabled && task.allowGui && await d.requestHumanApproval(task)) {
+    return d.run(task);                 // 仅在人工确认后执行
+  }
+
+  return escalate(task, 'no_channel');  // 写 failed + 告警，不静默丢单
+}
+```
+
+**降级触发条件（明确写死，避免“看起来成功”）：**
+
+| 通道 | 触发降级 | 处理 |
+|---|---|---|
+| B0 | `ECONNREFUSED`、401/403、5xx、`runId` 超时无事件、run 状态 failed | 记录 `fallback_reason`，转 A |
+| A | `supervisor.enabled=false` 且 60s 内无就绪任务；`claim_task` 冲突；平台离线 | 转 D（人工）或 `escalate` |
+| D | 无人工批准、Playwright/窗口不可用、超过最大步数/时长 | 终止并 `escalate`，不自动重试 |
+
+#### 组合.4 状态与数据契约
+
+| 通道 | 提交凭据 | 执行态 | 结果回写 | MTask 字段 |
+|---|---|---|---|---|
+| B0 | `runId` | accepted/running/success/failed | 解析 run 输出 → Markdown | `queue_jobs` + `exec_sessions.platform='workbuddy-gateway'` + `handle_result` |
+| A | `taskNo` + `session_id` | claimed/running/stalled/done | `mtask_update_task_result` | `ai_state=running` + `exec_sessions.platform='workbuddy'` + `monitor_ready=0` |
+| D | 人工确认号 | 人工执行中 | 按模板回传，标注 D 通道 | `exec_sessions.platform='workbuddy-gui'` + `verified=false` |
+
+**幂等约束：**
+- B0：`id = taskNo + attempt`，同一 `taskNo` 不重复建 Run；以 `runId` 为唯一票据。
+- A：`claim_task` 事务原子；同一任务只允许一个平台/会话认领。
+- D：单任务单操作员锁；执行前写 `exec_sessions.active`，禁止双人同时点同一单。
+
+#### 组合.5 安全与观测
+
+- **B0**：只绑 `127.0.0.1`；口令加密存储、可轮换；`X-CodeBuddy-Request: 1` + Bearer；不把口令写日志/任务描述/仓库。
+- **A**：按平台具名 token + 角色；`X-Access-Token` 轮换；`claim_task` 冲突即换单，不重试。
+- **D**：人工确认后才执行；先只读 snapshot 核对页面/账号/工作区；不把密码/token 写进 prompt；截图脱敏；最大步数/超时/急停。
+- **观测**：`monitor_runs` 记录 `channel`（b0/a/d）、`attempt`、`latency_ms`、`fallback_reason`、`runId/session_id`；面板展示「B0 成功率 / A 兜底率 / D 使用次数」。
+
+#### 组合.6 实施顺序
+
+1. **B0 主链路**：`PushDispatcher` + `CodeBuddyGatewayAdapter` + 网关配置/健康探针 + 结果映射。
+2. **A 手动兜底**：指定 taskNo → `claim_task` → 执行 → 回传（零代码，先跑通）。
+3. **A 自动兜底**：`readyMarkEnabled` 解耦 + WorkBuddy 派发技能 + Automation。
+4. **D 应急**：Playwright MCP 脚本 + 人工确认闸门 + 审计留证。
+5. **端到端验收**：B0 happy path、B0 故障转 A、A 故障转 D、并发防重。
+
+#### 组合.7 验收矩阵
+
+| # | 场景 | 预期 |
+|---|---|---|
+| 1 | B0 正常 | `POST /api/v1/runs` → `runId` → SSE/轮询 → 结果回写；`status=done` |
+| 2 | B0 网关关闭 | 60s 内转 A；任务被 `claim_task` 认领；结果回写；记录 `fallback_reason=b0_unreachable` |
+| 3 | A 监督器关闭且未人工指定 | 不静默丢单：转 D 人工确认或 `escalate` |
+| 4 | B0 与 A 同时可用，同一 taskNo 并发派发 | 只允许一个 `claim_task` 成功；另一个冲突退出，不重复执行 |
+| 5 | D 执行 | 必须人工批准；全程截图/日志；`verified=false`，标注需人工复核 |
+
+**任务映射：** B0 + 组合编排 → **T05747**；A 兜底 → **T05741**；D 应急 → 新建派生单；B 企业版 → **T05742（暂缓）**。
+
+---
+
 ## 5. 方案对比与选型
 
 ### 5.1 对比矩阵
@@ -733,7 +846,11 @@ browser_snapshot()                      // 读取结果区域
 
 ### 5.2 推送优先的推荐结论（2026-11-14 需求澄清后）
 
-按「MTask 主动推送」硬约束，优先级为：**B0（桌面端本地网关）→ B（企业版 ACP）→ C（通用 Webhook/中继）→ A（MCP 拉取兜底）→ E（A2A 储备）→ D（GUI 应急）**。
+按 2026-11-14 选型，九期采用 **B0 主链路 + A 兜底 + D 应急**；B/C/E 本轮不纳入：
+
+- **B0**：WorkBuddy 桌面端本地网关直推，MTask 主动发起，优先跑通。
+- **A**：B0 不可用时由 WorkBuddy 通过 MCP 拉取；手动指定 Txxxx 零改动，自动排水需解耦。
+- **D**：B0/A 都不可用时的 GUI 应急，仅人工确认后执行，不进无人值守。
 
 **首选 B0 的理由：**
 
@@ -745,13 +862,13 @@ browser_snapshot()                      // 读取结果区域
 
 **条件切换：**
 
-- 若九期验收环境是 **WorkBuddy 企业版**，且要求稳定商用承诺、多租户隔离、云沙箱、审计合规 → **方案 B 为首选**，B0 仅作本机调试通道。
-- 若目标平台只提供 **Webhook/HTTP**，没有 `/runs`、ACP 或 A2A → **方案 C**。
-- 若目标平台支持 MCP 但没有推送 API，且能接受分钟级延迟 → **方案 A** 兜底。
-- 若九期明确要「跨厂商 Agent 互通」→ **方案 E**，但需先补 A2A Server。
-- **方案 D 只做 POC/演示，不进主干。**
+- 若九期验收环境是 **WorkBuddy 企业版**，且要求稳定商用承诺、多租户隔离、云沙箱、审计合规 → **方案 B**；本轮暂缓（T05742），B0 仅作本机调试通道。
+- 若目标平台只提供 **Webhook/HTTP**，没有 `/runs`、ACP 或 A2A → **方案 C**；作为未来通用平台扩展，不在本轮。
+- 若目标平台支持 MCP 但没有推送 API，且能接受分钟级延迟 → **方案 A**；本轮已定为兜底。
+- 若九期明确要「跨厂商 Agent 互通」→ **方案 E**；P2 储备。
+- **方案 D 已定为应急通道**：仅人工确认后执行，不进无人值守。
 
-**建议落地形态：B0 + B 双通道，共用 `PushDispatcher`/`QueueService`/`ExecSessionService`，按目标平台能力路由；C 作为 Webhook 平台的通用适配；A 作为无推送能力平台的兜底；D/E 不进主干。**
+**建议落地形态：`PushDispatcher` 统一路由 **B0 → A → D**，共用 `QueueService`/`ExecSessionService`，每次派发记录 `channel`/`attempt`/`fallback_reason`；B/C/E 不纳入本轮。**
 
 ---
 
@@ -944,32 +1061,35 @@ browser_snapshot()                      // 读取结果区域
 
 ## 10. 九期落地路线与建议改动点（未改代码）
 
-### P0（2~3 天，方案 B0 推送最小闭环）
+### P0（2~3 天，B0 主链路 + 路由骨架）
 
-1. **MTask：新增 PushDispatcher + CodeBuddyGatewayAdapter** — `D:\code\otherProjects\MTask\server\src\adapters\codebuddyGateway.ts`（新），实现 `submit`（`POST /api/v1/runs` → `runId`）与 `poll`（`GET /api/v1/runs/:runId` 或 SSE）；复用 `QueueService` ticket 与 `ExecSessionService`。
-2. **MTask：网关配置与发现** — `ConfigService` 新增 `workbuddyGateway.baseUrl/password/callbackUrl`；优先从 WorkBuddy 远程控制入口读取或手动配置；加密存储、可轮换；**禁止硬编码端口**。
-3. **MTask：结果映射** — Run 状态 → `QueueService` job 状态；结果 Markdown → `mtask_update_task_result`；失败/超时 → `failed` + 降级到 A/B。
-4. **安全** — 仅回环；`X-CodeBuddy-Request: 1` + `Authorization: Bearer <password>`；回调地址校验；每次 runId 入审计。
-5. **端到端验收** — 1 条真实任务：`POST /api/v1/runs` → `runId` → SSE/轮询 → 结果回写；再补失败/超时各 1 条。
+1. **MTask：新增 PushDispatcher（含路由/降级）** — `D:\code\otherProjects\MTask\server\src\services\PushDispatcher.ts`（新），实现 `B0 → A → D` 路由、`channel/attempt/fallback_reason` 审计与 `escalate` 兜底。
+2. **MTask：新增 CodeBuddyGatewayAdapter** — `D:\code\otherProjects\MTask\server\src\adapters\codebuddyGateway.ts`（新），实现 `submit`（`POST /api/v1/runs` → `runId`）与 `poll`（`GET /api/v1/runs/:runId` 或 SSE）；复用 `QueueService` ticket 与 `ExecSessionService`。
+3. **MTask：网关配置与发现** — `ConfigService` 新增 `workbuddyGateway.baseUrl/password/callbackUrl`；优先从 WorkBuddy 远程控制入口读取或手动配置；加密存储、可轮换；**禁止硬编码端口**。
+4. **MTask：A 手动兜底最先接** — 指定 taskNo → `claim_task` → 执行 → 回传，零代码；先把 B0 故障时的人工兜底路径走通。
+5. **端到端验收** — B0 正常 1 条；B0 网关关闭后转 A 手动 1 条；记录 `fallback_reason`。
 
-### P1（3~5 天，兜底与质量）
+### P1（3~5 天，A 自动兜底 + D 应急 + 质量）
 
-1. **方案 A 兜底** — 就绪排水解耦（`D:\code\otherProjects\MTask\server\src\services\SupervisorService.ts:666`）+ WorkBuddy 派发技能 + Automation；仅在 B0 不可用时启用。手动指定 Txxxx 可零改动，自动排水需此改动。
-2. **结果模板强约束 + 附件回传**（`mtask_get_task_images` / artifacts）。
-3. 按平台具名 token + 角色（`X-MTask-Role`）。
-4. 失败重试/冷却/告警；`monitor_runs` 面板展示派发链路。
-5. Git 提交回写 `mtask_link_git_commit` 纳入技能闭环。
+1. **方案 A 自动兜底** — 就绪排水解耦（`D:\code\otherProjects\MTask\server\src\services\SupervisorService.ts:666`）+ WorkBuddy 派发技能 + Automation；仅在 B0 不可用时启用。手动指定 Txxxx 可零改动，自动排水需此改动。
+2. **方案 D 应急** — Playwright MCP（无障碍树优先）+ 人工确认闸门 + 截图/日志审计 + 最大步数/超时/急停；仅人工触发，不无人值守。
+3. **结果模板强约束 + 附件回传**（`mtask_get_task_images` / artifacts）。
+4. 按平台具名 token + 角色（`X-MTask-Role`）。
+5. 失败重试/冷却/告警；`monitor_runs` 面板展示 `channel/fallback`。
+6. Git 提交回写 `mtask_link_git_commit` 纳入技能闭环。
 
 ### P2（1~2 周，企业版/协议储备）
 
-1. `D:\code\otherProjects\MTask\server\src\adapters\workbuddyManaged.ts`（方案 B）+ `ConfigService` 新配置项 + ACP 事件映射。
+1. `D:\code\otherProjects\MTask\server\src\adapters\workbuddyManaged.ts`（方案 B）+ `ConfigService` 新配置项 + ACP 事件映射；本轮暂缓（T05742）。
 2. A2A Server/Client（方案 E），仅在明确跨厂商需求时启动。
-3. 方案 D 仅做 POC，不纳入无人值守。
+3. 多平台 CLI/AppServer Adapter（Qoder/Trae/Codex），按需扩展。
 
 ### 明确不做
 
 - 不新建第二套任务库/队列；复用 `tasks`/`queue_jobs`/`exec_sessions`。
 - 不把 WorkBuddy 的私有 UI 路径或本地网关端口硬编码进 MTask。
+- **不把 D 作为无人值守主链路**；D 只在 B0/A 都不可用时由人工触发。
+- 不在 B0 未实测的情况下宣称「推送已闭环」。
 - 不在未实测情况下标 `verified:true`。
 
 ---
