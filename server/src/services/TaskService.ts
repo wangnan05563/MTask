@@ -933,16 +933,46 @@ export const TaskService = {
     if (state === '') {
       return this.update(id, { ai_state: state });
     }
+    // T05748：ai_state_at 语义是「进入该状态的时刻」，状态没变就不该刷新。
+    // 已完工任务被派生单归并/结果修订反复写 unread 时，旧时间戳会让它看起来像"刚处理完"
+    // （通知清单按 ai_state_at 排序，桌面端据此弹「任务处理完成」）；running 例外——
+    // 它靠重复写入续心跳，避免被 MTASK_AI_STATE_STALE_MS 判超时。
+    if (state !== 'running') {
+      const current = getDb().prepare('SELECT ai_state FROM tasks WHERE id = ?').get(id) as { ai_state: string } | undefined;
+      if (current?.ai_state === state) return this.getById(id);
+    }
     return this.update(id, { ai_state: state, ai_state_at: new Date().toISOString() });
   },
 
   /** T01057-FR1.1：系统通知轮询数据源——ai_state 处于 unread/failed 的任务（跨项目，按处理时间倒序）。
-   *  主进程 30s 轮询 diff 快照后发 OS 通知；仅返回轻量字段，避免把整表拉进主进程。 */
+   *  主进程 30s 轮询 diff 快照后发 OS 通知；仅返回轻量字段，避免把整表拉进主进程。
+   *
+   *  T05748（缺陷：任务早已完成，通知弹窗隔很久才提示）：
+   *  已完成任务的「结果修订 / 派生单归并」会把 ai_state 重新置为 unread，主进程只要看到
+   *  ai_state 由 '' → unread 就再弹一次「任务处理完成」——任务其实几小时前就 done 了。
+   *  因此这里把「完工后才被重新置 unread」的条目排除出通知清单：
+   *    · 最后一次进入 unread 的时刻（ai_state='AI 处理完成' 事件；早期无事件的任务回退 ai_state_at）
+   *    · 晚于最后一次 todo→done 超过 60s（留出正常完成时 result/done 两次写入的毫秒级抖动）
+   *  ⇒ 视为完工后的补充更新，不派发系统通知（任务本身的 unread 圆点与通知中心事件不受影响）。 */
   listAiPending(): Array<{ task_no: string; title: string; ai_state: string; project_name: string; state_at: string }> {
     return getDb().prepare(
       `SELECT t.task_no, t.title, t.ai_state, t.ai_state_at AS state_at, p.name AS project_name
          FROM tasks t JOIN projects p ON p.id = t.project_id
         WHERE t.ai_state IN ('unread','failed') AND t.archived = 0
+          AND NOT (
+            t.ai_state = 'unread' AND t.status = 'done'
+            AND EXISTS (SELECT 1 FROM task_events e
+                         WHERE e.task_id = t.id AND e.kind = 'status' AND e.detail = 'todo → done')
+            AND COALESCE((SELECT MAX(e2.created_at) FROM task_events e2
+                           WHERE e2.task_id = t.id AND e2.kind = 'ai_state' AND e2.detail = 'AI 处理完成'),
+                         t.ai_state_at) IS NOT NULL
+            AND julianday(COALESCE((SELECT MAX(e2.created_at) FROM task_events e2
+                           WHERE e2.task_id = t.id AND e2.kind = 'ai_state' AND e2.detail = 'AI 处理完成'),
+                         t.ai_state_at))
+                > julianday((SELECT MAX(e3.created_at) FROM task_events e3
+                              WHERE e3.task_id = t.id AND e3.kind = 'status' AND e3.detail = 'todo → done'))
+                  + (60.0 / 86400.0)
+          )
         ORDER BY t.ai_state_at DESC LIMIT 20`,
     ).all() as Array<{ task_no: string; title: string; ai_state: string; project_name: string; state_at: string }>;
   },
