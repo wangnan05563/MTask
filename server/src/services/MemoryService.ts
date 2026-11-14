@@ -540,17 +540,17 @@ export function listPendingMemories(productKey: string, limit = 50): Record<stri
 
 /* ================= T05738：记忆图谱（/memories/graph 数据端点） ================= */
 
-/** 图谱节点：kind=memory 记忆条目 / kind=project 项目聚簇节点 */
+/** 图谱节点：kind=memory 记忆条目 / kind=project 项目聚簇节点 / kind=task 来源任务节点（P2） */
 export interface MemoryGraphNode {
   id: string;
-  kind: 'memory' | 'project';
+  kind: 'memory' | 'project' | 'task';
   type?: MemoryType;
   title: string;
   /** 截断后的内容摘要（详情面板用，≤160 字） */
   content?: string;
   tags?: string[];
   projectId?: string | null;
-  /** 节点权重（节点半径）：记忆=rank 得分 + 访问计数；项目=成员数 */
+  /** 节点权重（节点半径）：记忆=rank 得分 + 访问计数；项目=成员数；任务=关联记忆数 */
   size: number;
   invalidated?: boolean;
   supersededBy?: string | null;
@@ -563,8 +563,8 @@ export interface MemoryGraphEdge {
   id: string;
   source: string;
   target: string;
-  /** tag=共享标签（无向弱关系）/ supersede=被替代链（有向语义，渲染侧单向）/ project=归属聚簇 */
-  kind: 'tag' | 'supersede' | 'project';
+  /** tag=共享标签（无向弱关系）/ supersede=被替代链（有向语义，渲染侧单向）/ project=归属聚簇 / task=来源任务（P2） */
+  kind: 'tag' | 'supersede' | 'project' | 'task';
   /** tag 边附共享标签名（悬浮提示用） */
   tag?: string;
 }
@@ -572,7 +572,7 @@ export interface MemoryGraphEdge {
 export interface MemoryGraph {
   nodes: MemoryGraphNode[];
   edges: MemoryGraphEdge[];
-  stats: { memoryCount: number; projectCount: number; tagEdgeCount: number; supersedeCount: number };
+  stats: { memoryCount: number; projectCount: number; tagEdgeCount: number; supersedeCount: number; taskCount: number };
 }
 
 /** 单个 tag 最大两两连边成员数：超过则跳过该 tag 的成对连边（防高频标签织成蜘蛛网吞掉图语义） */
@@ -637,6 +637,34 @@ export function buildMemoryGraph(scope: ActiveMemoryScope): MemoryGraph {
       projectId: pid, size: Math.max(6, Math.min(16, 4 + Math.sqrt(count) * 2)),
     });
   }
+  // P2 任务节点：source_task_id 非空的记忆连到唯一任务节点（task_no 标签；回放时间取最早关联记忆的 updated_at）
+  const taskIds = [...new Set(rows.map((r) => r.source_task_id).filter((v): v is string => !!v))];
+  const taskInfo = new Map<string, { taskNo: string; title: string }>();
+  for (let i = 0; i < taskIds.length; i += 500) {
+    const chunk = taskIds.slice(i, i + 500);
+    const hits = db.prepare(
+      `SELECT id, task_no, title FROM tasks WHERE id IN (${chunk.map(() => '?').join(',')})`,
+    ).all(...chunk) as { id: string; task_no: string | null; title: string }[];
+    for (const t of hits) {
+      taskInfo.set(t.id, { taskNo: t.task_no ?? '', title: t.title });
+    }
+  }
+  const taskEarliest = new Map<string, string>();
+  for (const r of rows) {
+    if (!r.source_task_id || !taskInfo.has(r.source_task_id)) continue;
+    edges.push({ id: `e-task-${r.id}`, source: r.id, target: `task:${r.source_task_id}`, kind: 'task' });
+    const prev = taskEarliest.get(r.source_task_id);
+    if (!prev || r.updated_at < prev) taskEarliest.set(r.source_task_id, r.updated_at);
+  }
+  for (const [tid, info] of taskInfo) {
+    const count = rows.filter((r) => r.source_task_id === tid).length;
+    nodes.push({
+      id: `task:${tid}`, kind: 'task',
+      title: info.taskNo ? `${info.taskNo} ${info.title.slice(0, 24)}` : info.title.slice(0, 30),
+      sourceTaskId: tid, size: Math.max(5, Math.min(12, 3 + Math.sqrt(count) * 2)),
+      updatedAt: taskEarliest.get(tid),
+    });
+  }
   // 替代链（只连集内可见的行；被替代行已失效仍保留在图里，链路语义不丢）
   for (const r of rows) {
     if (r.superseded_by && byId.has(r.superseded_by)) {
@@ -674,6 +702,7 @@ export function buildMemoryGraph(scope: ActiveMemoryScope): MemoryGraph {
       projectCount: memberCount.size,
       tagEdgeCount,
       supersedeCount: edges.filter((e) => e.kind === 'supersede').length,
+      taskCount: taskInfo.size,
     },
   };
 }

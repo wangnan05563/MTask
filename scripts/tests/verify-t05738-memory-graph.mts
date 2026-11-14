@@ -28,10 +28,13 @@ const GRAPH = readFileSync(join(ROOT, 'web/src/pages/MemoryGraph.tsx'), 'utf8');
 const TAB = readFileSync(join(ROOT, 'web/src/pages/MemoryTab.tsx'), 'utf8');
 
 // A 组：服务端图谱数据端点
-ok('A-01 buildMemoryGraph 服务函数：节点=记忆+项目聚簇，边=tag/替代链/归属 三类',
+ok('A-01 buildMemoryGraph 服务函数：节点=记忆+项目聚簇+任务（P2），边=tag/替代链/归属/任务 四类',
   /export function buildMemoryGraph\(scope: ActiveMemoryScope\): MemoryGraph/.test(SVC)
-  && /kind: 'memory' \| 'project'/.test(SVC)
-  && /'tag' \| 'supersede' \| 'project'/.test(SVC));
+  && /kind: 'memory' \| 'project' \| 'task'/.test(SVC)
+  && /'tag' \| 'supersede' \| 'project' \| 'task'/.test(SVC));
+ok('A-02 task 节点按 source_task_id 分批查 tasks 表（task_no 标签，回放时间取最早关联记忆）',
+  /WHERE id IN \(\$\{chunk\.map\(\(\) => '\?'\)\.join\(','\)\}\)/.test(SVC)
+  && /taskEarliest\.set\(r\.source_task_id, r\.updated_at\)/.test(SVC));
 ok('A-02 tag 两两连边有成员数上限（防高频标签织蜘蛛网）+ 全量行硬上限',
   /GRAPH_TAG_FAN_MAX = \d+/.test(SVC) && /GRAPH_ROW_LIMIT = \d+/.test(SVC)
   && /members\.length > GRAPH_TAG_FAN_MAX\) continue;/.test(SVC));
@@ -70,6 +73,15 @@ ok('B-08 P1 入场动画：随机起始位置 → FA2 终位插值（easeOutCubi
   /function animateNodesIn\(graph: Graph, start: Map<string, \{ x: number; y: number \}>, sigma: Sigma\)/.test(GRAPH)
   && /1 - Math\.pow\(1 - raw, 3\)/.test(GRAPH)
   && /animateNodesIn\(graph, startPositions, sigma\)/.test(GRAPH));
+ok('B-09 P2 时间轴回放：nodeUpdatedAt 锚点 + cursor 游标 isHidden 驱动（节点+边双隐藏，不重算布局）',
+  /nodeUpdatedAt: n\.updatedAt \?\? null/.test(GRAPH)
+  && /res\.isHidden = true; return res;/.test(GRAPH)
+  && /graph\.getNodeAttribute\(graph\.source\(edge\), 'nodeUpdatedAt'\)/.test(GRAPH)
+  && /setInterval\(/.test(GRAPH));
+ok('B-10 P2 回放控制条：播放/停止切换 + 进度计数（data-lck 锚点）+ 卸载清定时器',
+  /▶ 回放生长/.test(GRAPH) && /⏸ 停止回放/.test(GRAPH)
+  && /data-lck="memory-graph-replay-progress"/.test(GRAPH)
+  && /\(\) => \{ if \(replayTimerRef\.current\) clearInterval\(replayTimerRef\.current\); \}, \[\]/.test(GRAPH));
 
 // C 组：MemoryTab 接入
 ok('C-01 列表/图谱视图切换（aria-pressed + 产品筛选共享）',

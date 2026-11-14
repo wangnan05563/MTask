@@ -210,7 +210,7 @@ memoriesApi.get('/graph', (req, res) => {
   });
   if (scope.kind === 'error') return fail(res, scope.error);
   if (scope.kind === 'empty') {
-    return res.json({ ok: true, nodes: [], edges: [], stats: { memoryCount: 0, projectCount: 0, tagEdgeCount: 0, supersedeCount: 0 }, hint: scope.hint });
+    return res.json({ ok: true, nodes: [], edges: [], stats: { memoryCount: 0, projectCount: 0, tagEdgeCount: 0, supersedeCount: 0, taskCount: 0 }, hint: scope.hint });
   }
   res.json({ ok: true, ...buildMemoryGraph(scope) });
 });

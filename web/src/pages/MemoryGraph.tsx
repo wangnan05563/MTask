@@ -20,10 +20,12 @@ const TYPE_COLORS: Record<string, string> = {
   reference: '#fbbf24', // 外部参考：黄
 };
 const PROJECT_NODE_COLOR = '#818cf8';
+const TASK_NODE_COLOR = '#22d3ee';
 const DEAD_NODE_COLOR = '#526078';
 const EDGE_TAG = 'rgba(96,165,250,0.30)';
 const EDGE_PROJECT = 'rgba(129,140,248,0.45)';
 const EDGE_SUPERSEDE = 'rgba(248,113,113,0.75)';
+const EDGE_TASK = 'rgba(34,211,238,0.55)';
 const EDGE_DIM = 'rgba(100,116,139,0.08)';
 const EDGE_DIM_SUPERSEDE = 'rgba(248,113,113,0.15)';
 
@@ -68,7 +70,7 @@ const TYPE_LABELS: Record<string, string> = {
 
 interface GraphNode {
   id: string;
-  kind: 'memory' | 'project';
+  kind: 'memory' | 'project' | 'task';
   type?: string;
   title: string;
   content?: string;
@@ -81,15 +83,16 @@ interface GraphNode {
   accessCount?: number;
   updatedAt?: string;
 }
-interface GraphEdge { id: string; source: string; target: string; kind: 'tag' | 'supersede' | 'project'; tag?: string }
+interface GraphEdge { id: string; source: string; target: string; kind: 'tag' | 'supersede' | 'project' | 'task'; tag?: string }
 interface GraphData {
   ok: boolean; nodes: GraphNode[]; edges: GraphEdge[];
-  stats: { memoryCount: number; projectCount: number; tagEdgeCount: number; supersedeCount: number };
+  stats: { memoryCount: number; projectCount: number; tagEdgeCount: number; supersedeCount: number; taskCount: number };
 }
 
 function nodeColor(n: GraphNode): string {
   if (n.invalidated) return DEAD_NODE_COLOR;
   if (n.kind === 'project') return PROJECT_NODE_COLOR;
+  if (n.kind === 'task') return TASK_NODE_COLOR;
   return TYPE_COLORS[n.type ?? 'reference'] ?? '#94a3b8';
 }
 
@@ -97,23 +100,63 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
   const [data, setData] = useState<GraphData | null>(null);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<GraphNode | null>(null);
+  // T05738 P2 时间轴回放：cursor 之前的节点隐藏（逐桶生长）；ref 供 reducer 读避免 React 重渲染
+  const [replayTick, setReplayTick] = useState(0); // 仅驱动控制条 UI（已显现计数）
+  const [replayActive, setReplayActive] = useState(false);
+  const replayRef = useRef<{ active: boolean; cursor: string | null }>({ active: false, cursor: null });
+  const replayTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const sigmaRef = useRef<Sigma | null>(null);
   // hover/邻域状态放 ref：变化只 sigma.refresh()，不触发 React 重渲染
   const hoveredRef = useRef<string | null>(null);
   const graphRef = useRef<Graph | null>(null);
 
+  const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3000); };
+  const [notice, setNotice] = useState('');
+
+  /** P2 时间轴回放：按记忆 updated_at 升序分桶，逐桶显现（每桶 160ms），走到尽头自动复位全显 */
+  const stopReplay = useCallback(() => {
+    if (replayTimerRef.current) { clearInterval(replayTimerRef.current); replayTimerRef.current = null; }
+    replayRef.current = { active: false, cursor: null };
+    setReplayActive(false);
+    sigmaRef.current?.refresh();
+  }, []);
+
+  const startReplay = useCallback(() => {
+    const g = graphRef.current;
+    if (!g) return;
+    stopReplay();
+    const times = [...new Set(
+      g.nodes().map((n) => g.getNodeAttribute(n, 'nodeUpdatedAt')).filter((t): t is string => !!t),
+    )].sort();
+    if (times.length === 0) { flash('本图没有可回放的时间戳记忆'); return; }
+    let i = 0;
+    replayRef.current = { active: true, cursor: '' }; // '' 早于任何 ISO 时间戳 → 初始全隐
+    setReplayActive(true);
+    replayTimerRef.current = setInterval(() => {
+      replayRef.current.cursor = times[i];
+      sigmaRef.current?.refresh();
+      setReplayTick((t) => t + 1);
+      i++;
+      if (i >= times.length) stopReplay();
+    }, 160);
+  }, [stopReplay]);
+
+  // 卸载兜底：清回放定时器（sigma.kill 在渲染 effect 的 cleanup 里）
+  useEffect(() => () => { if (replayTimerRef.current) clearInterval(replayTimerRef.current); }, []);
+
   const load = useCallback(async () => {
     if (!productKey) { setData(null); return; }
+    stopReplay();
     setLoading(true);
     setSelected(null);
     try {
       const r = await api.get<GraphData>(`/memories/graph?productKey=${encodeURIComponent(productKey)}`);
       setData(r);
     } catch (e) {
-      setData({ ok: false, nodes: [], edges: [], stats: { memoryCount: 0, projectCount: 0, tagEdgeCount: 0, supersedeCount: 0 }, error: e instanceof Error ? e.message : String(e) } as GraphData);
+      setData({ ok: false, nodes: [], edges: [], stats: { memoryCount: 0, projectCount: 0, tagEdgeCount: 0, supersedeCount: 0, taskCount: 0 }, error: e instanceof Error ? e.message : String(e) } as GraphData);
     } finally { setLoading(false); }
-  }, [productKey]);
+  }, [productKey, stopReplay]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -129,7 +172,8 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
       const x = Math.random() * 100;
       const y = Math.random() * 100;
       startPositions.set(n.id, { x, y });
-      graph.addNode(n.id, { x, y, size: n.size, color: nodeColor(n), label: n.title, nodeKind: n.kind });
+      // nodeUpdatedAt：回放生长的时间轴锚点（记忆/任务节点有时间戳；项目聚簇节点恒可见）
+      graph.addNode(n.id, { x, y, size: n.size, color: nodeColor(n), label: n.title, nodeKind: n.kind, nodeUpdatedAt: n.updatedAt ?? null });
     }
     for (const e of data.edges) {
       if (graph.hasNode(e.source) && graph.hasNode(e.target) && !graph.hasEdge(e.id)) {
@@ -173,6 +217,12 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
       },
       nodeReducer: (node, attrs) => {
         const res = { ...attrs } as Record<string, unknown>;
+        // T05738 P2 回放：时间轴 cursor 之后的节点隐藏（isHidden 驱动 v4 visibility 状态机）
+        const rp = replayRef.current;
+        if (rp.active && rp.cursor !== null) {
+          const ut = (attrs as unknown as Record<string, unknown>).nodeUpdatedAt as string | null | undefined;
+          if (ut && ut > rp.cursor) { res.isHidden = true; return res; }
+        }
         const hovered = hoveredRef.current;
         if (hovered && hovered !== node) {
           // 悬停高亮一跳邻域：其余节点淡出（Obsidian 同款）
@@ -190,8 +240,15 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
       edgeReducer: (edge, attrs) => {
         const res = { ...attrs } as Record<string, unknown>;
         const kind = String(res.edgeKind ?? 'tag');
-        res.color = kind === 'supersede' ? EDGE_SUPERSEDE : kind === 'project' ? EDGE_PROJECT : EDGE_TAG;
+        res.color = kind === 'supersede' ? EDGE_SUPERSEDE : kind === 'project' ? EDGE_PROJECT : kind === 'task' ? EDGE_TASK : EDGE_TAG;
         res.size = kind === 'supersede' ? 2 : 1;
+        // T05738 P2 回放：任一端未显现 → 整条边隐藏
+        const rp = replayRef.current;
+        if (rp.active && rp.cursor !== null) {
+          const su = graph.getNodeAttribute(graph.source(edge), 'nodeUpdatedAt') as string | null | undefined;
+          const tu = graph.getNodeAttribute(graph.target(edge), 'nodeUpdatedAt') as string | null | undefined;
+          if ((su && su > rp.cursor) || (tu && tu > rp.cursor)) { res.isHidden = true; return res; }
+        }
         const hovered = hoveredRef.current;
         if (hovered) {
           const touching = graph.hasEdge(edge)
@@ -235,8 +292,14 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
   const legend: { color: string; label: string }[] = [
     ...Object.keys(TYPE_LABELS).map((t) => ({ color: TYPE_COLORS[t], label: TYPE_LABELS[t] })),
     { color: PROJECT_NODE_COLOR, label: '项目' },
+    { color: TASK_NODE_COLOR, label: '来源任务' },
     { color: DEAD_NODE_COLOR, label: '已失效' },
   ];
+  // 回放进度：已显现节点数（replayTick 仅作渲染触发）
+  const shownCount = replayRef.current.active && replayRef.current.cursor !== null
+    ? data.nodes.filter((n) => n.updatedAt && n.updatedAt <= replayRef.current.cursor!).length
+    : data.nodes.length;
+  const totalDated = data.nodes.filter((n) => n.updatedAt).length;
 
   return (
     <div>
@@ -250,14 +313,26 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
         <span>· 蓝细线=共享标签</span>
         <span style={{ color: '#f87171' }}>· 红线=被替代</span>
         <span style={{ color: PROJECT_NODE_COLOR }}>· 紫线=项目归属</span>
+        <span style={{ color: TASK_NODE_COLOR }}>· 青线=来源任务</span>
         <span>· 悬停看邻域，点击看详情</span>
         <span style={{ marginLeft: 'auto' }}>
-          {data.stats.memoryCount} 条记忆 · {data.stats.projectCount} 个项目 · {data.stats.tagEdgeCount} 条标签连线
+          {data.stats.memoryCount} 条记忆 · {data.stats.projectCount} 个项目 · {data.stats.taskCount} 个任务 · {data.stats.tagEdgeCount} 条标签连线
         </span>
+        <button onClick={() => (replayActive ? stopReplay() : void startReplay())} aria-label={replayActive ? '停止回放' : '回放记忆生长'}
+          style={{
+            fontSize: 'var(--fs-xs)', padding: '2px 8px', border: `1px solid ${replayActive ? 'var(--accent)' : 'var(--border-strong)'}`,
+            borderRadius: 5, background: replayActive ? 'var(--accent)' : 'var(--card-bg)',
+            color: replayActive ? 'var(--accent-text)' : 'var(--text-secondary)', cursor: 'pointer',
+          }}>{replayActive ? '⏸ 停止回放' : '▶ 回放生长'}</button>
         <button onClick={() => void load()} style={{
           fontSize: 'var(--fs-xs)', padding: '2px 8px', border: '1px solid var(--border-strong)',
           borderRadius: 5, background: 'var(--card-bg)', color: 'var(--text-secondary)', cursor: 'pointer',
         }}>重排布局</button>
+        {replayActive && (
+          <span style={{ color: 'var(--accent)' }} data-lck="memory-graph-replay-progress">
+            回放中：已显现 {shownCount}/{totalDated}
+          </span>
+        )}
       </div>
       <div style={{ position: 'relative', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
         <div
@@ -276,7 +351,7 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
               <span style={{
                 fontSize: 'var(--fs-xs)', color: '#fff', padding: '1px 8px', borderRadius: 999,
                 background: nodeColor(selected),
-              }}>{selected.kind === 'project' ? '项目' : (TYPE_LABELS[selected.type ?? ''] ?? selected.type)}</span>
+              }}>{selected.kind === 'project' ? '项目' : selected.kind === 'task' ? '来源任务' : (TYPE_LABELS[selected.type ?? ''] ?? selected.type)}</span>
               <button onClick={() => setSelected(null)} aria-label="关闭详情" style={{
                 background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: 14, lineHeight: 1,
               }}>✕</button>
@@ -291,6 +366,7 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
             )}
             <div style={{ color: '#8fa0b8', fontSize: 'var(--fs-xs)', display: 'grid', gap: 3 }}>
               {selected.kind === 'project' && <span>成员记忆：{data.nodes.filter((n) => n.kind === 'memory' && n.projectId === selected.projectId).length} 条</span>}
+              {selected.kind === 'task' && <span>关联记忆：{data.nodes.filter((n) => n.kind === 'memory' && n.sourceTaskId === selected.sourceTaskId).length} 条</span>}
               {selected.kind === 'memory' && selected.tags && selected.tags.length > 0 && <span>标签：{selected.tags.join('、')}</span>}
               {selected.kind === 'memory' && <span>作用域：{selected.projectId ? '本期特有' : '产品级共享'}</span>}
               {selected.kind === 'memory' && selected.accessCount !== undefined && <span>访问：{selected.accessCount} 次</span>}
