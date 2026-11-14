@@ -951,8 +951,10 @@ export const TaskService = {
    *  已完成任务的「结果修订 / 派生单归并」会把 ai_state 重新置为 unread，主进程只要看到
    *  ai_state 由 '' → unread 就再弹一次「任务处理完成」——任务其实几小时前就 done 了。
    *  因此这里把「完工后才被重新置 unread」的条目排除出通知清单：
-   *    · 最后一次进入 unread 的时刻（ai_state='AI 处理完成' 事件；早期无事件的任务回退 ai_state_at）
-   *    · 晚于最后一次 todo→done 超过 60s（留出正常完成时 result/done 两次写入的毫秒级抖动）
+   *    · 没有 todo→done 事件 ⇒ 完成时刻早于事件埋点（T01064 于 2026-11-10 上线，存量任务无历史事件）
+   *      或已被 90 天保留期裁剪，无法证明「刚完成」，按老任务处理、不弹；
+   *    · 有事件但最后一次进入 unread（ai_state='AI 处理完成'，早期无事件的任务回退 ai_state_at）
+   *      晚于该 done 事件超过 60s（留出正常完成时 result/done 两次写入的毫秒级抖动）
    *  ⇒ 视为完工后的补充更新，不派发系统通知（任务本身的 unread 圆点与通知中心事件不受影响）。 */
   listAiPending(): Array<{ task_no: string; title: string; ai_state: string; project_name: string; state_at: string }> {
     return getDb().prepare(
@@ -961,17 +963,21 @@ export const TaskService = {
         WHERE t.ai_state IN ('unread','failed') AND t.archived = 0
           AND NOT (
             t.ai_state = 'unread' AND t.status = 'done'
-            AND EXISTS (SELECT 1 FROM task_events e
-                         WHERE e.task_id = t.id AND e.kind = 'status' AND e.detail = 'todo → done')
-            AND COALESCE((SELECT MAX(e2.created_at) FROM task_events e2
+            AND (
+              NOT EXISTS (SELECT 1 FROM task_events e
+                           WHERE e.task_id = t.id AND e.kind = 'status' AND e.detail = 'todo → done')
+              OR (
+                COALESCE((SELECT MAX(e2.created_at) FROM task_events e2
                            WHERE e2.task_id = t.id AND e2.kind = 'ai_state' AND e2.detail = 'AI 处理完成'),
                          t.ai_state_at) IS NOT NULL
-            AND julianday(COALESCE((SELECT MAX(e2.created_at) FROM task_events e2
+                AND julianday(COALESCE((SELECT MAX(e2.created_at) FROM task_events e2
                            WHERE e2.task_id = t.id AND e2.kind = 'ai_state' AND e2.detail = 'AI 处理完成'),
                          t.ai_state_at))
-                > julianday((SELECT MAX(e3.created_at) FROM task_events e3
-                              WHERE e3.task_id = t.id AND e3.kind = 'status' AND e3.detail = 'todo → done'))
-                  + (60.0 / 86400.0)
+                    > julianday((SELECT MAX(e3.created_at) FROM task_events e3
+                                  WHERE e3.task_id = t.id AND e3.kind = 'status' AND e3.detail = 'todo → done'))
+                      + (60.0 / 86400.0)
+              )
+            )
           )
         ORDER BY t.ai_state_at DESC LIMIT 20`,
     ).all() as Array<{ task_no: string; title: string; ai_state: string; project_name: string; state_at: string }>;
