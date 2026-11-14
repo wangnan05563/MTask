@@ -955,7 +955,11 @@ export const TaskService = {
    *      或已被 90 天保留期裁剪，无法证明「刚完成」，按老任务处理、不弹；
    *    · 有事件但最后一次进入 unread（ai_state='AI 处理完成'，早期无事件的任务回退 ai_state_at）
    *      晚于该 done 事件超过 60s（留出正常完成时 result/done 两次写入的毫秒级抖动）
-   *  ⇒ 视为完工后的补充更新，不派发系统通知（任务本身的 unread 圆点与通知中心事件不受影响）。 */
+   *  ⇒ 视为完工后的补充更新，不派发系统通知（任务本身的 unread 圆点与通知中心事件不受影响）。
+   *
+   *  同时取消原 `LIMIT 20`：主进程每轮先 notifySeen.clear() 再只装本轮条目，窗口外的任务
+   *  一旦后续挤进前 20（用户读掉更靠前的条目），prev 为 undefined 就会被误判成「新完成」再弹一次。
+   *  过滤后清单只剩真正新鲜的条目（生产约 456 条），全量返回的负载可接受。 */
   listAiPending(): Array<{ task_no: string; title: string; ai_state: string; project_name: string; state_at: string }> {
     return getDb().prepare(
       `SELECT t.task_no, t.title, t.ai_state, t.ai_state_at AS state_at, p.name AS project_name
@@ -979,7 +983,7 @@ export const TaskService = {
               )
             )
           )
-        ORDER BY t.ai_state_at DESC LIMIT 20`,
+        ORDER BY t.ai_state_at DESC`,
     ).all() as Array<{ task_no: string; title: string; ai_state: string; project_name: string; state_at: string }>;
   },
 
