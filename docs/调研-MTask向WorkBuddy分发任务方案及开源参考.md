@@ -2,23 +2,26 @@
 
 > 任务：T05739 ｜ 项目：MTask 九期 ｜ 日期：2026-11-14 ｜ 语言：简体中文
 > 结论口径：面向「MTask 作为任务调度/管理端，WorkBuddy 作为执行端/Agent」的通用逻辑；平台细节均标注来源，未实测项单列。
-> 验证级别：代码走查 + MCP 接口实测 + 官方文档核实；**未做企业版 ACP/A2A 与 GUI 自动化的端到端实测**（环境不具备，见 §9）。
+> 验证级别：代码走查 + MCP 接口实测 + 官方文档核实；**未做企业版 ACP/A2A、B0 本地网关与 GUI 自动化的端到端实测**（环境不具备，见 §9）。
 
 ---
 
 ## 0. 结论摘要（先看这里）
 
-1. **九期首选方案 A：MCP 拉取式 + WorkBuddy Automation/Skill。**
-   MTask 已具备完整的 `mtask_list_ready_tasks → mtask_claim_task → mtask_report_progress → mtask_update_task_result → mtask_write_task_status` 闭环；WorkBuddy 桌面端原生支持 MCP 客户端、Skill 与定时自动化；无需改 WorkBuddy，数据可不出本机，幂等与可观测性最好。
+> **2026-11-14 需求澄清：以「MTask 主动推送」为硬约束。**
+> 用户明确期望由 MTask 端直接推送任务给外部 AI Agent 平台，而不是等待平台来拉取。因此推荐顺序修正为 **推送优先**：桌面端首选方案 B0（CodeBuddy Remote Control 本地网关 `/api/v1/runs`），企业版选方案 B，通用平台选方案 C；原方案 A（MCP 拉取）降为「平台无推送 API 时的兜底」。详见 §4 方案 B0。
 
-2. **方案 A 有一个必须先补的硬缺口：就绪池默认永远为空。**
-   2026-11-14 实测 `mtask_supervisor_status` 返回 `enabled=false`，`mtask_list_ready_tasks{platform:"workbuddy"}` 返回 `[]`；代码上 `markMonitorReady()` 位于 `readEnabled()` 之后（`SupervisorService.ts:666-670`），熔断关闭时不会标记就绪任务。九期必须先做「就绪排水与决策层解耦」（见 §7 P0）。
+1. **桌面端直推首选方案 B0：CodeBuddy Remote Control 本地网关。**
+   2026-11-14 本机实测：WorkBuddy 桌面进程在 `127.0.0.1` 上监听多个 CodeBuddy Remote Control 端口，`/api/v1/auth/status` 返回 `authEnabled:true`，页面列出 `POST /api/v1/runs`、`GET /api/v1/runs/:runId/stream`、`/api/v1/acp`。MTask 可直接 POST 任务 → 拿 `runId` → SSE/轮询取结果；无需企业版、无需自建中继。代价：接口为 Beta/桌面内部网关，端口动态、默认密码鉴权，需做端点发现与口令管理。
 
-3. **企业版场景选方案 B：Managed Agents OpenAPI + ACP 直连。**
+2. **企业版选方案 B：Managed Agents OpenAPI + ACP 直连。**
    WorkBuddy Enterprise 已提供 `CreateAgentSession`、`message-events`、ACP（`/api/v1/acp/connect` + SSE + JSON-RPC `prompt`）等接口，能做到秒级下发与流式回传；代价是企业席位、云沙箱、API Key 与 Beta 接口风险。
 
-4. **方案 C（HTTP 中继推送）只作兜底。**
-   WorkBuddy 桌面端仍未公开「第三方稳定注入任务并取回执」的 API（仓库 2026-08 核查结论仍成立）；现有 `WorkBuddyAdapter` / `RelayDispatchService` 是可用的中继骨架，但必须自建中继服务，且中继最终仍要落到 MCP、企业版 API 或 GUI 自动化之一。
+3. **方案 A（MCP 拉取 + WorkBuddy Automation/Skill）降为兜底。**
+   MTask 已有 `list_ready_tasks → claim_task → report_progress → update_task_result → write_task_status` 闭环；但就绪池默认恒空（`SupervisorService.ts:666-670` 在 `readEnabled()` 为 false 时直接返回，`markMonitorReady()` 永不执行），且它本质是「平台来拉」而非「MTask 推」。仅当目标平台没有推送 API、但支持 MCP 时使用。
+
+4. **方案 C（HTTP 中继/Webhook 推送）用于只提供 Webhook/HTTP 的平台。**
+   现有 `WorkBuddyAdapter` / `RelayDispatchService` 可作为中继骨架；中继本身不收费，但多一跳运维，且最终仍要落到 B0/B/Webhook 之一。
 
 5. **方案 D（computer-use / use computer 类 GUI 直驱）仅应急或演示。**
    慢、脆、不可结构化观测，且需要屏幕/键鼠权限；适合没有 API 的黑盒场景，不适合作为九期主干。
@@ -36,7 +39,7 @@
 |---|---|
 | 明确数据格式、通信协议、权限控制 | §7 数据契约与权限设计 |
 | 分析 WorkBuddy 接收外部指令的接口能力/扩展点 | §3 WorkBuddy 能力矩阵 |
-| 至少 3 种技术实现路径 + 架构图 + 核心代码逻辑 | §4 方案 A~E（5 种） |
+| 至少 3 种技术实现路径 + 架构图 + 核心代码逻辑 | §4 方案 B0 + A~E（6 种） |
 | 维度：集成复杂度、实时性、稳定性、扩展性、侵入性 | §5 对比矩阵 |
 | 至少 5 个 GitHub 参考案例 | §6（列出 12 个真实项目） |
 | 推荐九期首选方案及理由 | §0、§5.2 |
@@ -130,15 +133,146 @@
 
 ### 3.3 明确不支持/未证实
 
-- **桌面端没有公开的「第三方任务注入 API」**：`server/src/adapters/workbuddy.ts:8-16` 记录 2026-08 核查结论；本次检索也未发现桌面端开放 `runs`/`prompt` 类注入接口。桌面端只能走 **MCP / Skill / Automation / Connector / GUI 自动化**。
-- **企业版 HTTP API 处于 Beta**：文档明确「接口可能会有调整」；`/api/v1/runs` 属于 CodeBuddy Code 本地 `--serve` 网关（与 WorkBuddy 桌面端不是同一进程），不要混用。
+- **桌面端没有 WorkBuddy 品牌公开的第三方任务注入 API，但本机存在 CodeBuddy Remote Control 本地网关**：`server/src/adapters/workbuddy.ts:8-16` 的 2026-08 结论仍适用于 WorkBuddy 自身接口；但 2026-11-14 实测 WorkBuddy 桌面进程在 `127.0.0.1` 上监听多个 CodeBuddy Remote Control 端口（`/api/v1/auth/status` → `{"authEnabled":true,"authenticated":false}`；`GET /` 返回 “CodeBuddy Remote Control”，页面列出 `POST /api/v1/runs`、`GET /api/v1/runs/:runId/stream`、`/api/v1/acp`）。该网关默认密码鉴权、端口动态、属于 Beta/内部接口，不能当作稳定公开 API；生产使用需确认版本兼容、端点发现与口令管理。
+- **企业版 HTTP API 处于 Beta**：文档明确「接口可能会有调整」；`/api/v1/runs` 是 CodeBuddy Code `--serve` / Remote Control 网关的接口，在桌面端以 CodeBuddy Remote Control 形式运行，在企业版以 CodeBuddy Code 网关/ACP 运行；字段以各自版本为准，不要混用。
 - **ACP/SSE 的具体事件字段**需以企业实际版本/OpenAPI JSON 为准；本报告只按文档给出的端点与语义设计，不虚构字段。
 
 ---
 
-## 4. 方案列表（5 条路径）
+## 4. 方案列表（6 条路径，B0 为推送首选）
 
-### 方案 A：MCP 拉取式 + WorkBuddy Automation/Skill（九期首选）
+### 方案 B0：CodeBuddy Remote Control 本地网关直推（桌面端推送首选）
+
+> 适用条件：目标是 WorkBuddy 桌面端（或同机 CodeBuddy Remote Control 网关），且接受 Beta 接口；需要「MTask 主动发起、无需平台定时来拉」。
+
+#### B0.1 架构图
+
+```
+┌────────────────────────────┐    HTTP（仅回环 127.0.0.1:<动态端口>）   ┌─────────────────────────────────┐
+│      MTask PushDispatcher  │  POST /api/v1/runs  (Gateway Protocol)  │  WorkBuddy Desktop              │
+│                            │  X-CodeBuddy-Request: 1                 │   CodeBuddy Remote Control GW    │
+│  QueueService / ticket      │  Authorization: Bearer <gateway pwd>   │   ├─ Agent Runtime（本机）       │
+│  ExecSessionService 进度     │ ◄─────────────────────────────────────► │   ├─ Run 状态 / SSE 事件         │
+│  mtask_update_task_result   │  GET /api/v1/runs/:runId/stream (SSE)   │   └─ callback.url（可选）        │
+│                            │  GET /api/v1/runs/:runId（轮询）        │                                  │
+└────────────────────────────┘                                        └─────────────────────────────────┘
+```
+
+#### B0.2 时序
+
+```
+MTask PushDispatcher
+  → 发现并验证网关端点（配置或 WorkBuddy 远程控制入口；GET /api/v1/auth/status）
+  → POST /api/v1/runs
+      { id, type:"message", source:{platform:"generic",...}, payload:{text:TaskEnvelope},
+        callback:{url,headers}, timeoutMs }
+  ← { data: { runId, status:"accepted" } }
+  → GET /api/v1/runs/{runId}/stream（SSE）或 GET /api/v1/runs/{runId}（轮询）
+  → 结果解析 → mtask_update_task_result → mtask_write_task_status
+失败/超时：POST /api/v1/runs/{runId}/cancel，或写 failed + 重试（受 maxRetry 限制）
+```
+
+#### B0.3 数据格式（Gateway Protocol）
+
+请求体示例（字段定义见 CodeBuddy Code HTTP API `GatewayInboundMessage`）：
+
+```json
+{
+  "id": "T05739-20261114-130000",
+  "type": "message",
+  "version": "1.0",
+  "source": {
+    "platform": "generic",
+    "sender": { "id": "mtask", "name": "MTask" },
+    "conversation": { "id": "T05739", "type": "direct" }
+  },
+  "payload": {
+    "text": "【项目】MTask九期\n【任务】T05739 …\n【工作空间】D:\\code\\otherProjects\\MTask\n【约束】…"
+  },
+  "callback": {
+    "url": "http://127.0.0.1:39876/api/dispatch/callback",
+    "headers": { "X-MTask-Task": "T05739" }
+  },
+  "timeoutMs": 3600000
+}
+```
+
+响应与查询：
+
+```json
+// POST /api/v1/runs
+{ "data": { "runId": "<uuid>", "status": "accepted" } }
+
+// GET /api/v1/runs/{runId}
+{ "data": { "runId": "<uuid>", "status": "running|success|failed|...", "...": "..." } }
+```
+
+#### B0.4 核心代码逻辑（骨架）
+
+```ts
+// 建议新增 server/src/adapters/codebuddyGateway.ts
+export class CodeBuddyGatewayAdapter implements AIAdapter {
+  readonly type = 'codebuddy-gateway';
+
+  async submit(context: TaskContext, cfg: ToolConfig): Promise<SubmitResult> {
+    const base = await resolveGateway(cfg); // 127.0.0.1:<port>，校验 /api/v1/auth/status
+    const res = await fetch(`${base}/api/v1/runs`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CodeBuddy-Request': '1',
+        Authorization: `Bearer ${cfg.gatewayPassword}`,
+      },
+      body: JSON.stringify({
+        id: `${context.taskNo}-${Date.now()}`,
+        type: 'message',
+        source: { platform: 'generic', sender: { id: 'mtask', name: 'MTask' }, conversation: { id: context.taskNo, type: 'direct' } },
+        payload: { text: buildTaskEnvelope(context) },
+        callback: { url: cfg.callbackUrl, headers: { 'X-MTask-Task': context.taskNo } },
+        timeoutMs: context.timeoutSec * 1000,
+      }),
+    });
+    const json = await res.json();
+    return { ok: true, accepted: true, ticket: json.data.runId };
+  }
+
+  async poll(ticket: string, cfg: ToolConfig): Promise<PollResult> {
+    const base = await resolveGateway(cfg);
+    const res = await fetch(`${base}/api/v1/runs/${ticket}`, {
+      headers: { 'X-CodeBuddy-Request': '1', Authorization: `Bearer ${cfg.gatewayPassword}` },
+    });
+    const json = await res.json();
+    return mapRunStatus(json.data); // accepted/running/success/failed → QueueService 状态
+  }
+}
+```
+
+#### B0.5 端点发现与鉴权
+
+| 项 | 做法 |
+|---|---|
+| 端口 | WorkBuddy 桌面启动时动态分配，**禁止硬编码** 56252/56906 等；优先从远程控制配置读取，或候选端口逐个校验 `GET /api/v1/auth/status` + `GET /` 标题是否为 “CodeBuddy Remote Control” |
+| 鉴权 | `X-CodeBuddy-Request: 1` 必带；`Authorization: Bearer <password>` 或 `X-Access-Token: <password>`；密码来自 WorkBuddy 远程控制入口/网关配置，加密存储、可轮换 |
+| 网络 | 只绑 `127.0.0.1`；不要暴露到公网；跨机需隧道 + 额外鉴权 |
+| 幂等 | `id` 使用 `taskNo + 时间戳`；服务端按 `id` 去重；同一 `taskNo` 不重复建 Run |
+| 回调 | 优先 SSE/轮询；`callback.url` 需 WorkBuddy 能访问到 MTask（同机可行） |
+
+#### B0.6 评分
+
+| 维度 | 评价 |
+|---|---|
+| 集成复杂度 | 中（端点发现 + 口令鉴权 + Run 状态映射） |
+| 实时性 | 高（POST 即时受理 + SSE） |
+| 稳定性 | 中（Beta/桌面内部网关，版本、端口、口令可能变化） |
+| 扩展性 | 高（同一 Gateway Protocol 可接多个 CodeBuddy/WorkBuddy 实例） |
+| 对 MTask 侵入性 | 中（新增 PushDispatcher/Adapter，复用 Queue/ExecSession） |
+| 安全/数据 | 中高（本机回环；需口令管理与端口发现策略） |
+
+> 结论：如果目标是 WorkBuddy 桌面端、且接受 Beta，B0 是**最直接的 MTask 主动推送路径**；若要求稳定商用承诺，选 B（企业版 ACP）；A 仅作无推送 API 时的兜底。
+
+---
+
+### 方案 A：MCP 拉取式 + WorkBuddy Automation/Skill（拉取兜底）
 
 #### A.1 架构图
 
@@ -537,34 +671,38 @@ browser_snapshot()                      // 读取结果区域
 
 ### 5.1 对比矩阵
 
-| 维度 | A MCP 拉取 | B 企业版 ACP | C HTTP 中继 | D GUI 直驱 | E A2A |
-|---|---|---|---|---|---|
-| 集成复杂度 | 低 | 高 | 中 | 中 | 高 |
-| 实时性 | 中（RRULE 间隔；最小粒度待实测） | 高（秒级/流式） | 中高（5s 轮询） | 低 | 高 |
-| 稳定性 | 高 | 中高（Beta） | 中 | 低 | 高 |
-| 扩展性 | 高 | 高 | 中 | 低 | 最高 |
-| 对 MTask 侵入性 | 极低（1 开关 + 1 过滤） | 中（新 adapter） | 低（复用 Queue） | 极低（外挂） | 高（新协议栈） |
-| 数据边界 | 本机闭环 | 云沙箱 | 取决于中继 | 屏幕/本机 | 跨端 |
-| 九期建议 | **P0 首选** | P1（企业版） | P2 兜底 | 仅演示 | P2 储备 |
+| 维度 | B0 本地网关直推 | A MCP 拉取 | B 企业版 ACP | C HTTP 中继 | D GUI 直驱 | E A2A |
+|---|---|---|---|---|---|---|
+| 集成复杂度 | 中 | 低 | 高 | 中 | 中 | 高 |
+| 实时性 | 高（POST + SSE） | 中（RRULE 间隔；最小粒度待实测） | 高（秒级/流式） | 中高（5s 轮询） | 低 | 高 |
+| 稳定性 | 中（Beta/桌面内部网关） | 高 | 中高（Beta） | 中 | 低 | 高 |
+| 扩展性 | 高 | 高 | 高 | 中 | 低 | 最高 |
+| 对 MTask 侵入性 | 中（新 PushDispatcher/Adapter） | 极低（1 开关 + 1 过滤） | 中（新 adapter） | 低（复用 Queue） | 极低（外挂） | 高（新协议栈） |
+| 数据边界 | 本机回环 | 本机闭环 | 云沙箱 | 取决于中继 | 屏幕/本机 | 跨端 |
+| 推送/拉取 | **主动推送** | 平台拉取 | **主动推送** | **主动推送** | 外挂驱动 | **主动推送** |
+| 九期建议 | **P0（推送硬约束）** | P2 兜底 | P1（企业版） | P1（通用平台） | 仅演示 | P2 储备 |
 
-### 5.2 推荐结论
+### 5.2 推送优先的推荐结论（2026-11-14 需求澄清后）
 
-**首选方案 A（MCP 拉取 + WorkBuddy Automation/Skill），理由按优先级：**
+按「MTask 主动推送」硬约束，优先级为：**B0（桌面端本地网关）→ B（企业版 ACP）→ C（通用 Webhook/中继）→ A（MCP 拉取兜底）→ E（A2A 储备）→ D（GUI 应急）**。
 
-1. **可行性已被现实验证**：WorkBuddy 桌面端已配置 `mtask` MCP，MTask 五个关键工具已实现；缺的只是「就绪排水开关」与「平台侧技能模板」。
-2. **侵入最小、可回滚**：MTask 只改 1 处开关 + 1 个可选过滤；WorkBuddy 零改；失败可随时关闭 Automation 回到人工。
-3. **数据与权限可控**：本机 `127.0.0.1` 闭环，`X-Access-Token` 轮换；不把任务内容发到第三方云。
-4. **可观测性最好**：任务 `ai_state`、`exec_sessions` 心跳、`monitor_runs` 审计三套口径已经在库。
-5. **九期交付节奏匹配**：P0 可在 1~2 天内做端到端样板，再逐步扩到多项目/多平台。
+**首选 B0 的理由：**
+
+1. **真正由 MTask 发起**：`POST /api/v1/runs` 即时受理并返回 `runId`，不需要等平台定时来拉。
+2. **零企业版门槛**：复用现有 WorkBuddy 桌面端订阅，不新增席位费；数据在本机回环。
+3. **可观测**：`runId` + SSE/轮询 + `callback` 三选一，可映射到 `exec_sessions`。
+4. **侵入可控**：只新增 `PushDispatcher`/`CodeBuddyGatewayAdapter`，不改 WorkBuddy。
+5. **风险可降级**：网关不可用/版本变更时，自动降级到 A（MCP 拉取）或 B（企业版）。
 
 **条件切换：**
 
-- 若九期验收环境是 **WorkBuddy 企业版**，且要求「秒级下发 + 流式回传 + 云沙箱执行」→ **方案 B 为首选**，A 作为降级/本地备份。
-- 若目标平台**不支持 MCP**（如某些只提供 Webhook 的系统）→ **方案 C**。
-- 若必须操作 WorkBuddy **桌面 UI 且无任何 API/MCP** → **方案 D**，仅限演示。
+- 若九期验收环境是 **WorkBuddy 企业版**，且要求稳定商用承诺、多租户隔离、云沙箱、审计合规 → **方案 B 为首选**，B0 仅作本机调试通道。
+- 若目标平台只提供 **Webhook/HTTP**，没有 `/runs`、ACP 或 A2A → **方案 C**。
+- 若目标平台支持 MCP 但没有推送 API，且能接受分钟级延迟 → **方案 A** 兜底。
 - 若九期明确要「跨厂商 Agent 互通」→ **方案 E**，但需先补 A2A Server。
+- **方案 D 只做 POC/演示，不进主干。**
 
-**建议落地形态：A + B 双通道，共用 `QueueService/ExecSessionService`，按平台能力路由；C 作为中继兜底；D/E 不进主干。**
+**建议落地形态：B0 + B 双通道，共用 `PushDispatcher`/`QueueService`/`ExecSessionService`，按目标平台能力路由；C 作为 Webhook 平台的通用适配；A 作为无推送能力平台的兜底；D/E 不进主干。**
 
 ---
 
@@ -714,6 +852,7 @@ browser_snapshot()                      // 读取结果区域
 | 就绪池 | `mtask_list_ready_tasks{platform:"workbuddy"}` → `[]`（因熔断关闭） |
 | WorkBuddy 接入 | `~/.workbuddy/mcp.json` 含 `mtask` 指向 `http://127.0.0.1:39877/api/mcp`；`~/.workbuddy-ai/skills` 含 `mtask`/`agent-browser`/`chrome-devtools-mcp-main` |
 | WorkBuddy Automation 存储 | `~/.workbuddy/automation-backups/automation-*.json`：`scheduleType=recurring`、`rrule=FREQ=DAILY;BYHOUR=9;BYMINUTE=0` | 调度底层是 RRULE，支持按间隔配置；**最小粒度未实测** |
+| WorkBuddy 本地网关（直推） | WorkBuddy/WorkBuddyAI 进程监听 `56252/56906/62961/65466` 等回环端口；`GET /api/v1/auth/status` → `{"authEnabled":true,"authenticated":false}`；`GET /` 返回 “CodeBuddy Remote Control”，页面列出 `POST /api/v1/runs`、`GET /api/v1/runs/:runId/stream`、`/api/v1/acp` | 桌面端存在 MTask→Agent 直推入口；**未做认证调用与 run 实测**（缺口令：未取得口令） |
 | 代码走查 | `server/src/mcp/server.ts:1306-1392`、`server/src/services/SupervisorService.ts:666-670`、`server/src/services/TaskService.ts:1091-1132`、`server/src/services/RelayDispatchService.ts:83-131`、`server/src/adapters/workbuddy.ts:8-157` |
 
 ### 9.2 文档核实（外部）
@@ -723,6 +862,8 @@ browser_snapshot()                      // 读取结果区域
 - WorkBuddy Enterprise OpenAPI：<https://cloud.tencent.com/document/product/1831/140342>
 - WorkBuddy Enterprise HTTP API (Beta，ACP)：<https://cloud.tencent.com/document/product/1831/137064>
 - WorkBuddy 自动化：<https://cloud.tencent.com/document/product/1831/134399>
+- CodeBuddy Code HTTP API（`/api/v1/runs`、ACP、Gateway Protocol）：<https://www.workbuddy.ai/docs/cli/http-api>
+- CodeBuddy Remote Control：<https://www.workbuddy.ai/docs/cli/remote-control>
 - A2A：<https://a2a-protocol.org/latest/specification/>、<https://agent2agent.info/docs/concepts/task/>
 - OpenHands Agent Server：<https://docs.openhands.dev/sdk/arch/agent-server>、<https://docs.openhands.dev/sdk/guides/agent-server/conversation-goals>
 - Playwright MCP：<https://playwright.dev/python/docs/getting-started-mcp>
@@ -735,6 +876,7 @@ browser_snapshot()                      // 读取结果区域
 
 | 项 | 原因 | 后续验证方式 |
 |---|---|---|
+| B0 本地网关直推 | 端口需密码鉴权，未取得口令；未实际 `POST /api/v1/runs` | 从 WorkBuddy 远程控制入口取口令，跑 1 条 run，验证 `runId`/SSE/结果回写 |
 | WorkBuddy Automation 实际触发派发 | 未配置定时任务；需用户在 WorkBuddy UI 创建 | 按 §4 A.4 创建 1 条 Automation，观察 2 个周期 |
 | 方案 A 端到端（claim→执行→result→done） | 就绪池为空；需先解耦开关 | P0 改动后用 3 条真实任务跑通 |
 | 企业版 ACP/OpenAPI | 无企业席位/Key/企业 ID | 申请测试企业 + `pt_`/`ck_`，按 §4 B.4 跑 CreateAgentSession+ACP |
@@ -746,31 +888,32 @@ browser_snapshot()                      // 读取结果区域
 
 ## 10. 九期落地路线与建议改动点（未改代码）
 
-### P0（1~2 天，方案 A 最小闭环）
+### P0（2~3 天，方案 B0 推送最小闭环）
 
-1. **MTask：就绪排水解耦** — `D:\code\otherProjects\MTask\server\src\services\SupervisorService.ts:666` 附近，新增 `supervisor.readyMarkEnabled`（默认 true），`markMonitorReady()` 移到 `readEnabled()` 之前；保留 `supervisor.enabled` 只控决策层。
-2. **MTask：就绪池项目过滤（可选）** — `D:\code\otherProjects\MTask\server\src\services\TaskService.ts:1113`，`listMonitorReady` 增加 `projectId` 参数并同步 `server/src/mcp/server.ts:1336` 的 `mtask_list_ready_tasks` schema。
-3. **WorkBuddy：新增派发技能** — `D:\code\otherProjects\MTask\skills\workbuddy-mtask-dispatch\SKILL.md`（按 §4 A.4 模板）；安装到 `~/.workbuddy-ai/skills/` 或项目级 `.workbuddy-ai/skills/`。
-4. **WorkBuddy：配置 Automation** — 按客户端支持的最小间隔（建议 10~30 分钟）执行「处理 MTask 就绪待办，最多 2 条，串行」。
-5. **端到端验收** — 3 条真实任务：一条成功、一条失败、一条冲突认领；断言 `ai_state`、`exec_sessions`、`handle_result` 三处一致。
+1. **MTask：新增 PushDispatcher + CodeBuddyGatewayAdapter** — `D:\code\otherProjects\MTask\server\src\adapters\codebuddyGateway.ts`（新），实现 `submit`（`POST /api/v1/runs` → `runId`）与 `poll`（`GET /api/v1/runs/:runId` 或 SSE）；复用 `QueueService` ticket 与 `ExecSessionService`。
+2. **MTask：网关配置与发现** — `ConfigService` 新增 `workbuddyGateway.baseUrl/password/callbackUrl`；优先从 WorkBuddy 远程控制入口读取或手动配置；加密存储、可轮换；**禁止硬编码端口**。
+3. **MTask：结果映射** — Run 状态 → `QueueService` job 状态；结果 Markdown → `mtask_update_task_result`；失败/超时 → `failed` + 降级到 A/B。
+4. **安全** — 仅回环；`X-CodeBuddy-Request: 1` + `Authorization: Bearer <password>`；回调地址校验；每次 runId 入审计。
+5. **端到端验收** — 1 条真实任务：`POST /api/v1/runs` → `runId` → SSE/轮询 → 结果回写；再补失败/超时各 1 条。
 
-### P1（3~5 天，质量与权限）
+### P1（3~5 天，兜底与质量）
 
-1. 结果模板强约束 + 附件回传（`mtask_get_task_images` / artifacts）。
-2. 按平台具名 token + 角色（`X-MTask-Role`）。
-3. 失败重试/冷却/告警；`monitor_runs` 面板展示派发链路。
-4. Git 提交回写 `mtask_link_git_commit` 纳入技能闭环。
+1. **方案 A 兜底** — 就绪排水解耦（`D:\code\otherProjects\MTask\server\src\services\SupervisorService.ts:666`）+ WorkBuddy 派发技能 + Automation；仅在 B0 不可用时启用。
+2. **结果模板强约束 + 附件回传**（`mtask_get_task_images` / artifacts）。
+3. 按平台具名 token + 角色（`X-MTask-Role`）。
+4. 失败重试/冷却/告警；`monitor_runs` 面板展示派发链路。
+5. Git 提交回写 `mtask_link_git_commit` 纳入技能闭环。
 
 ### P2（1~2 周，企业版/协议储备）
 
-1. `server/src/adapters/workbuddyManaged.ts`（方案 B）+ `ConfigService` 新配置项 + ACP 事件映射。
+1. `D:\code\otherProjects\MTask\server\src\adapters\workbuddyManaged.ts`（方案 B）+ `ConfigService` 新配置项 + ACP 事件映射。
 2. A2A Server/Client（方案 E），仅在明确跨厂商需求时启动。
 3. 方案 D 仅做 POC，不纳入无人值守。
 
 ### 明确不做
 
 - 不新建第二套任务库/队列；复用 `tasks`/`queue_jobs`/`exec_sessions`。
-- 不把 WorkBuddy 的私有 UI 路径硬编码进 MTask。
+- 不把 WorkBuddy 的私有 UI 路径或本地网关端口硬编码进 MTask。
 - 不在未实测情况下标 `verified:true`。
 
 ---
@@ -783,24 +926,26 @@ browser_snapshot()                      // 读取结果区域
 4. WorkBuddy Enterprise OpenAPI：<https://cloud.tencent.com/document/product/1831/140342>
 5. WorkBuddy Enterprise HTTP API（ACP）：<https://cloud.tencent.com/document/product/1831/137064>
 6. WorkBuddy 自动化：<https://cloud.tencent.com/document/product/1831/134399>
-7. WorkBuddy Agent A2A 配置：<https://cloud.tencent.com/document/product/1831/138574>
-8. WorkBuddy 开放平台 Buddy 应用（JSSDK/ACP Content）：<https://open.workbuddy.cn/docs/buddy-app>
-9. OpenHands Agent Server：<https://docs.openhands.dev/sdk/arch/agent-server>
-10. OpenHands Conversation Goals：<https://docs.openhands.dev/sdk/guides/agent-server/conversation-goals>
-11. browser-use：<https://github.com/browser-use/browser-use>
-12. Playwright MCP：<https://playwright.dev/python/docs/getting-started-mcp>
-13. A2A 规范：<https://a2a-protocol.org/latest/specification/>
-14. A2A Task 生命周期：<https://agent2agent.info/docs/concepts/task/>
-15. LangGraph Checkpointer：<https://docs.langchain.com/oss/javascript/langgraph/checkpointers>
-16. CrewAI Flows：<https://docs.crewai.com/en/concepts/flows>
-17. AutoGPT Platform：<https://agpt.co/docs/platform/what-is-autogpt-platform/>
-18. Temporal AI：<https://temporal.io/llm-info>
-19. n8n 许可：<https://docs.n8n.io/choose-n8n/faircode-license/>
-20. E2B：<https://e2b.dev/docs>
-21. Skyvern：<https://www.skyvern.com/developers>
-22. Open Interpreter：<https://www.openinterpreter.com/zh>
-23. Anthropic computer use 局限：<https://www.anthropic.com/news/developing-computer-use>
-24. agent-browser：<https://github.com/vercel-labs/agent-browser>
+7. CodeBuddy Code HTTP API（`/api/v1/runs`、ACP、Gateway Protocol）：<https://www.workbuddy.ai/docs/cli/http-api>
+8. CodeBuddy Remote Control：<https://www.workbuddy.ai/docs/cli/remote-control>
+9. WorkBuddy Agent A2A 配置：<https://cloud.tencent.com/document/product/1831/138574>
+10. WorkBuddy 开放平台 Buddy 应用（JSSDK/ACP Content）：<https://open.workbuddy.cn/docs/buddy-app>
+11. OpenHands Agent Server：<https://docs.openhands.dev/sdk/arch/agent-server>
+12. OpenHands Conversation Goals：<https://docs.openhands.dev/sdk/guides/agent-server/conversation-goals>
+13. browser-use：<https://github.com/browser-use/browser-use>
+14. Playwright MCP：<https://playwright.dev/python/docs/getting-started-mcp>
+15. A2A 规范：<https://a2a-protocol.org/latest/specification/>
+16. A2A Task 生命周期：<https://agent2agent.info/docs/concepts/task/>
+17. LangGraph Checkpointer：<https://docs.langchain.com/oss/javascript/langgraph/checkpointers>
+18. CrewAI Flows：<https://docs.crewai.com/en/concepts/flows>
+19. AutoGPT Platform：<https://agpt.co/docs/platform/what-is-autogpt-platform/>
+20. Temporal AI：<https://temporal.io/llm-info>
+21. n8n 许可：<https://docs.n8n.io/choose-n8n/faircode-license/>
+22. E2B：<https://e2b.dev/docs>
+23. Skyvern：<https://www.skyvern.com/developers>
+24. Open Interpreter：<https://www.openinterpreter.com/zh>
+25. Anthropic computer use 局限：<https://www.anthropic.com/news/developing-computer-use>
+26. agent-browser：<https://github.com/vercel-labs/agent-browser>
 
 ---
 
@@ -840,3 +985,29 @@ Automation 配置（WorkBuddy UI）：
 | 7 | `POST /v2/enterprises/{enterpriseId}/managedagent/artifacts/{artifactId}/download-url` | 下载产物 |
 
 > 以上路径来自腾讯云 WorkBuddy Enterprise OpenAPI 文档；实际字段与可用性以企业版 OpenAPI JSON 为准（Beta）。
+
+## 附录 C：方案 B0 网关配置与端点发现
+
+配置项（`ConfigService`，示意）：
+
+```json
+{
+  "workbuddyGateway": {
+    "baseUrl": "http://127.0.0.1:<dynamic-port>",
+    "password": "<gateway-password>",
+    "callbackUrl": "http://127.0.0.1:39876/api/dispatch/callback",
+    "requestTimeoutMs": 30000,
+    "runTimeoutMs": 3600000
+  }
+}
+```
+
+端点发现步骤（不硬编码端口）：
+
+1. 从 WorkBuddy「远程控制」入口或本地网关配置读取当前 `baseUrl` 与密码；
+2. 候选端点校验：`GET /api/v1/auth/status` 返回 `authEnabled:true`，且 `GET /` 页面标题为 `CodeBuddy Remote Control`；
+3. 鉴权探针：带 `X-CodeBuddy-Request: 1` + `Authorization: Bearer <password>` 调 `GET /api/v1/info`，返回环境信息即认为可用；
+4. 失败则降级到 A（MCP 拉取）或 B（企业版 ACP），并把失败原因写入 `monitor_runs` 审计。
+
+> 安全：网关默认只绑 `127.0.0.1`，不要暴露到公网；密码只存加密配置，禁止写入日志/任务描述/仓库。
+
