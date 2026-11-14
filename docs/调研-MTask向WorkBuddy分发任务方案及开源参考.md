@@ -825,7 +825,7 @@ async function dispatch(task: TaskContext): Promise<DispatchResult> {
 | 4 | B0 与 A 同时可用，同一 taskNo 并发派发 | 只允许一个 `claim_task` 成功；另一个冲突退出，不重复执行 |
 | 5 | D 执行 | 必须人工批准；全程截图/日志；`verified=false`，标注需人工复核 |
 
-**任务映射：** B0 + 组合编排 → **T05747**；A 兜底 → **T05741**；D 应急 → 新建派生单；B 企业版 → **T05742（暂缓）**。
+**任务映射：** B0 + 组合编排 → **T05747**；A 兜底 → **T05741**；D 应急 → **T05749**；B 企业版 → **T05742（暂缓）**。
 
 ---
 
