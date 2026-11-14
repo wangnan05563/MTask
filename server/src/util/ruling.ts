@@ -11,7 +11,8 @@
  *  - 结论文本：命中明确的裁决请求短语才算「需要裁决」，候选词本身不单独作数——
  *    历史结论里「按裁定 A 落地」「裁决：保留 X」是陈述，按候选词判会把已收口单误挂成待裁决。
  *  - 描述：普通描述仍是背景叙述；但 AI 回写派生单常把裁决请求写在描述里且 `handle_result` 为空。
- *    因此仅裁决主体读描述中的显式请求/结论，避免普通任务被背景叙述误标。
+ *    因此仅裁决主体读描述中的显式请求/结论，且**只认标题行或行首**（T05749：任务规格正文里的
+ *    操作闸门「由人工确认后驱动 UI」不是向用户请求裁决，全描述扫描会把它误挂成待裁决）。
  */
 
 /** 通用回落选项（语义贴合「AI 派生待办的结论如何处置」）：结论里抽不出候选时才用它 */
@@ -255,7 +256,10 @@ export function detectRuling(input: string | RulingInput, opts: { strict?: boole
   const conclusion = subject ? rulingConclusionFromDescription(s.description) : '';
   if (conclusion) return { needed: false, reason: '', options: [], conclusion };
   const resultHit = askHit(s.handleResult);
-  const descriptionHit = subject ? (askHit(s.description) || descriptionAskHit(s.description)) : '';
+  // T05749：描述面只认标题行/行首的显式请求（descriptionAskHit）。此前先用 askHit 做全描述扫描，
+  // 会把任务规格里的操作闸门（「由人工确认后驱动 UI」）当成裁决请求——生产库 9 条待裁决里，
+  // 唯一一条由描述正文中间命中的就是这类误标；T04458 系列 5 条现场样本走行首口径仍全部命中。
+  const descriptionHit = subject ? descriptionAskHit(s.description) : '';
   const hit = resultHit || descriptionHit;
   const options = badge ? candidatesFromBadge(badge) : [];
   const resultOptions = options.length ? [] : candidatesFromResult(s.handleResult);
