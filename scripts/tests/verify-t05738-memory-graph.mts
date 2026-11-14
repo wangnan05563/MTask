@@ -61,6 +61,15 @@ ok('B-05 type 四色映射 + 失效灰显 + 项目聚簇色（图例齐备）',
   && /DEAD_NODE_COLOR/.test(GRAPH) && /PROJECT_NODE_COLOR/.test(GRAPH));
 ok('B-06 数据源只走 /memories/graph 端点（前端不做 N² 拼边）',
   /\/memories\/graph\?productKey=/.test(GRAPH) && !/for\s*\(let j = i \+ 1/.test(GRAPH));
+ok('B-07 P1 发光：backdrop 常开 + shadow 按节点色生成光晕（hover 增强）',
+  /backdropVisibility: 'visible'/.test(GRAPH)
+  && /backdropColor: 'rgba\(0,0,0,0\)'/.test(GRAPH)
+  && /backdropShadowColor: \(attrs: \{ color\?: string \}\) => glowOf\(/.test(GRAPH)
+  && /backdropShadowBlur: \{ whenState: 'isHovered', then: \d+, else: \d+ \}/.test(GRAPH));
+ok('B-08 P1 入场动画：随机起始位置 → FA2 终位插值（easeOutCubic），不引入额外动画依赖',
+  /function animateNodesIn\(graph: Graph, start: Map<string, \{ x: number; y: number \}>, sigma: Sigma\)/.test(GRAPH)
+  && /1 - Math\.pow\(1 - raw, 3\)/.test(GRAPH)
+  && /animateNodesIn\(graph, startPositions, sigma\)/.test(GRAPH));
 
 // C 组：MemoryTab 接入
 ok('C-01 列表/图谱视图切换（aria-pressed + 产品筛选共享）',

@@ -27,6 +27,41 @@ const EDGE_SUPERSEDE = 'rgba(248,113,113,0.75)';
 const EDGE_DIM = 'rgba(100,116,139,0.08)';
 const EDGE_DIM_SUPERSEDE = 'rgba(248,113,113,0.15)';
 
+/** hex(#rrggbb) → 发光 rgba 色：backdrop shadow 用，节点色即光晕色（暗底上呈现「发光节点」效果） */
+function glowOf(color: string, alpha: number): string {
+  const m = /^#([0-9a-f]{6})$/i.exec(color);
+  if (!m) return `rgba(148,163,184,${alpha})`;
+  const n = parseInt(m[1], 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
+}
+
+/** 入场位移动画：节点从随机初始位置插值滑向 ForceAtlas2 终位（easeOutCubic，700ms） */
+function animateNodesIn(graph: Graph, start: Map<string, { x: number; y: number }>, sigma: Sigma): void {
+  const targets: { node: string; x: number; y: number }[] = [];
+  for (const [node, s] of start) {
+    if (!graph.hasNode(node)) continue;
+    targets.push({ node, x: graph.getNodeAttribute(node, 'x'), y: graph.getNodeAttribute(node, 'y') });
+    graph.setNodeAttribute(node, 'x', s.x);
+    graph.setNodeAttribute(node, 'y', s.y);
+  }
+  if (targets.length === 0) return;
+  const duration = 700;
+  const t0 = performance.now();
+  const step = (now: number) => {
+    const raw = Math.min(1, (now - t0) / duration);
+    const t = 1 - Math.pow(1 - raw, 3); // easeOutCubic
+    for (const { node, x, y } of targets) {
+      if (!graph.hasNode(node)) continue;
+      const sx = start.get(node)!;
+      graph.setNodeAttribute(node, 'x', sx.x + (x - sx.x) * t);
+      graph.setNodeAttribute(node, 'y', sx.y + (y - sx.y) * t);
+    }
+    sigma.refresh();
+    if (raw < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
 const TYPE_LABELS: Record<string, string> = {
   user: '用户偏好', feedback: '反馈纠正', project: '项目事实', reference: '外部参考',
 };
@@ -88,9 +123,13 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
     if (!container || !data || data.nodes.length === 0) return;
 
     const graph = new Graph({ multi: false, type: 'undirected' });
+    const startPositions = new Map<string, { x: number; y: number }>();
     for (const n of data.nodes) {
-      // 随机初始位置（FA2 assign 会覆盖为布局结果）
-      graph.addNode(n.id, { x: Math.random() * 100, y: Math.random() * 100, size: n.size, color: nodeColor(n), label: n.title, nodeKind: n.kind });
+      // 随机初始位置（记录下来供入场动画插值；FA2 assign 会覆盖为布局终位）
+      const x = Math.random() * 100;
+      const y = Math.random() * 100;
+      startPositions.set(n.id, { x, y });
+      graph.addNode(n.id, { x, y, size: n.size, color: nodeColor(n), label: n.title, nodeKind: n.kind });
     }
     for (const e of data.edges) {
       if (graph.hasNode(e.source) && graph.hasNode(e.target) && !graph.hasEdge(e.id)) {
@@ -99,7 +138,7 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
     }
     graphRef.current = graph;
 
-    // ForceAtlas2 布局：运行即冻结（写死 x/y，无持续动画循环，空闲 CPU≈0）
+    // ForceAtlas2 布局：运行即冻结（写死 x/y 作为终位，无持续动画循环，空闲 CPU≈0）
     ForceAtlas2.assign(graph, {
       iterations: 120,
       settings: {
@@ -124,6 +163,12 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
           labelColor: '#dbe4f3',
           labelSize: 12,
           labelFont: 'system-ui, sans-serif',
+          // T05738 P1 发光：backdrop 常开（默认仅 hover 显示），shadow 用节点色做光晕、hover 时增强
+          backdropVisibility: 'visible',
+          backdropColor: 'rgba(0,0,0,0)',
+          backdropPadding: 3,
+          backdropShadowColor: (attrs: { color?: string }) => glowOf(String(attrs?.color ?? '#94a3b8'), 0.34),
+          backdropShadowBlur: { whenState: 'isHovered', then: 28, else: 13 },
         },
       },
       nodeReducer: (node, attrs) => {
@@ -157,6 +202,9 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
       },
     });
     sigmaRef.current = sigma;
+
+    // T05738 P1 入场动画：节点从随机初始位置滑向 FA2 终位（卡片切换/产品切换时重建即重播）
+    animateNodesIn(graph, startPositions, sigma);
 
     sigma.on('enterNode', ({ node }) => { hoveredRef.current = node; sigma.refresh(); });
     sigma.on('leaveNode', () => { hoveredRef.current = null; sigma.refresh(); });
