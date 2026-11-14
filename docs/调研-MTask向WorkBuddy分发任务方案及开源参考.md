@@ -270,9 +270,58 @@ export class CodeBuddyGatewayAdapter implements AIAdapter {
 
 > 结论：如果目标是 WorkBuddy 桌面端、且接受 Beta，B0 是**最直接的 MTask 主动推送路径**；若要求稳定商用承诺，选 B（企业版 ACP）；A 仅作无推送 API 时的兜底。
 
+#### B0.7 适用边界：B0 能套用到哪些平台
+
+**B0 不是通用协议，而是「本地执行器直连」这一类架构。** 可复用的是 `PushDispatcher + Adapter` 分层；协议本身是 CodeBuddy 私有的 `POST /api/v1/runs` + Gateway Protocol，只有 CodeBuddy 系（CodeBuddy CLI `--serve`、CodeBuddy Remote Control、WorkBuddy 桌面端）直接可用。其他平台要各自实现 Adapter，不能把 `/api/v1/runs` 直接套上去。
+
+| 平台 | 是否有 CodeBuddy 式 `/api/v1/runs` 本地网关 | 可行的 MTask 主动推送方式 | 结论 |
+|---|---|---|---|
+| WorkBuddy 桌面端 / CodeBuddy CLI | **有**（`--serve` / Remote Control） | `POST /api/v1/runs` + SSE/轮询 | **B0 直接可用** |
+| 豆包 / 豆包工作 | 无公开的本地 run 网关 | 自定义 MCP 连接器 + 定时任务（平台侧拉取）；或豆包开放平台/火山方舟 Responses API（模型级，自建 Agent） | **B0 不适用**；桌面端只能 A（拉取），API 路线归 C |
+| Qoder（qcoder） | 未发现公开 `/api/v1/runs`；支持 MCP 客户端 | `qoder -p "<prompt>"` 无头进程调用；或 MCP 拉取 | **B0 协议不适用**；可做 QoderCliAdapter |
+| Trae | 未发现公开 `/api/v1/runs`；支持 MCP 客户端 | `traecli exec "<prompt>"` 非交互进程调用；或 MCP 拉取 | **B0 协议不适用**；可做 TraeCliAdapter |
+| Codex | 无 `/api/v1/runs`；有 `codex exec`、app-server JSONL、`codex mcp-server` | 进程调用 `codex exec`；app-server JSON-RPC（stdio）；或把 Codex 当 MCP 工具 | **B0 协议不适用**；可做 CodexCliAdapter / AppServerAdapter |
+
+```text
+MTask PushDispatcher
+  ├─ CodeBuddyGatewayAdapter  HTTP POST /api/v1/runs      → WorkBuddy 桌面 / CodeBuddy
+  ├─ QoderCliAdapter          spawn qoder -p              → Qoder
+  ├─ TraeCliAdapter           spawn traecli exec          → Trae
+  ├─ CodexCliAdapter          spawn codex exec            → Codex
+  ├─ CodexAppServerAdapter    stdio JSONL (JSON-RPC lite) → Codex
+  └─ McpPullAdapter           平台定时拉取（兜底）        → 豆包 / Qoder / Trae
+```
+
+**判断口诀：**
+1. 平台有「启动一次 Agent Run」的 HTTP/SSE 接口 → 走 B0 类 HTTP Adapter（当前只有 CodeBuddy 系）；
+2. 平台有非交互 CLI（`qoder -p`、`traecli exec`、`codex exec`）→ 走 Process Adapter，仍是 MTask 主动发起；
+3. 平台只有 MCP 客户端、没有 CLI/HTTP 触发入口 → 只能 A（平台拉取），不是严格意义的推送；
+4. 平台只有 GUI → D；支持 A2A → E。
+
+> 以上为 2026-11-14 公开文档核对；Qoder/Trae/Codex 的非交互调用未在本机逐一实测，落地前需按 §9.3 补验证。
+
 ---
 
 ### 方案 A：MCP 拉取式 + WorkBuddy Automation/Skill（拉取兜底）
+
+#### A.0 现状核对（2026-11-14）：哪些已实现、哪些没通
+
+| 层 | 现状 | 结论 |
+|---|---|---|
+| MCP 工具层 | `mtask_list_ready_tasks`、`mtask_claim_task`、`mtask_report_progress`、`mtask_update_task_result`、`mtask_write_task_status` 均已在 `server/src/mcp/server.ts:1336-1392` 注册 | **已实现** |
+| WorkBuddy MCP 配置 | `~/.workbuddy/mcp.json` 已有 `mtask` → `http://127.0.0.1:39877/api/mcp` | **已配置** |
+| WorkBuddy 技能 | `~/.workbuddy-ai/skills/mtask/SKILL.md` 是「处理待办」技能，不是「定时排水」技能；无 Automation 调用它 | **部分实现**：能人工处理指定 Txxxx，不能自动轮询 |
+| 就绪池 | `SupervisorService.ts:666` 在 `supervisor.enabled=false` 时直接 return；`TaskService.markMonitorReady()` 只在 `:670` 被调用，永不执行；`listMonitorReady()` 又要求 `monitor_ready=1` | **未通**：`mtask_list_ready_tasks` 恒空 |
+| 认领 | `ExecSessionService.claimTask()` 只校验 `status=todo`、`archived=0`、`ai_state=''`，**不要求 monitor_ready** | **可绕过就绪池**：按 taskNo 直接认领 |
+| 定时触发 | WorkBuddy 未配置 Automation | **未配置** |
+
+**结论：**
+
+1. **手动兜底（指定 Txxxx）今天就能用，零代码修改**：WorkBuddy 技能按 taskNo 调 `mtask_claim_task`（或 `mtask_write_task_status running`）→ 执行 → `mtask_update_task_result` → `progress done`。适合「人工点名一条任务让 WorkBuddy 做」。
+2. **自动兜底（定时拉取就绪池）今天不可用**：`mtask_list_ready_tasks` 返回空，必须二选一：
+   - **开开关**：`supervisor.enabled=1`，不改代码；但会连带启动监督决策层（LLM 调用/自动动作），兜底场景不建议。
+   - **解耦（推荐）**：新增 `supervisor.readyMarkEnabled`（默认 true），把 `markMonitorReady()` 移到 `readEnabled()` 之前；只排水、不决策。配套还要新增 WorkBuddy 派发技能 + Automation。
+3. 因此「A 作为兜底不需要修改」**只说对了一半**：手动兜底不需要；自动兜底需要上面这一步小改（或接受监督器全开）。
 
 #### A.1 架构图
 
@@ -864,6 +913,11 @@ browser_snapshot()                      // 读取结果区域
 - WorkBuddy 自动化：<https://cloud.tencent.com/document/product/1831/134399>
 - CodeBuddy Code HTTP API（`/api/v1/runs`、ACP、Gateway Protocol）：<https://www.workbuddy.ai/docs/cli/http-api>
 - CodeBuddy Remote Control：<https://www.workbuddy.ai/docs/cli/remote-control>
+- CodeBuddy Gateway 配置（`gateway` / `--serve`）：<https://www.codebuddy.ai/docs/cli/settings>
+- Qoder CLI 无头模式：<https://docs.qoder.com/cli/run-in-scripts>
+- Trae CLI 命令行参数（`traecli exec`）：<https://docs.trae.cn/cli_command-line-parameters>
+- Codex App Server（JSONL/stdio）：<https://openai.com/index/unlocking-the-codex-harness/>
+- 豆包工作自定义 MCP 插件：<https://www.doubao.com/work/docs/zh-cn/articles/705018132598-plugins>
 - A2A：<https://a2a-protocol.org/latest/specification/>、<https://agent2agent.info/docs/concepts/task/>
 - OpenHands Agent Server：<https://docs.openhands.dev/sdk/arch/agent-server>、<https://docs.openhands.dev/sdk/guides/agent-server/conversation-goals>
 - Playwright MCP：<https://playwright.dev/python/docs/getting-started-mcp>
@@ -877,6 +931,8 @@ browser_snapshot()                      // 读取结果区域
 | 项 | 原因 | 后续验证方式 |
 |---|---|---|
 | B0 本地网关直推 | 端口需密码鉴权，未取得口令；未实际 `POST /api/v1/runs` | 从 WorkBuddy 远程控制入口取口令，跑 1 条 run，验证 `runId`/SSE/结果回写 |
+| Qoder / Trae / Codex CLI 直推 | 仅核对公开文档，未在本机逐一实测 | 各跑 1 条只读任务：`qoder -p`、`traecli exec`、`codex exec`，断言退出码与输出 |
+| 豆包工作 MCP 拉取 | 未在豆包工作添加自定义 MCP 连接器 | 添加 MTask MCP → 建 1 条定时/对话触发，验证 `list_ready_tasks` |
 | WorkBuddy Automation 实际触发派发 | 未配置定时任务；需用户在 WorkBuddy UI 创建 | 按 §4 A.4 创建 1 条 Automation，观察 2 个周期 |
 | 方案 A 端到端（claim→执行→result→done） | 就绪池为空；需先解耦开关 | P0 改动后用 3 条真实任务跑通 |
 | 企业版 ACP/OpenAPI | 无企业席位/Key/企业 ID | 申请测试企业 + `pt_`/`ck_`，按 §4 B.4 跑 CreateAgentSession+ACP |
@@ -898,7 +954,7 @@ browser_snapshot()                      // 读取结果区域
 
 ### P1（3~5 天，兜底与质量）
 
-1. **方案 A 兜底** — 就绪排水解耦（`D:\code\otherProjects\MTask\server\src\services\SupervisorService.ts:666`）+ WorkBuddy 派发技能 + Automation；仅在 B0 不可用时启用。
+1. **方案 A 兜底** — 就绪排水解耦（`D:\code\otherProjects\MTask\server\src\services\SupervisorService.ts:666`）+ WorkBuddy 派发技能 + Automation；仅在 B0 不可用时启用。手动指定 Txxxx 可零改动，自动排水需此改动。
 2. **结果模板强约束 + 附件回传**（`mtask_get_task_images` / artifacts）。
 3. 按平台具名 token + 角色（`X-MTask-Role`）。
 4. 失败重试/冷却/告警；`monitor_runs` 面板展示派发链路。
@@ -946,6 +1002,11 @@ browser_snapshot()                      // 读取结果区域
 24. Open Interpreter：<https://www.openinterpreter.com/zh>
 25. Anthropic computer use 局限：<https://www.anthropic.com/news/developing-computer-use>
 26. agent-browser：<https://github.com/vercel-labs/agent-browser>
+27. CodeBuddy Gateway 配置：<https://www.codebuddy.ai/docs/cli/settings>
+28. Qoder CLI 无头模式：<https://docs.qoder.com/cli/run-in-scripts>
+29. Trae CLI 命令行参数：<https://docs.trae.cn/cli_command-line-parameters>
+30. Codex App Server（JSONL/stdio）：<https://openai.com/index/unlocking-the-codex-harness/>
+31. 豆包工作自定义 MCP 插件：<https://www.doubao.com/work/docs/zh-cn/articles/705018132598-plugins>
 
 ---
 
