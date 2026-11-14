@@ -5,12 +5,14 @@ import { OpenAICompatAdapter } from './openaiCompat';
 import { ClaudeAdapter } from './claude';
 import { OllamaAdapter } from './ollama';
 import { WorkBuddyAdapter } from './workbuddy';
+import { CodeBuddyGatewayAdapter } from './codebuddyGateway';
 
 const registry: Record<string, AIAdapter> = {
   'openai-compatible': new OpenAICompatAdapter(),
   claude: new ClaudeAdapter(),
   ollama: new OllamaAdapter(),
   workbuddy: new WorkBuddyAdapter(),
+  'codebuddy-gateway': new CodeBuddyGatewayAdapter(),
 };
 
 export function getAdapter(type: string): AIAdapter {

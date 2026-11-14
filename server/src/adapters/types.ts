@@ -113,7 +113,7 @@ export interface AIAdapter {
 }
 
 /** 由 AI 工具类型映射到适配器实例 */
-export type AdapterType = 'openai-compatible' | 'claude' | 'ollama' | 'workbuddy';
+export type AdapterType = 'openai-compatible' | 'claude' | 'ollama' | 'workbuddy' | 'codebuddy-gateway';
 
 /**
  * T00779：流式输出触顶截断的统一错误文案（与 T00714 非流式 finish_reason=length 判定同语义）。

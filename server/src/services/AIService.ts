@@ -14,6 +14,7 @@ import { isRateLimitError, sleepMs } from '../util/rateLimit'; // T03700：限�
 import { recordUsage } from '../util/aiUsageRecord'; // T03296：写入单源下沉 util，直连适配器的卡可复用同一口径
 import { classifyItems, type BatchCategory, type BatchItem, type BatchPriority, type ClassifyItemsResult } from './classifyBatch'; // T03297：批量分类分批调用与结果合并
 import { buildOptimizePrompt } from './optimizePrompt'; // T04808：提示词构造单源（含「仅标题」分支）
+import { armTaskReady } from './taskArming'; // T05747：B0 异步失败/超时 → A 就绪池（纯 SQL 单源，避免与 Relay 循环依赖）
 
 /** 模型未配置时的统一提示，保持与产品语境一致的表达 */
 const MODEL_UNCONFIGURED = '所选模型未配置，请先在「模型管理」为该工具填写默认模型';
@@ -856,9 +857,41 @@ export const AIService = {
       const limit = config.timeoutMs ?? 60000;
       const elapsed = Date.now() - submitted;
       // 喂饱平台查询后：仅当仍 running 且已超时才降级为 timeout，避免短暂轮询被误判
-      const result = await adapter.poll(ticket, config);
+      let result = await adapter.poll(ticket, config);
+      if (result.status === 'success' && type === 'codebuddy-gateway') {        // T05747：B0 网关的结果只存在于 SSE 流，QueueService 的 autoComplete 只置 done 不写结论；
+        // 在这里把 Agent 最终 Markdown 落到 handle_result（再交由 pollPending 走既有 autoComplete）。
+        try {
+          const content = (result.content ?? '').trim();
+          const stamp = new Date().toISOString();
+          const body = content
+            ? `${content}\n\n---\n- 通道：codebuddy-gateway\n- 回执：\`${ticket}\`\n- 完成时间：${stamp}`
+            : `## B0 网关执行完成\n\n网关未返回文本结果。\n\n- 回执：\`${ticket}\`\n- 完成时间：${stamp}`;
+          TaskService.update(job.task_id, { handle_result: body });
+        } catch (e) {
+          logService.log('ERROR', 'ai', `B0 结果回写失败：task=${job.task_id.slice(0, 8)}，${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
       if (result.status === 'running' && elapsed > limit) {
-        return { status: 'timeout', error: `等待结果超过 ${limit}ms，已超时` };
+        result = { status: 'timeout', error: `等待结果超过 ${limit}ms，已超时` };
+      }
+      if (type === 'codebuddy-gateway' && (result.status === 'failed' || result.status === 'timeout')) {
+        // T05747：submit 已受理后的异步失败/超时，PushDispatcher 早已返回 running；
+        // 在这里把任务归位 A 就绪池（monitor_ready=1 + 清 ai_state），完成「B0 失败自动降级 A」。
+        // 只处理仍为 todo 且未归档的任务，避免把用户已手工完成/归档的任务重新拉回池子。
+        try {
+          const current = TaskService.getById(job.task_id);
+          if (current && current.status === 'todo' && !current.archived) {
+            armTaskReady(job.task_id, 'mcp');
+            const reason = result.error ?? 'B0 执行未成功';
+            logService.log('WARN', 'dispatch', JSON.stringify({
+              event: 'fallback', taskNo: current.task_no ?? current.id, channel: 'A', attempt: 2,
+              state: 'ready', from: 'B0', fallbackReason: reason, ticket,
+            }));
+            logService.log('WARN', 'ai', `B0 执行${result.status === 'timeout' ? '超时' : '失败'}，已回退 A 就绪池：task=${job.task_id.slice(0, 8)}，${reason}`);
+          }
+        } catch (e) {
+          logService.log('ERROR', 'ai', `B0 → A 回退失败：task=${job.task_id.slice(0, 8)}，${e instanceof Error ? e.message : String(e)}`);
+        }
       }
       return result;
     };

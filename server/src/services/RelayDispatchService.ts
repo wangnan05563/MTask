@@ -14,12 +14,12 @@
  * 派发后任务必须**退出就绪池**（`monitor_ready=0`）：否则同一任务既被推给中继、又留在池里等
  * MCP 平台拉取，形成双份执行——这与 `mtask_claim_task` 的「认领即出池」是同一防护语义。
  */
-import { getDb } from '../db/connection';
 import { getSetting } from './AppSettings';
 import { normalizePlatform } from '../util/platform'; // T01288：平台标识归一化统一口径
 import { QueueService } from './QueueService';
 import { AIService } from './AIService';
 import { logService } from './LogService';
+import { armTaskReady, armTaskRunning } from './taskArming'; // T05747：归位动作单源（避免与 AIService 循环依赖）
 
 /** 视为「不支持 MCP 拉取」的平台名清单 */
 const RELAY_PLATFORMS_KEY = 'supervisor.relayPlatforms';
@@ -59,29 +59,24 @@ export function isRelayPlatform(platform: string | undefined): boolean {
  * 调用方用它把任务归位回就绪池。复用内部 armTask 的 ready 分支，避免第二套状态归位口径。
  */
 export function armReady(taskId: string, platform: string): void {
-  armTask(taskId, platform, 'ready');
+  armTaskReady(taskId, platform);
 }
 
 /** 任务归位：把派发结果写回任务行（monitor_ready 出/入池 + 重试计数自增，语义同 SupervisorExecutor） */
 function armTask(taskId: string, platform: string, state: RelayDispatchResult['state']): void {
-  const db = getDb();
-  const ts = new Date().toISOString();
-  // 就绪态退回 = RESUME 的「重新武装」（清 ai_state 让平台能再次认领）；running/done = 已出池
-  const sql = state === 'ready'
-    ? `UPDATE tasks SET ai_state = '', ai_state_at = '', exec_session_id = NULL, monitor_preferred_platform = ?,
-              monitor_ready = 1, monitor_retry = monitor_retry + 1, updated_at = ? WHERE id = ?`
-    : `UPDATE tasks SET ai_state = 'running', ai_state_at = ?, exec_session_id = NULL, monitor_preferred_platform = ?,
-              monitor_ready = 0, monitor_retry = monitor_retry + 1, updated_at = ? WHERE id = ?`;
-  const args = state === 'ready' ? [platform, ts, taskId] : [ts, platform, ts, taskId];
-  db.prepare(sql).run(...args);
+  if (state === 'ready') armTaskReady(taskId, platform);
+  else armTaskRunning(taskId, platform);
 }
 
 /**
  * 把单条任务经中继推送派发（FR-3.6）。
  * 调用方负责前置校验（任务存在/未归档/待办）——本函数只做派发与状态归位，避免第二套校验口径。
+ *
+ * T05747：新增可选 `toolIdOverride`——B0（CodeBuddy Gateway）与既有 supervisor 中继共用
+ * 同一套 Queue/submit/poll/归位状态机，但两者工具 id 不同。不传时仍读原配置，零回归。
  */
-export async function dispatchTask(taskId: string, platform: string): Promise<RelayDispatchResult> {
-  const toolId = (getSetting(RELAY_TOOL_KEY) ?? '').trim();
+export async function dispatchTask(taskId: string, platform: string, toolIdOverride?: string): Promise<RelayDispatchResult> {
+  const toolId = (toolIdOverride ?? getSetting(RELAY_TOOL_KEY) ?? '').trim();
   if (!toolId) {
     const detail = `平台「${platform}」不支持 MCP 拉取，但未配置中继派发工具（${RELAY_TOOL_KEY}），任务保持就绪`;
     logService.log('WARN', 'supervisor', detail);

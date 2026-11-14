@@ -59,9 +59,18 @@ function now(): string {
 function autoCompleteQueueTask(taskId: string): void {
   if (getSetting('queue.autoCompleteTask') === '0') return;
   try {
-    const t = getDb().prepare('SELECT status FROM tasks WHERE id = ?').get(taskId) as { status: string } | undefined;
+    const t = getDb().prepare('SELECT status, ai_state FROM tasks WHERE id = ?').get(taskId) as
+      | { status: string; ai_state: string }
+      | undefined;
     if (!t || t.status === 'done') return;
-    TaskService.setStatus(taskId, 'done');
+    // T05747：B0/Relay 派发在 armTask 时置 ai_state=running；队列成功回写若只改 status，
+    // 任务会停在「已 done 但 AI 运行中」的互斥态（前端仍转圈、MCP 也认为在执行）。
+    // 这里随完成一次性把 running 收口为 unread（用户未读），非 running 的旧路径保持原行为。
+    if (t.ai_state === 'running') {
+      TaskService.update(taskId, { status: 'done', ai_state: 'unread', ai_state_at: new Date().toISOString() });
+    } else {
+      TaskService.setStatus(taskId, 'done');
+    }
     logService.log('INFO', 'queue', `队列自动回写：task=${taskId.slice(0, 8)} → done（queue.autoCompleteTask 开启）`);
   } catch (e) {
     logService.log('ERROR', 'queue', `队列自动回写失败：task=${taskId.slice(0, 8)}，${e instanceof Error ? e.message : String(e)}`);
