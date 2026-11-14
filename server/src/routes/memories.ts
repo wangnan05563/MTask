@@ -7,7 +7,7 @@ import {
 } from '../services/ProductTagService'; // T04154（PRD MEM-505/107/108）：标签重命名与孤儿清理入口
 import { appendReviewLog, listReviewLog, ruleRejectStats, sampleMemoriesForReview } from '../services/MemoryReviewLogService'; // T04158/T04164（MEM-604/F8）：评审记录与抽样
 import {
-  deleteMemory, listMemories, listPendingMemories, listProductTags,
+  buildMemoryGraph, deleteMemory, listMemories, listPendingMemories, listProductTags,
   queryForContext, queryMemories, saveMemory, similarMemories, updateMemory,
 } from '../services/MemoryService';
 
@@ -200,6 +200,19 @@ memoriesApi.post('/pending/:id/reject', (req, res) => {
   const r = resolvePendingMemory(req.params.id, 'reject');
   if (!r.ok) return res.status(400).json({ error: r.reason ?? '驳回失败' });
   res.json({ ok: true, id: req.params.id });
+});
+
+// ---------- 记忆图谱（T05738：管理页「图谱视图」数据源） ----------
+memoriesApi.get('/graph', (req, res) => {
+  const scope = scopeOf({
+    productKey: req.query.productKey,
+    projectId: typeof req.query.projectId === 'string' ? req.query.projectId : undefined,
+  });
+  if (scope.kind === 'error') return fail(res, scope.error);
+  if (scope.kind === 'empty') {
+    return res.json({ ok: true, nodes: [], edges: [], stats: { memoryCount: 0, projectCount: 0, tagEdgeCount: 0, supersedeCount: 0 }, hint: scope.hint });
+  }
+  res.json({ ok: true, ...buildMemoryGraph(scope) });
 });
 
 // ---------- 列表 / 召回 ----------

@@ -538,6 +538,154 @@ export function listPendingMemories(productKey: string, limit = 50): Record<stri
     .all(normalizePk(productKey), Math.min(Math.max(1, Math.floor(limit)), 200)) as Record<string, unknown>[];
 }
 
+/* ================= T05738：记忆图谱（/memories/graph 数据端点） ================= */
+
+/** 图谱节点：kind=memory 记忆条目 / kind=project 项目聚簇节点 */
+export interface MemoryGraphNode {
+  id: string;
+  kind: 'memory' | 'project';
+  type?: MemoryType;
+  title: string;
+  /** 截断后的内容摘要（详情面板用，≤160 字） */
+  content?: string;
+  tags?: string[];
+  projectId?: string | null;
+  /** 节点权重（节点半径）：记忆=rank 得分 + 访问计数；项目=成员数 */
+  size: number;
+  invalidated?: boolean;
+  supersededBy?: string | null;
+  sourceTaskId?: string | null;
+  accessCount?: number;
+  updatedAt?: string;
+}
+
+export interface MemoryGraphEdge {
+  id: string;
+  source: string;
+  target: string;
+  /** tag=共享标签（无向弱关系）/ supersede=被替代链（有向语义，渲染侧单向）/ project=归属聚簇 */
+  kind: 'tag' | 'supersede' | 'project';
+  /** tag 边附共享标签名（悬浮提示用） */
+  tag?: string;
+}
+
+export interface MemoryGraph {
+  nodes: MemoryGraphNode[];
+  edges: MemoryGraphEdge[];
+  stats: { memoryCount: number; projectCount: number; tagEdgeCount: number; supersedeCount: number };
+}
+
+/** 单个 tag 最大两两连边成员数：超过则跳过该 tag 的成对连边（防高频标签织成蜘蛛网吞掉图语义） */
+const GRAPH_TAG_FAN_MAX = 10;
+/** 图谱全量行硬上限（量级保护：tag 两两连边是 O(n²)，500 行以内量级完全安全） */
+const GRAPH_ROW_LIMIT = 500;
+
+/**
+ * T05738：构建产品维度的记忆图谱数据（管理页「图谱视图」数据源）。
+ * 节点=记忆条目（type 四色渲染）+ 项目聚簇节点；边=① 共享 tag（核心连线，两两连且单 tag 成员数有上限）
+ * ② superseded_by 替代链 ③ project_id 归属。失效行保留（前端灰显）。
+ */
+export function buildMemoryGraph(scope: ActiveMemoryScope): MemoryGraph {
+  const db = getDb();
+  const rows = db.prepare(`SELECT id, project_id, type, title, content, tags, source_task_id,
+      access_count, invalidated_at, superseded_by, updated_at,
+      ${MEMORY_RANK_SQL} AS rank_score
+    FROM memories WHERE ${buildMemoryScopeWhere(scope, { includeInvalidated: true }).sql}
+    ORDER BY rank_score DESC LIMIT ?`).all(scope.productKey, GRAPH_ROW_LIMIT) as {
+    id: string; project_id: string | null; type: MemoryType; title: string; content: string;
+    tags: string | null; source_task_id: string | null; access_count: number;
+    invalidated_at: string | null; superseded_by: string | null; updated_at: string; rank_score: number;
+  }[];
+
+  const nodes: MemoryGraphNode[] = [];
+  const edges: MemoryGraphEdge[] = [];
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const projectIds = [...new Set(rows.map((r) => r.project_id).filter((v): v is string => !!v))];
+  const projectNames = new Map<string, string>();
+  for (const pid of projectIds) {
+    const hit = db.prepare('SELECT name FROM projects WHERE id = ?').get(pid) as { name: string } | undefined;
+    projectNames.set(pid, hit?.name ?? pid.slice(0, 8));
+  }
+
+  for (const r of rows) {
+    nodes.push({
+      id: r.id,
+      kind: 'memory',
+      type: r.type,
+      title: r.title,
+      content: r.content.length > 160 ? `${r.content.slice(0, 160)}…` : r.content,
+      tags: parseMemoryGraphTags(r.tags),
+      projectId: r.project_id,
+      size: Math.max(3, Math.min(12, 3 + r.rank_score * 0.6 + Math.sqrt(r.access_count || 0))),
+      invalidated: !!r.invalidated_at,
+      supersededBy: r.superseded_by,
+      sourceTaskId: r.source_task_id,
+      accessCount: r.access_count,
+      updatedAt: r.updated_at,
+    });
+  }
+  // 项目聚簇节点：同项目记忆全部挂到唯一节点上（比「同项目两两连」省边数且聚簇形态更清晰）
+  const memberCount = new Map<string, number>();
+  for (const r of rows) {
+    if (!r.project_id) continue;
+    memberCount.set(r.project_id, (memberCount.get(r.project_id) ?? 0) + 1);
+    edges.push({ id: `e-proj-${r.id}`, source: r.id, target: `proj:${r.project_id}`, kind: 'project' });
+  }
+  for (const [pid, count] of memberCount) {
+    nodes.push({
+      id: `proj:${pid}`, kind: 'project', title: projectNames.get(pid) ?? pid.slice(0, 8),
+      projectId: pid, size: Math.max(6, Math.min(16, 4 + Math.sqrt(count) * 2)),
+    });
+  }
+  // 替代链（只连集内可见的行；被替代行已失效仍保留在图里，链路语义不丢）
+  for (const r of rows) {
+    if (r.superseded_by && byId.has(r.superseded_by)) {
+      edges.push({ id: `e-sup-${r.id}`, source: r.id, target: r.superseded_by, kind: 'supersede' });
+    }
+  }
+  // 共享 tag 两两连边（去重 pair；单 tag 成员超上限跳过，避免高频标签吞掉图）
+  const tagMembers = new Map<string, string[]>();
+  for (const r of rows) {
+    for (const t of parseMemoryGraphTags(r.tags)) {
+      const list = tagMembers.get(t) ?? [];
+      list.push(r.id);
+      tagMembers.set(t, list);
+    }
+  }
+  const seenPair = new Set<string>();
+  let tagEdgeCount = 0;
+  for (const [tag, members] of tagMembers) {
+    if (members.length < 2 || members.length > GRAPH_TAG_FAN_MAX) continue;
+    for (let i = 0; i < members.length; i++) {
+      for (let j = i + 1; j < members.length; j++) {
+        const pair = [members[i], members[j]].sort().join('~');
+        if (seenPair.has(pair)) continue;
+        seenPair.add(pair);
+        edges.push({ id: `e-tag-${pair}`, source: members[i], target: members[j], kind: 'tag', tag });
+        tagEdgeCount++;
+      }
+    }
+  }
+  return {
+    nodes,
+    edges,
+    stats: {
+      memoryCount: rows.length,
+      projectCount: memberCount.size,
+      tagEdgeCount,
+      supersedeCount: edges.filter((e) => e.kind === 'supersede').length,
+    },
+  };
+}
+
+function parseMemoryGraphTags(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? v.map(String) : [];
+  } catch { return []; }
+}
+
 function normalizePk(value: string): string {
   return (value ?? '').trim().toLowerCase();
 }

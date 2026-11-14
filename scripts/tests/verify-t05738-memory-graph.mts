@@ -1,0 +1,83 @@
+/**
+ * T05738 门：记忆图谱可视化（Obsidian 式力导向图）。
+ *
+ * 交付：server `GET /memories/graph`（服务端拼 tag 共享边/替代链/项目聚簇，tag 成员数上限防蜘蛛网）
+ * + web `MemoryGraph.tsx`（sigma v4 + graphology + ForceAtlas2，暗底四色、悬停邻域高亮、
+ *   缩放门控标签、click 详情面板、实例 kill 清理）+ MemoryTab「列表/图谱」视图切换。
+ *
+ * 用法：node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05738-memory-graph.mts
+ */
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const OUT_DIR = join(ROOT, '.workbuddy');
+
+let pass = 0;
+let fail = 0;
+const lines: string[] = [];
+const ok = (name: string, cond: boolean, extra?: unknown) => {
+  cond ? (pass += 1) : (fail += 1);
+  lines.push(`[${cond ? 'PASS' : 'FAIL'}] ${name}${cond || extra === undefined ? '' : ` → ${JSON.stringify(extra).slice(0, 320)}`}`);
+};
+
+const SVC = readFileSync(join(ROOT, 'server/src/services/MemoryService.ts'), 'utf8');
+const ROUTE = readFileSync(join(ROOT, 'server/src/routes/memories.ts'), 'utf8');
+const GRAPH = readFileSync(join(ROOT, 'web/src/pages/MemoryGraph.tsx'), 'utf8');
+const TAB = readFileSync(join(ROOT, 'web/src/pages/MemoryTab.tsx'), 'utf8');
+
+// A 组：服务端图谱数据端点
+ok('A-01 buildMemoryGraph 服务函数：节点=记忆+项目聚簇，边=tag/替代链/归属 三类',
+  /export function buildMemoryGraph\(scope: ActiveMemoryScope\): MemoryGraph/.test(SVC)
+  && /kind: 'memory' \| 'project'/.test(SVC)
+  && /'tag' \| 'supersede' \| 'project'/.test(SVC));
+ok('A-02 tag 两两连边有成员数上限（防高频标签织蜘蛛网）+ 全量行硬上限',
+  /GRAPH_TAG_FAN_MAX = \d+/.test(SVC) && /GRAPH_ROW_LIMIT = \d+/.test(SVC)
+  && /members\.length > GRAPH_TAG_FAN_MAX\) continue;/.test(SVC));
+ok('A-03 路由 GET /graph 必须带产品作用域校验（缺省 400 / 未绑产品空集+hint），且注册于 /:id 动态段语义之前',
+  /memoriesApi\.get\('\/graph', \(req, res\) => \{[\s\S]{0,200}scopeOf\(\{[\s\S]{0,120}productKey: req\.query\.productKey/.test(ROUTE)
+  && (ROUTE.indexOf("memoriesApi.get('/:id'") === -1
+    || ROUTE.indexOf("memoriesApi.get('/graph'") < ROUTE.indexOf("memoriesApi.get('/:id'")));
+ok('A-04 失效行保留（图谱含已失效记忆，前端灰显）',
+  /buildMemoryScopeWhere\(scope, \{ includeInvalidated: true \}\)/.test(SVC));
+
+// B 组：web 图谱组件（sigma v4 API）
+ok('B-01 sigma v4 分层 options：settings(labelRenderedSizeThreshold 相机门控) + styles.nodes(labelColor)',
+  /settings: \{[\s\S]{0,200}labelRenderedSizeThreshold: \d+/.test(GRAPH)
+  && /styles: \{[\s\S]{0,80}nodes: \{[\s\S]{0,120}labelColor: '#/.test(GRAPH));
+ok('B-02 ForceAtlas2 运行即冻结（无持续动画循环）+ 大图 barnesHut 开关',
+  /ForceAtlas2\.assign\(graph, \{[\s\S]{0,120}iterations: \d+/.test(GRAPH)
+  && /barnesHutOptimize: data\.nodes\.length > \d+/.test(GRAPH));
+ok('B-03 悬停高亮一跳邻域：非邻域淡出 + 邻域强制标签（Obsidian 同款）',
+  /graph\.areNeighbors\(node, hovered\)/.test(GRAPH)
+  && /res\.labelVisibility = 'hidden';/.test(GRAPH)
+  && /res\.labelVisibility = 'visible';/.test(GRAPH));
+ok('B-04 点击节点开详情面板 + clickStage 清除 + sigma.kill() 卸载清理',
+  /sigma\.on\('clickNode'/.test(GRAPH) && /sigma\.on\('clickStage'/.test(GRAPH) && /sigma\.kill\(\)/.test(GRAPH));
+ok('B-05 type 四色映射 + 失效灰显 + 项目聚簇色（图例齐备）',
+  /user: '#38bdf8'/.test(GRAPH) && /feedback: '#f472b6'/.test(GRAPH)
+  && /project: '#34d399'/.test(GRAPH) && /reference: '#fbbf24'/.test(GRAPH)
+  && /DEAD_NODE_COLOR/.test(GRAPH) && /PROJECT_NODE_COLOR/.test(GRAPH));
+ok('B-06 数据源只走 /memories/graph 端点（前端不做 N² 拼边）',
+  /\/memories\/graph\?productKey=/.test(GRAPH) && !/for\s*\(let j = i \+ 1/.test(GRAPH));
+
+// C 组：MemoryTab 接入
+ok('C-01 列表/图谱视图切换（aria-pressed + 产品筛选共享）',
+  /viewMode, setViewMode\] = useState<'list' \| 'graph'>\('list'\)/.test(TAB)
+  && TAB.match(/aria-pressed=\{viewMode === '(list|graph)'\}/g)?.length === 2
+  && /\{viewMode === 'graph' && <MemoryGraph productKey=\{productKey\} \/>\}/.test(TAB));
+ok('C-02 图谱只读提示 + 列表主体按视图条件渲染（新增/表格/孤立标签归 list）',
+  /图谱为只读视图；新增\/编辑\/删除请切回「列表」视图。/.test(TAB)
+  && /\{viewMode === 'list' && \(<>/.test(TAB));
+ok('C-03 sigma/graphology 依赖已登记（package.json）',
+  /"sigma": "\^4\./.test(readFileSync(join(ROOT, 'web/package.json'), 'utf8'))
+  && /"graphology"/.test(readFileSync(join(ROOT, 'web/package.json'), 'utf8')));
+
+mkdirSync(OUT_DIR, { recursive: true });
+const summary = `T05738 门：${pass} 通过 / ${fail} 失败`;
+lines.push('');
+lines.push(summary);
+writeFileSync(join(OUT_DIR, 't05738-gate-results.txt'), lines.join('\n'), 'utf8');
+console.log(lines.join('\n'));
+process.exit(fail === 0 ? 0 : 1);

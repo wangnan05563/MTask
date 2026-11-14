@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
+import { MemoryGraph } from './MemoryGraph';
 
 /**
  * T04152（PRD MEM-501/502）：设置 → 数据 →「记忆管理」页签。
@@ -92,6 +93,8 @@ export function MemoryTab() {
   const [newTags, setNewTags] = useState('');
   // 行内编辑：同时只编辑一条，避免多行草稿状态互相覆盖
   const [editing, setEditing] = useState<{ id: string; type: MemoryType; title: string; content: string; tags: string } | null>(null);
+  // T05738：视图切换——列表（管理/编辑）与图谱（关系可视化）共用同一份产品筛选
+  const [viewMode, setViewMode] = useState<'list' | 'graph'>('list');
 
   const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3000); };
 
@@ -276,6 +279,19 @@ export function MemoryTab() {
       </div>
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
+        {/* T05738：视图切换——列表管编辑、图谱看关系，产品筛选两视图共享 */}
+        <span role="group" aria-label="记忆视图切换" style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }}>
+          <button aria-pressed={viewMode === 'list'} onClick={() => setViewMode('list')} style={{
+            ...btnStyle, borderRadius: 0, border: 'none',
+            background: viewMode === 'list' ? 'var(--accent)' : 'var(--card-bg)',
+            color: viewMode === 'list' ? 'var(--accent-text)' : 'var(--text-secondary)',
+          }}>列表</button>
+          <button aria-pressed={viewMode === 'graph'} onClick={() => setViewMode('graph')} style={{
+            ...btnStyle, borderRadius: 0, border: 'none', borderLeft: '1px solid var(--border-strong)',
+            background: viewMode === 'graph' ? 'var(--accent)' : 'var(--card-bg)',
+            color: viewMode === 'graph' ? 'var(--accent-text)' : 'var(--text-secondary)',
+          }}>图谱</button>
+        </span>
         <select aria-label="产品标签" value={productKey}
           onChange={(e) => { setProductKey(e.target.value); setEditing(null); }}
           style={{ ...inputStyle, minWidth: 180 }}>
@@ -285,20 +301,34 @@ export function MemoryTab() {
           ))}
         </select>
         {productKey && <button style={btnStyle} onClick={() => void renameTag(productKey)}>重命名标签</button>}
-        <select aria-label="记忆类型筛选" value={type} onChange={(e) => setType(e.target.value as '' | MemoryType)} style={inputStyle}>
-          <option value="">全部类型</option>
-          {MEMORY_TYPES.map((k) => <option key={k} value={k}>{TYPE_LABELS[k]}</option>)}
-        </select>
-        <input aria-label="关键词筛选" value={keyword} onChange={(e) => setKeyword(e.target.value)}
-          placeholder="标题/内容关键词" style={{ ...inputStyle, minWidth: 200 }} />
-        <label style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 4 }}>
-          <input type="checkbox" checked={includeInvalidated} onChange={(e) => setIncludeInvalidated(e.target.checked)} />
-          含已失效
-        </label>
-        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{loading ? '加载中…' : `共 ${total} 条`}</span>
+        {viewMode === 'list' && (
+          <>
+            <select aria-label="记忆类型筛选" value={type} onChange={(e) => setType(e.target.value as '' | MemoryType)} style={inputStyle}>
+              <option value="">全部类型</option>
+              {MEMORY_TYPES.map((k) => <option key={k} value={k}>{TYPE_LABELS[k]}</option>)}
+            </select>
+            <input aria-label="关键词筛选" value={keyword} onChange={(e) => setKeyword(e.target.value)}
+              placeholder="标题/内容关键词" style={{ ...inputStyle, minWidth: 200 }} />
+            <label style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 4 }}>
+              <input type="checkbox" checked={includeInvalidated} onChange={(e) => setIncludeInvalidated(e.target.checked)} />
+              含已失效
+            </label>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{loading ? '加载中…' : `共 ${total} 条`}</span>
+          </>
+        )}
       </div>
       {notice && <div style={{ marginBottom: 10, fontSize: 'var(--fs-s)', color: 'var(--accent)' }}>{notice}</div>}
 
+      {/* T05738：图谱视图——力导向关系图（tag 共享/替代链/项目聚簇），编辑仍回列表视图 */}
+      {viewMode === 'graph' && <MemoryGraph productKey={productKey} />}
+      {viewMode === 'graph' && (
+        <div style={{ marginTop: 16, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+          图谱为只读视图；新增/编辑/删除请切回「列表」视图。
+        </div>
+      )}
+
+      {/* 列表视图主体（自动抽取 / 待确认 / 新增 / 表格 / 孤立标签） */}
+      {viewMode === 'list' && (<>
       {/* MEM-504：项目级自动抽取开关（只列本产品项目，跨产品入口不存在） */}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', fontSize: 'var(--fs-s)' }}>
         <span style={{ color: 'var(--text-secondary)' }}>自动抽取（项目级）：</span>
@@ -456,6 +486,7 @@ export function MemoryTab() {
           </div>
         ))}
       </div>
+      </>)}
     </div>
   );
 }
