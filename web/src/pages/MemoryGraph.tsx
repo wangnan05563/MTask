@@ -180,13 +180,6 @@ interface GraphData {
   stats: { memoryCount: number; projectCount: number; tagEdgeCount: number; supersedeCount: number; taskCount: number };
 }
 
-/** 拖拽会话：记录拖动起点与邻域原始坐标，用于「拖动节点→邻域弹簧跟随→松手回弹」的力反馈。 */
-interface GraphDragState {
-  node: string;
-  start: { x: number; y: number };
-  neighbors: Map<string, { x: number; y: number }>;
-}
-
 function nodeColor(n: GraphNode, theme: GraphTheme): string {
   if (n.invalidated) return theme.deadColor;
   if (n.kind === 'project') return theme.projectColor;
@@ -210,11 +203,6 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
   // hover/邻域状态放 ref：变化只 sigma.refresh()，不触发 React 重渲染
   const hoveredRef = useRef<string | null>(null);
   const graphRef = useRef<Graph | null>(null);
-  // 悬停微动：hover 呼吸相位；拖拽力反馈：拖拽会话与松手回弹 RAF
-  const hoverPulseRef = useRef(0);
-  const hoverRafRef = useRef<number | null>(null);
-  const dragRef = useRef<GraphDragState | null>(null);
-  const dragRafRef = useRef<number | null>(null);
 
   const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3000); };
   const [notice, setNotice] = useState('');
@@ -313,7 +301,7 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
         labelDensity: 0.7,
         minCameraRatio: 0.08,
         maxCameraRatio: 8,
-        // T05738 交互：节点可拖拽；拖动时由 nodeDrag 事件给邻域施加弹簧跟随，松手回弹
+        // 方案 A：保留 sigma 原生节点拖拽（不做邻域弹簧/回弹），让交互保持 Obsidian 的「稳定布局 + 手动整理」手感
         enableNodeDrag: true,
         dragTimeout: 60,
       },
@@ -357,33 +345,19 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
           if (ut && ut > rp.cursor) { res.isHidden = true; return res; }
         }
         const baseSize = Number((attrs as unknown as Record<string, unknown>).size ?? 6);
-        const pulse = hoverPulseRef.current;
-        const drag = dragRef.current;
         const hovered = hoveredRef.current;
-        if (drag?.node === node) {
-          // 拖拽中：被拖节点放大 + 常显标签，给出「手上有物」的直接反馈
-          res.size = baseSize + 2.4;
-          res.opacity = 1;
-          res.labelVisibility = 'visible';
-        } else if (drag?.neighbors.has(node)) {
-          // 邻域弹簧跟随：轻微放大，边缘张力由 edgeReducer 加粗体现
-          res.size = baseSize + 0.7;
-          res.opacity = 1;
-          res.labelVisibility = 'visible';
-        }
         if (hovered === node) {
-          // 悬停微动：呼吸式轻微放大，避免只靠颜色变化
-          res.size = Math.max(Number(res.size ?? baseSize), baseSize) + 1.4 * pulse;
+          res.size = baseSize;
           res.opacity = 1;
           res.labelVisibility = 'visible';
         } else if (hovered) {
-          // 悬停高亮一跳邻域：其余节点降低不透明度，但保留自身颜色（旧实现直接改灰导致“整图发灰”）
+          // 方案 A：悬停只做一跳邻域高亮（非邻域淡出但保留原色），不做呼吸/缩放式持续动画
           const isNeighbor = graph.areNeighbors(node, hovered);
           if (!isNeighbor) {
             res.opacity = 0.46;
             res.labelVisibility = 'hidden';
           } else {
-            res.size = Math.max(Number(res.size ?? baseSize), baseSize) + 0.55 * pulse;
+            res.size = baseSize;
             res.opacity = 1;
             res.labelVisibility = 'visible';
           }
@@ -403,11 +377,6 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
           const tu = graph.getNodeAttribute(graph.target(edge), 'nodeUpdatedAt') as string | null | undefined;
           if ((su && su > rp.cursor) || (tu && tu > rp.cursor)) { res.isHidden = true; return res; }
         }
-        const drag = dragRef.current;
-        if (drag && (graph.source(edge) === drag.node || graph.target(edge) === drag.node)) {
-          // 拖拽力反馈：与被拖节点相连的边加粗，拉伸感更明显
-          res.size = Math.max(Number(res.size), 2.1);
-        }
         const hovered = hoveredRef.current;
         if (hovered) {
           const touching = graph.hasEdge(edge)
@@ -426,115 +395,14 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
     // T05738 P1 入场动画：节点从随机初始位置滑向 FA2 终位（卡片切换/产品切换时重建即重播）
     animateNodesIn(graph, startPositions, sigma);
 
-    // 悬停微动：hover 时用一条低频正弦驱动节点尺寸，肉眼可见但不打扰阅读
-    const stopHoverPulse = () => {
-      if (hoverRafRef.current !== null) {
-        cancelAnimationFrame(hoverRafRef.current);
-        hoverRafRef.current = null;
-      }
-      hoverPulseRef.current = 0;
-    };
-    const startHoverPulse = () => {
-      if (hoverRafRef.current !== null) return;
-      const t0 = performance.now();
-      const step = (now: number) => {
-        if (!hoveredRef.current) {
-          hoverRafRef.current = null;
-          hoverPulseRef.current = 0;
-          sigma.refresh();
-          return;
-        }
-        hoverPulseRef.current = (Math.sin((now - t0) / 420) + 1) / 2;
-        sigma.refresh();
-        hoverRafRef.current = requestAnimationFrame(step);
-      };
-      hoverRafRef.current = requestAnimationFrame(step);
-    };
-
+    // 方案 A：悬停只做一跳邻域高亮；不做呼吸式缩放，也不接管节点拖拽的邻域位移
     sigma.on('enterNode', ({ node }) => {
-      if (dragRef.current) return;
       hoveredRef.current = node;
-      startHoverPulse();
       sigma.refresh();
     });
     sigma.on('leaveNode', () => {
       hoveredRef.current = null;
-      stopHoverPulse();
       sigma.refresh();
-    });
-
-    // 拖拽力反馈：拖动节点时邻域按比例弹簧跟随，松手后回弹到原位；相连边加粗由 edgeReducer 负责
-    sigma.on('nodeDragStart', ({ node }) => {
-      if (dragRafRef.current !== null) {
-        cancelAnimationFrame(dragRafRef.current);
-        dragRafRef.current = null;
-      }
-      stopHoverPulse();
-      hoveredRef.current = null;
-      const start = {
-        x: Number(graph.getNodeAttribute(node, 'x') ?? 0),
-        y: Number(graph.getNodeAttribute(node, 'y') ?? 0),
-      };
-      const neighbors = new Map<string, { x: number; y: number }>();
-      for (const neighbor of graph.neighbors(node)) {
-        neighbors.set(neighbor, {
-          x: Number(graph.getNodeAttribute(neighbor, 'x') ?? 0),
-          y: Number(graph.getNodeAttribute(neighbor, 'y') ?? 0),
-        });
-      }
-      dragRef.current = { node, start, neighbors };
-      sigma.refresh();
-    });
-    sigma.on('nodeDrag', ({ node }) => {
-      const session = dragRef.current;
-      if (!session || session.node !== node) return;
-      const dx = Number(graph.getNodeAttribute(node, 'x') ?? 0) - session.start.x;
-      const dy = Number(graph.getNodeAttribute(node, 'y') ?? 0) - session.start.y;
-      // 邻域弹簧：节点越多跟随越轻，避免整张图被一只鼠标拖着跑
-      const follow = 0.22 / Math.max(1, Math.sqrt(session.neighbors.size));
-      for (const [neighbor, origin] of session.neighbors) {
-        if (!graph.hasNode(neighbor)) continue;
-        graph.setNodeAttribute(neighbor, 'x', origin.x + dx * follow);
-        graph.setNodeAttribute(neighbor, 'y', origin.y + dy * follow);
-      }
-      sigma.refresh();
-    });
-    sigma.on('nodeDragEnd', ({ node }) => {
-      const session = dragRef.current;
-      if (!session || session.node !== node) {
-        dragRef.current = null;
-        sigma.refresh();
-        return;
-      }
-      const from = new Map<string, { x: number; y: number }>();
-      for (const neighbor of session.neighbors.keys()) {
-        if (!graph.hasNode(neighbor)) continue;
-        from.set(neighbor, {
-          x: Number(graph.getNodeAttribute(neighbor, 'x') ?? 0),
-          y: Number(graph.getNodeAttribute(neighbor, 'y') ?? 0),
-        });
-      }
-      const t0 = performance.now();
-      const duration = 360;
-      const step = (now: number) => {
-        const raw = Math.min(1, (now - t0) / duration);
-        const t = 1 - Math.pow(1 - raw, 3); // easeOutCubic
-        for (const [neighbor, target] of session.neighbors) {
-          const origin = from.get(neighbor);
-          if (!origin || !graph.hasNode(neighbor)) continue;
-          graph.setNodeAttribute(neighbor, 'x', origin.x + (target.x - origin.x) * t);
-          graph.setNodeAttribute(neighbor, 'y', origin.y + (target.y - origin.y) * t);
-        }
-        sigma.refresh();
-        if (raw < 1) {
-          dragRafRef.current = requestAnimationFrame(step);
-        } else {
-          dragRafRef.current = null;
-          dragRef.current = null;
-          sigma.refresh();
-        }
-      };
-      dragRafRef.current = requestAnimationFrame(step);
     });
 
     sigma.on('clickNode', ({ node }) => {
@@ -544,12 +412,6 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
     sigma.on('clickStage', () => { setSelected(null); });
 
     return () => {
-      stopHoverPulse();
-      if (dragRafRef.current !== null) {
-        cancelAnimationFrame(dragRafRef.current);
-        dragRafRef.current = null;
-      }
-      dragRef.current = null;
       hoveredRef.current = null;
       sigma.kill();
       sigmaRef.current = null;
@@ -594,7 +456,7 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
         <span style={{ color: theme.legendSupersede }}>· 红线=被替代</span>
         <span style={{ color: theme.legendProject }}>· 紫线=项目归属</span>
         <span style={{ color: theme.legendTask }}>· 青线=来源任务</span>
-        <span>· 悬停微动、拖拽节点看力反馈，点击看详情</span>
+        <span>· 悬停高亮邻域，拖动节点可整理，点击看详情</span>
         <span style={{ marginLeft: 'auto' }}>
           {data.stats.memoryCount} 条记忆 · {data.stats.projectCount} 个项目 · {data.stats.taskCount} 个任务 · {data.stats.tagEdgeCount} 条标签连线
         </span>

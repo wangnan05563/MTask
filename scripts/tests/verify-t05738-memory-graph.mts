@@ -87,13 +87,14 @@ ok('B-10 P2 回放控制条：播放/停止切换 + 进度计数（data-lck 锚�
   /▶ 回放生长/.test(GRAPH) && /⏸ 停止回放/.test(GRAPH)
   && /data-lck="memory-graph-replay-progress"/.test(GRAPH)
   && /\(\) => \{ if \(replayTimerRef\.current\) clearInterval\(replayTimerRef\.current\); \}, \[\]/.test(GRAPH));
-ok('B-11 悬停微动 + 拖拽力反馈：hover 呼吸相位 / 节点可拖拽 / 邻域弹簧跟随与松手回弹',
-  /hoverPulseRef/.test(GRAPH)
-  && /enableNodeDrag: true/.test(GRAPH)
-  && /sigma\.on\('nodeDragStart'/.test(GRAPH)
-  && /sigma\.on\('nodeDrag'/.test(GRAPH)
-  && /sigma\.on\('nodeDragEnd'/.test(GRAPH)
-  && /const follow = 0\.22 \/ Math\.max\(1, Math\.sqrt\(session\.neighbors\.size\)\)/.test(GRAPH));
+ok('B-11 方案 A：悬停只做邻域高亮 + 原生拖拽，不再叠加 hover 呼吸/邻域弹簧/松手回弹',
+  /enableNodeDrag: true/.test(GRAPH)
+  && /sigma\.on\('enterNode'/.test(GRAPH)
+  && /sigma\.on\('leaveNode'/.test(GRAPH)
+  && !/hoverPulseRef/.test(GRAPH)
+  && !/nodeDragStart/.test(GRAPH)
+  && !/nodeDragEnd/.test(GRAPH)
+  && !/0\.22 \/ Math\.max\(1, Math\.sqrt\(session\.neighbors\.size\)\)/.test(GRAPH));
 
 // C 组：MemoryTab 接入
 ok('C-01 列表/图谱视图切换（aria-pressed + 产品筛选共享）',
