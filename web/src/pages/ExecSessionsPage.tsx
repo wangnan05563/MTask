@@ -319,10 +319,48 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0, height: standalone ? '100vh' : undefined }}>
       <style>{`
+        @property --exec-flow-angle {
+          syntax: '<angle>';
+          inherits: false;
+          initial-value: 0deg;
+        }
         @keyframes exec-spin { to { transform: rotate(360deg) } }
         @keyframes exec-card-in { from { opacity: 0; transform: translateY(4px) } to { opacity: 1; transform: none } }
+        @keyframes exec-running-flow { to { --exec-flow-angle: 360deg } }
         .exec-kanban-card { will-change: transform; }
         .exec-kanban-card:hover { border-color: var(--border-strong) !important; box-shadow: 0 4px 14px rgba(15,23,42,.08); }
+        /* T05766：只有进行中的会话显示绿色旋转流光边框；等待中/失败/完成保持静态边框。 */
+        .exec-card-running {
+          position: relative;
+          border-color: transparent !important;
+          box-shadow: 0 0 0 1px rgba(34,197,94,.08), 0 4px 16px rgba(34,197,94,.10);
+        }
+        .exec-card-running::before {
+          content: '';
+          position: absolute;
+          inset: -1px;
+          border-radius: inherit;
+          padding: 1px;
+          background: conic-gradient(
+            from var(--exec-flow-angle),
+            transparent 0deg 58deg,
+            rgba(34,197,94,.10) 74deg,
+            rgba(34,197,94,.78) 92deg,
+            #5eead4 104deg,
+            rgba(34,197,94,.16) 122deg,
+            transparent 142deg 360deg
+          );
+          -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          -webkit-mask-composite: xor;
+          mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          mask-composite: exclude;
+          animation: exec-running-flow 2.4s linear infinite;
+          pointer-events: none;
+        }
+        .exec-card-running:hover { border-color: transparent !important; }
+        @media (prefers-reduced-motion: reduce) {
+          .exec-card-running::before { animation: none; }
+        }
         .exec-column { scrollbar-width: thin; }
         .exec-split-handle:hover span, .exec-split-handle:focus-visible span { background: var(--accent) !important; }
         .notify-feed-scroll { scrollbar-width: thin; }
@@ -506,8 +544,9 @@ function SessionCard({ s, cardRef, enterAnimation = false }: { readonly s: ExecS
   return (
     <div
       ref={cardRef}
-      className="exec-kanban-card"
+      className={`exec-kanban-card${s.status === 'active' ? ' exec-card-running' : ''}`}
       data-lck="exec-session-card"
+      data-status={s.status}
       style={{ ...card, display: 'flex', flexDirection: 'column', gap: 7, animation: enterAnimation ? 'exec-card-in .24s ease-out' : undefined }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
