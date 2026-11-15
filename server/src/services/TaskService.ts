@@ -37,10 +37,16 @@ const PRIORITY_CASE = "CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHE
 export const TASK_STATUSES: ReadonlySet<string> = new Set(['todo', 'done']);
 /** T00620：running 状态超时阈值——超过则视为 AI 中断并自动置 failed（可用环境变量覆盖，便于调试） */
 // T01297：running 超时兜底阈值——默认从 30 分钟放宽到 1 小时。
-// 原 30 分钟在「长任务执行中无续期」时（如文档识别/AI 生成本身耗时超阈值且期间与 MTask 零交互）
-// 会把仍在执行的任务误置 failed（T00851 曾因此"未执行完就被标中断"）。1 小时覆盖绝大多数长任务，
-// 真正的超长任务仍由 Agent 中途重写 running 续期兜底（见 mtask 技能状态机）。
-const AI_STATE_STALE_MS = Number(process.env.MTASK_AI_STATE_STALE_MS ?? 60 * 60 * 1000);
+// T05779：历史数据中 T05759/T05769/T05746 均在 running 后恰好 1 小时被兜底置 failed；
+// 长耗时任务（多轮工具调用、大仓构建/扫描、长文档生成）在 1 小时内没有 MTask 交互时会被误判中断。
+// 默认再放宽到 2 小时：覆盖长任务单段静默窗口，同时保留上限，避免真正的进程卡死无限挂起。
+// 仍由 Agent 中途 progress ping（running 同状态会刷新 ai_state_at）续心跳；超长任务据此可继续延长。
+export const DEFAULT_AI_STATE_STALE_MS = 2 * 60 * 60 * 1000;
+/** 环境变量 MTASK_AI_STATE_STALE_MS 覆盖（非法/非正数回退默认，避免 NaN 让 cutoff 失效） */
+export const AI_STATE_STALE_MS = (() => {
+  const raw = Number(process.env.MTASK_AI_STATE_STALE_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_AI_STATE_STALE_MS;
+})();
 
 
 /** DB 原始行：archived 为 number（SQLite 0/1） */
@@ -1598,7 +1604,8 @@ export const TaskService = {
  * T01368 后续（P1）：把 running 超时兜底从「每次读」移出，改为启动后定时收敛。
  * 原 list()/getById() 每次读取都调用 expireStaleRunning()，等于在只读接口上挂写锁——
  * 并发列表刷新会互相阻塞（压测显示 /api/tasks 并发下吞吐从数千 rps 跌到十几 rps）。
- * 改为每 60s 跑一轮：running 超时窗口默认 1 小时，60s 粒度足够兜底 AI 中断，且彻底去掉读路径写锁。
+ * 改为每 60s 跑一轮：running 超时窗口默认 2 小时（T05779 起；原 1 小时会误伤长耗时任务），
+ * 60s 粒度足够兜底 AI 中断，且彻底去掉读路径写锁。
  */
 let staleGuardTimer: ReturnType<typeof setInterval> | null = null;
 export function startStaleRunningGuard(intervalMs = 60000): void {

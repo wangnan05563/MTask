@@ -728,7 +728,7 @@ export async function createMCPServer(): Promise<McpServer> {
       // ①仅查看/三查的任务钉成转圈、②已完成的 unread 与中断后的 failed 抹回 running
       // （用户实测："任务处理结束后状态还是运行态"）。
       // 现在：状态只由显式写入驱动（mtask_write_task_status / markRunning:true），
-      // 且 running 超时（默认 1 小时，见 TaskService.expireStaleRunning）自动兜底为 failed。
+      // 且 running 超时（默认 2 小时，见 TaskService.expireStaleRunning）自动兜底为 failed。
       if (a.markRunning && task.status === 'todo' && task.ai_state === '' && !task.ai_state_at) {
         TaskService.setAiState(task.id, 'running');
       }
