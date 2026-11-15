@@ -5,7 +5,16 @@
  * 出现「导航叫数据维护、面板叫数据库」这类同名不同物的入口（UX-09②）。
  * 分组固定三组（偏好 / 数据 / 运维与诊断），顺序即展示顺序；`keywords` 只用于搜索，
  * 不参与展示，覆盖用户常说但不在标题里的词（如「主题」「备份」「穿透」）。
+ *
+ * T05771：为分组与页签补开源 lucide 图标；名称按「简短、无歧义、名词性」统一，
+ * 对外 key 保持不变，避免深链、持久化页签和命令面板入口失效。
  */
+import {
+  Archive, ArrowLeftRight, Brain, CircleHelp, Database, History, Info, KeyRound,
+  LayoutDashboard, ListPlus, Network, Repeat, ScanLine, ScrollText, Settings2,
+  ShieldCheck, SlidersHorizontal, Tags, Wrench, type LucideIcon,
+} from 'lucide-react';
+
 export type SettingsTabKey =
   | 'general' | 'help' | 'about'
   | 'dashboard' | 'categories' | 'fields' | 'recurring' | 'history' | 'archive' | 'memory' | 'migration' | 'dbadmin' | 'apitokens' | 'sonar'
@@ -14,6 +23,8 @@ export type SettingsTabKey =
 export interface SettingsTab {
   readonly key: SettingsTabKey;
   readonly label: string;
+  /** 开源 lucide 图标；同一套图标库保证尺寸/描边一致 */
+  readonly icon: LucideIcon;
   /** 搜索补充词：只影响命中，不影响展示与排序 */
   readonly keywords: readonly string[];
 }
@@ -21,42 +32,43 @@ export interface SettingsTab {
 export interface SettingsGroup {
   readonly key: 'preference' | 'data' | 'ops';
   readonly label: string;
+  readonly icon: LucideIcon;
   readonly tabs: readonly SettingsTab[];
 }
 
 export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
   {
-    key: 'preference', label: '偏好',
+    key: 'preference', label: '偏好', icon: SlidersHorizontal,
     tabs: [
-      { key: 'general', label: '通用设置', keywords: ['主题', '字号', '语言', '外观', '强调色'] },
-      { key: 'help', label: '帮助文档', keywords: ['文档', '说明', '指南'] },
-      { key: 'about', label: '关于', keywords: ['版本', '许可', '应用信息'] },
+      { key: 'general', label: '通用', icon: Settings2, keywords: ['主题', '字号', '语言', '外观', '强调色', '通用设置'] },
+      { key: 'help', label: '帮助文档', icon: CircleHelp, keywords: ['文档', '说明', '指南', '帮助'] },
+      { key: 'about', label: '关于', icon: Info, keywords: ['版本', '许可', '应用信息', '产品信息'] },
     ],
   },
   {
-    key: 'data', label: '数据',
+    key: 'data', label: '数据', icon: Database,
     tabs: [
-      { key: 'dashboard', label: '仪表盘', keywords: ['概览', '统计', '指标'] },
-      { key: 'categories', label: '任务分类', keywords: ['分类', '标签', '归类'] },
-      { key: 'fields', label: '自定义字段', keywords: ['字段', '属性', '自定义'] },
-      { key: 'recurring', label: '循环任务', keywords: ['周期', '自动生成'] },
-      { key: 'history', label: '历史资产', keywords: ['快照', '历史', '版本'] },
-      { key: 'archive', label: '归档', keywords: ['归档', '已归档'] },
+      { key: 'dashboard', label: '仪表盘', icon: LayoutDashboard, keywords: ['概览', '统计', '指标'] },
+      { key: 'categories', label: '任务分类', icon: Tags, keywords: ['分类', '标签', '归类'] },
+      { key: 'fields', label: '自定义字段', icon: ListPlus, keywords: ['字段', '属性', '自定义'] },
+      { key: 'recurring', label: '循环任务', icon: Repeat, keywords: ['周期', '自动生成'] },
+      { key: 'history', label: '历史版本', icon: History, keywords: ['快照', '历史', '版本', '历史资产'] },
+      { key: 'archive', label: '归档', icon: Archive, keywords: ['归档', '已归档'] },
       // T04152（PRD MEM-502）：产品维度长期记忆的浏览/编辑/待确认入口
-      { key: 'memory', label: '记忆管理', keywords: ['记忆', 'memory', '产品标签', '待确认', '长期记忆'] },
-      { key: 'migration', label: '数据迁移', keywords: ['导入', '导出', '迁移', '备份'] },
-      { key: 'dbadmin', label: '数据维护', keywords: ['数据库', '清理', '维护', '备份'] },
-      { key: 'apitokens', label: 'API Token', keywords: ['令牌', '凭据', '接口', 'token'] },
+      { key: 'memory', label: '记忆管理', icon: Brain, keywords: ['记忆', 'memory', '产品标签', '待确认', '长期记忆'] },
+      { key: 'migration', label: '数据迁移', icon: ArrowLeftRight, keywords: ['导入', '导出', '迁移', '备份'] },
+      { key: 'dbadmin', label: '数据库维护', icon: Database, keywords: ['数据库', '清理', '维护', '备份', '数据维护'] },
+      { key: 'apitokens', label: 'API 令牌', icon: KeyRound, keywords: ['令牌', '凭据', '接口', 'token', 'API Token'] },
       // T03371（八期 §3.4.1）：SonarQube 环境配置页，PRD 要求紧接「API Token」之后
-      { key: 'sonar', label: 'SonarQube', keywords: ['sonar', '质量扫描', '扫描器', '服务器地址', 'projectKey', 'java', 'token'] },
+      { key: 'sonar', label: 'SonarQube', icon: ScanLine, keywords: ['sonar', '质量扫描', '扫描器', '服务器地址', 'projectKey', 'java', 'token'] },
     ],
   },
   {
-    key: 'ops', label: '运维与诊断',
+    key: 'ops', label: '运维与诊断', icon: Wrench,
     tabs: [
-      { key: 'supervisor', label: '监督审计', keywords: ['监督', '审计', '熔断', '队列'] },
-      { key: 'tunnel', label: '内网穿透', keywords: ['穿透', '隧道', '外网'] },
-      { key: 'logs', label: '日志', keywords: ['日志', '排障', '诊断'] },
+      { key: 'supervisor', label: '监督与审计', icon: ShieldCheck, keywords: ['监督', '审计', '熔断', '队列', '监督审计'] },
+      { key: 'tunnel', label: '内网穿透', icon: Network, keywords: ['穿透', '隧道', '外网'] },
+      { key: 'logs', label: '日志', icon: ScrollText, keywords: ['日志', '排障', '诊断'] },
     ],
   },
 ];
@@ -82,9 +94,9 @@ export function matchesSettingsTab(tab: SettingsTab, query: string): boolean {
 }
 
 /** 过滤后仍保序、保留分组；空分组不返回（导航不出现只有标题的空组） */
-export function filterSettingsGroups(query: string): Array<{ key: SettingsGroup['key']; label: string; tabs: SettingsTab[] }> {
+export function filterSettingsGroups(query: string): Array<{ key: SettingsGroup['key']; label: string; icon: LucideIcon; tabs: SettingsTab[] }> {
   return SETTINGS_GROUPS
-    .map((g) => ({ key: g.key, label: g.label, tabs: g.tabs.filter((t) => matchesSettingsTab(t, query)) }))
+    .map((g) => ({ ...g, tabs: g.tabs.filter((t) => matchesSettingsTab(t, query)) }))
     .filter((g) => g.tabs.length > 0);
 }
 

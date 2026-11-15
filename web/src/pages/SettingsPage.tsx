@@ -72,12 +72,18 @@ export function SettingsPage() {
         </span>
       </div>
       <nav aria-label="设置分组" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
-        {groups.map((g) => (
+        {groups.map((g) => {
+          const GroupIcon = g.icon;
+          return (
           <fieldset key={g.key} aria-label={g.label} data-t03271="group" data-group={g.key}
             style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4, border: 'none', margin: 0, padding: 0, minWidth: 0 }}>
-            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 72 }}>{g.label}</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 80 }}>
+              <GroupIcon size={13} aria-hidden="true" />
+              {g.label}
+            </span>
             {g.tabs.map((t) => {
               const on = active === t.key;
+              const Icon = t.icon;
               return (
                 <button
                   key={t.key}
@@ -87,20 +93,23 @@ export function SettingsPage() {
                   data-tab={t.key}
                   title={SETTINGS_TAB_LABELS[t.key]}
                   style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 5,
                     fontSize: 'var(--fs-m)',
-                    padding: '6px 14px',
+                    padding: '6px 12px',
                     borderRadius: 6,
                     background: on ? 'var(--accent)' : 'var(--card-bg)',
                     color: on ? 'var(--accent-text)' : 'var(--text)',
                     cursor: 'pointer',
                   }}
                 >
+                  <Icon size={14} aria-hidden="true" />
                   {t.label}
                 </button>
               );
             })}
           </fieldset>
-        ))}
+          );
+        })}
         {groups.length === 0 && (
           <output data-t03271="empty" style={{ display: 'block', padding: '8px 0', fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>
             无匹配设置项
