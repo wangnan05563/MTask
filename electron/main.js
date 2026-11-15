@@ -52,6 +52,8 @@ if (app.requestSingleInstanceLock()) {
 let serverProc = null;
 let splashWin = null;
 let mainWin = null;
+/** T05767：执行会话独立置顶监控窗口；不设 parent，避免随主窗口最小化而隐藏。 */
+let execMonitorWin = null;
 let backendReady = false;
 let uiReady = false;
 let ticker = null;
@@ -1457,6 +1459,63 @@ async function bootstrapApp() {
     await mainWin.loadURL('app://ui/index.html');
   }
 }
+/**
+ * T05767：创建执行会话独立置顶监控窗口。
+ *
+ * 关键取舍：
+ * - 不设置 parent：Electron 子窗口会随父窗口最小化而隐藏，无法满足「主应用最小化后仍监控」；
+ * - alwaysOnTop 在窗口创建时即开启，层级高于主应用；窗口独立加载同一前端，只渲染
+ *   ?view=exec-monitor 的双栏页面；
+ * - 复用同一套 preload 与 app:// /api 协议，因此左右栏的轮询请求和主应用指向同一后端。
+ * - 重复点击时复用已有窗口并置顶，避免堆出多个监控窗口。
+ */
+async function openExecMonitorWindow() {
+  if (execMonitorWin && !execMonitorWin.isDestroyed()) {
+    execMonitorWin.show();
+    execMonitorWin.focus();
+    execMonitorWin.setAlwaysOnTop(true);
+    return { ok: true, reused: true };
+  }
+
+  const win = new BrowserWindow({
+    width: 1120,
+    height: 760,
+    minWidth: 720,
+    minHeight: 520,
+    show: false,
+    title: 'MTask · 执行会话监控',
+    icon: path.join(__dirname, 'icon.png'),
+    alwaysOnTop: true,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      preload: path.join(__dirname, 'preload.js'),
+    },
+  });
+  execMonitorWin = win;
+
+  // 监控窗口同样禁止页内 window.open 拉起外部协议，外链只交给系统浏览器。
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
+
+  win.once('ready-to-show', () => {
+    win.show();
+    win.setAlwaysOnTop(true);
+    win.focus();
+  });
+  win.on('closed', () => {
+    if (execMonitorWin === win) execMonitorWin = null;
+  });
+
+  const target = DEV ? `http://localhost:${VITE_PORT}` : 'app://ui/index.html';
+  await win.loadURL(`${target}?view=exec-monitor`);
+  return { ok: true, reused: false };
+}
+
+ipcMain.handle('exec-monitor:open', () => openExecMonitorWindow());
+
 app.on('ready', () => { void bootstrapApp(); });
 
 app.on('window-all-closed', () => {

@@ -62,6 +62,8 @@ export interface DesktopApi {
   onUpdateProgress?: (cb: (data: { status: string; received?: number; total?: number; filePath?: string; origin?: string; message?: string }) => void) => () => void;
   /** T02976：菜单通道下载失败后的「重试」——重走整条在线更新流程（检查→确认→下载） */
   retryOnlineUpdate?: () => Promise<void>;
+  /** T05767：弹出独立置顶的执行会话监控窗口（Electron 主进程创建，主应用最小化不中断） */
+  openExecMonitor?: () => Promise<{ ok: boolean; reused?: boolean }>;
 }
 
 /** 取桌面壳 API；非 Electron 环境返回 null（调用方需自行降级） */

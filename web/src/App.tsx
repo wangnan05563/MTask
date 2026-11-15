@@ -604,6 +604,16 @@ function resolveUiMode(): 'mobile' | 'desktop' {
 }
 
 export function App() {
+  // T05767：独立置顶监控窗口以 ?view=exec-monitor 打开——不渲染主应用导航/通知铃铛，
+  // 只承载执行会话双栏页面，避免独立窗口里再出现一套应用外壳。
+  const standaloneMonitor = new URLSearchParams(location.search).get('view') === 'exec-monitor';
+  if (standaloneMonitor) {
+    return (
+      <SettingsProvider>
+        <ExecSessionsPage standalone />
+      </SettingsProvider>
+    );
+  }
   const ui = resolveUiMode();
   return (
     <SettingsProvider>

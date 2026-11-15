@@ -34,6 +34,8 @@ contextBridge.exposeInMainWorld('mtaskDesktop', {
   /** T01057-FR1.1：任务通知开关（持久化在主进程 userData/notify-prefs.json） */
   getNotifyEnabled: () => ipcRenderer.invoke('notify:get-enabled'),
   setNotifyEnabled: (enabled) => ipcRenderer.invoke('notify:set-enabled', enabled),
+  /** T05767：弹出独立置顶的执行会话监控窗口（主应用最小化后仍可见） */
+  openExecMonitor: () => ipcRenderer.invoke('exec-monitor:open'),
   /** T03776：关闭交互偏好 { closeAction: 'minimize_to_tray'|'exit_app', rememberChoice: boolean } */
   getClosePrefs: () => ipcRenderer.invoke('close:get-prefs'),
   setClosePrefs: (patch) => ipcRenderer.invoke('close:set-prefs', patch),

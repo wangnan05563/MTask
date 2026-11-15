@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { Activity, Loader2, RefreshCw, RotateCcw } from 'lucide-react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { Activity, Loader2, Pin, RefreshCw, RotateCcw } from 'lucide-react';
 import { api, type ExecSession } from '../api/client';
 import { EmptyState } from '../ui/EmptyState';
 import { focusTaskByNo } from '../ui/focusTask';
 import { fullTime, relTime } from '../ui/format';
-import { platformLabel } from '../ui/platformLabel';
+import { NotificationFeed } from '../ui/NotificationFeed';
+import { PlatformLogo, platformDisplayName } from '../ui/PlatformLogo';
+import { desktopApi } from '../ui/desktop';
 
 /**
  * T01271-FR1.4：「执行会话」面板——展示外部平台会话的存活 / 进度 / 阶段 / 停滞标记。
@@ -12,6 +14,9 @@ import { platformLabel } from '../ui/platformLabel';
  * T03175（AI-402）升级：活跃且可见时刷新 ≤2 秒（隐藏页降频 15 秒）、停滞/失败会话一键重派
  * （经服务端复用既有 RelayDispatch 链路）、任务 chip 点击直达任务详情（focusTaskByNo 定位高亮）。
  * 停滞标记仍完全由服务端写入，前端不做二次推断；重派动作也只在服务端校验后执行（单一口径）。
+ *
+ * T05766：由单列大留白列表改为「状态分列卡片看板」；每列按最新状态更新时间倒序，
+ * 来源平台以统一尺寸 Logo 标识；状态变化时用 FLIP 动画从旧位置平滑冒泡到新列顶部。
  */
 
 /** AI-402④：可见时 ≤2 秒刷新；隐藏页降频（与队列页 15 秒轮询同档） */
@@ -20,6 +25,29 @@ const HIDDEN_POLL_MS = 15000;
 
 /** 可重派状态（PRD §8：心跳超时→stalled、平台报错→failed 才有一键重派；其余状态服务端整单拒绝） */
 const REDISPATCHABLE = new Set(['stalled', 'failed']);
+
+/** T05767：左右分栏默认严格 3:1（左 75% / 右 25%），拖动范围留出两侧安全边界。 */
+const SPLIT_KEY = 'mtask.execSessions.splitPct';
+const DEFAULT_LEFT_PCT = 75;
+const MIN_LEFT_PCT = 55;
+const MAX_LEFT_PCT = 85;
+
+function readSplitPct(): number {
+  try {
+    const raw = Number(localStorage.getItem(SPLIT_KEY));
+    if (Number.isFinite(raw) && raw >= MIN_LEFT_PCT && raw <= MAX_LEFT_PCT) return raw;
+  } catch { /* 忽略 */ }
+  return DEFAULT_LEFT_PCT;
+}
+
+/** 看板列定义：状态键 + 列标题 + 语义色。未知状态会动态追加，避免会话凭空消失。 */
+const STATUS_COLUMNS: Array<{ key: string; label: string; color: string; tone: string }> = [
+  { key: 'active', label: '进行中', color: 'var(--success)', tone: 'var(--accent-soft)' },
+  { key: 'stalled', label: '等待中', color: 'var(--warn)', tone: 'color-mix(in srgb, var(--warn) 10%, transparent)' },
+  { key: 'failed', label: '失败', color: 'var(--danger)', tone: 'color-mix(in srgb, var(--danger) 10%, transparent)' },
+  { key: 'done', label: '已完成', color: 'var(--text-muted)', tone: 'var(--surface-2)' },
+  { key: 'aborted', label: '已中止', color: 'var(--text-muted)', tone: 'var(--surface-2)' },
+];
 
 /** `POST /exec-sessions/:id/redispatch` 响应（服务端 RedispatchSessionResult 镜像） */
 interface RedispatchEntry {
@@ -38,20 +66,16 @@ interface RedispatchResponse {
   entries: RedispatchEntry[];
 }
 
-/** 会话状态展示口径（PRD §8 状态机） */
-const STATUS_META: Record<string, { label: string; color: string }> = {
-  active: { label: '存活', color: 'var(--success)' },
-  stalled: { label: '停滞', color: 'var(--danger)' },
-  done: { label: '已完成', color: 'var(--text-muted)' },
-  failed: { label: '失败', color: 'var(--danger)' },
-  aborted: { label: '已中止', color: 'var(--text-muted)' },
-};
+/** 会话状态展示口径（PRD §8 状态机）。列标题与卡片内徽标共用同一份语义。 */
+const STATUS_META: Record<string, { label: string; color: string }> = Object.fromEntries(
+  STATUS_COLUMNS.map((c) => [c.key, { label: c.label, color: c.color }]),
+);
 
 const card: CSSProperties = {
   background: 'var(--card-bg)',
   border: '1px solid var(--border)',
-  borderRadius: 16,
-  padding: '12px 14px',
+  borderRadius: 14,
+  padding: '10px 12px',
 };
 
 const chip: CSSProperties = {
@@ -83,12 +107,34 @@ const projectBadge: CSSProperties = {
   padding: '0 5px',
 };
 
-export function ExecSessionsPage() {
+/** 会话的「最新状态更新时间」：终态取结束时间，运行态取最近心跳；用于列内倒序。 */
+function sessionUpdatedAt(s: ExecSession): number {
+  const candidates = [s.finished_at, s.last_heartbeat, s.started_at].filter(Boolean) as string[];
+  return candidates.reduce((max, iso) => Math.max(max, Date.parse(iso) || 0), 0);
+}
+
+function statusColumns(rows: ExecSession[]) {
+  const extra = Array.from(new Set(rows.map((r) => r.status).filter((st) => !STATUS_META[st])));
+  return [
+    ...STATUS_COLUMNS,
+    ...extra.map((key) => ({ key, label: key || '未知', color: 'var(--text-muted)', tone: 'var(--surface-2)' })),
+  ];
+}
+
+export function ExecSessionsPage({ standalone = false }: { readonly standalone?: boolean }) {
   const [rows, setRows] = useState<ExecSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   /** L3 丁档：最近一次摘要指纹——相同就跳过整行重取 */
   const sigRef = useRef('');
+  /** T05767：左右分栏宽度（左栏百分比）与拖动状态；默认严格 3:1。 */
+  const [leftPct, setLeftPct] = useState(readSplitPct);
+  const [dragging, setDragging] = useState(false);
+  const splitRef = useRef<HTMLDivElement | null>(null);
+  /** T05766：FLIP 冒泡动画的锚点：上一次渲染后的卡片矩形 + 每个会话的状态。 */
+  const cardRefs = useRef(new Map<string, HTMLDivElement>());
+  const prevRectsRef = useRef(new Map<string, DOMRect>());
+  const prevStatusRef = useRef(new Map<string, string>());
 
   const load = useCallback(async () => {
     try {
@@ -133,9 +179,106 @@ export function ExecSessionsPage() {
     };
   }, [poll, load]);
 
-  const alive = rows.filter((r) => r.status === 'active').length;
-  const stalled = rows.filter((r) => r.status === 'stalled').length;
-  const finished = rows.filter((r) => r.status === 'done').length;
+  // T05767：分隔线拖动。监听挂在 window 上，指针移出分隔线/窗口边界仍可持续调整；
+  // 限制 55%~85%，避免右栏被压成 0 或左栏把看板挤坏；松手才写 localStorage。
+  useEffect(() => {
+    if (!dragging) return;
+    const resize = (ev: PointerEvent) => {
+      const rect = splitRef.current?.getBoundingClientRect();
+      if (!rect || rect.width <= 0) return;
+      const pct = ((ev.clientX - rect.left) / rect.width) * 100;
+      setLeftPct(Math.max(MIN_LEFT_PCT, Math.min(MAX_LEFT_PCT, pct)));
+    };
+    const stop = () => {
+      setDragging(false);
+      setLeftPct((cur) => {
+        try { localStorage.setItem(SPLIT_KEY, String(Math.round(cur))); } catch { /* 忽略 */ }
+        return cur;
+      });
+    };
+    const oldCursor = document.body.style.cursor;
+    const oldSelect = document.body.style.userSelect;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('pointermove', resize);
+    window.addEventListener('pointerup', stop, { once: true });
+    window.addEventListener('pointercancel', stop, { once: true });
+    return () => {
+      window.removeEventListener('pointermove', resize);
+      window.removeEventListener('pointerup', stop);
+      window.removeEventListener('pointercancel', stop);
+      document.body.style.cursor = oldCursor;
+      document.body.style.userSelect = oldSelect;
+    };
+  }, [dragging]);
+
+  const adjustSplit = (delta: number) => {
+    setLeftPct((cur) => {
+      const next = Math.max(MIN_LEFT_PCT, Math.min(MAX_LEFT_PCT, cur + delta));
+      try { localStorage.setItem(SPLIT_KEY, String(Math.round(next))); } catch { /* 忽略 */ }
+      return next;
+    });
+  };
+
+  const openMonitor = async () => {
+    const desktop = desktopApi();
+    if (desktop?.openExecMonitor) {
+      await desktop.openExecMonitor();
+      return;
+    }
+    // 浏览器直连时无法设置 alwaysOnTop；退化为独立窗口，桌面壳内仍走 IPC 置顶窗口。
+    const url = new URL(location.href);
+    url.searchParams.set('view', 'exec-monitor');
+    globalThis.open(url.toString(), 'mtask-exec-monitor', 'popup=yes,width=1100,height=760');
+  };
+
+  // T05766：状态变化后卡片会被 React 立即挪到新列；这里用 Web Animations API 先把它
+  // 视觉上拉回旧位置，再过渡到新位置，形成「从原处冒泡到列顶」的 FLIP 效果。
+  // 只在状态真的变化时触发，避免每 2 秒心跳轮询都抖动；尊重 prefers-reduced-motion。
+  useLayoutEffect(() => {
+    const reduceMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+    const nextRects = new Map<string, DOMRect>();
+    for (const s of rows) {
+      const el = cardRefs.current.get(s.id);
+      if (el) nextRects.set(s.id, el.getBoundingClientRect());
+    }
+
+    if (!reduceMotion && prevStatusRef.current.size > 0) {
+      for (const s of rows) {
+        const oldStatus = prevStatusRef.current.get(s.id);
+        if (!oldStatus || oldStatus === s.status) continue;
+        const oldRect = prevRectsRef.current.get(s.id);
+        const nextRect = nextRects.get(s.id);
+        const el = cardRefs.current.get(s.id);
+        if (!oldRect || !nextRect || !el) continue;
+        const dx = oldRect.left - nextRect.left;
+        const dy = oldRect.top - nextRect.top;
+        if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue;
+        el.animate(
+          [
+            { transform: `translate(${dx}px, ${dy}px)`, boxShadow: '0 0 0 2px var(--accent)' },
+            { transform: 'translate(0, 0)', boxShadow: '0 0 0 2px var(--accent)' },
+            { transform: 'translate(0, 0)', boxShadow: '0 0 0 0 transparent' },
+          ],
+          { duration: 520, easing: 'cubic-bezier(.2,.8,.2,1)' },
+        );
+      }
+    }
+
+    prevRectsRef.current = nextRects;
+    prevStatusRef.current = new Map(rows.map((s) => [s.id, s.status]));
+  }, [rows]);
+
+  const columns = statusColumns(rows);
+  const grouped = new Map<string, ExecSession[]>();
+  for (const col of columns) grouped.set(col.key, []);
+  for (const s of rows) {
+    const key = grouped.has(s.status) ? s.status : 'active';
+    grouped.get(key)?.push(s);
+  }
+  for (const [, list] of grouped) {
+    list.sort((a, b) => sessionUpdatedAt(b) - sessionUpdatedAt(a));
+  }
 
   // S3358：嵌套三元展开为 if/else 语句
   let content: ReactNode;
@@ -155,62 +298,178 @@ export function ExecSessionsPage() {
     );
   } else {
     content = (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {rows.map((s) => <SessionCard key={s.id} s={s} />)}
+      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${columns.length}, minmax(190px, 1fr))`, gap: 12, alignItems: 'start', overflowX: 'auto', paddingBottom: 8 }}>
+        {columns.map((col) => (
+          <KanbanColumn
+            key={col.key}
+            title={col.label}
+            color={col.color}
+            tone={col.tone}
+            rows={grouped.get(col.key) ?? []}
+            onCardRef={(id, el) => {
+              if (el) cardRefs.current.set(id, el);
+              else cardRefs.current.delete(id);
+            }}
+          />
+        ))}
       </div>
     );
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <style>{'@keyframes exec-spin { to { transform: rotate(360deg) } }'}</style>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0, height: standalone ? '100vh' : undefined }}>
+      <style>{`
+        @keyframes exec-spin { to { transform: rotate(360deg) } }
+        @keyframes exec-card-in { from { opacity: 0; transform: translateY(4px) } to { opacity: 1; transform: none } }
+        .exec-kanban-card { will-change: transform; }
+        .exec-kanban-card:hover { border-color: var(--border-strong) !important; box-shadow: 0 4px 14px rgba(15,23,42,.08); }
+        .exec-column { scrollbar-width: thin; }
+        .exec-split-handle:hover span, .exec-split-handle:focus-visible span { background: var(--accent) !important; }
+        .notify-feed-scroll { scrollbar-width: thin; }
+      `}</style>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0, paddingTop: standalone ? 12 : 0, paddingLeft: standalone ? 16 : 0, paddingRight: standalone ? 16 : 0 }}>
         <Activity size={20} style={{ color: 'var(--accent)' }} />
-        <div style={{ flex: 1 }}>
-          <h2 style={{ margin: 0, fontSize: 'var(--fs-2xl)', color: 'var(--text)' }}>执行会话</h2>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <h2 style={{ margin: 0, fontSize: 'var(--fs-2xl)', color: 'var(--text)' }}>{standalone ? '执行会话监控' : '执行会话'}</h2>
           <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginTop: 2 }}>
-            外部 AI 平台（qcoder / WorkBuddy / 中继）执行任务期间上报的会话存活与进度；页面可见时每 2 秒刷新，隐藏时降为 15 秒
+            {standalone
+              ? '独立置顶窗口：主应用最小化后仍持续刷新，左右栏与主应用共用同一份服务端数据。'
+              : '左侧看板按状态分列，同列按最新状态更新时间倒序；右侧通知流自动刷新。拖动中间分隔线可调整 3:1 默认比例。'}
           </div>
         </div>
-        <button
-          className="tbtn-anim"
-          onClick={() => void load()}
-          title="刷新列表"
-          aria-label="刷新：重新拉取执行会话列表"
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'calc(var(--fs-s) + 0.5px)', padding: '6px 12px',
-            background: 'var(--surface-2)', color: 'var(--text)', border: '1px solid var(--border)',
-            borderRadius: 8, cursor: 'pointer',
+        {standalone ? (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-s)', color: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 999, padding: '4px 10px' }}>
+            <Pin size={13} /> 置顶监控中
+          </span>
+        ) : (
+          <>
+            <button
+              className="tbtn-anim"
+              onClick={() => void openMonitor()}
+              title="弹出置顶监控窗口 — 独立于主应用运行，主应用最小化后仍可见"
+              aria-label="弹出置顶监控窗口"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'calc(var(--fs-s) + 0.5px)', padding: '6px 12px',
+                background: 'var(--card-bg)', color: 'var(--accent)', border: '1px solid var(--accent)',
+                borderRadius: 8, cursor: 'pointer',
+              }}
+            >
+              <Pin size={14} /> 弹出置顶
+            </button>
+            <button
+              className="tbtn-anim"
+              onClick={() => void load()}
+              title="刷新列表"
+              aria-label="刷新：重新拉取执行会话列表"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'calc(var(--fs-s) + 0.5px)', padding: '6px 12px',
+                background: 'var(--surface-2)', color: 'var(--text)', border: '1px solid var(--border)',
+                borderRadius: 8, cursor: 'pointer',
+              }}
+            >
+              <RefreshCw size={14} /> 刷新
+            </button>
+          </>
+        )}
+      </div>
+
+      {error && <div style={{ fontSize: 'var(--fs-m)', color: 'var(--danger)', flexShrink: 0 }}>加载失败：{error}</div>}
+
+      <div
+        ref={splitRef}
+        style={{
+          display: 'grid',
+          gridTemplateColumns: `${leftPct}% 10px minmax(0, 1fr)`,
+          gap: 0,
+          minHeight: 520,
+          height: standalone ? 'calc(100vh - 96px)' : 'calc(100vh - 210px)',
+          padding: standalone ? '0 16px 12px' : 0,
+          boxSizing: 'border-box',
+          minWidth: 0,
+        }}
+      >
+        <div data-lck="exec-monitor-column" style={{ minWidth: 0, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', paddingRight: 10 }}>
+          {content}
+        </div>
+        <div
+          className="exec-split-handle"
+          data-lck="exec-split-handle"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整执行会话与通知中心宽度"
+          aria-valuemin={MIN_LEFT_PCT}
+          aria-valuemax={MAX_LEFT_PCT}
+          aria-valuenow={Math.round(leftPct)}
+          tabIndex={0}
+          onPointerDown={(e) => { e.preventDefault(); setDragging(true); }}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowLeft') { e.preventDefault(); adjustSplit(-3); }
+            else if (e.key === 'ArrowRight') { e.preventDefault(); adjustSplit(3); }
+            else if (e.key === 'Home') { e.preventDefault(); setLeftPct(DEFAULT_LEFT_PCT); try { localStorage.setItem(SPLIT_KEY, String(DEFAULT_LEFT_PCT)); } catch { /* 忽略 */ } }
           }}
+          title="拖动调整左右栏宽度（默认 3:1）；双击恢复 3:1"
+          onDoubleClick={() => { setLeftPct(DEFAULT_LEFT_PCT); try { localStorage.setItem(SPLIT_KEY, String(DEFAULT_LEFT_PCT)); } catch { /* 忽略 */ } }}
+          style={{ position: 'relative', cursor: 'col-resize', touchAction: 'none', userSelect: 'none', background: 'transparent', border: 'none', padding: 0, minWidth: 10 }}
         >
-          <RefreshCw size={14} /> 刷新
-        </button>
+          <span style={{ position: 'absolute', left: 4, top: 8, bottom: 8, width: 2, borderRadius: 2, background: dragging ? 'var(--accent)' : 'var(--border-strong)', transition: 'background .15s ease' }} />
+          <span aria-hidden="true" style={{ position: 'absolute', left: 2, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', fontSize: 10, lineHeight: 1 }}>⋮</span>
+        </div>
+        <div data-lck="notification-column" style={{ minWidth: 0, minHeight: 0, overflow: 'hidden', paddingLeft: 10 }}>
+          <NotificationFeed limit={50} />
+        </div>
       </div>
-
-      <div style={{ display: 'flex', gap: 12 }}>
-        <Stat label="存活" value={alive} color="var(--success)" />
-        <Stat label="停滞" value={stalled} color="var(--danger)" />
-        <Stat label="已完成" value={finished} color="var(--text-muted)" />
-      </div>
-
-      {error && <div style={{ fontSize: 'var(--fs-m)', color: 'var(--danger)' }}>加载失败：{error}</div>}
-
-      {content}
     </div>
   );
 }
 
-function Stat({ label, value, color }: { readonly label: string; readonly value: number; readonly color: string }) {
+function KanbanColumn({
+  title,
+  color,
+  tone,
+  rows,
+  onCardRef,
+}: {
+  readonly title: string;
+  readonly color: string;
+  readonly tone: string;
+  readonly rows: ExecSession[];
+  readonly onCardRef: (id: string, el: HTMLDivElement | null) => void;
+}) {
   return (
-    <div style={{ ...card, flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
-      <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>{label}</span>
-      <span style={{ fontSize: 'var(--fs-title)', fontWeight: 600, color }}>{value}</span>
-    </div>
+    <section
+      className="exec-column"
+      aria-label={`${title}，${rows.length} 个会话`}
+      style={{
+        minWidth: 0, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14,
+        padding: 10, display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 'calc(100vh - 300px)', overflowY: 'auto',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '1px 2px', position: 'sticky', top: -10, zIndex: 1, background: 'var(--surface)' }}>
+        <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, boxShadow: `0 0 0 3px ${tone}` }} />
+        <span style={{ fontSize: 'calc(var(--fs-s) + 0.5px)', fontWeight: 600, color: 'var(--text)' }}>{title}</span>
+        <span style={{ marginLeft: 'auto', minWidth: 22, height: 20, padding: '0 6px', borderRadius: 999, background: 'var(--card-bg)', border: '1px solid var(--border)', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+          {rows.length}
+        </span>
+      </div>
+      {rows.length === 0 && (
+        <div style={{ padding: '18px 8px', textAlign: 'center', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', border: '1px dashed var(--border)', borderRadius: 10 }}>
+          暂无{title}会话
+        </div>
+      )}
+      {rows.map((s) => (
+        <SessionCard
+          key={s.id}
+          s={s}
+          cardRef={(el) => onCardRef(s.id, el)}
+          enterAnimation
+        />
+      ))}
+    </section>
   );
 }
 
-function SessionCard({ s }: { readonly s: ExecSession }) {
+function SessionCard({ s, cardRef, enterAnimation = false }: { readonly s: ExecSession; readonly cardRef?: (el: HTMLDivElement | null) => void; readonly enterAnimation?: boolean }) {
   const meta = STATUS_META[s.status] ?? { label: s.status || '未知', color: 'var(--text-muted)' };
   const pct = Math.max(0, Math.min(100, Math.round(s.progress ?? 0)));
   const [busy, setBusy] = useState(false);
@@ -245,16 +504,29 @@ function SessionCard({ s }: { readonly s: ExecSession }) {
   };
 
   return (
-    <div style={{ ...card, display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+    <div
+      ref={cardRef}
+      className="exec-kanban-card"
+      data-lck="exec-session-card"
+      style={{ ...card, display: 'flex', flexDirection: 'column', gap: 7, animation: enterAnimation ? 'exec-card-in .24s ease-out' : undefined }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <PlatformLogo platform={s.platform} size={28} />
+        <span style={{ fontSize: 'calc(var(--fs-m) + 0.5px)', fontWeight: 600, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {platformDisplayName(s.platform)}
+        </span>
         <span style={{ fontSize: 'calc(var(--fs-xs) + 0.5px)', color: meta.color, border: `1px solid ${meta.color}`, borderRadius: 999, padding: '1px 8px' }}>
           {meta.label}
         </span>
-        <span style={{ fontSize: 'calc(var(--fs-m) + 0.5px)', fontWeight: 600, color: 'var(--text)' }}>{platformLabel(s.platform)}</span>
-        <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>{s.session_id ?? '-'}</span>
         <span style={{ flex: 1 }} />
-        <span title={fullTime(s.last_heartbeat)} style={{ fontSize: 'var(--fs-s)', color: redispatchable ? 'var(--danger)' : 'var(--text-muted)' }}>
-          心跳 {relTime(s.last_heartbeat)}
+        <span title={fullTime(s.last_heartbeat)} style={{ fontSize: 'var(--fs-xs)', color: redispatchable ? 'var(--danger)' : 'var(--text-muted)' }}>
+          {relTime(s.last_heartbeat)}
+        </span>
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+        <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {s.session_id ?? '-'}
         </span>
         {redispatchable && (
           <button
@@ -265,27 +537,27 @@ function SessionCard({ s }: { readonly s: ExecSession }) {
             aria-label={`重派会话 ${s.session_id ?? s.id} 的停滞任务`}
             title="一键重派：经中继把该会话关联的待办任务重新派发（复用既有派发链路）"
             style={{
-              display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-s)', padding: '3px 10px',
+              marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', padding: '2px 8px',
               background: 'var(--surface-2)', color: 'var(--danger)', border: '1px solid var(--danger)',
-              borderRadius: 8, cursor: 'pointer',
+              borderRadius: 7, cursor: 'pointer', flexShrink: 0,
             }}
           >
-            <RotateCcw size={12} style={{ animation: busy ? 'exec-spin 1s linear infinite' : undefined }} /> {busy ? '重派中' : '重派'}
+            <RotateCcw size={11} style={{ animation: busy ? 'exec-spin 1s linear infinite' : undefined }} /> {busy ? '重派中' : '重派'}
           </button>
         )}
       </div>
 
-      {s.phase && <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }}>阶段：{s.phase}</div>}
+      {s.phase && <div title={s.phase} style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>阶段：{s.phase}</div>}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <div style={{ flex: 1, height: 6, borderRadius: 999, background: 'var(--surface-2)', overflow: 'hidden' }}>
+        <div style={{ flex: 1, height: 5, borderRadius: 999, background: 'var(--surface-2)', overflow: 'hidden' }}>
           <div style={{ width: `${pct}%`, height: '100%', background: meta.color, transition: 'width .3s ease' }} />
         </div>
-        <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', minWidth: 34, textAlign: 'right' }}>{pct}%</span>
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 32, textAlign: 'right' }}>{pct}%</span>
       </div>
 
       {s.tasks.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
           {s.tasks.map((t) => (
             <button
               key={t.id}
@@ -293,7 +565,7 @@ function SessionCard({ s }: { readonly s: ExecSession }) {
               onClick={() => void focusTaskByNo(t.task_no, 'notice')}
               title={`${t.project_name ?? '未分配项目'}｜${t.task_no ?? ''} ${t.title}——点击直达任务`}
               style={{
-                ...chip, display: 'inline-flex', alignItems: 'center', gap: 6,
+                ...chip, display: 'inline-flex', alignItems: 'center', gap: 5,
                 border: '1px solid var(--border)', cursor: 'pointer', background: 'var(--surface-2)', textAlign: 'left', font: 'inherit',
               }}
             >
@@ -308,7 +580,7 @@ function SessionCard({ s }: { readonly s: ExecSession }) {
         </div>
       )}
 
-      {notice && <div data-lck="redispatch-notice" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>{notice}</div>}
+      {notice && <div data-lck="redispatch-notice" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>{notice}</div>}
     </div>
   );
 }
