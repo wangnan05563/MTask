@@ -10,6 +10,8 @@ import { api } from '../api/client';
  * 数据源 `GET /memories/graph?productKey=`（服务端拼好 tag 共享边/替代链/项目聚簇，前端不做 N² 计算）。
  * 视觉：跟随当前亮/暗主题的图谱画布 + type 四色节点 + 失效灰显 + 悬停高亮一跳邻域
  * + 缩放门控标签（labelRenderedSizeThreshold 即 Obsidian 的 text fade threshold）+ 点击节点开详情面板。
+ * 动效：参考 KarpathyWiki 的 vis-network 常开物理手感——FA2 只做种子布局，随后 rAF 持续单步迭代；
+ * 原生拖拽期间暂停物理、松手续跑；边宽随相位轻微脉冲形成「流动感」。
  */
 
 interface GraphTheme {
@@ -159,6 +161,19 @@ const TYPE_LABELS: Record<string, string> = {
   user: '用户偏好', feedback: '反馈纠正', project: '项目事实', reference: '外部参考',
 };
 
+/**
+ * 常开物理参数：对齐 KarpathyWiki 的 forceAtlas2Based 手感——
+ * 低中心重力 + 较强斥力 + 阻尼，让图在种子布局后仍持续轻微收敛/回弹，而不是彻底冻结。
+ */
+const LIVE_PHYSICS = {
+  gravity: 0.3,
+  scalingRatio: 9,
+  strongGravityMode: false,
+  edgeWeightInfluence: 0.8,
+  adjustSizes: true,
+  slowDown: 2.4,
+};
+
 interface GraphNode {
   id: string;
   kind: 'memory' | 'project' | 'task';
@@ -203,6 +218,9 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
   // hover/邻域状态放 ref：变化只 sigma.refresh()，不触发 React 重渲染
   const hoveredRef = useRef<string | null>(null);
   const graphRef = useRef<Graph | null>(null);
+  // 常开物理循环：rAF 句柄 + 拖拽暂停标志（拖拽时让用户完全控制节点，松手后自然收敛）
+  const simRafRef = useRef<number | null>(null);
+  const simPausedRef = useRef(false);
 
   const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3000); };
   const [notice, setNotice] = useState('');
@@ -275,18 +293,11 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
     }
     graphRef.current = graph;
 
-    // ForceAtlas2 布局：运行即冻结（写死 x/y 作为终位，无持续动画循环，空闲 CPU≈0）
-    // 低重力 + 高斥力让 20~30 条记忆在画布上铺开，而不是缩成左下角一小团。
+    // 第一步：FA2 种子布局（90 次），给节点一个稳定的初始骨架；
+    // 真正的「持续力模拟」交给下面的 rAF 单步循环，避免一次性跑几百次造成首屏卡顿。
     ForceAtlas2.assign(graph, {
-      iterations: 220,
-      settings: {
-        gravity: 0.3,
-        scalingRatio: 9,
-        barnesHutOptimize: data.nodes.length > 300,
-        strongGravityMode: false,
-        edgeWeightInfluence: 0.8,
-        adjustSizes: true,
-      },
+      iterations: 90,
+      settings: { ...LIVE_PHYSICS, barnesHutOptimize: data.nodes.length > 300 },
     });
 
     // sigma v4：settings 与 styles 分层——门控/相机在 settings，标签颜色/字号在 styles.nodes
@@ -369,7 +380,10 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
         const res = { ...attrs } as Record<string, unknown>;
         const kind = String(res.edgeKind ?? 'tag');
         res.color = kind === 'supersede' ? theme.edgeSupersede : kind === 'project' ? theme.edgeProject : kind === 'task' ? theme.edgeTask : theme.edgeTag;
-        res.size = kind === 'supersede' ? 2.4 : 1.5;
+        // 边宽相位脉冲：同一时刻不同边相位错开，配合持续物理刷新形成轻微「流光」而不抢节点焦点
+        const baseSize = kind === 'supersede' ? 2.4 : 1.5;
+        const phase = performance.now() / 900 + (edge.charCodeAt(edge.length - 1) % 7);
+        res.size = baseSize + (Math.sin(phase) * 0.5 + 0.5) * (kind === 'supersede' ? 0.9 : 0.45);
         // T05738 P2 回放：任一端未显现 → 整条边隐藏
         const rp = replayRef.current;
         if (rp.active && rp.cursor !== null) {
@@ -389,6 +403,33 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
     });
     sigmaRef.current = sigma;
 
+    // 第二步：常开物理——每 ~32ms 跑一次单步 FA2，让图持续轻微收敛/回弹（KarpathyWiki 的 physics.enabled 手感）。
+    // 拖拽期间由 simPausedRef 暂停，松手后自动续跑；rAF 循环本身保持，避免频繁重建定时器。
+    let lastPhysicsStep = 0;
+    const stepSimulation = () => {
+      if (!graphRef.current || graphRef.current.order === 0) return;
+      if (!simPausedRef.current) {
+        const now = performance.now();
+        if (now - lastPhysicsStep >= 32) {
+          lastPhysicsStep = now;
+          ForceAtlas2.assign(graph, { iterations: 1, settings: { ...LIVE_PHYSICS, barnesHutOptimize: data.nodes.length > 300 } });
+          sigma.refresh();
+        }
+      }
+      simRafRef.current = requestAnimationFrame(stepSimulation);
+    };
+    const startSimulation = () => {
+      if (simRafRef.current === null) simRafRef.current = requestAnimationFrame(stepSimulation);
+    };
+    const stopSimulation = () => {
+      if (simRafRef.current !== null) {
+        cancelAnimationFrame(simRafRef.current);
+        simRafRef.current = null;
+      }
+    };
+    // 入场动画 700ms；等它结束（780ms）再开物理，避免两套 x/y 插值互相拉扯
+    const simulationStartTimer = window.setTimeout(startSimulation, 780);
+
     // 相机复位到画布中心：避免默认视角把已经铺开的图压在左下角
     sigma.getCamera().setState({ x: 0.5, y: 0.5, ratio: 1 });
 
@@ -405,6 +446,11 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
       sigma.refresh();
     });
 
+    // 原生拖拽：拖拽期间完全交给 sigma 的拖拽控制器（物理暂停），松手后继续慢速收敛。
+    // 不接管节点坐标，也不做邻域弹簧，保持 KarpathyWiki 那种「手动摆位后自然回弹」的手感。
+    sigma.on('nodeDragStart', () => { simPausedRef.current = true; });
+    sigma.on('nodeDragEnd', () => { simPausedRef.current = false; });
+
     sigma.on('clickNode', ({ node }) => {
       const hit = data.nodes.find((n) => n.id === node);
       setSelected(hit ?? null);
@@ -413,6 +459,9 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
 
     return () => {
       hoveredRef.current = null;
+      window.clearTimeout(simulationStartTimer);
+      stopSimulation();
+      simPausedRef.current = false;
       sigma.kill();
       sigmaRef.current = null;
       graphRef.current = null;
@@ -456,7 +505,7 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
         <span style={{ color: theme.legendSupersede }}>· 红线=被替代</span>
         <span style={{ color: theme.legendProject }}>· 紫线=项目归属</span>
         <span style={{ color: theme.legendTask }}>· 青线=来源任务</span>
-        <span>· 悬停高亮邻域，拖动节点可整理，点击看详情</span>
+        <span>· 持续力模拟，悬停高亮邻域，拖动调整，点击看详情</span>
         <span style={{ marginLeft: 'auto' }}>
           {data.stats.memoryCount} 条记忆 · {data.stats.projectCount} 个项目 · {data.stats.taskCount} 个任务 · {data.stats.tagEdgeCount} 条标签连线
         </span>

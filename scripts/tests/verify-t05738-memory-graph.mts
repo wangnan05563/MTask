@@ -3,7 +3,7 @@
  *
  * 交付：server `GET /memories/graph`（服务端拼 tag 共享边/替代链/项目聚簇，tag 成员数上限防蜘蛛网）
  * + web `MemoryGraph.tsx`（sigma v4 + graphology + ForceAtlas2，暗底四色、悬停邻域高亮、
- *   缩放门控标签、click 详情面板、实例 kill 清理）+ MemoryTab「列表/图谱」视图切换。
+ *   FA2 种子 + rAF 持续单步物理、原生拖拽暂停/续跑、缩放门控标签、click 详情面板、实例 kill 清理）+ MemoryTab「列表/图谱」视图切换。
  *
  * 用法：node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05738-memory-graph.mts
  */
@@ -52,8 +52,12 @@ ok('B-01 sigma v4 分层 options：settings(labelRenderedSizeThreshold 相机门
   && /styles: \{[\s\S]{0,120}nodes: \{[\s\S]{0,300}labelColor: theme\.label/.test(GRAPH)
   && /\.\.\.DEFAULT_STYLES\.nodes/.test(GRAPH)
   && /\.\.\.DEFAULT_STYLES\.edges/.test(GRAPH));
-ok('B-02 ForceAtlas2 运行即冻结（无持续动画循环）+ 大图 barnesHut 开关',
-  /ForceAtlas2\.assign\(graph, \{[\s\S]{0,120}iterations: \d+/.test(GRAPH)
+ok('B-02 ForceAtlas2 种子布局 + rAF 持续单步物理（拖拽暂停/松手续跑）+ 大图 barnesHut 开关',
+  /ForceAtlas2\.assign\(graph, \{[\s\S]{0,120}iterations: 90/.test(GRAPH)
+  && /iterations: 1,[\s\S]{0,160}settings: \{ \.\.\.LIVE_PHYSICS/.test(GRAPH)
+  && /requestAnimationFrame\(stepSimulation\)/.test(GRAPH)
+  && /simPausedRef\.current = true/.test(GRAPH)
+  && /simPausedRef\.current = false/.test(GRAPH)
   && /barnesHutOptimize: data\.nodes\.length > \d+/.test(GRAPH));
 ok('B-03 悬停高亮一跳邻域：非邻域淡出 + 邻域强制标签（Obsidian 同款）',
   /graph\.areNeighbors\(node, hovered\)/.test(GRAPH)
@@ -87,13 +91,13 @@ ok('B-10 P2 回放控制条：播放/停止切换 + 进度计数（data-lck 锚�
   /▶ 回放生长/.test(GRAPH) && /⏸ 停止回放/.test(GRAPH)
   && /data-lck="memory-graph-replay-progress"/.test(GRAPH)
   && /\(\) => \{ if \(replayTimerRef\.current\) clearInterval\(replayTimerRef\.current\); \}, \[\]/.test(GRAPH));
-ok('B-11 方案 A：悬停只做邻域高亮 + 原生拖拽，不再叠加 hover 呼吸/邻域弹簧/松手回弹',
+ok('B-11 悬停只做邻域高亮 + 原生拖拽；拖拽仅暂停/继续物理，不再叠加 hover 呼吸/邻域弹簧',
   /enableNodeDrag: true/.test(GRAPH)
   && /sigma\.on\('enterNode'/.test(GRAPH)
   && /sigma\.on\('leaveNode'/.test(GRAPH)
+  && /sigma\.on\('nodeDragStart'/.test(GRAPH)
+  && /sigma\.on\('nodeDragEnd'/.test(GRAPH)
   && !/hoverPulseRef/.test(GRAPH)
-  && !/nodeDragStart/.test(GRAPH)
-  && !/nodeDragEnd/.test(GRAPH)
   && !/0\.22 \/ Math\.max\(1, Math\.sqrt\(session\.neighbors\.size\)\)/.test(GRAPH));
 
 // C 组：MemoryTab 接入
