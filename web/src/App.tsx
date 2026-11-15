@@ -16,7 +16,7 @@ import { MarkdownStyles } from './ui/Markdown';
 import { CommandPalette } from './pages/CommandPalette';
 import { SettingsProvider } from './settings';
 import { MobileShell } from './mobile/MobileShell';
-import { Compass, Loader2, Network } from 'lucide-react'; // T03184（PM-102）：菜单图标随 TABS 一并迁入 ui/tabs.ts，此处只留命令面板入口图标；T05738：记忆入口图标
+import { Compass, Loader2 } from 'lucide-react'; // T03184（PM-102）：菜单图标随 TABS 一并迁入 ui/tabs.ts，此处只留命令面板入口图标
 import { PageGuideDialog, hasSeenGuide, markGuideSeen } from './pages/PageGuide'; // T00706：通用使用向导
 import { GUIDES } from './pages/guides'; // T00706：各菜单向导内容配置
 import { useReportStream } from './reportStream'; // T01038：AI 工作台运行态（周报生成）
@@ -24,7 +24,6 @@ import { usePrdGen } from './stores/prdGenStore'; // T01038：原始需求生成
 import { aiImportStore } from './stores/aiImportStore'; // T01038：项目计划/PRD 导入运行态
 
 import { TABS, type Tab } from './ui/tabs'; // T03184（PM-102）：一级导航单源——命令面板页面列表同源生成
-import { focusSettingsTab } from './ui/settingsTabs'; // T05738：顶部「记忆」入口直达设置页签
 import { applyDeepLink, buildDeepLink, readDeepLinkFromLocation } from './ui/deepLink'; // T03187（D-13）：深链契约单源
 
 // T00441：日志/归档入口从顶部菜单移入「设置」（内网穿透下方），顶部菜单收敛为高频功能
@@ -448,28 +447,7 @@ function Shell() {
             </button>
           );
         })}
-        {/* T05738：记忆管理与图谱直达入口——此前只藏在「设置 → 数据 → 记忆管理」，
-            最新包 UI 复验反馈「找不到入口」，故在顶部导航补一个常驻入口。 */}
-        <button
-          className="nav-btn"
-          data-lck="nav-memory"
-          onClick={() => { focusSettingsTab('memory'); setTab('settings'); }}
-          title="记忆管理 / 记忆图谱（设置 → 数据 → 记忆管理 → 图谱）"
-          aria-label="打开记忆管理与记忆图谱"
-          style={{
-            padding: '7px 10px',
-            borderRadius: 6,
-            background: 'var(--card-bg)',
-            color: 'var(--text)',
-            cursor: 'pointer',
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 6,
-          }}
-        >
-          <Network size={18} />
-          <span className="nav-label" style={{ maxWidth: 120, opacity: 1 }}>记忆</span>
-        </button>
+        {/* T05765：移除顶部「记忆」导航入口；记忆管理仍由「设置 → 数据 → 记忆管理」进入。 */}
         {/* T01064-FR1.4：全局通知中心（铃铛 + 未读角标 + 事件下拉） */}
         <NotifyBell />
         {/* 后端连接状态：随 serverOk 动态更新，常驻菜单行最右侧。

@@ -25,7 +25,7 @@
  * 定位是纯函数 `hoverCardPos`（门可直接调用，不依赖 DOM）：卡片尺寸用调用方给的估算值，
  * 是为了在「尚未渲染」时就能算出位置，避免先渲染到 (0,0) 再跳一次。
  */
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
 /** 悬停开启延时：§3.1.4 定的就是「悬浮 300ms 出摘要浮层」，同时也是「路过即弹」的下限 */
@@ -106,11 +106,13 @@ export interface HoverCardProps {
   /** 读屏用：卡片 `<dialog>` 的名称，同时也是「这是什么」的兜底说明 */
   readonly ariaLabel: string;
   readonly testId?: string;
+  /** 触发元素外层容器的样式（表格单元格需要 block/100% 宽才能触发省略号） */
+  readonly style?: CSSProperties;
 }
 
 export function HoverCard({
   children, card, cardW = 340, cardH = 132,
-  openDelay = HOVER_OPEN_DELAY, closeDelay = HOVER_CLOSE_DELAY, ariaLabel, testId,
+  openDelay = HOVER_OPEN_DELAY, closeDelay = HOVER_CLOSE_DELAY, ariaLabel, testId, style,
 }: HoverCardProps) {
   const [pos, setPos] = useState<HoverPlacement | null>(null);
   const triggerRef = useRef<HTMLSpanElement>(null);
@@ -279,7 +281,7 @@ export function HoverCard({
     <span
       ref={triggerRef}
       data-t03394="hover-trigger"
-      style={{ display: 'inline-flex', alignItems: 'center', minWidth: 0 }}
+      style={{ display: 'inline-flex', alignItems: 'center', minWidth: 0, ...style }}
       aria-haspopup={card == null ? undefined : 'dialog'}
       aria-expanded={isOpen}
       aria-describedby={isOpen ? descId : undefined}

@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from 'react';
+import { Check, Link2, List as ListIcon, Network, Pencil, Plus, Save, Tag, Trash2, Undo2, X } from 'lucide-react';
 import { api } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
+import { HoverCard } from '../ui/HoverCard';
 import { MemoryGraph } from './MemoryGraph';
 
 /**
@@ -45,16 +47,77 @@ interface MemoryRow {
 }
 
 const cell: React.CSSProperties = {
-  padding: 8, borderBottom: '1px solid var(--surface-2)', fontSize: 'var(--fs-s)', verticalAlign: 'top',
+  padding: '8px 8px', borderBottom: '1px solid var(--surface-2)', fontSize: 'var(--fs-s)',
+  verticalAlign: 'middle', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+};
+const th: React.CSSProperties = {
+  padding: '8px 8px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-s)',
+  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
 };
 const inputStyle: React.CSSProperties = {
   padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)',
   borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)',
 };
-const btnStyle: React.CSSProperties = {
-  fontSize: 'var(--fs-xs)', padding: '3px 9px', border: '1px solid var(--border-strong)',
-  borderRadius: 5, background: 'var(--card-bg)', color: 'var(--text-secondary)', cursor: 'pointer',
+const iconBtnStyle: React.CSSProperties = {
+  width: 28, height: 28, minWidth: 28, padding: 0, border: '1px solid var(--border-strong)',
+  borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text-secondary)', cursor: 'pointer',
+  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
 };
+const truncateStyle: React.CSSProperties = {
+  display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+};
+
+type IconTone = 'default' | 'accent' | 'danger';
+
+/**
+ * T05765：记忆管理页统一图标按钮。
+ * 图标全部来自开源 lucide-react（不自绘 SVG），Tooltip 走系统既有 HoverCard（Portal + Esc/滚动收起），
+ * 不复用原生 title，避免与页面其它提示浮层样式冲突。
+ */
+function IconButton({
+  action, label, hint, icon, onClick, disabled = false, tone = 'default', pressed,
+}: {
+  action: string;
+  label: string;
+  hint: string;
+  icon: ReactNode;
+  onClick?: () => void;
+  disabled?: boolean;
+  tone?: IconTone;
+  pressed?: boolean;
+}) {
+  const color = tone === 'danger' ? 'var(--danger)' : tone === 'accent' ? 'var(--accent)' : 'var(--text-secondary)';
+  const activeStyle: CSSProperties = pressed
+    ? { background: 'var(--accent)', color: 'var(--accent-text)', borderColor: 'var(--accent)' }
+    : {};
+  return (
+    <HoverCard card={`${label} | ${hint}`} ariaLabel={`${label}：${hint}`} openDelay={120} cardW={280} cardH={52}>
+      <button
+        type="button"
+        className="memory-icon-btn"
+        data-lck="memory-icon-btn"
+        data-action={action}
+        aria-label={`${label} | ${hint}`}
+        aria-pressed={pressed}
+        disabled={disabled}
+        onClick={onClick}
+        style={{ ...iconBtnStyle, color, ...activeStyle }}
+      >
+        {icon}
+      </button>
+    </HoverCard>
+  );
+}
+
+/** T05765：单行截断 + 悬浮显示完整原文；只有文本内容走 HoverCard，表格行本身不被包裹。 */
+function CellText({ text, empty = '—', cardW = 420 }: { text?: string | null; empty?: string; cardW?: number }) {
+  const full = text && text.trim() ? text : empty;
+  return (
+    <HoverCard card={full} ariaLabel="完整内容" openDelay={160} cardW={cardW} cardH={72} style={{ display: 'block', width: '100%' }}>
+      <span style={truncateStyle}>{full}</span>
+    </HoverCard>
+  );
+}
 
 function parseTags(raw: string | null): string[] {
   if (!raw) return [];
@@ -271,7 +334,25 @@ export function MemoryTab() {
   }
 
   return (
-    <div style={{ maxWidth: 980 }}>
+    <div className="memory-admin-page" style={{ maxWidth: 1180 }}>
+      <style>{`
+        .memory-admin-page .memory-icon-btn {
+          transition: transform .18s ease, box-shadow .18s ease, background .18s ease, color .18s ease;
+        }
+        .memory-admin-page .memory-icon-btn:hover:not(:disabled) {
+          transform: perspective(420px) rotateX(-8deg) rotateY(8deg) scale(1.08);
+          box-shadow: 0 6px 14px var(--overlay);
+        }
+        .memory-admin-page .memory-icon-btn:active:not(:disabled) {
+          transform: perspective(420px) rotateX(0deg) rotateY(0deg) scale(.94);
+        }
+        .memory-admin-page .memory-icon-btn:focus-visible {
+          outline: 2px solid var(--accent); outline-offset: 2px;
+        }
+        .memory-admin-page .memory-icon-btn:disabled { cursor: not-allowed; opacity: .45; }
+        .memory-table th, .memory-table td { white-space: nowrap; }
+        .memory-cell-text { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      `}</style>
       <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, marginBottom: 4 }}>记忆管理</div>
       <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 12 }}>
         产品维度的 AI 长期记忆：同一产品下的多期项目共享记忆池，跨产品严格隔离。
@@ -279,18 +360,12 @@ export function MemoryTab() {
       </div>
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
-        {/* T05738：视图切换——列表管编辑、图谱看关系，产品筛选两视图共享 */}
-        <span role="group" aria-label="记忆视图切换" style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }}>
-          <button aria-pressed={viewMode === 'list'} onClick={() => setViewMode('list')} style={{
-            ...btnStyle, borderRadius: 0, border: 'none',
-            background: viewMode === 'list' ? 'var(--accent)' : 'var(--card-bg)',
-            color: viewMode === 'list' ? 'var(--accent-text)' : 'var(--text-secondary)',
-          }}>列表</button>
-          <button aria-pressed={viewMode === 'graph'} onClick={() => setViewMode('graph')} style={{
-            ...btnStyle, borderRadius: 0, border: 'none', borderLeft: '1px solid var(--border-strong)',
-            background: viewMode === 'graph' ? 'var(--accent)' : 'var(--card-bg)',
-            color: viewMode === 'graph' ? 'var(--accent-text)' : 'var(--text-secondary)',
-          }}>图谱</button>
+        {/* T05738：视图切换——列表管编辑、图谱看关系，产品筛选两视图共享；T05765：改为图标按钮 */}
+        <span role="group" aria-label="记忆视图切换" style={{ display: 'inline-flex', gap: 2, border: '1px solid var(--border-strong)', borderRadius: 6, padding: 2 }}>
+          <IconButton action="view-list" label="列表" hint="以表格方式查看和编辑记忆" icon={<ListIcon size={15} />}
+            pressed={viewMode === 'list'} onClick={() => setViewMode('list')} />
+          <IconButton action="view-graph" label="图谱" hint="以关系图查看记忆与任务、项目的关联" icon={<Network size={15} />}
+            pressed={viewMode === 'graph'} onClick={() => setViewMode('graph')} />
         </span>
         <select aria-label="产品标签" value={productKey}
           onChange={(e) => { setProductKey(e.target.value); setEditing(null); }}
@@ -300,7 +375,8 @@ export function MemoryTab() {
             <option key={t.productKey} value={t.productKey}>{t.productKey}（记忆 {t.memoryCount}）</option>
           ))}
         </select>
-        {productKey && <button style={btnStyle} onClick={() => void renameTag(productKey)}>重命名标签</button>}
+        {productKey && <IconButton action="rename-product-tag" label="重命名标签" hint="修改当前产品标签名称，目标已存在时合并"
+          icon={<Tag size={15} />} onClick={() => void renameTag(productKey)} />}
         {viewMode === 'list' && (
           <>
             <select aria-label="记忆类型筛选" value={type} onChange={(e) => setType(e.target.value as '' | MemoryType)} style={inputStyle}>
@@ -369,10 +445,10 @@ export function MemoryTab() {
                 </span>
                 <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{brief(p.content, 90)}</div>
               </div>
-              <button style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)' }}
-                onClick={() => void resolvePending(p.id, 'confirm')}>确认入库</button>
-              <button style={{ ...btnStyle, color: 'var(--danger)' }}
-                onClick={() => void resolvePending(p.id, 'reject')}>驳回</button>
+              <IconButton action="pending-confirm" label="确认入库" hint="把该候选写入长期记忆" tone="accent"
+                icon={<Check size={15} />} onClick={() => void resolvePending(p.id, 'confirm')} />
+              <IconButton action="pending-reject" label="驳回" hint="删除该候选，不写入记忆库" tone="danger"
+                icon={<X size={15} />} onClick={() => void resolvePending(p.id, 'reject')} />
             </div>
           ))}
         </div>
@@ -389,8 +465,8 @@ export function MemoryTab() {
           placeholder="内容（声明式事实，≤400 字）" style={{ ...inputStyle, flex: 1, minWidth: 260 }} />
         <input aria-label="新记忆标签" value={newTags} onChange={(e) => setNewTags(e.target.value)}
           placeholder="标签，逗号分隔" style={{ ...inputStyle, width: 160 }} />
-        <button onClick={() => void createMemory()} disabled={!productKey}
-          style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)' }}>新增</button>
+        <IconButton action="memory-create" label="新增记忆" hint="将标题、内容与标签保存为当前产品记忆" tone="accent"
+          icon={<Plus size={15} />} disabled={!productKey} onClick={() => void createMemory()} />
       </div>
 
       {rows.length === 0 ? (
@@ -398,17 +474,28 @@ export function MemoryTab() {
           {productKey ? '该产品暂无记忆（或筛选无命中）。' : '请先在项目上绑定产品标签，记忆才会有归属产品。'}
         </div>
       ) : (
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <div style={{ overflowX: 'auto' }}>
+        <table className="memory-table" style={{ width: '100%', minWidth: 1100, borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+          <colgroup>
+            <col style={{ width: 100 }} />
+            <col style={{ width: 300 }} />
+            <col style={{ width: 130 }} />
+            <col style={{ width: 116 }} />
+            <col style={{ width: 160 }} />
+            <col style={{ width: 66 }} />
+            <col style={{ width: 138 }} />
+            <col style={{ width: 90 }} />
+          </colgroup>
           <thead>
             <tr style={{ textAlign: 'left', color: 'var(--text-secondary)', fontSize: 'var(--fs-s)' }}>
-              <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>类型</th>
-              <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>标题 / 内容</th>
-              <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>标签</th>
-              <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>作用域</th>
-              <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>来源 / 溯源</th>
-              <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>访问</th>
-              <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>更新时间</th>
-              <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>操作</th>
+              <th style={th}>类型</th>
+              <th style={th}>标题 / 内容</th>
+              <th style={th}>标签</th>
+              <th style={th}>作用域</th>
+              <th style={th}>来源 / 溯源</th>
+              <th style={th}>访问</th>
+              <th style={th}>更新时间</th>
+              <th style={th}>操作</th>
             </tr>
           </thead>
           <tbody>
@@ -416,7 +503,7 @@ export function MemoryTab() {
               <tr key={r.id}>
                 <td style={cell}>
                   <select aria-label="编辑类型" value={editing.type}
-                    onChange={(e) => setEditing({ ...editing, type: e.target.value as MemoryType })} style={inputStyle}>
+                    onChange={(e) => setEditing({ ...editing, type: e.target.value as MemoryType })} style={{ ...inputStyle, width: '100%' }}>
                     {MEMORY_TYPES.map((k) => <option key={k} value={k}>{TYPE_LABELS[k]}</option>)}
                   </select>
                 </td>
@@ -428,40 +515,51 @@ export function MemoryTab() {
                 </td>
                 <td style={cell}>
                   <input aria-label="编辑标签" value={editing.tags} onChange={(e) => setEditing({ ...editing, tags: e.target.value })}
-                    placeholder="逗号分隔" style={{ ...inputStyle, width: 140 }} />
+                    placeholder="逗号分隔" style={{ ...inputStyle, width: '100%' }} />
                 </td>
                 <td style={cell} colSpan={4}>{r.project_id ? '本期特有' : '产品级共享'}</td>
                 <td style={cell}>
-                  <button onClick={() => void saveEdit()} style={{ ...btnStyle, color: 'var(--accent)', marginRight: 4 }}>保存</button>
-                  <button onClick={() => setEditing(null)} style={btnStyle}>取消</button>
+                  <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                    <IconButton action="memory-save" label="保存" hint="保存本行修改" icon={<Save size={15} />} tone="accent"
+                      onClick={() => void saveEdit()} />
+                    <IconButton action="memory-edit-cancel" label="取消" hint="放弃本行修改" icon={<Undo2 size={15} />}
+                      onClick={() => setEditing(null)} />
+                  </div>
                 </td>
               </tr>
             ) : (
               <tr key={r.id} style={{ opacity: r.invalidated_at ? 0.55 : 1 }}>
                 <td style={cell}>{TYPE_LABELS[r.type] ?? r.type}</td>
                 <td style={cell}>
-                  <div style={{ color: 'var(--text)' }}>
-                    {r.title}
-                    {r.need_review && <span style={{ marginLeft: 6, fontSize: 'var(--fs-xs)', color: 'var(--warning, #d97706)' }}>需复核</span>}
-                    {r.invalidated_at && <span style={{ marginLeft: 6, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>已失效{r.superseded_by ? `（${r.superseded_by}）` : ''}</span>}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, color: 'var(--text)' }}>
+                    <div style={{ flex: 1, minWidth: 0 }}><CellText text={r.title} cardW={420} /></div>
+                    {r.need_review && <span style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--warning, #d97706)' }}>需复核</span>}
+                    {r.invalidated_at && <span style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>已失效{r.superseded_by ? `（${r.superseded_by}）` : ''}</span>}
                   </div>
-                  <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{brief(r.content, 70)}</div>
+                  <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+                    <CellText text={r.content} cardW={480} />
+                  </div>
                 </td>
-                <td style={cell}>{parseTags(r.tags).join('、') || '—'}</td>
+                <td style={cell}><CellText text={parseTags(r.tags).join('、')} cardW={280} /></td>
                 <td style={cell}>{r.project_id ? '本期特有' : '产品级共享'}</td>
-                <td style={cell}>{r.source_task_id ?? '—'}<div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{r.source_kind}</div></td>
+                <td style={cell}><CellText text={`${r.source_task_id ?? '—'} · ${r.source_kind}`} cardW={320} /></td>
                 <td style={cell}>{r.access_count}</td>
-                <td style={cell}>{r.updated_at.slice(0, 16).replace('T', ' ')}</td>
+                <td style={cell}><CellText text={r.updated_at.slice(0, 16).replace('T', ' ')} empty="—" cardW={220} /></td>
                 <td style={cell}>
-                  <button style={{ ...btnStyle, marginRight: 4 }} onClick={() => setEditing({
-                    id: r.id, type: r.type, title: r.title, content: r.content, tags: parseTags(r.tags).join(','),
-                  })}>编辑</button>
-                  <button style={{ ...btnStyle, color: 'var(--danger)' }} onClick={() => void removeMemory(r)}>删除</button>
+                  <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                    <IconButton action="memory-edit" label="编辑" hint="在表格内修改这条记忆的类型、标题和内容"
+                      icon={<Pencil size={15} />} onClick={() => setEditing({
+                        id: r.id, type: r.type, title: r.title, content: r.content, tags: parseTags(r.tags).join(','),
+                      })} />
+                    <IconButton action="memory-delete" label="删除" hint="移除该条记忆记录，此操作不可恢复" tone="danger"
+                      icon={<Trash2 size={15} />} onClick={() => void removeMemory(r)} />
+                  </div>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
+        </div>
       )}
 
       {/* MEM-505/108：孤立标签维护——已无项目引用但仍有记忆，可挂回项目或清理 */}
@@ -480,9 +578,10 @@ export function MemoryTab() {
               <option value="">选择要挂回的项目</option>
               {allProjects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
-            <button style={btnStyle} onClick={() => void reattachOrphan(o.productKey)}>挂回</button>
-            <button style={{ ...btnStyle, color: 'var(--danger)' }}
-              onClick={() => void cleanupOrphan(o.productKey, o.memoryCount)}>清理</button>
+            <IconButton action="orphan-reattach" label="挂回" hint="把该孤立标签重新挂到选中的项目"
+              icon={<Link2 size={15} />} onClick={() => void reattachOrphan(o.productKey)} />
+            <IconButton action="orphan-cleanup" label="清理" hint="删除该孤立标签下的全部记忆，不可恢复" tone="danger"
+              icon={<Trash2 size={15} />} onClick={() => void cleanupOrphan(o.productKey, o.memoryCount)} />
           </div>
         ))}
       </div>
