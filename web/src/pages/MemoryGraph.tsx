@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Graph from 'graphology';
-import Sigma from 'sigma';
+import Sigma, { DEFAULT_STYLES } from 'sigma';
 import ForceAtlas2 from 'graphology-layout-forceatlas2';
 import { api } from '../api/client';
 
@@ -8,26 +8,117 @@ import { api } from '../api/client';
  * T05738：记忆图谱视图（Obsidian 式力导向图，sigma.js v4 + graphology + ForceAtlas2）。
  *
  * 数据源 `GET /memories/graph?productKey=`（服务端拼好 tag 共享边/替代链/项目聚簇，前端不做 N² 计算）。
- * 视觉：暗色画布 + type 四色节点 + 失效灰显 + 悬停高亮一跳邻域（其余淡出，Obsidian 同款）
+ * 视觉：跟随当前亮/暗主题的图谱画布 + type 四色节点 + 失效灰显 + 悬停高亮一跳邻域
  * + 缩放门控标签（labelRenderedSizeThreshold 即 Obsidian 的 text fade threshold）+ 点击节点开详情面板。
- * 画布本身是内容区（暗底发光风格为图谱语汇），不随亮/暗主题翻转；外层容器仍走主题变量。
  */
 
-const TYPE_COLORS: Record<string, string> = {
-  user: '#38bdf8',      // 用户偏好：蓝
-  feedback: '#f472b6',  // 反馈纠正：粉
-  project: '#34d399',   // 项目事实：绿
-  reference: '#fbbf24', // 外部参考：黄
+interface GraphTheme {
+  canvas: string;
+  grid: string;
+  label: string;
+  labelBg: string;
+  panelBg: string;
+  panelBorder: string;
+  panelText: string;
+  panelMuted: string;
+  panelHint: string;
+  typeColors: Record<string, string>;
+  projectColor: string;
+  taskColor: string;
+  deadColor: string;
+  edgeTag: string;
+  edgeProject: string;
+  edgeSupersede: string;
+  edgeTask: string;
+  edgeDim: string;
+  edgeDimSupersede: string;
+  legendSupersede: string;
+  legendProject: string;
+  legendTask: string;
+  glowAlpha: number;
+  glowBlur: number;
+}
+
+/** 深色主题：沿用暗底发光图谱语汇，但底色与文字仍走同一套主题色系。 */
+const DARK_THEME: GraphTheme = {
+  canvas: 'radial-gradient(ellipse at 50% 38%, #182338 0%, #101827 55%, #0b1220 100%)',
+  grid: 'radial-gradient(circle, rgba(148,163,184,0.14) 1px, transparent 1px)',
+  label: '#e2e8f0',
+  labelBg: 'rgba(8,13,25,0.72)',
+  panelBg: 'rgba(15,23,42,0.94)',
+  panelBorder: 'rgba(129,140,248,0.45)',
+  panelText: '#f1f5f9',
+  panelMuted: '#b6c2d8',
+  panelHint: '#94a3b8',
+  typeColors: {
+    user: '#38bdf8',
+    feedback: '#f472b6',
+    project: '#34d399',
+    reference: '#fbbf24',
+  },
+  projectColor: '#818cf8',
+  taskColor: '#22d3ee',
+  deadColor: '#526078',
+  edgeTag: 'rgba(96,165,250,0.62)',
+  edgeProject: 'rgba(129,140,248,0.72)',
+  edgeSupersede: 'rgba(248,113,113,0.88)',
+  edgeTask: 'rgba(34,211,238,0.72)',
+  edgeDim: 'rgba(100,116,139,0.16)',
+  edgeDimSupersede: 'rgba(248,113,113,0.22)',
+  legendSupersede: '#f87171',
+  legendProject: '#a5b4fc',
+  legendTask: '#67e8f9',
+  glowAlpha: 0.32,
+  glowBlur: 11,
 };
-const PROJECT_NODE_COLOR = '#818cf8';
-const TASK_NODE_COLOR = '#22d3ee';
-const DEAD_NODE_COLOR = '#526078';
-const EDGE_TAG = 'rgba(96,165,250,0.30)';
-const EDGE_PROJECT = 'rgba(129,140,248,0.45)';
-const EDGE_SUPERSEDE = 'rgba(248,113,113,0.75)';
-const EDGE_TASK = 'rgba(34,211,238,0.55)';
-const EDGE_DIM = 'rgba(100,116,139,0.08)';
-const EDGE_DIM_SUPERSEDE = 'rgba(248,113,113,0.15)';
+
+/** 浅色主题：白底/浅灰底上使用加深的节点色与更高不透明度的连线，避免“黑块+灰点”。 */
+const LIGHT_THEME: GraphTheme = {
+  canvas: 'radial-gradient(ellipse at 50% 38%, #ffffff 0%, #f4f7fb 58%, #e8eff7 100%)',
+  grid: 'radial-gradient(circle, rgba(100,116,139,0.18) 1px, transparent 1px)',
+  label: '#1e293b',
+  labelBg: 'rgba(255,255,255,0.82)',
+  panelBg: 'rgba(255,255,255,0.96)',
+  panelBorder: 'rgba(79,70,229,0.32)',
+  panelText: '#0f172a',
+  panelMuted: '#475569',
+  panelHint: '#64748b',
+  typeColors: {
+    user: '#0369a1',
+    feedback: '#be185d',
+    project: '#047857',
+    reference: '#b45309',
+  },
+  projectColor: '#4f46e5',
+  taskColor: '#0e7490',
+  deadColor: '#94a3b8',
+  edgeTag: 'rgba(37,99,235,0.56)',
+  edgeProject: 'rgba(79,70,229,0.64)',
+  edgeSupersede: 'rgba(220,38,38,0.72)',
+  edgeTask: 'rgba(14,116,144,0.64)',
+  edgeDim: 'rgba(100,116,139,0.12)',
+  edgeDimSupersede: 'rgba(220,38,38,0.18)',
+  legendSupersede: '#dc2626',
+  legendProject: '#4338ca',
+  legendTask: '#0e7490',
+  glowAlpha: 0.18,
+  glowBlur: 8,
+};
+
+/** 主题由 SettingsProvider 写到 documentElement.dataset.theme；监听它即可覆盖 light/dark/auto。 */
+function useIsDarkTheme(): boolean {
+  const [dark, setDark] = useState(() => typeof document !== 'undefined' && document.documentElement.dataset.theme === 'dark');
+  useEffect(() => {
+    if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return;
+    const root = document.documentElement;
+    const sync = () => setDark(root.dataset.theme === 'dark');
+    sync();
+    const observer = new MutationObserver(sync);
+    observer.observe(root, { attributes: true, attributeFilter: ['data-theme'] });
+    return () => observer.disconnect();
+  }, []);
+  return dark;
+}
 
 /** hex(#rrggbb) → 发光 rgba 色：backdrop shadow 用，节点色即光晕色（暗底上呈现「发光节点」效果） */
 function glowOf(color: string, alpha: number): string {
@@ -89,14 +180,16 @@ interface GraphData {
   stats: { memoryCount: number; projectCount: number; tagEdgeCount: number; supersedeCount: number; taskCount: number };
 }
 
-function nodeColor(n: GraphNode): string {
-  if (n.invalidated) return DEAD_NODE_COLOR;
-  if (n.kind === 'project') return PROJECT_NODE_COLOR;
-  if (n.kind === 'task') return TASK_NODE_COLOR;
-  return TYPE_COLORS[n.type ?? 'reference'] ?? '#94a3b8';
+function nodeColor(n: GraphNode, theme: GraphTheme): string {
+  if (n.invalidated) return theme.deadColor;
+  if (n.kind === 'project') return theme.projectColor;
+  if (n.kind === 'task') return theme.taskColor;
+  return theme.typeColors[n.type ?? 'reference'] ?? theme.deadColor;
 }
 
 export function MemoryGraph({ productKey }: { productKey: string }) {
+  const isDark = useIsDarkTheme();
+  const theme = isDark ? DARK_THEME : LIGHT_THEME;
   const [data, setData] = useState<GraphData | null>(null);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<GraphNode | null>(null);
@@ -128,7 +221,7 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
     stopReplay();
     const times = [...new Set(
       g.nodes().map((n) => g.getNodeAttribute(n, 'nodeUpdatedAt')).filter((t): t is string => !!t),
-    )].sort();
+    )].sort((a, b) => a.localeCompare(b));
     if (times.length === 0) { flash('本图没有可回放的时间戳记忆'); return; }
     let i = 0;
     replayRef.current = { active: true, cursor: '' }; // '' 早于任何 ISO 时间戳 → 初始全隐
@@ -173,7 +266,7 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
       const y = Math.random() * 100;
       startPositions.set(n.id, { x, y });
       // nodeUpdatedAt：回放生长的时间轴锚点（记忆/任务节点有时间戳；项目聚簇节点恒可见）
-      graph.addNode(n.id, { x, y, size: n.size, color: nodeColor(n), label: n.title, nodeKind: n.kind, nodeUpdatedAt: n.updatedAt ?? null });
+      graph.addNode(n.id, { x, y, size: n.size, color: nodeColor(n, theme), label: n.title, nodeKind: n.kind, nodeUpdatedAt: n.updatedAt ?? null });
     }
     for (const e of data.edges) {
       if (graph.hasNode(e.source) && graph.hasNode(e.target) && !graph.hasEdge(e.id)) {
@@ -183,36 +276,60 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
     graphRef.current = graph;
 
     // ForceAtlas2 布局：运行即冻结（写死 x/y 作为终位，无持续动画循环，空闲 CPU≈0）
+    // 低重力 + 高斥力让 20~30 条记忆在画布上铺开，而不是缩成左下角一小团。
     ForceAtlas2.assign(graph, {
-      iterations: 120,
+      iterations: 220,
       settings: {
-        gravity: 1.2,
-        scalingRatio: 2.2,
+        gravity: 0.3,
+        scalingRatio: 9,
         barnesHutOptimize: data.nodes.length > 300,
         strongGravityMode: false,
-        edgeWeightInfluence: 0.4,
+        edgeWeightInfluence: 0.8,
+        adjustSizes: true,
       },
     });
 
     // sigma v4：settings 与 styles 分层——门控/相机在 settings，标签颜色/字号在 styles.nodes
     const sigma = new Sigma(graph, container, {
       settings: {
-        // Obsidian 同款「文字淡出门控」：缩放到足够大才显示标签
-        labelRenderedSizeThreshold: 4,
+        // 自动把图包围盒铺满画布；stagePadding 保证节点/标签不被边框裁掉
+        autoRescale: true,
+        autoRescaleContent: 'nodes',
+        stagePadding: 56,
+        // 默认只给大节点显示标签，避免十几个长标题叠在一起；缩放或 hover/选中后显示当前节点标签
+        labelRenderedSizeThreshold: 7.4,
+        labelDensity: 0.7,
         minCameraRatio: 0.08,
         maxCameraRatio: 8,
       },
       styles: {
+        stage: {
+          // 让 WebGL 画布保持透明，真正底色由外层容器的主题渐变绘制
+          background: 'transparent',
+        },
         nodes: {
-          labelColor: '#dbe4f3',
+          // sigma v4：传入 styles.nodes 会整体覆盖默认样式；必须先展开默认绑定，
+          // 否则 color/x/y/size 等绑定丢失，节点会回落为默认灰色 #666。
+          ...DEFAULT_STYLES.nodes,
+          labelColor: theme.label,
           labelSize: 12,
           labelFont: 'system-ui, sans-serif',
-          // T05738 P1 发光：backdrop 常开（默认仅 hover 显示），shadow 用节点色做光晕、hover 时增强
+          labelBackgroundColor: theme.labelBg,
+          labelBackgroundPadding: 3,
+          // T05738 P1 发光：backdrop 常开，shadow 用节点色做光晕；暗底更亮、亮底更克制
           backdropVisibility: 'visible',
           backdropColor: 'rgba(0,0,0,0)',
-          backdropPadding: 3,
-          backdropShadowColor: (attrs: { color?: string }) => glowOf(String(attrs?.color ?? '#94a3b8'), 0.34),
-          backdropShadowBlur: { whenState: 'isHovered', then: 28, else: 13 },
+          backdropPadding: 2,
+          backdropBorderColor: isDark ? 'rgba(255,255,255,0.10)' : 'rgba(15,23,42,0.06)',
+          backdropBorderWidth: 1,
+          backdropShadowColor: (attrs: { color?: string }) => glowOf(String(attrs?.color ?? '#94a3b8'), theme.glowAlpha),
+          backdropShadowBlur: { whenState: 'isHovered', then: 24, else: theme.glowBlur }, // NOSONAR - sigma 状态映射 API 固定字段名 then/else，并非 Promise thenable
+        },
+        edges: {
+          ...DEFAULT_STYLES.edges,
+          // 边宽/颜色仍由 edgeReducer 按 edgeKind 动态给出；这里只兜底默认值
+          color: theme.edgeTag,
+          size: 1.2,
         },
       },
       nodeReducer: (node, attrs) => {
@@ -225,23 +342,24 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
         }
         const hovered = hoveredRef.current;
         if (hovered && hovered !== node) {
-          // 悬停高亮一跳邻域：其余节点淡出（Obsidian 同款）
+          // 悬停高亮一跳邻域：其余节点降低不透明度，但保留自身颜色（旧实现直接改灰导致“整图发灰”）
           const isNeighbor = graph.areNeighbors(node, hovered);
           if (!isNeighbor) {
-            res.color = 'rgba(100,116,139,0.18)';
+            res.opacity = 0.46;
             res.labelVisibility = 'hidden';
           } else {
+            res.opacity = 1;
             res.labelVisibility = 'visible';
           }
         }
-        if (hovered === node || selected?.id === node) { res.labelVisibility = 'visible'; }
+        if (hovered === node || selected?.id === node) { res.opacity = 1; res.labelVisibility = 'visible'; }
         return res;
       },
       edgeReducer: (edge, attrs) => {
         const res = { ...attrs } as Record<string, unknown>;
         const kind = String(res.edgeKind ?? 'tag');
-        res.color = kind === 'supersede' ? EDGE_SUPERSEDE : kind === 'project' ? EDGE_PROJECT : kind === 'task' ? EDGE_TASK : EDGE_TAG;
-        res.size = kind === 'supersede' ? 2 : 1;
+        res.color = kind === 'supersede' ? theme.edgeSupersede : kind === 'project' ? theme.edgeProject : kind === 'task' ? theme.edgeTask : theme.edgeTag;
+        res.size = kind === 'supersede' ? 2.4 : 1.5;
         // T05738 P2 回放：任一端未显现 → 整条边隐藏
         const rp = replayRef.current;
         if (rp.active && rp.cursor !== null) {
@@ -253,12 +371,15 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
         if (hovered) {
           const touching = graph.hasEdge(edge)
             && (graph.source(edge) === hovered || graph.target(edge) === hovered);
-          if (!touching) res.color = kind === 'supersede' ? EDGE_DIM_SUPERSEDE : EDGE_DIM;
+          if (!touching) res.color = kind === 'supersede' ? theme.edgeDimSupersede : theme.edgeDim;
         }
         return res;
       },
     });
     sigmaRef.current = sigma;
+
+    // 相机复位到画布中心：避免默认视角把已经铺开的图压在左下角
+    sigma.getCamera().setState({ x: 0.5, y: 0.5, ratio: 1 });
 
     // T05738 P1 入场动画：节点从随机初始位置滑向 FA2 终位（卡片切换/产品切换时重建即重播）
     animateNodesIn(graph, startPositions, sigma);
@@ -277,7 +398,7 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
       graphRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data]);
+  }, [data, isDark]);
 
   if (!productKey) return null;
   if (loading) return <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: 12 }}>图谱加载中…</div>;
@@ -290,10 +411,10 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
   }
 
   const legend: { color: string; label: string }[] = [
-    ...Object.keys(TYPE_LABELS).map((t) => ({ color: TYPE_COLORS[t], label: TYPE_LABELS[t] })),
-    { color: PROJECT_NODE_COLOR, label: '项目' },
-    { color: TASK_NODE_COLOR, label: '来源任务' },
-    { color: DEAD_NODE_COLOR, label: '已失效' },
+    ...Object.keys(TYPE_LABELS).map((t) => ({ color: theme.typeColors[t], label: TYPE_LABELS[t] })),
+    { color: theme.projectColor, label: '项目' },
+    { color: theme.taskColor, label: '来源任务' },
+    { color: theme.deadColor, label: '已失效' },
   ];
   // 回放进度：已显现节点数（replayTick 仅作渲染触发）
   const shownCount = replayRef.current.active && replayRef.current.cursor !== null
@@ -302,7 +423,8 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
   const totalDated = data.nodes.filter((n) => n.updatedAt).length;
 
   return (
-    <div>
+    <div data-replay-tick={replayTick}>
+      <div hidden aria-live="polite">{notice}</div>
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
         {legend.map((l) => (
           <span key={l.label} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -311,14 +433,14 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
           </span>
         ))}
         <span>· 蓝细线=共享标签</span>
-        <span style={{ color: '#f87171' }}>· 红线=被替代</span>
-        <span style={{ color: PROJECT_NODE_COLOR }}>· 紫线=项目归属</span>
-        <span style={{ color: TASK_NODE_COLOR }}>· 青线=来源任务</span>
+        <span style={{ color: theme.legendSupersede }}>· 红线=被替代</span>
+        <span style={{ color: theme.legendProject }}>· 紫线=项目归属</span>
+        <span style={{ color: theme.legendTask }}>· 青线=来源任务</span>
         <span>· 悬停看邻域，点击看详情</span>
         <span style={{ marginLeft: 'auto' }}>
           {data.stats.memoryCount} 条记忆 · {data.stats.projectCount} 个项目 · {data.stats.taskCount} 个任务 · {data.stats.tagEdgeCount} 条标签连线
         </span>
-        <button onClick={() => (replayActive ? stopReplay() : void startReplay())} aria-label={replayActive ? '停止回放' : '回放记忆生长'}
+        <button onClick={() => (replayActive ? stopReplay() : startReplay())} aria-label={replayActive ? '停止回放' : '回放记忆生长'}
           style={{
             fontSize: 'var(--fs-xs)', padding: '2px 8px', border: `1px solid ${replayActive ? 'var(--accent)' : 'var(--border-strong)'}`,
             borderRadius: 5, background: replayActive ? 'var(--accent)' : 'var(--card-bg)',
@@ -339,32 +461,38 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
           ref={containerRef}
           data-lck="memory-graph-canvas"
           aria-label="记忆关系图谱"
-          style={{ width: '100%', height: 560, background: 'radial-gradient(ellipse at center, #101828 0%, #0b1020 70%)', cursor: 'default' }}
+          style={{
+            width: '100%', height: 560, cursor: 'default',
+            backgroundImage: `${theme.grid}, ${theme.canvas}`,
+            backgroundSize: '20px 20px, auto',
+            backgroundRepeat: 'repeat, no-repeat',
+          }}
         />
         {selected && (
           <div style={{
             position: 'absolute', right: 12, top: 12, width: 300, maxHeight: 480, overflowY: 'auto',
-            background: 'rgba(13,19,32,0.92)', border: '1px solid rgba(129,140,248,0.5)', borderRadius: 8,
+            background: theme.panelBg, border: `1px solid ${theme.panelBorder}`, borderRadius: 8,
             padding: 12, boxSizing: 'border-box', backdropFilter: 'blur(4px)',
+            boxShadow: isDark ? '0 8px 24px rgba(0,0,0,0.32)' : '0 8px 24px rgba(15,23,42,0.12)',
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
               <span style={{
                 fontSize: 'var(--fs-xs)', color: '#fff', padding: '1px 8px', borderRadius: 999,
-                background: nodeColor(selected),
+                background: nodeColor(selected, theme),
               }}>{selected.kind === 'project' ? '项目' : selected.kind === 'task' ? '来源任务' : (TYPE_LABELS[selected.type ?? ''] ?? selected.type)}</span>
               <button onClick={() => setSelected(null)} aria-label="关闭详情" style={{
-                background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: 14, lineHeight: 1,
+                background: 'none', border: 'none', color: theme.panelHint, cursor: 'pointer', fontSize: 14, lineHeight: 1,
               }}>✕</button>
             </div>
-            <div style={{ color: '#f1f5f9', fontSize: 'var(--fs-s)', fontWeight: 600, marginBottom: 6, overflowWrap: 'anywhere' }}>
+            <div style={{ color: theme.panelText, fontSize: 'var(--fs-s)', fontWeight: 600, marginBottom: 6, overflowWrap: 'anywhere' }}>
               {selected.title}
             </div>
             {selected.content && (
-              <div style={{ color: '#b6c2d8', fontSize: 'var(--fs-xs)', lineHeight: 1.7, marginBottom: 8, overflowWrap: 'anywhere' }}>
+              <div style={{ color: theme.panelMuted, fontSize: 'var(--fs-xs)', lineHeight: 1.7, marginBottom: 8, overflowWrap: 'anywhere' }}>
                 {selected.content}
               </div>
             )}
-            <div style={{ color: '#8fa0b8', fontSize: 'var(--fs-xs)', display: 'grid', gap: 3 }}>
+            <div style={{ color: theme.panelHint, fontSize: 'var(--fs-xs)', display: 'grid', gap: 3 }}>
               {selected.kind === 'project' && <span>成员记忆：{data.nodes.filter((n) => n.kind === 'memory' && n.projectId === selected.projectId).length} 条</span>}
               {selected.kind === 'task' && <span>关联记忆：{data.nodes.filter((n) => n.kind === 'memory' && n.sourceTaskId === selected.sourceTaskId).length} 条</span>}
               {selected.kind === 'memory' && selected.tags && selected.tags.length > 0 && <span>标签：{selected.tags.join('、')}</span>}
@@ -372,7 +500,7 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
               {selected.kind === 'memory' && selected.accessCount !== undefined && <span>访问：{selected.accessCount} 次</span>}
               {selected.kind === 'memory' && selected.sourceTaskId && <span>来源任务：{selected.sourceTaskId}</span>}
               {selected.kind === 'memory' && selected.updatedAt && <span>更新：{selected.updatedAt.slice(0, 16).replace('T', ' ')}</span>}
-              {selected.invalidated && <span style={{ color: '#f87171' }}>已失效{selected.supersededBy ? '（被其它记忆替代）' : ''}</span>}
+              {selected.invalidated && <span style={{ color: theme.legendSupersede }}>已失效{selected.supersededBy ? '（被其它记忆替代）' : ''}</span>}
             </div>
           </div>
         )}
