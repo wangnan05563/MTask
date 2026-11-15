@@ -747,7 +747,7 @@ export function TasksPage() {
   const { projects } = projectList;
   // T04133（PRD §3.1）：无字典表——已有产品标签候选由项目列表现算去重，供弹窗下拉选择
   const productKeyOptions = useMemo(
-    () => Array.from(new Set(projects.map((p) => (p.product_key ?? '').trim()).filter(Boolean))).sort(),
+    () => Array.from(new Set(projects.map((p) => (p.product_key ?? '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'zh-CN')),
     [projects],
   );
   // 复用（复制）任务弹窗状态：reuseOpen 存待复制任务 id（null 关闭）；projectId 为选中的目标项目
@@ -3392,6 +3392,14 @@ export function TasksPage() {
     // 全部沿用迁移前各独立按钮的原值，只换承载容器；菜单为纯静态渲染，不依赖网络请求。
     const moreItems: TaskMoreMenuItem[] = [
       {
+        key: 'detail', label: '查看详细信息',
+        title: '查看详细信息 — 在右侧抽屉中查看并编辑任务完整详情',
+        ariaLabel: `查看详细信息：${t.title}`,
+        icon: <PanelRightOpen size={14} />,
+        dataAttrs: { 'data-t05778': 'more-detail' },
+        onClick: () => openDetailDrawer(t),
+      },
+      {
         key: 'subtask', label: '创建子任务',
         title: '创建子任务 — 在该任务下创建子任务（层级展示）',
         ariaLabel: '创建子任务',
@@ -3629,9 +3637,9 @@ export function TasksPage() {
     const unreadDone = t.status === 'done' && !t.handle_result && t.ai_state === 'unread';
     // M6-6.4：title 提示文案判定改为平铺分支（消除嵌套三元 S3358）
     const descTitle = descExpanded[t.id] ? '收起 — 再次点击收起任务描述' : '展开 — 点击查看完整任务描述';
-    let titleAttr: string | undefined;
-    if (descToggleable) titleAttr = descTitle;
-    else if (unreadDone) titleAttr = '点击消除未读状态';
+    let titleAttr = '双击标题空白处打开详情抽屉';
+    if (descToggleable) titleAttr = `${descTitle}；双击空白处打开详情抽屉`;
+    else if (unreadDone) titleAttr = '点击消除未读状态；双击空白处打开详情抽屉';
     return (
       // T00918：已完成且无处理结果反馈的任务，其标题行常无「描述/处理结果」展开入口可点，
       // 未读红点无处置除；故点击标题本身即视为「已查看」，清除该任务未读状态（仅覆盖此场景，不影响已填反馈任务）
@@ -3642,10 +3650,18 @@ export function TasksPage() {
       <button
         type="button"
         className="row-title-btn"
+        data-t05778="title-dblclick"
         onClick={(e) => {
           const sel = globalThis.getSelection();
           if (sel && !sel.isCollapsed && e.currentTarget.contains(sel.anchorNode)) return; // 正在框选复制，不触发折叠
           if (descToggleable) { toggleDesc(); } else { markTitleRead(); }
+        }}
+        onDoubleClick={(e) => {
+          // T05778：仅在标题空白区域双击时打开抽屉；双击文字会形成选区，不抢占选中/复制。
+          const sel = globalThis.getSelection();
+          if (sel && !sel.isCollapsed) return;
+          e.preventDefault();
+          openDetailDrawer(t);
         }}
         onMouseDown={() => setTitleSelId(t.id)}
         aria-expanded={descToggleable ? descExpanded[t.id] ?? false : undefined}
