@@ -180,7 +180,6 @@ export function TunnelPanel() {
 
   return (
     <div style={{ maxWidth: 640 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600, fontSize: 'var(--fs-l)', marginBottom: 4 }}><Network size={15} /> 内网穿透</div>
       <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 12 }}>
         将本机 Web 服务暴露到公网，手机/远程浏览器可通过隧道地址访问使用。支持 Cloudflare / cpolar / Tailscale。
       </div>

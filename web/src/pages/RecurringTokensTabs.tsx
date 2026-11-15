@@ -163,7 +163,6 @@ export function RecurringTab() {
 
   return (
     <div style={{ maxWidth: 760 }}>
-      <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, marginBottom: 4 }}>{t('循环任务', '循环任务')}</div>
       <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 12 }}>
         {t('按周期自动生成任务副本（例：每周周报）。到期由后端每小时检查并生成，标题自动带日期后缀。', '按周期自动生成任务副本（例：每周周报）。到期由后端每小时检查并生成，标题自动带日期后缀。')}
         {t('需要精确到时刻时填 cron 表达式', '需要精确到时刻时填 cron 表达式')}（<code>{t('分 时 日 月 周', '分 时 日 月 周')}</code>{t('，如', '，如')} <code>0 9 * * 1</code> {t('= 每周一 9:00，按本地时区；留空则按上面的频率粗粒度生成。', '= 每周一 9:00，按本地时区；留空则按上面的频率粗粒度生成。')}）
@@ -290,7 +289,6 @@ export function ApiTokensTab() {
 
   return (
     <div style={{ maxWidth: 760 }}>
-      <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, marginBottom: 4 }}>API Token</div>
       <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 12 }}>
         {t('供外部脚本调用 MTask REST API 的具名凭据（请求头 X-Access-Token）；在内网穿透开启时与主令牌等效。可随时停用或撤销。', '供外部脚本调用 MTask REST API 的具名凭据（请求头 X-Access-Token）；在内网穿透开启时与主令牌等效。可随时停用或撤销。')}
         <b>{t('只读', '只读')}</b>{t('凭据仅放行 GET（写操作返回 403），适合给看板/统计类脚本——拿到 token 也改不动数据。', '凭据仅放行 GET（写操作返回 403），适合给看板/统计类脚本——拿到 token 也改不动数据。')}

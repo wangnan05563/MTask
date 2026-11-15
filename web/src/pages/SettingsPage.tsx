@@ -3,10 +3,10 @@ import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视
 import { api, type TaskCategory } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { FONT_OPTIONS, FONT_SIZE_OPTIONS, useSettings, type ImportMode } from '../settings';
-import { Ban, Download, ExternalLink, FileUp, FolderPlus, Info, MonitorCog, Moon, Pencil, RefreshCw, RotateCcw, Save, Settings, ShieldCheck, Sun, Trash2 } from 'lucide-react';
+import { Ban, Download, ExternalLink, FileUp, FolderPlus, MonitorCog, Moon, Pencil, RefreshCw, RotateCcw, Save, ShieldCheck, Sun, Trash2 } from 'lucide-react';
 import { getLang, setLang, onLangChange, type Lang } from '../i18n'; // T01071-FR5.4：i18n 底座
 import { usePersistentState } from '../ui/session'; // T03271（UX-09③）：Tab 选中态跨页面/跨会话保持（沿用 T02977 口径）
-import { SETTINGS_TAB_LABELS, filterSettingsGroups, normalizeSettingsTab } from '../ui/settingsTabs'; // T03271（UX-09①②）：页签与分组单源
+import { SETTINGS_TABS, SETTINGS_TAB_LABELS, filterSettingsGroups, normalizeSettingsTab } from '../ui/settingsTabs'; // T03271（UX-09①②）：页签与分组单源；T05772：子页统一图标头
 import { updateCardStore, shownProgressOf, type UpdateCheckInfo } from '../stores/updateCardStore';
 
 /** T01060-FR4.1：强调色预设色板（与主题内置 accent 同源的六色系） */
@@ -49,6 +49,8 @@ export function SettingsPage() {
   // T03271（UX-09③）：沿用 T02977 口径——切走返回、整页刷新后仍停原页签；脏值由单源兜底回「通用设置」
   const [st, setSt] = usePersistentState<string>('settings.tab', 'general');
   const active = normalizeSettingsTab(st);
+  const activeMeta = SETTINGS_TABS.find((t) => t.key === active) ?? SETTINGS_TABS[0];
+  const ActiveIcon = activeMeta.icon;
   // T03271（UX-09②）：命令面板直达时设置页可能已挂载——只写存储不会重渲染，故另派事件即时切页签
   useEffect(() => {
     const onFocus = (e: Event) => setSt(normalizeSettingsTab((e as CustomEvent<{ key?: string }>).detail?.key));
@@ -116,6 +118,17 @@ export function SettingsPage() {
           </output>
         )}
       </nav>
+
+      {/* T05772：所有设置子页共用一个图标头；原页面级文字标题已从各子页移除。 */}
+      <div
+        data-settings-header
+        role="img"
+        aria-label={activeMeta.label}
+        title={activeMeta.label}
+        style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 34, height: 34, margin: '2px 0 10px', borderRadius: 9, border: '1px solid var(--border)', background: 'var(--surface-2)', color: 'var(--text-secondary)' }}
+      >
+        <ActiveIcon size={20} aria-hidden="true" />
+      </div>
 
       {active === 'general' && <GeneralTab />}
       {active === 'dashboard' && <DashboardPage />} {/* T01154：仪表盘迁入设置页 */}
@@ -196,10 +209,7 @@ function CategoriesTab() {
   return (
     <div style={{ maxWidth: 560 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-l)', fontWeight: 600 }}><FolderPlus size={14} /> 任务分类</div>
-          <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }}>管理任务归类选项；删除分类后其下任务回到「未分类」。</div>
-        </div>
+        <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }}>管理任务归类选项；删除分类后其下任务回到「未分类」。</div>
         <button onClick={() => void add()} title="新增分类 — 新建一个任务分类选项" aria-label="新增分类：新建任务分类选项" style={{ fontSize: 'var(--fs-m)', padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           <FolderPlus size={13} /> 新增分类
         </button>
@@ -293,9 +303,6 @@ function GeneralTab() {
 
   return (
     <div style={{ maxWidth: 560 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2, fontSize: 'var(--fs-l)', fontWeight: 600 }}>
-        <Settings size={14} /> 通用设置
-      </div>
       <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 16 }}>
         以下偏好会立即应用并自动保存，刷新或重开应用后保持。
       </div>
@@ -558,7 +565,6 @@ function MigrationTab() {
 
   return (
     <div style={{ maxWidth: 620 }}>
-      <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, marginBottom: 4 }}>数据迁移</div>
       <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 14 }}>
         用于<strong>换电脑或重装系统</strong>时迁移用户数据：先在旧机导出备份文件，再到新机安装本应用后导入即可。
       </div>
@@ -611,7 +617,6 @@ function AboutTab() {
 
   return (
     <div style={{ maxWidth: 520 }}>
-      <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}><Info size={14} /> 关于</div>
       <div style={{ marginTop: 12, padding: 16, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card-bg)' }}>
         <div style={{ fontSize: 'var(--fs-title)', fontWeight: 600 }}>{APP_NAME}</div>
         <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginTop: 4 }}>{APP_DESC}</div>

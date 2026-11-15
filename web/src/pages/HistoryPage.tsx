@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { askConfirm } from '../ui/dialogs';
-import { Archive, ChevronDown, ChevronUp, FolderInput, History, RotateCcw, Search, X } from 'lucide-react';
+import { Archive, ChevronDown, ChevronUp, FolderInput, RotateCcw, Search, X } from 'lucide-react';
 import { relTime } from '../ui/format';
 import { useSessionState } from '../ui/session';
 import { SETTINGS_SEARCH_EVENT, peekSettingsSearchIntent, takeSettingsSearchIntent, type SettingsSearchIntentEventDetail } from '../ui/settingsSearch'; // T04099：命令面板跳转带关键词
@@ -182,8 +182,6 @@ export function HistoryPage() {
       {notice && <div style={{ position: 'fixed', top: 12, right: 16, zIndex: 200, padding: '6px 12px', borderRadius: 6, background: 'var(--card-bg)', border: '1px solid var(--accent)', fontSize: 'var(--fs-s)', color: 'var(--text)' }}>{notice}</div>}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
-        <History size={16} style={{ color: 'var(--accent)' }} />
-        <h2 style={{ fontSize: 'var(--fs-2xl)', margin: 0 }}>历史资产</h2>
         <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>
           项目级组织过程资产沉淀——项目整体转为快照后从任务/计划菜单隐去；<strong style={{ color: 'var(--text)' }}>归档</strong>为软删除区，二者独立
         </span>

@@ -353,7 +353,6 @@ export function MemoryTab() {
         .memory-table th, .memory-table td { white-space: nowrap; }
         .memory-cell-text { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       `}</style>
-      <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, marginBottom: 4 }}>记忆管理</div>
       <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 12 }}>
         产品维度的 AI 长期记忆：同一产品下的多期项目共享记忆池，跨产品严格隔离。
         {productKey && <span> <b>本页记忆仅属于产品「{productKey}」</b>，其它产品的记忆不会出现在此处。</span>}

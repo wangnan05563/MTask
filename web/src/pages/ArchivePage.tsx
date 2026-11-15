@@ -510,7 +510,6 @@ export function ArchivePage() {
 
       {/* T00586：顶部工具区——多选开关 + 搜索 + 分类/项目筛选（对齐计划页工具栏风格） */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-        <h3 style={{ fontSize: 'var(--fs-xl)', margin: 0 }}>归档管理</h3>
         <span style={{ flex: 1 }} />
         {/* 多选模式（参考计划页：ListChecks/Check 图标切换） */}
         <button onClick={() => { setMulti((m) => !m); setSelTaskIds([]); setSelPlanIds([]); }}

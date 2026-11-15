@@ -361,9 +361,6 @@ export function DbAdminTab() {
 
   return (
     <div>
-      <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
-        <Database size={14} /> 数据维护
-      </div>
       <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 12 }}>
         业务表在线增删改查。删除操作需确认码 <b>{CONFIRM_TOKEN}</b>；建议先「导出」备份再修改。
       </div>

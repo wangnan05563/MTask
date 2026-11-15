@@ -125,9 +125,6 @@ export function LogsPage() {
   return (
     <section>
       <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
-          <Search size={14} style={{ color: 'var(--text-muted)' }} /> 后台日志
-        </span>
         <button onClick={() => setPaused((p) => !p)} style={controlStyle} title={paused ? '恢复 — 继续自动滚动到底部' : '暂停 — 停止自动滚动跟随'} aria-label={paused ? '恢复自动滚动' : '暂停自动滚动'}>
           {paused ? <Play size={13} /> : <Pause size={13} />}{paused ? '恢复' : '暂停'}
         </button>

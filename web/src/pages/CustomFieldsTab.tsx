@@ -115,7 +115,6 @@ export function CustomFieldsTab() {
     <div style={{ maxWidth: 720 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
         <div>
-          <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600 }}>自定义字段</div>
           <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }}>
             为选中项目增加文本 / 数字 / 日期 / 单选字段；只描述任务，不改变任务的 todo / done 状态。
           </div>

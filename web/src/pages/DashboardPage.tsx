@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Activity, BarChart3, CheckCircle2, Clock3, ListTodo, ShieldCheck } from 'lucide-react';
+import { Activity, CheckCircle2, Clock3, ListTodo, ShieldCheck } from 'lucide-react';
 import { api } from '../api/client';
 import { FlowProgress } from '../ui/FlowProgress'; // T01068-FR4.4：流光进度条
 import { ProjectListHint, useProjectList } from '../ui/projectList';
@@ -54,8 +54,6 @@ export function DashboardPage() {
   return (
     <div style={{ padding: 16, maxWidth: 1100, margin: '0 auto' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
-        <BarChart3 size={18} style={{ color: 'var(--accent)' }} />
-        <span style={{ fontSize: 'var(--fs-2xl)', fontWeight: 700, color: 'var(--text)' }}>统计仪表盘</span>
         <span style={{ flex: 1 }} />
         <select
           value={projectId}
