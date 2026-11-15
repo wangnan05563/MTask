@@ -1,24 +1,38 @@
 /**
  * T05766：执行会话来源平台标识。
  *
- * 这里用品牌色 + 短标记组成的轻量 Logo，不依赖外网资源，打包后离线也能正常显示。
- * 重点覆盖 WorkBuddy / Trae / Qcoder / 豆包 / Codex，并为未知平台保留中性回退。
+ * 五个常用平台使用安装目录中的真实应用图标（随前端打包，离线可用）；
+ * 中继/MCP 与未知平台继续使用品牌色 + 短标记回退。
  */
+import workbuddyIcon from '../assets/platforms/workbuddy.png';
+import traeIcon from '../assets/platforms/trae.png';
+import qoderIcon from '../assets/platforms/qoder.png';
+import doubaoIcon from '../assets/platforms/doubao.png';
+import codexIcon from '../assets/platforms/codex.png';
+
 type Brand = {
   label: string;
   short: string;
   color: string;
   text: string;
+  icon?: string;
 };
 
 const BRANDS: Record<string, Brand> = {
-  workbuddy: { label: 'WorkBuddy', short: 'WB', color: '#0f766e', text: '#ffffff' },
-  trae: { label: 'Trae', short: 'T', color: '#6d28d9', text: '#ffffff' },
-  qcoder: { label: 'Qcoder', short: 'Q', color: '#1d4ed8', text: '#ffffff' },
-  qoder: { label: 'Qcoder', short: 'Q', color: '#1d4ed8', text: '#ffffff' },
-  doubao: { label: '豆包', short: '豆', color: '#f97316', text: '#ffffff' },
-  '豆包': { label: '豆包', short: '豆', color: '#f97316', text: '#ffffff' },
-  codex: { label: 'Codex', short: 'Cx', color: '#111827', text: '#ffffff' },
+  workbuddy: { label: 'WorkBuddy', short: 'WB', color: '#0f766e', text: '#ffffff', icon: workbuddyIcon },
+  workbuddyai: { label: 'WorkBuddy', short: 'WB', color: '#0f766e', text: '#ffffff', icon: workbuddyIcon },
+  trae: { label: 'Trae', short: 'T', color: '#6d28d9', text: '#ffffff', icon: traeIcon },
+  'trae cn': { label: 'Trae', short: 'T', color: '#6d28d9', text: '#ffffff', icon: traeIcon },
+  'trae-cn': { label: 'Trae', short: 'T', color: '#6d28d9', text: '#ffffff', icon: traeIcon },
+  qcoder: { label: 'Qcoder', short: 'Q', color: '#1d4ed8', text: '#ffffff', icon: qoderIcon },
+  qoder: { label: 'Qcoder', short: 'Q', color: '#1d4ed8', text: '#ffffff', icon: qoderIcon },
+  'qoder cn': { label: 'Qcoder', short: 'Q', color: '#1d4ed8', text: '#ffffff', icon: qoderIcon },
+  'qoder-cn': { label: 'Qcoder', short: 'Q', color: '#1d4ed8', text: '#ffffff', icon: qoderIcon },
+  qodercn: { label: 'Qcoder', short: 'Q', color: '#1d4ed8', text: '#ffffff', icon: qoderIcon },
+  doubao: { label: '豆包', short: '豆', color: '#f97316', text: '#ffffff', icon: doubaoIcon },
+  '豆包': { label: '豆包', short: '豆', color: '#f97316', text: '#ffffff', icon: doubaoIcon },
+  codex: { label: 'Codex', short: 'Cx', color: '#111827', text: '#ffffff', icon: codexIcon },
+  'codex++': { label: 'Codex', short: 'Cx', color: '#111827', text: '#ffffff', icon: codexIcon },
   relay: { label: '中继', short: 'R', color: '#475569', text: '#ffffff' },
   mcp: { label: 'MCP', short: 'M', color: '#0369a1', text: '#ffffff' },
 };
@@ -46,7 +60,7 @@ export function PlatformLogo({ platform, size = 28 }: { readonly platform: strin
         height: size,
         flex: `0 0 ${size}px`,
         borderRadius: Math.max(6, Math.round(size * 0.25)),
-        background: brand.color,
+        background: brand.icon ? 'transparent' : brand.color,
         color: brand.text,
         display: 'inline-flex',
         alignItems: 'center',
@@ -55,11 +69,23 @@ export function PlatformLogo({ platform, size = 28 }: { readonly platform: strin
         fontWeight: 800,
         letterSpacing: '-0.02em',
         lineHeight: 1,
-        boxShadow: 'inset 0 0 0 1px rgba(255,255,255,.16), 0 2px 6px rgba(15,23,42,.12)',
+        overflow: 'hidden',
+        boxShadow: brand.icon
+          ? '0 1px 4px rgba(15,23,42,.16)'
+          : 'inset 0 0 0 1px rgba(255,255,255,.16), 0 2px 6px rgba(15,23,42,.12)',
         userSelect: 'none',
       }}
     >
-      {brand.short}
+      {brand.icon ? (
+        <img
+          src={brand.icon}
+          alt=""
+          aria-hidden="true"
+          draggable={false}
+          decoding="async"
+          style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
+        />
+      ) : brand.short}
     </span>
   );
 }
