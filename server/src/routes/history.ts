@@ -51,7 +51,7 @@ historyApi.get('/summary', (_req, res) => {
  *  第 237/250 行），不可省略；本优化针对查询次数而非列裁剪。 */
 historyApi.get('/list', (_req, res) => {
   const db = getDb();
-  const projects = db.prepare(`SELECT id, name, description, history_at FROM projects WHERE ${SNAPSHOT_WHERE} ORDER BY history_at DESC`).all() as Array<{ id: string; name: string; description: string; history_at: string }>;
+  const projects = db.prepare(`SELECT id, name, description, history_at, product_key FROM projects WHERE ${SNAPSHOT_WHERE} ORDER BY history_at DESC`).all() as Array<{ id: string; name: string; description: string; history_at: string; product_key: string | null }>;
   if (projects.length === 0) return res.json({ snapshots: [] });
 
   // 占位符按项目数动态生成；IN 查询一次取回全部快照的任务/计划

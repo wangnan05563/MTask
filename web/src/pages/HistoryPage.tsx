@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { askConfirm } from '../ui/dialogs';
-import { Archive, ChevronDown, ChevronUp, FolderInput, RotateCcw, Search, X } from 'lucide-react';
+import { Archive, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, FolderInput, RotateCcw, Search, X } from 'lucide-react';
 import { relTime } from '../ui/format';
 import { useSessionState } from '../ui/session';
 import { SETTINGS_SEARCH_EVENT, peekSettingsSearchIntent, takeSettingsSearchIntent, type SettingsSearchIntentEventDetail } from '../ui/settingsSearch'; // T04099：命令面板跳转带关键词
@@ -36,6 +36,8 @@ interface Snapshot {
   id: string;
   name: string;
   description: string;
+  /** T05776：项目的产品标签（归一化文本，空串＝未绑定）——历史资产页按此动态分 Sheet */
+  product_key?: string;
   history_at: string;
   stats: { tasks: number; doneTasks: number; plans: number; donePlans: number };
   tasks: SnapTask[];
@@ -66,10 +68,13 @@ export function HistoryPage() {
   const [summary, setSummary] = useState<HistorySummary | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
+  const [loadError, setLoadError] = useState('');
   const [transferProject, setTransferProject] = useSessionState<string>('history.transferProject', '');
   const [kw, setKw] = useSessionState<string>('history.kw', '');
   const [openIds, setOpenIds] = useSessionState<string[]>('history.openSnaps', []);
+  const [productTag, setProductTag] = useSessionState<string>('history.productTag', '');
   const [page, setPage] = useState(1);
+  const tabScrollRef = useRef<HTMLDivElement>(null);
 
   // T04099：命令面板「历史资产中另有 N 条」带过来的关键词——挂载时消费一次（读到即删）。
   // 意图只做一次性覆盖（searchKw），不写回 `history.kw`：否则下次不经面板进入页面还会看到上次的关键词。
@@ -110,17 +115,61 @@ export function HistoryPage() {
       ]);
       setSnapshots(data.snapshots);
       setSummary(sum);
+      setLoadError('');
     } catch (e) {
-      flash(`历史数据加载失败：${e instanceof Error ? e.message : String(e)}`);
+      const msg = e instanceof Error ? e.message : String(e);
+      setLoadError(msg);
+      flash(`历史数据加载失败：${msg}`);
     }
   }, []);
 
   useEffect(() => { void load(); }, [load]);
 
+  // T05776：鼠标纵向滚轮在标签栏内转为横向滚动（原生监听 + passive:false，避免 React 合成 wheel 无法阻止页面滚动）
+  useEffect(() => {
+    const el = tabScrollRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (el.scrollWidth <= el.clientWidth) return;
+      el.scrollLeft += e.deltaY;
+      e.preventDefault();
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [snapshots.length]);
+
+  // T05776：产品标签从快照数据动态生成（不硬编码）；顺序沿用快照接口的 history_at DESC，
+  // 同一产品标签只出现一次；空 product_key 归入「未绑定产品」，避免与「全部产品」混淆。
+  const productTabs = useMemo(() => {
+    const groups = new Map<string, { key: string; label: string; count: number }>();
+    for (const s of snapshots) {
+      const raw = (s.product_key ?? '').trim();
+      const key = raw || '__none__';
+      const existing = groups.get(key);
+      if (existing) existing.count += 1;
+      else groups.set(key, { key, label: raw || '未绑定产品', count: 1 });
+    }
+    return [
+      { key: '', label: '全部产品', count: snapshots.length },
+      ...Array.from(groups.values()),
+    ];
+  }, [snapshots]);
+  // 数据刷新后若当前标签已不存在，回落到「全部产品」，避免空白 Sheet
+  const activeProduct = productTabs.some((t) => t.key === productTag) ? productTag : '';
+  const activeProductLabel = productTabs.find((t) => t.key === activeProduct)?.label ?? '全部产品';
+  useEffect(() => {
+    if (productTag && !productTabs.some((t) => t.key === productTag)) setProductTag('');
+  }, [productTag, productTabs, setProductTag]);
+
   const filtered = useMemo(() => {
     const k = searchKw.trim().toLowerCase();
-    return snapshots.filter((s) => !k || `${s.name} ${s.description ?? ''}`.toLowerCase().includes(k));
-  }, [snapshots, searchKw]);
+    const byProduct = (s: Snapshot) => {
+      if (activeProduct === '') return true;
+      const raw = (s.product_key ?? '').trim();
+      return activeProduct === '__none__' ? raw === '' : raw === activeProduct;
+    };
+    return snapshots.filter((s) => byProduct(s) && (!k || `${s.name} ${s.description ?? ''}`.toLowerCase().includes(k)));
+  }, [snapshots, searchKw, activeProduct]);
 
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const cur = Math.min(page, pages);
@@ -128,6 +177,10 @@ export function HistoryPage() {
 
   function toggleOpen(id: string) {
     setOpenIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  function scrollProductTabs(dir: -1 | 1) {
+    tabScrollRef.current?.scrollBy({ left: dir * 240, behavior: 'smooth' });
   }
 
   /** 沉淀：整个项目转为历史快照 */
@@ -226,9 +279,57 @@ export function HistoryPage() {
         </span>
       </div>
 
-      {filtered.length === 0 && (
+      {/* T05776：取数失败时给出常驻错误出口（toast 会消失；失败态下不把“无快照”误报成空数据） */}
+      {loadError && (
+        <div data-t05776="load-error" role="alert"
+          style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '7px 10px', marginBottom: 10, border: '1px solid var(--danger)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>
+          <span style={{ color: 'var(--danger)' }}>历史数据加载失败：{loadError}</span>
+          <button type="button" onClick={() => void load()} className="tbtn-anim"
+            style={{ border: '1px solid var(--accent)', background: 'transparent', color: 'var(--accent)', borderRadius: 5, cursor: 'pointer', fontSize: 'var(--fs-s)', padding: '2px 8px' }}>
+            重试
+          </button>
+        </div>
+      )}
+
+      {/* T05776：产品标签 Sheet 页签——标签由快照 product_key 动态生成；超出容器时横向滚动 + 左右箭头提示，
+          并支持鼠标纵向滚轮转为横向滚动；切换标签只影响下方快照列表，不改沉淀/恢复/归档逻辑 */}
+      {snapshots.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 8 }}>
+          <button type="button" onClick={() => scrollProductTabs(-1)} aria-label="向左滚动产品标签" title="向左滚动产品标签"
+            style={{ flex: '0 0 auto', border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: '4px 2px', display: 'inline-flex' }}>
+            <ChevronLeft size={16} />
+          </button>
+          <div ref={tabScrollRef} data-t05776="product-tabs" role="group" aria-label="历史资产产品标签 Sheet 切换"
+            style={{ display: 'flex', gap: 4, alignItems: 'center', flex: 1, minWidth: 0, overflowX: 'auto', borderBottom: '1px solid var(--border-strong)', scrollBehavior: 'smooth' }}>
+            {productTabs.map((t) => (
+              <button key={t.key || 'all'} type="button" aria-pressed={activeProduct === t.key}
+                onClick={() => { setProductTag(t.key); setPage(1); }}
+                title={`${t.label}（${t.count} 个快照） — 点击切换产品标签 Sheet`}
+                style={{
+                  fontSize: 'var(--fs-l)', padding: '6px 12px', border: 'none', background: 'transparent', cursor: 'pointer',
+                  flex: '0 0 auto', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  fontWeight: activeProduct === t.key ? 700 : 400,
+                  color: activeProduct === t.key ? 'var(--text)' : 'var(--text-muted)',
+                  borderBottom: activeProduct === t.key ? '2px solid var(--accent)' : '2px solid transparent',
+                }}>
+                {t.label}（{t.count}）
+              </button>
+            ))}
+          </div>
+          <button type="button" onClick={() => scrollProductTabs(1)} aria-label="向右滚动产品标签" title="向右滚动产品标签"
+            style={{ flex: '0 0 auto', border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: '4px 2px', display: 'inline-flex' }}>
+            <ChevronRight size={16} />
+          </button>
+        </div>
+      )}
+
+      {!loadError && filtered.length === 0 && (
         <p style={{ color: 'var(--text-muted)' }}>
-          暂无历史快照。选择一个活跃项目点击「沉淀为历史快照」——沉淀后该项目从任务/计划菜单隐去，内容以快照形式在此留存。
+          {snapshots.length === 0
+            ? '暂无历史快照。选择一个活跃项目点击「沉淀为历史快照」——沉淀后该项目从任务/计划菜单隐去，内容以快照形式在此留存。'
+            : searchKw.trim()
+              ? `「${activeProductLabel}」下没有匹配「${searchKw.trim()}」的快照。`
+              : `「${activeProductLabel}」下暂无历史快照。`}
         </p>
       )}
 
