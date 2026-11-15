@@ -531,16 +531,33 @@ export function ArchivePage() {
 
       {/* T02284：条数来自服务端 total（跨全部页），不再是本地过滤后的长度；500 条截断警告随服务端分页撤销 */}
       <h4 style={{ fontSize: 'var(--fs-l)', margin: '0 0 8px' }}>归档任务（共 {taskTotal} 条）</h4>
-      <ResourceHint view={tasksView} label="归档任务列表" />
-      {/* 任务区筛选：分类 */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-        <select value={catFilter} onChange={(e) => { setCatFilter(e.target.value); setPage(1); }}
-          aria-label="按分类筛选归档任务" title="按分类筛选归档任务"
-          style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
-          <option value="">全部分类</option>
-          {cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
+      {/* T05775：分类切换对齐任务页的 sheet 页签——激活项加粗 + 底部强调线，横向可滚动；筛选仍走 catFilter 服务端查询 */}
+      <div
+        data-t05775="category-tabs"
+        role="group"
+        aria-label="归档任务分类切换"
+        style={{ display: 'flex', gap: 4, alignItems: 'center', borderBottom: '1px solid var(--border-strong)', marginBottom: 8, overflowX: 'auto', paddingBottom: 0 }}
+      >
+        {[{ value: '', label: '全部分类' }, ...cats.map((c) => ({ value: c.id, label: c.name })), { value: 'none', label: '未分类' }].map((t) => (
+          <button
+            key={t.value || 'all'}
+            type="button"
+            aria-pressed={catFilter === t.value}
+            onClick={() => { setCatFilter(t.value); setPage(1); }}
+            title={`${t.label} — 点击切换归档任务分类`}
+            style={{
+              fontSize: 'var(--fs-l)', padding: '6px 12px', border: 'none', background: 'transparent', cursor: 'pointer',
+              whiteSpace: 'nowrap', flex: '0 0 auto',
+              fontWeight: catFilter === t.value ? 700 : 400,
+              color: catFilter === t.value ? 'var(--text)' : 'var(--text-muted)',
+              borderBottom: catFilter === t.value ? '2px solid var(--accent)' : '2px solid transparent',
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
+      <ResourceHint view={tasksView} label="归档任务列表" />
       {renderBatchBar('task')}
       {/* 空态只在「取数成功且本页为空」时出现——失败态由上方 ResourceHint 承载，两者不再同形 */}
       {tasksView.phase === 'ready' && pageTasks.length === 0 && (
