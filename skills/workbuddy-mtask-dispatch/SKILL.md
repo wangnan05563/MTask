@@ -144,7 +144,7 @@ mtask_update_task { taskNo:"Txxxxx", verified:false, feedback:"<失败原因与�
 
 在 WorkBuddy「自动化」中新建一条：
 
-- 触发频率：10~30 分钟（以客户端实际最小间隔为准；未确认前用 30 分钟）。
+- 触发频率：客户端实测最小间隔 1 小时（2026-11-16 WorkBuddy 5.11.3 实机确认，界面「间隔」最小为「每隔 1 小时」）；Automation 选「间隔 / 1 小时」，不要写 10~30 分钟。
 - Prompt：`使用 workbuddy-mtask-dispatch 技能，拉取并串行处理 MTask 就绪任务，最多 2 条。`
 - 只保留 1 条 Automation，最多再加 1 条低频兜底；不要多条并行抢同一队列。
 - 暂停/急停：直接在 Automation 面板停用；已认领任务会在 MTask 会话超时后由人工接管。
