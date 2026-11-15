@@ -9,7 +9,7 @@
  *  - 校验以服务端为准：前端不重复一套 URL 规则，只把 400 的 `error` 原样行内回显（两套规则迟早漂移）；
  *  - 连接测试用的是**草稿值**（未保存也能测），与 `update/test` 同口径，避免「先保存才能测」的多余门槛。
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { api } from '../api/client';
 import { askConfirm } from '../ui/dialogs';
 import { ProjectListHint, useProjectList } from '../ui/projectList';
@@ -72,6 +72,19 @@ const fieldStyle: React.CSSProperties = { width: '100%', padding: '7px 10px', bo
 const labelStyle: React.CSSProperties = { display: 'block', fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginBottom: 4 };
 const btnStyle: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 5, padding: '6px 12px', fontSize: 'var(--fs-s)', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer' };
 
+/** T05773：右栏信息卡片。卡片不承载表单，纯展示；标题与正文分区固定，便于左右栏对齐。 */
+function SonarCard({ title, extra, children }: { readonly title: string; readonly extra?: ReactNode; readonly children: ReactNode }) {
+  return (
+    <section style={{ border: '1px solid var(--border)', borderRadius: 10, background: 'var(--card-bg)', padding: 12 }}>
+      <header style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+        <span style={{ fontSize: 'var(--fs-s)', fontWeight: 600, color: 'var(--text)' }}>{title}</span>
+        {extra && <span style={{ marginLeft: 'auto' }}>{extra}</span>}
+      </header>
+      {children}
+    </section>
+  );
+}
+
 /** 项目键可达性一行的人话（原为嵌套三元；抽成纯函数让分支一眼可读） */
 function projectKeyDetail(
   project: TestResult['project'],
@@ -90,6 +103,19 @@ function auditResultText(row: AuditRow): string {
   return row.note ? `失败（${row.note}）` : '失败';
 }
 
+/** T05773：右栏探针行。状态点只表达“已探测/未探测”，不把未测试的服务器状态说成通过。 */
+function ProbeLine({ label, ok, value, hint }: { readonly label: string; readonly ok: boolean; readonly value: string; readonly hint?: string }) {
+  return (
+    <div style={{ display: 'flex', gap: 7, alignItems: 'flex-start', fontSize: 'var(--fs-xs)', lineHeight: 1.5 }}>
+      <span aria-hidden="true" style={{ color: ok ? 'var(--success, var(--accent))' : 'var(--warn)', flex: '0 0 auto' }}>●</span>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ color: 'var(--text)' }}><span style={{ fontWeight: 600 }}>{label}</span> — {value}</div>
+        {hint && <div style={{ color: 'var(--text-muted)' }}>{hint}</div>}
+      </div>
+    </div>
+  );
+}
+
 export function SonarSettingsTab() {
   const [cfg, setCfg] = useState<ConfigView>(EMPTY_CFG);
   const [serverDraft, setServerDraft] = useState('');
@@ -103,6 +129,7 @@ export function SonarSettingsTab() {
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState<'' | 'save' | 'test' | 'reveal'>('');
+  const [loading, setLoading] = useState(true);
   const [projectOptions, setProjectOptions] = useState<SonarProjectOption[]>([]);
   const [projectTotal, setProjectTotal] = useState(0);
   const [projectSource, setProjectSource] = useState('');
@@ -118,11 +145,14 @@ export function SonarSettingsTab() {
   };
 
   async function load() {
+    setLoading(true);
     try {
       applyCfg(await api.get<ConfigView>('/settings/sonar'));
       setError('');
     } catch (e) {
       setError(`配置读取失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -240,9 +270,26 @@ export function SonarSettingsTab() {
   }
 
   const tokenShown = revealed || (cfg.tokenConfigured ? cfg.tokenMasked : '');
+  const serverTest = rows.find((r) => r.label.startsWith('服务器状态'));
 
   return (
-    <div data-t03371="sonar-tab" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+    <div
+      data-t03371="sonar-tab"
+      data-project-source={projectSource}
+      className="sonar-config-grid"
+      style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.65fr) minmax(300px, 0.95fr)', gap: 16, alignItems: 'start' }}
+    >
+      {/* T05773：响应式双栏——1024px 以下堆叠，左栏先于右栏，保持原有 Tab 焦点顺序。 */}
+      <style>{`
+        .sonar-config-grid { width: 100%; }
+        .sonar-config-left, .sonar-config-right { min-width: 0; }
+        .sonar-card-scroll { max-height: 300px; overflow-y: auto; overscroll-behavior: contain; }
+        @media (max-width: 1024px) {
+          .sonar-config-grid { grid-template-columns: minmax(0, 1fr) !important; }
+        }
+      `}</style>
+
+      <div className="sonar-config-left" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>
         SonarQube 连接参数与扫描环境。首版按 Community 版实现（用 <code>sonar.inclusions</code> 收窄增量），分支/PR 模式列为后续迭代。
       </div>
@@ -307,15 +354,8 @@ export function SonarSettingsTab() {
           placeholder="留空则按系统 PATH 探测 sonar-scanner"
           onChange={(e) => setScannerDraft(e.target.value)}
         />
-        <div data-t03375="scanner-probe" style={{ fontSize: 'var(--fs-xs)', marginTop: 4, color: cfg.scanner.available ? 'var(--text-muted)' : 'var(--warn)' }}>
-          {cfg.scanner.available ? `探测到：${cfg.scanner.resolved} · ${cfg.scanner.version}${cfg.scanner.hint ? ` — ${cfg.scanner.hint}` : ''}` : `未探测到可用扫描器 — ${cfg.scanner.hint}`}
-        </div>
-      </div>
-
-      <div>
-        <div style={labelStyle}>Java 环境（只读探测）</div>
-        <div data-t03375="java-probe" style={{ fontSize: 'var(--fs-xs)', color: cfg.java.available ? 'var(--text-muted)' : 'var(--warn)' }}>
-          {cfg.java.available ? `探测到：${cfg.java.version}` : `未探测到 Java — ${cfg.java.hint}`}
+        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4 }}>
+          留空按 PATH 探测；探测结果在右栏「自动检测」实时展示。
         </div>
       </div>
 
@@ -414,31 +454,81 @@ export function SonarSettingsTab() {
 
       {notice && <output data-t03372="notice" style={{ display: 'block', fontSize: 'var(--fs-s)', color: 'var(--accent)' }}>{notice}</output>}
       {error && <div role="alert" data-t03427="error" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)' }}>{error}</div>}
-
-      {rows.length > 0 && (
-        <div data-t03374="test-rows" style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: 10, border: '1px solid var(--border)', borderRadius: 10 }}>
-          <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600 }}>连接测试结果</div>
-          {rows.map((r) => (
-            <div key={r.label} data-t03374="test-row" style={{ fontSize: 'var(--fs-xs)', color: r.ok ? 'var(--text-muted)' : 'var(--danger)' }}>
-              <span style={{ fontWeight: 600, color: r.ok ? 'var(--success, var(--accent))' : 'var(--danger)' }}>{r.ok ? '通过' : '失败'} · </span>
-              {r.label} — {r.detail || '—'}
-              {!r.ok && r.hint && <div style={{ marginTop: 2, color: 'var(--warn)' }}>指引：{r.hint}</div>}
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div>
-        <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, marginBottom: 6 }}>Token 查看审计</div>
-        <div data-t03373="audit-list" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: 3 }}>
-          {audit.length === 0 && <span data-t03373="audit-empty">暂无查看记录（审计只记时间与服务器地址，不记 Token 本身）</span>}
-          {audit.slice(0, 5).map((a, i) => (
-            <span key={`${a.revealedAt}-${i}`} data-t03373="audit-row">
-              {a.revealedAt.replace('T', ' ').slice(0, 19)} · {auditResultText(a)} · {a.serverUrl || '（未配置地址）'}
-            </span>
-          ))}
-        </div>
       </div>
+
+      <aside className="sonar-config-right" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <SonarCard
+          title="自动检测"
+          extra={<button type="button" style={{ ...btnStyle, padding: '4px 8px' }} onClick={() => { void load(); void api.get<{ rows: AuditRow[] }>('/settings/sonar/audit').then((r) => setAudit(r.rows)).catch(() => undefined); }} aria-label="重新探测 Sonar 环境">重新探测</button>}
+        >
+          {loading ? (
+            <div data-t05773="config-loading" style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+              {[74, 58, 66].map((w, i) => (
+                <div key={i} style={{ height: 11, width: `${w}%`, borderRadius: 4, background: 'var(--surface-2)' }} />
+              ))}
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>正在读取配置与环境探针…</div>
+            </div>
+          ) : (
+            <div data-t05773="auto-detect-list" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <ProbeLine label="服务器地址" ok={!!cfg.serverUrl} value={cfg.serverUrl || '未配置'} hint={cfg.serverUrl ? '保存后可用左侧「连接测试」校验版本与状态' : '请先在左栏填写 SonarQube 地址'} />
+              <ProbeLine label="服务器状态" ok={serverTest?.ok === true} value={serverTest ? serverTest.detail : '未测试'} hint={serverTest && !serverTest.ok ? serverTest.hint : '连接测试后会在此显示版本、版本线与状态'} />
+              <div data-t03375="scanner-probe">
+                <ProbeLine label="扫描器" ok={cfg.scanner.available} value={cfg.scanner.available ? `${cfg.scanner.version}` : '未探测到'} hint={cfg.scanner.available ? cfg.scanner.resolved : cfg.scanner.hint} />
+              </div>
+              <div data-t03375="java-probe">
+                <ProbeLine label="Java 环境" ok={cfg.java.available} value={cfg.java.available ? cfg.java.version : '未探测到'} hint={cfg.java.available ? cfg.java.resolved : cfg.java.hint} />
+              </div>
+              <ProbeLine label="认证 Token" ok={cfg.tokenConfigured} value={cfg.tokenConfigured ? cfg.tokenMasked : '未配置'} hint={cfg.tokenConfigured ? 'AES-256-GCM 密文落库；查看原文需二次确认并写审计' : '匿名实例可留空'} />
+            </div>
+          )}
+        </SonarCard>
+
+        <SonarCard title="连接测试">
+          <div data-t03374="test-rows" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {busy === 'test' && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>正在测试服务器、扫描器与项目键…</div>}
+            {rows.length === 0 && busy !== 'test' && (
+              <div data-t03374="test-empty" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+                尚未运行连接测试；左栏「连接测试（三项）」会使用当前草稿地址与 Token，无需先保存。
+              </div>
+            )}
+            {rows.map((r) => (
+              <div key={r.label} data-t03374="test-row" style={{ fontSize: 'var(--fs-xs)', color: r.ok ? 'var(--text-muted)' : 'var(--danger)' }}>
+                <span style={{ fontWeight: 600, color: r.ok ? 'var(--success, var(--accent))' : 'var(--danger)' }}>{r.ok ? '通过' : '失败'} · </span>
+                {r.label} — {r.detail || '—'}
+                {!r.ok && r.hint && <div style={{ marginTop: 2, color: 'var(--warn)' }}>指引：{r.hint}</div>}
+              </div>
+            ))}
+          </div>
+        </SonarCard>
+
+        <SonarCard title="配置概览">
+          <div data-t05773="config-summary" style={{ display: 'flex', flexDirection: 'column', gap: 5, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+            <span>projectKey 映射：{keys.filter((k) => k.projectKey.trim()).length} 个</span>
+            <span>扫描并发上限：{scanLimit}（当前生效闸上限 {cfg.gateLimitEffective}）</span>
+            <span>加载的 Sonar 项目候选：{projectOptions.length} 个{projectTotal > projectOptions.length ? `（服务器共 ${projectTotal} 个）` : ''}</span>
+          </div>
+        </SonarCard>
+
+        <SonarCard title="质量扫描概览">
+          <div data-t05773="quality-empty" style={{ display: 'flex', flexDirection: 'column', gap: 5, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+            <span>代码库规模：暂无数据</span>
+            <span>扫描进度：暂无运行中的扫描</span>
+            <span>质量问题：暂无扫描结果</span>
+            <div style={{ marginTop: 2, lineHeight: 1.5 }}>统计由「报告 → Sonar 质量扫描」面板提供；本配置页只读连接参数，不缓存扫描结果。</div>
+          </div>
+        </SonarCard>
+
+        <SonarCard title="Token 查看审计">
+          <div className="sonar-card-scroll" data-t03373="audit-list" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: 3 }}>
+            {audit.length === 0 && <span data-t03373="audit-empty">暂无查看记录（审计只记时间与服务器地址，不记 Token 本身）</span>}
+            {audit.slice(0, 5).map((a, i) => (
+              <span key={`${a.revealedAt}-${i}`} data-t03373="audit-row">
+                {a.revealedAt.replace('T', ' ').slice(0, 19)} · {auditResultText(a)} · {a.serverUrl || '（未配置地址）'}
+              </span>
+            ))}
+          </div>
+        </SonarCard>
+      </aside>
     </div>
   );
 }
