@@ -11,7 +11,10 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+// 仓库使用 junction 时 fileURLToPath 会解析到真实缓存目录；允许用 MTASK_GATE_ROOT 指回源码根。
+const ROOT = process.env.MTASK_GATE_ROOT
+  ? resolve(process.env.MTASK_GATE_ROOT)
+  : resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const OUT_DIR = join(ROOT, '.workbuddy');
 
 let pass = 0;
@@ -26,6 +29,7 @@ const SVC = readFileSync(join(ROOT, 'server/src/services/MemoryService.ts'), 'ut
 const ROUTE = readFileSync(join(ROOT, 'server/src/routes/memories.ts'), 'utf8');
 const GRAPH = readFileSync(join(ROOT, 'web/src/pages/MemoryGraph.tsx'), 'utf8');
 const TAB = readFileSync(join(ROOT, 'web/src/pages/MemoryTab.tsx'), 'utf8');
+const SETTINGS = readFileSync(join(ROOT, 'web/src/pages/SettingsPage.tsx'), 'utf8');
 const APP = readFileSync(join(ROOT, 'web/src/App.tsx'), 'utf8');
 
 // A 组：服务端图谱数据端点
@@ -59,8 +63,10 @@ ok('B-02 ForceAtlas2 种子布局 + rAF 持续单步物理（拖拽暂停/松手
   && /simPausedRef\.current = true/.test(GRAPH)
   && /simPausedRef\.current = false/.test(GRAPH)
   && /barnesHutOptimize: data\.nodes\.length > \d+/.test(GRAPH));
-ok('B-03 悬停高亮一跳邻域：非邻域淡出 + 邻域强制标签（Obsidian 同款）',
+ok('B-03 悬停高亮一跳邻域：默认隐藏标签 + 非邻域淡出 + 仅悬停节点显示（避免缩放后堆字）',
   /graph\.areNeighbors\(node, hovered\)/.test(GRAPH)
+  && /默认隐藏标签/.test(GRAPH)
+  && /只显示悬停节点自身的标签/.test(GRAPH)
   && /res\.labelVisibility = 'hidden';/.test(GRAPH)
   && /res\.labelVisibility = 'visible';/.test(GRAPH));
 ok('B-04 点击节点开详情面板 + clickStage 清除 + sigma.kill() 卸载清理',
@@ -101,9 +107,10 @@ ok('B-11 悬停只做邻域高亮 + 原生拖拽；拖拽仅暂停/继续物理�
   && !/0\.22 \/ Math\.max\(1, Math\.sqrt\(session\.neighbors\.size\)\)/.test(GRAPH));
 
 // C 组：MemoryTab 接入
-ok('C-01 列表/图谱视图切换（aria-pressed + 产品筛选共享）',
+ok('C-01 列表/图谱视图切换（IconButton aria-pressed + 产品筛选共享）',
   /viewMode, setViewMode\] = useState<'list' \| 'graph'>\('list'\)/.test(TAB)
-  && TAB.match(/aria-pressed=\{viewMode === '(list|graph)'\}/g)?.length === 2
+  && /pressed=\{viewMode === 'list'\}/.test(TAB)
+  && /pressed=\{viewMode === 'graph'\}/.test(TAB)
   && /\{viewMode === 'graph' && <MemoryGraph productKey=\{productKey\} \/>\}/.test(TAB));
 ok('C-02 图谱只读提示 + 列表主体按视图条件渲染（新增/表格/孤立标签归 list）',
   /图谱为只读视图；新增\/编辑\/删除请切回「列表」视图。/.test(TAB)
@@ -111,10 +118,10 @@ ok('C-02 图谱只读提示 + 列表主体按视图条件渲染（新增/表格/
 ok('C-03 sigma/graphology 依赖已登记（package.json）',
   /"sigma": "\^4\./.test(readFileSync(join(ROOT, 'web/package.json'), 'utf8'))
   && /"graphology"/.test(readFileSync(join(ROOT, 'web/package.json'), 'utf8')));
-ok('C-04 顶部常驻「记忆」直达入口：data-lck 锚点 + focusSettingsTab(memory)',
-  /data-lck="nav-memory"/.test(APP)
-  && /focusSettingsTab\('memory'\)/.test(APP)
-  && /aria-label="打开记忆管理与记忆图谱"/.test(APP));
+ok('C-04 记忆入口收敛到 设置→数据→记忆管理（T05765 移除顶部直达）',
+  /移除顶部「记忆」导航入口；记忆管理仍由「设置 → 数据 → 记忆管理」进入/.test(APP)
+  && /active === 'memory' && <MemoryTab \/>/.test(SETTINGS)
+  && /data-tab=\{t\.key\}/.test(SETTINGS));
 
 mkdirSync(OUT_DIR, { recursive: true });
 const summary = `T05738 门：${pass} 通过 / ${fail} 失败`;

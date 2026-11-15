@@ -356,6 +356,9 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
           if (ut && ut > rp.cursor) { res.isHidden = true; return res; }
         }
         const baseSize = Number((attrs as unknown as Record<string, unknown>).size ?? 6);
+        // T05738：默认隐藏标签，仅 hover/选中时显示。主题切换会重建画布并改变缩放，
+        // 若依赖 labelRenderedSizeThreshold，缩放变大时全部标签会同时出现并互相压字。
+        res.labelVisibility = 'hidden';
         const hovered = hoveredRef.current;
         if (hovered === node) {
           res.size = baseSize;
@@ -370,7 +373,8 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
           } else {
             res.size = baseSize;
             res.opacity = 1;
-            res.labelVisibility = 'visible';
+            // T05738：只显示悬停节点自身的标签。邻域节点若同时显示标签，密度高的簇会互相压字。
+            res.labelVisibility = 'hidden';
           }
         }
         if (selected?.id === node) { res.opacity = 1; res.labelVisibility = 'visible'; }
