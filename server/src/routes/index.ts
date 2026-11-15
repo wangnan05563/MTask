@@ -582,12 +582,60 @@ api.get('/stats/dashboard', (req, res) => {
        SUM(CASE WHEN status NOT IN ('todo','done') THEN 1 ELSE 0 END) AS other
      FROM tasks WHERE archived = 0 ${projWhere}`,
   ).get(...projArgs) as { todo: number | null; done: number | null; other: number | null };
+  // T05777：新增统计维度（保留原查询口径，只加聚合，不扫全表到前端）
+  // 优先级分布：任务表 priority（存量脏值按原值返回，前端只做兜底展示）
+  const priorities = db.prepare(
+    `SELECT priority, COUNT(*) AS count FROM tasks WHERE archived = 0 ${projWhere} GROUP BY priority ORDER BY count DESC`,
+  ).all(...projArgs) as Array<{ priority: string; count: number }>;
+  // 分类分布：任务分类名 + 未分类兜底；只取前 8 类，避免多分类时返回体膨胀
+  const categoryWhere = projectId ? 'AND t.project_id = ?' : '';
+  const categories = db.prepare(
+    `SELECT COALESCE(c.name, '未分类') AS name, COUNT(*) AS count
+       FROM tasks t LEFT JOIN task_categories c ON c.id = t.category_id
+      WHERE t.archived = 0 ${categoryWhere}
+      GROUP BY COALESCE(c.name, '未分类')
+      ORDER BY count DESC LIMIT 8`,
+  ).all(...projArgs) as Array<{ name: string; count: number }>;
+  // 计划推进：项目计划（archived=0）状态计数 + 平均进度
+  const planAgg = db.prepare(
+    `SELECT COUNT(*) AS total,
+            SUM(CASE WHEN status = 'todo' THEN 1 ELSE 0 END) AS todo,
+            SUM(CASE WHEN status = 'doing' THEN 1 ELSE 0 END) AS doing,
+            SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done,
+            AVG(progress) AS avgProgress
+       FROM plan_tasks WHERE archived = 0 ${projWhere}`,
+  ).get(...projArgs) as { total: number | null; todo: number | null; doing: number | null; done: number | null; avgProgress: number | null };
+  // 项目工作量：按项目聚合当前未归档任务；只回前 8 个项目（全部项目视图下按总量降序）
+  const workloadWhere = projectId ? 'AND p.id = ?' : '';
+  const workload = db.prepare(
+    `SELECT p.id, p.name,
+            COUNT(t.id) AS total,
+            SUM(CASE WHEN t.status = 'todo' THEN 1 ELSE 0 END) AS todo,
+            SUM(CASE WHEN t.status = 'done' THEN 1 ELSE 0 END) AS done,
+            SUM(CASE WHEN t.status NOT IN ('todo','done') THEN 1 ELSE 0 END) AS other
+       FROM projects p LEFT JOIN tasks t ON t.project_id = p.id AND t.archived = 0
+      WHERE p.archived = 0 ${workloadWhere}
+      GROUP BY p.id, p.name
+      ORDER BY total DESC LIMIT 8`,
+  ).all(...projArgs) as Array<{ id: string; name: string; total: number; todo: number | null; done: number | null; other: number | null }>;
   res.json({
     days,
     throughput,
     ai: { total: ai.total ?? 0, ok: ai.okCount ?? 0, rate: ai.total ? Math.round(((ai.okCount ?? 0) / ai.total) * 1000) / 10 : 0, avgMs: Math.round(ai.avgMs ?? 0) },
     verify: { total: verify.total ?? 0, verified: verify.verified ?? 0, rate: verify.total ? Math.round(((verify.verified ?? 0) / verify.total) * 1000) / 10 : 0 },
     totals: { todo: totals.todo ?? 0, done: totals.done ?? 0, other: totals.other ?? 0 },
+    breakdown: {
+      priorities,
+      categories,
+      plans: {
+        total: planAgg.total ?? 0,
+        todo: planAgg.todo ?? 0,
+        doing: planAgg.doing ?? 0,
+        done: planAgg.done ?? 0,
+        avgProgress: Math.round(planAgg.avgProgress ?? 0),
+      },
+      workload: workload.map((p) => ({ ...p, todo: p.todo ?? 0, done: p.done ?? 0, other: p.other ?? 0 })),
+    },
   });
 });
 

@@ -3,6 +3,7 @@ import { Activity, CheckCircle2, Clock3, ListTodo, ShieldCheck } from 'lucide-re
 import { api } from '../api/client';
 import { FlowProgress } from '../ui/FlowProgress'; // T01068-FR4.4：流光进度条
 import { ProjectListHint, useProjectList } from '../ui/projectList';
+import { priorityBadgeLabel, priorityColor } from '../ui/priority'; // T05777：优先级分布沿用单源文案/颜色
 
 /** T01059-FR2.2：统计仪表盘——周吞吐/AI 成功率/AI 平均耗时/验证通过率四指标 + 吞吐趋势条形图。
  *  数据源 /api/stats/dashboard；纯 CSS 条形图（无图表库依赖）；项目/时间窗筛选。 */
@@ -13,6 +14,13 @@ interface DashboardData {
   ai: { total: number; ok: number; rate: number; avgMs: number };
   verify: { total: number; verified: number; rate: number };
   totals: { todo: number; done: number; other: number };
+  /** T05777：新增维度聚合；旧服务端可能不返回，前端按可选处理 */
+  breakdown?: {
+    priorities: Array<{ priority: string; count: number }>;
+    categories: Array<{ name: string; count: number }>;
+    plans: { total: number; todo: number; doing: number; done: number; avgProgress: number };
+    workload: Array<{ id: string; name: string; total: number; todo: number; done: number; other: number }>;
+  };
 }
 
 const RANGES = [
@@ -27,6 +35,38 @@ function StatCard({ icon, label, value, sub, accent }: { readonly icon: React.Re
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>{icon}{label}</div>
       <div style={{ fontSize: 'var(--fs-display)', fontWeight: 700, color: accent ? 'var(--accent)' : 'var(--text)', marginTop: 6 }}>{value}</div>
       <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>{sub}</div>
+    </div>
+  );
+}
+
+/** T05777：统一的分组条形明细——用于优先级/分类/项目工作量，空数据给明确空态。 */
+function BarList({ items, empty }: { readonly items: Array<{ label: string; count: number; color?: string; title?: string }>; readonly empty: string }) {
+  const total = items.reduce((s, x) => s + x.count, 0);
+  const max = Math.max(1, ...items.map((x) => x.count));
+  if (items.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-s)', padding: '6px 0' }}>{empty}</div>;
+  return (
+    <div style={{ display: 'grid', gap: 8 }}>
+      {items.map((x) => (
+        <div key={x.label} title={x.title ?? `${x.label}：${x.count} 条`}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-s)', marginBottom: 3 }}>
+            <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text)' }}>{x.label}</span>
+            <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>{x.count}{total ? `（${Math.round((x.count / total) * 100)}%）` : ''}</span>
+          </div>
+          <div style={{ height: 6, borderRadius: 3, background: 'var(--surface-2)', overflow: 'hidden' }}>
+            <div style={{ width: `${Math.max(2, Math.round((x.count / max) * 100))}%`, height: '100%', borderRadius: 3, background: x.color ?? 'var(--accent)', transition: 'width .2s ease' }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function InsightCard({ title, sub, children }: { readonly title: string; readonly sub: string; readonly children: React.ReactNode }) {
+  return (
+    <div data-t05777="insight-card" style={{ padding: 14, border: '1px solid var(--border)', borderRadius: 10, background: 'var(--card-bg)', minWidth: 0 }}>
+      <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600, color: 'var(--text)', marginBottom: 2 }}>{title}</div>
+      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 10 }}>{sub}</div>
+      {children}
     </div>
   );
 }
@@ -141,6 +181,74 @@ export function DashboardPage() {
               </div>
             )}
           </div>
+
+          {/* T05777：新增多维统计视图——任务结构 / 优先级 / 分类 / 计划推进 / 项目工作量；
+              数据由 /stats/dashboard 聚合返回，前端只渲染，不在浏览器拉全量任务。 */}
+          {data.breakdown ? (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12, marginTop: 16 }}>
+              <InsightCard title="任务结构" sub="当前未归档任务的待办 / 完成 / 进行中或搁置构成">
+                <BarList
+                  items={[
+                    { label: '待办', count: data.totals.todo, color: 'var(--text-secondary)' },
+                    { label: '已完成', count: data.totals.done, color: 'var(--accent)' },
+                    { label: '进行中 / 搁置', count: data.totals.other, color: 'var(--warning, #d97706)' },
+                  ]}
+                  empty="暂无任务数据"
+                />
+              </InsightCard>
+
+              <InsightCard title="优先级分布" sub="按任务优先级统计当前未归档任务">
+                <BarList
+                  items={data.breakdown.priorities.map((p) => ({
+                    label: priorityBadgeLabel(p.priority),
+                    count: p.count,
+                    color: priorityColor(p.priority),
+                    title: `${priorityBadgeLabel(p.priority)}：${p.count} 条`,
+                  }))}
+                  empty="暂无优先级数据"
+                />
+              </InsightCard>
+
+              <InsightCard title="分类分布" sub="按任务分类统计，最多展示前 8 类">
+                <BarList
+                  items={data.breakdown.categories.map((c) => ({ label: c.name, count: c.count, title: `${c.name}：${c.count} 条` }))}
+                  empty="暂无分类数据"
+                />
+              </InsightCard>
+
+              <InsightCard title="计划推进" sub="按未归档计划行统计（含历史快照项目）状态计数与平均进度">
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 10, fontSize: 'var(--fs-s)' }}>
+                  <span>全部 <strong>{data.breakdown.plans.total}</strong></span>
+                  <span style={{ color: 'var(--text-secondary)' }}>待办 {data.breakdown.plans.todo}</span>
+                  <span style={{ color: 'var(--accent)' }}>进行中 {data.breakdown.plans.doing}</span>
+                  <span style={{ color: 'var(--text-muted)' }}>已完成 {data.breakdown.plans.done}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginBottom: 4 }}>
+                  <span>平均进度</span>
+                  <span>{data.breakdown.plans.avgProgress}%</span>
+                </div>
+                <div style={{ height: 8, borderRadius: 4, background: 'var(--surface-2)', overflow: 'hidden' }}>
+                  <div style={{ width: `${Math.max(0, Math.min(100, data.breakdown.plans.avgProgress))}%`, height: '100%', borderRadius: 4, background: 'var(--accent)' }} />
+                </div>
+                {data.breakdown.plans.total === 0 && <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-s)', marginTop: 8 }}>暂无项目计划数据</div>}
+              </InsightCard>
+
+              <InsightCard title="项目工作量 Top 8" sub={projectId ? '当前筛选项目的未归档任务构成' : '全部项目按未归档任务总量排序（含历史快照项目）'}>
+                <BarList
+                  items={data.breakdown.workload.map((p) => ({
+                    label: p.name,
+                    count: p.total,
+                    title: `${p.name}：任务 ${p.total}（待办 ${p.todo} · 完成 ${p.done} · 其他 ${p.other}）`,
+                  }))}
+                  empty="暂无项目工作量数据"
+                />
+              </InsightCard>
+            </div>
+          ) : (
+            <div style={{ marginTop: 16, padding: 12, border: '1px dashed var(--border-strong)', borderRadius: 8, color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>
+              当前服务端未返回新增统计维度；请更新后端后刷新。
+            </div>
+          )}
         </>
       )}
     </div>
