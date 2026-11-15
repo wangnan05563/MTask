@@ -12,8 +12,9 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { api } from '../api/client';
 import { askConfirm } from '../ui/dialogs';
+import { HoverCard } from '../ui/HoverCard';
 import { ProjectListHint, useProjectList } from '../ui/projectList';
-import { Eye, ListChecks, Plus, RefreshCw, Save, ShieldCheck, Trash2 } from 'lucide-react';
+import { CircleHelp, Eye, ListChecks, Plus, RefreshCw, Save, ShieldCheck, Trash2 } from 'lucide-react';
 
 interface ProbeView {
   available: boolean;
@@ -294,8 +295,15 @@ export function SonarSettingsTab() {
         SonarQube 连接参数与扫描环境。首版按 Community 版实现（用 <code>sonar.inclusions</code> 收窄增量），分支/PR 模式列为后续迭代。
       </div>
 
-      <div>
-        <label style={labelStyle} htmlFor="sonar-server-url">服务器地址</label>
+      <HoverCard
+        ariaLabel="服务器地址填写说明"
+        testId="sonar-server-hint"
+        cardW={390}
+        cardH={112}
+        style={{ display: 'block' }}
+        card={<div style={{ lineHeight: 1.65 }}>仅允许 http/https；保存时自动去掉结尾斜杠；地址里不能带账号口令（凭据请填下面的 Token）。</div>}
+      >
+        <label style={labelStyle} htmlFor="sonar-server-url"><span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>服务器地址<CircleHelp size={12} aria-hidden="true" /></span></label>
         <input
           id="sonar-server-url"
           data-t03372="server-url"
@@ -309,13 +317,17 @@ export function SonarSettingsTab() {
             setProjectSource('');
           }}
         />
-        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4 }}>
-          仅允许 http/https；保存时自动去掉结尾斜杠；地址里不能带账号口令（凭据请填下面的 Token）。
-        </div>
-      </div>
+      </HoverCard>
 
-      <div>
-        <label style={labelStyle} htmlFor="sonar-token">认证 Token（密文存储，默认脱敏）</label>
+      <HoverCard
+        ariaLabel="认证 Token 填写说明"
+        testId="sonar-token-hint"
+        cardW={430}
+        cardH={128}
+        style={{ display: 'block' }}
+        card={<div style={{ lineHeight: 1.65 }}>Token 以 AES-256-GCM 密文落库；查看原文需二次确认并写审计。留空保存不会改动现有 Token，「清除」会显式清空。</div>}
+      >
+        <label style={labelStyle} htmlFor="sonar-token"><span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>认证 Token（密文存储，默认脱敏）<CircleHelp size={12} aria-hidden="true" /></span></label>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <input
             id="sonar-token"
@@ -342,10 +354,17 @@ export function SonarSettingsTab() {
           {cfg.tokenConfigured ? `当前：${tokenShown}（AES-256-GCM 密文落库；查看原文需二次确认并写审计）` : '未配置 Token；匿名可读的实例可留空。'}
           {revealed && <b style={{ color: 'var(--warn)', marginLeft: 8 }}>原文已展开 — 离开页签或点「隐藏」即清除</b>}
         </div>
-      </div>
+      </HoverCard>
 
-      <div>
-        <label style={labelStyle} htmlFor="sonar-scanner-path">扫描器路径</label>
+      <HoverCard
+        ariaLabel="扫描器路径填写说明"
+        testId="sonar-scanner-hint"
+        cardW={360}
+        cardH={88}
+        style={{ display: 'block' }}
+        card={<div style={{ lineHeight: 1.65 }}>留空按系统 PATH 探测 sonar-scanner；探测到的路径与版本在右栏「自动检测」实时展示。</div>}
+      >
+        <label style={labelStyle} htmlFor="sonar-scanner-path"><span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>扫描器路径<CircleHelp size={12} aria-hidden="true" /></span></label>
         <input
           id="sonar-scanner-path"
           data-t03375="scanner-path"
@@ -354,10 +373,7 @@ export function SonarSettingsTab() {
           placeholder="留空则按系统 PATH 探测 sonar-scanner"
           onChange={(e) => setScannerDraft(e.target.value)}
         />
-        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4 }}>
-          留空按 PATH 探测；探测结果在右栏「自动检测」实时展示。
-        </div>
-      </div>
+      </HoverCard>
 
       <div>
         <div style={labelStyle}>默认 projectKey 映射</div>
@@ -417,8 +433,15 @@ export function SonarSettingsTab() {
         {projectView.phase === 'error' && <ProjectListHint view={projectView} />}
       </div>
 
-      <div>
-        <label style={labelStyle} htmlFor="sonar-scan-limit">扫描并发上限（1–2）</label>
+      <HoverCard
+        ariaLabel="扫描并发上限填写说明"
+        testId="sonar-limit-hint"
+        cardW={370}
+        cardH={104}
+        style={{ display: 'block' }}
+        card={<div style={{ lineHeight: 1.65 }}>1 — 逐个扫描（默认）；2 — 允许两个并行。与既有导出族共用闸机制，超限返回 429 且不排队。</div>}
+      >
+        <label style={labelStyle} htmlFor="sonar-scan-limit"><span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>扫描并发上限（1–2）<CircleHelp size={12} aria-hidden="true" /></span></label>
         <select
           id="sonar-scan-limit"
           data-t03375="scan-limit"
@@ -429,10 +452,7 @@ export function SonarSettingsTab() {
           <option value={1}>1 — 逐个扫描（默认）</option>
           <option value={2}>2 — 允许两个并行</option>
         </select>
-        <div data-t03375="gate-effective" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4 }}>
-          当前生效闸上限：{cfg.gateLimitEffective}（与既有导出族共用闸机制，超限返回 429 且不排队）
-        </div>
-      </div>
+      </HoverCard>
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
         <button type="button" className="primary" data-t03372="save" onClick={() => void save()} disabled={busy === 'save'}>
@@ -504,7 +524,7 @@ export function SonarSettingsTab() {
         <SonarCard title="配置概览">
           <div data-t05773="config-summary" style={{ display: 'flex', flexDirection: 'column', gap: 5, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
             <span>projectKey 映射：{keys.filter((k) => k.projectKey.trim()).length} 个</span>
-            <span>扫描并发上限：{scanLimit}（当前生效闸上限 {cfg.gateLimitEffective}）</span>
+            <span data-t03375="gate-effective">扫描并发上限：{scanLimit}（当前生效闸上限 {cfg.gateLimitEffective}）</span>
             <span>加载的 Sonar 项目候选：{projectOptions.length} 个{projectTotal > projectOptions.length ? `（服务器共 ${projectTotal} 个）` : ''}</span>
           </div>
         </SonarCard>
