@@ -13,7 +13,10 @@ D 是**应急通道**，不是常规分发路径；每次运行必须由人明�
 ## 前置检查（全部只读）
 
 1. `GET /api/dispatch/status` 或 `mtask_supervisor_status`：确认 B0 未配置/不可达、A `readyTasks=0` 或 A 已关闭。
-2. `mtask_get_task {taskNo}` 读取目标任务：只接受 `status=todo`、`archived=0`、`ai_state=''` 的任务；
+2. `mtask_get_task {taskNo}` 读取目标任务：只接受 `status=todo`、`archived=0`、且**未被真实认领**的任务。
+   `ai_state=''` 可直接执行；`ai_state='unread'` 但 `handle_result` 为空、`exec_session_id` 为空时，
+   属于 MCP 建单留下的创建残留（`mtask_claim_task` 会返回 `already_claimed`），必须在人工确认中显式说明后
+   才可按只读/零写入任务执行；`running`/`failed` 或 `exec_session_id` 非空的任务不得走 D。
    已被认领/已完成/已归档的任务不得走 D。
 3. 记录本次 D 运行三要素：任务号、操作者、人工确认时间。
 4. 启动审计会话（仓库内脚本，强制人工闸门）：

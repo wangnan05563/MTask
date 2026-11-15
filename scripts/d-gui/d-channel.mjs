@@ -63,6 +63,7 @@ function loadSession(dir, id) {
 }
 
 function saveSession(dir, id, state) {
+  fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(sessionFile(dir, id), JSON.stringify(state, null, 2), 'utf8');
 }
 
