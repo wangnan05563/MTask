@@ -69,7 +69,9 @@ const EMPTY_CFG: ConfigView = {
   java: { available: false, resolved: '', version: '', hint: '' },
 };
 
-const fieldStyle: React.CSSProperties = { width: '100%', padding: '7px 10px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' };
+// T05788：输入框收缩并受控——boxSizing 让 padding/border 计入宽度（全局无 border-box reset，
+// 缺它时 width:100% 会溢出容器被右栏裁切）；maxWidth 限制最长，minWidth:0 防止 flex 子项撑破左栏。
+const fieldStyle: React.CSSProperties = { width: '100%', maxWidth: 480, minWidth: 0, boxSizing: 'border-box', padding: '7px 10px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' };
 const labelStyle: React.CSSProperties = { display: 'block', fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginBottom: 4 };
 const btnStyle: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 5, padding: '6px 12px', fontSize: 'var(--fs-s)', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer' };
 
@@ -284,13 +286,23 @@ export function SonarSettingsTab() {
       <style>{`
         .sonar-config-grid { width: 100%; }
         .sonar-config-left, .sonar-config-right { min-width: 0; }
+        /* T05788：左栏表单区加边框与内边距，明确区域边界；overflow-x hidden 兜底防止输入框撑破。 */
+        .sonar-config-left {
+          box-sizing: border-box;
+          border: 1px solid var(--border);
+          border-radius: 10px;
+          padding: 14px;
+          background: var(--card-bg);
+          overflow-x: hidden;
+        }
+        .sonar-config-left input, .sonar-config-left select { max-width: 100%; box-sizing: border-box; }
         .sonar-card-scroll { max-height: 300px; overflow-y: auto; overscroll-behavior: contain; }
         @media (max-width: 1024px) {
           .sonar-config-grid { grid-template-columns: minmax(0, 1fr) !important; }
         }
       `}</style>
 
-      <div className="sonar-config-left" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div className="sonar-config-left" data-t05788="sonar-left" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>
         SonarQube 连接参数与扫描环境。首版按 Community 版实现（用 <code>sonar.inclusions</code> 收窄增量），分支/PR 模式列为后续迭代。
       </div>
