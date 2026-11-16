@@ -125,6 +125,8 @@ export function ArchivePage() {
   const [page, setPage] = useState(1);
   const [planPage, setPlanPage] = useState(1);
   const [promptPage, setPromptPage] = useState(1); // T00872：归档提示词分页页脚
+  // T05775：归档类型 sheet 页签（任务/计划/提示词/通用需求/PRD/矩阵/测试用例）
+  const [archiveTab, setArchiveTab] = useSessionState<string>('archive.tab', 'tasks');
 
   // T04099：命令面板「归档中另有 N 条」带过来的关键词——挂载时消费一次（读到即删）。
   // 意图只做一次性覆盖（searchKw），不写回 `archive.kw`：否则下次不经面板进入页面还会看到上次的关键词。
@@ -529,33 +531,54 @@ export function ArchivePage() {
         </span>
       </div>
 
-      {/* T02284：条数来自服务端 total（跨全部页），不再是本地过滤后的长度；500 条截断警告随服务端分页撤销 */}
-      <h4 style={{ fontSize: 'var(--fs-l)', margin: '0 0 8px' }}>归档任务（共 {taskTotal} 条）</h4>
-      {/* T05775：分类切换对齐任务页的 sheet 页签——激活项加粗 + 底部强调线，横向可滚动；筛选仍走 catFilter 服务端查询 */}
+      {/* T05775：顶层按「归档类型」分 sheet 页签；任务分类筛选恢复为下拉，不再把缺陷分类当页签 */}
       <div
-        data-t05775="category-tabs"
-        role="group"
-        aria-label="归档任务分类切换"
-        style={{ display: 'flex', gap: 4, alignItems: 'center', borderBottom: '1px solid var(--border-strong)', marginBottom: 8, overflowX: 'auto', paddingBottom: 0 }}
+        data-t05775="archive-type-tabs"
+        role="tablist"
+        aria-label="归档类型切换"
+        style={{ display: 'flex', gap: 4, alignItems: 'center', borderBottom: '1px solid var(--border-strong)', marginBottom: 12, overflowX: 'auto', paddingBottom: 0 }}
       >
-        {[{ value: '', label: '全部分类' }, ...cats.map((c) => ({ value: c.id, label: c.name })), { value: 'none', label: '未分类' }].map((t) => (
+        {[
+          { key: 'tasks', label: '归档任务' },
+          { key: 'plans', label: '归档计划' },
+          { key: 'prompts', label: '归档提示词' },
+          { key: 'reqs', label: '归档通用需求' },
+          { key: 'prd', label: '归档 PRD 文档' },
+          { key: 'matrix', label: '归档需求跟踪矩阵' },
+          { key: 'cases', label: '归档测试用例' },
+        ].map((t) => (
           <button
-            key={t.value || 'all'}
+            key={t.key}
             type="button"
-            aria-pressed={catFilter === t.value}
-            onClick={() => { setCatFilter(t.value); setPage(1); }}
-            title={`${t.label} — 点击切换归档任务分类`}
+            role="tab"
+            aria-selected={archiveTab === t.key}
+            data-t05775={`archive-type-${t.key}`}
+            onClick={() => { setArchiveTab(t.key); setSelTaskIds([]); setSelPlanIds([]); }}
+            title={`${t.label} — 点击切换归档类型`}
             style={{
               fontSize: 'var(--fs-l)', padding: '6px 12px', border: 'none', background: 'transparent', cursor: 'pointer',
               whiteSpace: 'nowrap', flex: '0 0 auto',
-              fontWeight: catFilter === t.value ? 700 : 400,
-              color: catFilter === t.value ? 'var(--text)' : 'var(--text-muted)',
-              borderBottom: catFilter === t.value ? '2px solid var(--accent)' : '2px solid transparent',
+              fontWeight: archiveTab === t.key ? 700 : 400,
+              color: archiveTab === t.key ? 'var(--text)' : 'var(--text-muted)',
+              borderBottom: archiveTab === t.key ? '2px solid var(--accent)' : '2px solid transparent',
             }}
           >
             {t.label}
           </button>
         ))}
+      </div>
+
+      <div data-t05775="archive-section" data-archive-type="tasks" style={{ display: archiveTab === 'tasks' ? 'block' : 'none' }}>
+      {/* T02284：条数来自服务端 total（跨全部页），不再是本地过滤后的长度；500 条截断警告随服务端分页撤销 */}
+      <h4 style={{ fontSize: 'var(--fs-l)', margin: '0 0 8px' }}>归档任务（共 {taskTotal} 条）</h4>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <select value={catFilter} onChange={(e) => { setCatFilter(e.target.value); setPage(1); }}
+          aria-label="按分类筛选归档任务" title="按分类筛选归档任务"
+          style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          <option value="">全部分类</option>
+          {cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          <option value="none">未分类</option>
+        </select>
       </div>
       <ResourceHint view={tasksView} label="归档任务列表" />
       {renderBatchBar('task')}
@@ -581,7 +604,9 @@ export function ArchivePage() {
         ))}
       </ul>
       {renderPager(curTaskPage, taskPages, (n) => setPage(n), '归档任务')}
+      </div>
 
+      <div data-t05775="archive-section" data-archive-type="plans" style={{ display: archiveTab === 'plans' ? 'block' : 'none' }}>
       {/* T00442 扩展：项目计划归档区——计划「删除」改归档后在此恢复或彻底删除 */}
       <h4 style={{ fontSize: 'var(--fs-l)', margin: '20px 0 8px' }}>归档项目计划（共 {planTotal} 条）</h4>
       <ResourceHint view={plansView} label="归档计划列表" />
@@ -614,7 +639,9 @@ export function ArchivePage() {
         ))}
       </ul>
       {renderPager(curPlanPage, planPages, (n) => setPlanPage(n), '归档项目计划')}
+      </div>
 
+      <div data-t05775="archive-section" data-archive-type="prompts" style={{ display: archiveTab === 'prompts' ? 'block' : 'none' }}>
       {/* T00872：归档提示词区——提示词「归档」（软删）后在此还原或彻底删除 */}
       <h4 style={{ fontSize: 'var(--fs-l)', margin: '20px 0 8px' }}>归档提示词（共 {promptTotal} 条）</h4>
       <ResourceHint view={promptsView} label="归档提示词列表" />
@@ -634,7 +661,9 @@ export function ArchivePage() {
         ))}
       </ul>
       {renderPager(curPromptPage, promptPages, (n) => setPromptPage(n), '归档提示词')}
+      </div>
 
+      <div data-t05775="archive-section" data-archive-type="reqs" style={{ display: archiveTab === 'reqs' ? 'block' : 'none' }}>
       {/* T03685：归档通用需求区——通用需求条目「归档」（软删）后在此还原或彻底删除，
           与提示词区同构；入口来自通用需求菜单的行内归档按钮 */}
       <h4 style={{ fontSize: 'var(--fs-l)', margin: '20px 0 8px' }}>归档通用需求（共 {archivedReqs.length} 条）</h4>
@@ -654,7 +683,9 @@ export function ArchivePage() {
           </li>
         ))}
       </ul>
+      </div>
 
+      <div data-t05775="archive-section" data-archive-type="prd" style={{ display: archiveTab === 'prd' ? 'block' : 'none' }}>
       {/* T05080：归档 PRD 文档区——PRD 管理视图「归档」后在此还原或彻底删除 */}
       <h4 style={{ fontSize: 'var(--fs-l)', margin: '20px 0 8px' }}>归档 PRD 文档（共 {archivedPrdDocs.length} 条）</h4>
       <ResourceHint view={prdDocsArchivedView} label="归档 PRD 文档列表" />
@@ -673,7 +704,9 @@ export function ArchivePage() {
           </li>
         ))}
       </ul>
+      </div>
 
+      <div data-t05775="archive-section" data-archive-type="matrix" style={{ display: archiveTab === 'matrix' ? 'block' : 'none' }}>
       {/* T05080：归档需求跟踪矩阵区——需求跟踪矩阵视图「归档」后在此还原或彻底删除 */}
       <h4 style={{ fontSize: 'var(--fs-l)', margin: '20px 0 8px' }}>归档需求跟踪矩阵（共 {archivedMatrixReqs.length} 条）</h4>
       <ResourceHint view={reqMatrixArchivedView} label="归档需求跟踪矩阵列表" />
@@ -692,7 +725,9 @@ export function ArchivePage() {
           </li>
         ))}
       </ul>
+      </div>
 
+      <div data-t05775="archive-section" data-archive-type="cases" style={{ display: archiveTab === 'cases' ? 'block' : 'none' }}>
       {/* T05080：归档测试用例区——测试用例视图「归档」后在此还原或彻底删除 */}
       <h4 style={{ fontSize: 'var(--fs-l)', margin: '20px 0 8px' }}>归档测试用例（共 {archivedCases.length} 条）</h4>
       <ResourceHint view={casesArchivedView} label="归档测试用例列表" />
@@ -711,6 +746,7 @@ export function ArchivePage() {
           </li>
         ))}
       </ul>
+      </div>
     </section>
   );
 }
