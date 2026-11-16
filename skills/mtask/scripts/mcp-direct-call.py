@@ -65,6 +65,44 @@ SESSION_FILE = os.environ.get('MTASK_SESSION_FILE') or os.path.join(
     tempfile.gettempdir(), "mtask-session.txt")
 
 
+# T05793：平台识别改为配置化映射表（避免硬编码厂商名到分支里）。
+# 键=宿主目录/标识片段（小写子串），值=规范平台名。命中顺序按字典声明顺序（长串在前）。
+# MTASK_PLATFORM 环境变量优先级最高（调用方显式声明），其次按脚本所在路径匹配本表，
+# 都未命中才回落到 workbuddy（保持既有 WorkBuddy 默认口径，不再把所有第三方误归为它）。
+PLATFORM_HOST_MAP = [
+    (".trae-cn", "trae"),
+    (".trae", "trae"),
+    (".qoder-cn", "qoder"),
+    (".qoder", "qoder"),
+    (".codex", "codex"),
+    ("codex", "codex"),
+    (".doubao", "doubao"),
+    ("doubao", "doubao"),
+    ("豆包", "doubao"),
+    (".workbuddy", "workbuddy"),
+]
+PLATFORM_FALLBACK = "workbuddy"
+
+
+def resolve_platform(script_path=None, env=None):
+    """T05793：解析上报平台名（纯函数，便于门脚本隔离测试）。
+    优先级：MTASK_PLATFORM 显式声明 > 脚本路径命中 PLATFORM_HOST_MAP > 默认 workbuddy。
+    显式声明会去掉 relay:/mcp: 通道前缀并归一别名，避免 'mcp:doubao' 落成未知平台。"""
+    env = env if env is not None else os.environ
+    explicit = (env.get("MTASK_PLATFORM") or "").strip()
+    if explicit:
+        key = explicit.lower()
+        for frag, canonical in PLATFORM_HOST_MAP:
+            if frag in key:
+                return canonical
+        return key
+    path = (script_path if script_path is not None else __file__).lower()
+    for frag, canonical in PLATFORM_HOST_MAP:
+        if frag in path:
+            return canonical
+    return PLATFORM_FALLBACK
+
+
 def _proxy_context():
     """T01369：connector-proxy 端点要求携带 X-WorkBuddy-MCP-Context（会话上下文），
     从进程环境 CODEBUDDY_MCP_CONFIG 的 mtask 条目自动提取。"""
@@ -407,9 +445,9 @@ def main():
         action, task_no = argv[1], argv[2]
         if action not in ("start", "ping", "done", "fail"):
             raise SystemExit("progress 动作需为 start / ping / done / fail，收到：" + action)
-        # T01665：默认平台按脚本所在宿主目录推断（真实宿主），MTASK_PLATFORM 环境变量仍可显式覆盖
-        _host_default = "trae" if ".trae-cn" in __file__ else ("qoder" if ".qoder-cn" in __file__ else "workbuddy")
-        platform = os.environ.get("MTASK_PLATFORM", _host_default)
+        # T05793：配置化平台识别——MTASK_PLATFORM 显式声明 > 宿主目录映射表 > workbuddy 默认。
+        # 修复豆包/Codex 经 MCP 执行时因「其余→workbuddy」硬编码回退被误标为 WorkBuddy 的问题。
+        platform = resolve_platform(__file__)
         cache = os.path.join(tempfile.gettempdir(), "mtask-progress-%s.txt" % task_no)
         if action == "start":
             sess_id = "%s-%s-%s" % (platform, task_no,

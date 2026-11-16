@@ -3,6 +3,10 @@
  *
  * 五个常用平台使用安装目录中的真实应用图标（随前端打包，离线可用）；
  * 中继/MCP 与未知平台继续使用品牌色 + 短标记回退。
+ *
+ * T05793：配置化厂商别名映射（避免硬编码分支）——豆包/Codex 等经 MCP 上报时，
+ * platform 可能带 relay:/mcp: 前缀或 -mcp/-ai 等后缀、或用中文名/厂商别名，
+ * 统一在 brandFor 里按别名表归一后再取品牌，杜绝被误判成 workbuddy/未知平台。
  */
 import workbuddyIcon from '../assets/platforms/workbuddy.png';
 import traeIcon from '../assets/platforms/trae.png';
@@ -37,11 +41,60 @@ const BRANDS: Record<string, Brand> = {
   mcp: { label: 'MCP', short: 'M', color: '#0369a1', text: '#ffffff' },
 };
 
+/**
+ * T05793：厂商别名 → 规范键的配置化映射表（新增厂商只改这里，不动识别逻辑）。
+ * 值必须是 BRANDS 里已有的规范键；键统一小写，匹配时先做归一化。
+ */
+const PLATFORM_ALIASES: Readonly<Record<string, string>> = {
+  // 豆包：MCP 上报常见形态 doubao / doubao-mcp / mcp:doubao / relay:doubao / 豆包 / 火山方舟系
+  'doubao-mcp': 'doubao',
+  'doubaoai': 'doubao',
+  'dou-bao': 'doubao',
+  '豆包ai': 'doubao',
+  '豆包助手': 'doubao',
+  'volcengine': 'doubao',
+  '火山': 'doubao',
+  '火山方舟': 'doubao',
+  '方舟': 'doubao',
+  // Codex：codex-mcp / OpenAI Codex / Codex++ 等
+  'openai-codex': 'codex',
+  'codexcli': 'codex',
+  'codex-cli': 'codex',
+  'codexmcp': 'codex',
+  'codex-mcp': 'codex',
+  'codexpp': 'codex',
+  'codex ++': 'codex',
+  // WorkBuddy 变体
+  'work-buddy': 'workbuddy',
+  'work buddy': 'workbuddy',
+  'wb': 'workbuddy',
+  // Trae / Qoder 变体
+  'traeai': 'trae',
+  'trae-ai': 'trae',
+  'qcoder': 'qoder',
+  'qoder-ai': 'qoder',
+};
+
+/**
+ * T05793：平台标识归一化——用于识别，不改变存库的 platform 原值（会话唯一键口径保持不变）。
+ * 步骤：trim → 小写 → 去 relay:/mcp: 前缀 → 去 -mcp/-ai 等尾缀 → 折叠空白/下划线/连字符。
+ */
+function normalizeForBrand(raw: string): string {
+  let s = raw.trim().toLowerCase();
+  s = s.replace(/^(relay|mcp|平台|platform)\s*[:：/]\s*/, ''); // 去掉通道前缀
+  s = s.replace(/[-_]\s*(mcp|ai|agent|client|assistant)\b/g, ''); // 去掉常见角色尾缀
+  s = s.replace(/[\s_]+/g, ' ').replace(/[-]+/g, '-'); // 折叠空白/连字符
+  return s.trim();
+}
+
 function brandFor(platform: string | null | undefined): Brand {
-  const key = (platform ?? '').trim().toLowerCase();
-  return BRANDS[key] ?? {
-    label: platform?.trim() || '未知平台',
-    short: (platform?.trim() || '?').slice(0, 2).toUpperCase(),
+  const raw = (platform ?? '').trim();
+  const key = normalizeForBrand(raw);
+  // 先按别名表归一，再查 BRANDS；别名的 value 是 BRANDS 的规范键
+  const canonical = BRANDS[key] ? key : PLATFORM_ALIASES[key] ?? '';
+  return BRANDS[canonical] ?? {
+    label: raw || '未知平台',
+    short: (raw || '?').slice(0, 2).toUpperCase(),
     color: '#64748b',
     text: '#ffffff',
   };
