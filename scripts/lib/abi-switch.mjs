@@ -27,11 +27,15 @@ const LOCK_SIDECAR = `${WORKSPACE_NODE}.mtask-lock`;
 
 const RELEASE_CACHE = path.join('release', '.mtask-abi-cache');
 
-/** 主缓存优先；build\native 不可写时允许 release\.mtask-abi-cache 兜底。 */
+/**
+ * T05739：可重复构建产物集中到 release/。
+ * release\.mtask-abi-cache 为主缓存，build\native 只作为旧布局的兼容兜底；
+ * 这样构建脚本自动播种时不会再在仓库根重建 build\native。
+ */
 export function cacheCandidates(root, mode) {
   return [
-    path.join(root, 'build', 'native', mode, 'better_sqlite3.node'),
     path.join(root, RELEASE_CACHE, mode, 'better_sqlite3.node'),
+    path.join(root, 'build', 'native', mode, 'better_sqlite3.node'),
   ];
 }
 
@@ -40,7 +44,7 @@ export function cachePath(root, mode) {
   return candidates.find((p) => fs.existsSync(p)) || candidates[0];
 }
 
-/** 写入缺失的 ABI 缓存；首选 build\native，失败再落 release\.mtask-abi-cache。 */
+/** 写入缺失的 ABI 缓存；首选 release\.mtask-abi-cache，失败再落 build\native。 */
 export function writeCache(root, mode, data) {
   const candidates = cacheCandidates(root, mode);
   let lastErr = null;

@@ -102,23 +102,16 @@ ok('H-06 HEAD 副本 `tsc --noEmit -p web/tsconfig.json` 零错误',
 // 反证：只破坏副本（工作树不动），证明「引用入库、定义没入库」这类破损能被本判据拓出来
 let neg: { code: number; text: string } = { code: 0, text: '未执行' };
 if (junctionOk) {
-  const target = join(COPY, 'server', 'src', 'util', 'exportStyle.ts');
-  if (existsSync(target)) {
-    const orig = readFileSync(target, 'utf8');
-    // 挑一处导出名删掉「定义」但保留引用侧——正是 T02295 记录的那类不自洽形态
-    const m = /export const (BRAND_[A-Z]+|ON_BRAND)/.exec(orig);
-    if (m) {
-      writeFileSync(target, orig.replace(m[0], `// const ${m[1]} = 已被本反证移除（仅副本）`), 'utf8');
-      neg = tscInCopy('server');
-      writeFileSync(target, orig, 'utf8');
-    } else {
-      neg = { code: 0, text: '副本里没找到可移除的 BRAND_* 导出（改判据时需换靶子）' };
-    }
-  } else {
-    neg = { code: 0, text: '副本缺少 server/src/util/exportStyle.ts（改判据时需换靶子）' };
+  // 用一个只在副本里新增的探针文件注入未定义引用：不受既有文件是否被引用、是否被 tsc 缓存影响。
+  const probe = join(COPY, 'server', 'src', '__h07_probe.ts');
+  try {
+    writeFileSync(probe, 'const __H07_MISSING_SYMBOL = __H07_NOT_DEFINED;\n', 'utf8');
+    neg = tscInCopy('server');
+  } finally {
+    rmSync(probe, { force: true });
   }
 }
-ok('H-07 反证（只破坏副本）：抽掉一个被引用的导出后 tsc 必须报错——本判据不是恒绿摆设',
+ok('H-07 反证（只破坏副本）：注入未定义引用后 tsc 必须报错——本判据不是恒绿摆设',
   neg.code !== 0 && /TS2305|TS2304|Cannot find/.test(neg.text),
   `exit=${neg.code}｜${errOf(neg.text).slice(0, 2).join(' ⏎ ').slice(0, 300) || neg.text.slice(0, 200)}`);
 

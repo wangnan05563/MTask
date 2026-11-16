@@ -282,11 +282,15 @@ if exist "%OUTDIR%\win-unpacked" (
     )
 )
 
+REM T05739: collect repeatable build outputs under release/; clean release/ to reclaim space.
+node "scripts\archive-build-outputs.mjs"
+if errorlevel 1 echo   [WARN] build artifact archive failed - installer is unaffected.
+
 echo ============================================
 echo  Build done
 echo ============================================
-echo  server:  server\dist
-echo  web:     web\dist
+echo  server:  release\build-artifacts\server-dist
+echo  web:     release\build-artifacts\web-dist
 echo  exe:     release\
 REM Print the actual version used this run so each artifact can be traced back.
 for /f "usebackq delims=" %%v in (`node -p "require('./package.json').version"`) do set "APPVER=%%v"

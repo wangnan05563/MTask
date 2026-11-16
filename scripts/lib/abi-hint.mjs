@@ -17,6 +17,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { cachePath } from './abi-switch.mjs';
 
 const ABI_SYMBOL_RE = /node_register_module_v(\d+)/;
 const NAPI_SYMBOL_RE = /napi_register_module_v1/;
@@ -41,8 +42,8 @@ export function report(root = '.', { log = (m) => console.log(m) } = {}) {
   const nodeAbi = Number(process.versions.modules);
   log(`[ABI] interpreter: node ${process.version} NODE_MODULE_VERSION=${nodeAbi} exe=${process.execPath}`);
   const targets = {
-    dev: path.join(root, 'build', 'native', 'dev', 'better_sqlite3.node'),
-    electron: path.join(root, 'build', 'native', 'electron', 'better_sqlite3.node'),
+    dev: cachePath(root, 'dev'),
+    electron: cachePath(root, 'electron'),
     workspace: path.join(root, 'node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node'),
   };
   const found = {};

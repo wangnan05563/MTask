@@ -35,7 +35,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import {
-  cachePath, describeHolders, restoreWorkspaceAbi, snapshotWorkspaceAbi, switchAbi,
+  cachePath, describeHolders, ensureCache, restoreWorkspaceAbi, snapshotWorkspaceAbi, switchAbi,
   waitForWritable, workspaceNodePath,
 } from './lib/abi-switch.mjs';
 import versionBackup from './lib/version-backup.js';
@@ -148,6 +148,9 @@ run(NODE, [path.join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js'), 'build'], 
 // 一锁定就退出，版本号已 +1 却没有产物（旧脚本那句 "version was bumped already but no artifact was
 // produced this run" 就是这个副作用的残留）。这里先验后 bump，并给失败分支挂回滚。
 log('原生依赖预检（递增版本号之前）…');
+// T05739：缓存缺失时先在 release\.mtask-abi-cache 自动播种，再走硬检查；
+// 避免 Node 入口只报「缓存缺失」而不会像 .bat 入口那样自动补建。
+ensureCache(ROOT, { fail, log: (m) => console.log(m) });
 for (const mode of ['dev', 'electron']) {
   if (!fs.existsSync(cachePath(ROOT, mode))) fail(`ABI 缓存缺失：${cachePath(ROOT, mode)}（可用 scripts/native-switch.bat dev 重建）`);
 }
@@ -202,9 +205,17 @@ try {
 
 // 安装包已产出、ABI 已还原：这次递增定稿，丢弃回滚备份（否则下次失败会还原成更旧的版本）
 versionBackup.discardVersionBackup(ROOT);
+
+// T05739：把可重复构建产物集中到 release/，仓库根只留源码；清理 release/ 即可回收空间。
+try {
+  const { archiveBuildOutputs } = await import('./archive-build-outputs.mjs');
+  archiveBuildOutputs(ROOT);
+} catch (err) {
+  console.warn(`[WARN] 构建产物归档失败（安装包不受影响）：${err?.message || err}`);
+}
 buildOk = true;
 
 console.log('\n============================================');
 console.log(' Build done');
-console.log(` server: server\\dist\n web:    web\\dist\n exe:    ${outDir}\\\n version: ${appVer}`);
+console.log(` server: release\\build-artifacts\\server-dist\n web:    release\\build-artifacts\\web-dist\n exe:    ${outDir}\\\n version: ${appVer}`);
 console.log('============================================');

@@ -3,9 +3,9 @@ rem MTask better-sqlite3 native ABI switcher.
 rem Usage: native-switch.bat dev|electron
 rem Copies the cached <ABI>.node into node_modules so the loaded module matches
 rem the current Node / Electron runtime WITHOUT needing a C++ toolchain.
-rem Cache lives under build\native\: dev = local Node ABI (137, matches the node on PATH),
-rem electron = Electron ABI(130). T02692: dev was 127 under the old managed Node 22; that
-rem Node is gone, so keeping 127 made every dev run fail with ERR_DLOPEN_FAILED.
+rem Cache lives under release\.mtask-abi-cache\ (T05739: 集中到 release，方便清理)：
+rem dev = local Node ABI (137, matches the node on PATH), electron = Electron ABI(130).
+rem Legacy build\native\ remains a fallback for older checkouts.
 setlocal
 set "MODE=%~1"
 if /i "%MODE%"=="dev" goto valid
@@ -13,7 +13,8 @@ if /i "%MODE%"=="electron" goto valid
 echo [ERROR] usage: native-switch.bat dev^|electron
 exit /b 1
 :valid
-set "SRC=%~dp0..\build\native\%MODE%\better_sqlite3.node"
+set "SRC=%~dp0..\release\.mtask-abi-cache\%MODE%\better_sqlite3.node"
+if not exist "%SRC%" set "SRC=%~dp0..\build\native\%MODE%\better_sqlite3.node"
 set "DST=%~dp0..\node_modules\better-sqlite3\build\Release\better_sqlite3.node"
 if not exist "%SRC%" (
     echo [ERROR] cache missing: %SRC%

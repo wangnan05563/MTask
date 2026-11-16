@@ -28,7 +28,8 @@ const path = require('node:path');
 const ROOT = path.resolve(__dirname, '..');
 
 (async () => {
-  const { switchAbi, snapshotWorkspaceAbi, restoreWorkspaceAbi } = await import('./lib/abi-switch.mjs');
+  const { switchAbi, snapshotWorkspaceAbi, restoreWorkspaceAbi, ensureCache } = await import('./lib/abi-switch.mjs');
+  const { archiveBuildOutputs } = await import('./archive-build-outputs.mjs');
   const fail = (msg) => {
     console.error(`[ERROR] ${msg}`);
     process.exit(1);
@@ -52,6 +53,10 @@ const ROOT = path.resolve(__dirname, '..');
 
   const version = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
   if (!version) fail('无法读取 package.json version');
+
+  // T05739：缓存缺失时先在 release\.mtask-abi-cache 自动播种，再快照/切换；
+  // 与三个 .bat 入口和 scripts/打包.mjs 共用同一实现，避免 Node 入口绕过自动补建。
+  ensureCache(ROOT, { fail, log: (m) => console.log(m) });
 
   // 打包前记录工作区当前的原生二进制（必须先取快照再切换，否则快照就是 Electron 那份、还原等于没做），
   // 缓存缺失在这里就 fail-fast，避免打到一半才炸。
@@ -81,6 +86,13 @@ const ROOT = path.resolve(__dirname, '..');
   // 成功、失败、被子进程异常终止都要还原 ABI（否则本地 node 直跑 server/dist 会 ERR_DLOPEN_FAILED）
   child.on('exit', (code) => {
     restoreWorkspaceAbi(ROOT, prevAbi, { ...abiOpts, sidecar: abiSidecar });
+    if (code === 0) {
+      try {
+        archiveBuildOutputs(ROOT);
+      } catch (err) {
+        console.warn(`[WARN] 构建产物归档失败（安装包不受影响）：${err?.message || err}`);
+      }
+    }
     process.exit(code ?? 1);
   });
   child.on('error', (err) => {
