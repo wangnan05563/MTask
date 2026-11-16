@@ -50,12 +50,13 @@ function restoreVersionFiles(root) {
     if (!fs.existsSync(bak)) continue;
     fs.copyFileSync(bak, path.join(root, rel));
   }
-  fs.rmSync(dir, { recursive: true, force: true });
+  // 备份目录可能因杀毒/句柄暂时删不干净；文件已恢复，清理失败不应让还原整体失败。
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
   return { restored: true, version: meta?.prev ?? null };
 }
 
 function discardVersionBackup(root) {
-  fs.rmSync(backupDir(root), { recursive: true, force: true });
+  try { fs.rmSync(backupDir(root), { recursive: true, force: true }); } catch { /* best-effort */ }
 }
 
 module.exports = { backupVersionFiles, restoreVersionFiles, discardVersionBackup };

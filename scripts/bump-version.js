@@ -18,7 +18,17 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { backupVersionFiles, restoreVersionFiles, discardVersionBackup } = require('./lib/version-backup.js');
 
-const ROOT = path.resolve(__dirname, '..');
+const SCRIPT_ROOT = path.resolve(__dirname, '..');
+function resolveRoot() {
+  if (process.env.MTASK_PROJECT_ROOT) return path.resolve(process.env.MTASK_PROJECT_ROOT);
+  // scripts 是 junction 时 __dirname 会落到 E 盘真实 target；以 cwd 的 workspace 根为准。
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'));
+    if (pkg.workspaces) return process.cwd();
+  } catch { /* 非 workspace 根，回退脚本所在仓库 */ }
+  return SCRIPT_ROOT;
+}
+const ROOT = resolveRoot();
 const root = path.join(ROOT, 'package.json');
 const electronPkg = path.join(ROOT, 'electron', 'package.json');
 
@@ -64,14 +74,14 @@ setVer(electronPkg, next);
 // 同步 package-lock.json：顶层 version 必须跟根一致；workspace 入口则按各自 package.json
 // 的「真实版本」逐一对齐，不能把 server/web 也强制改成根版本——否则会与其自身 package.json
 // 不一致，导致下次 npm install 因版本漂移重写锁文件、产生与本次改动无关的噪音。
-const lockP = path.resolve(__dirname, '..', 'package-lock.json');
+const lockP = path.join(ROOT, 'package-lock.json');
 const lock = JSON.parse(fs.readFileSync(lockP, 'utf8'));
 lock.version = next;
 if (lock.packages['']) lock.packages[''].version = next; // 根入口即根版本（已 setVer）
 if (lock.packages['electron']) lock.packages['electron'].version = next; // electron 已 setVer
 for (const w of ['server', 'web']) { // 未改版本的 workspace 按其真实 package.json 版本对齐
   if (!lock.packages[w]) continue;
-  const wp = path.resolve(__dirname, '..', w, 'package.json');
+  const wp = path.join(ROOT, w, 'package.json');
   lock.packages[w].version = JSON.parse(fs.readFileSync(wp, 'utf8')).version;
 }
 fs.writeFileSync(lockP, JSON.stringify(lock, null, 2) + '\n');
