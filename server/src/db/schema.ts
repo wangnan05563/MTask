@@ -81,6 +81,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
       remark      TEXT DEFAULT '',
       console_url TEXT DEFAULT '',
       provider_type TEXT DEFAULT '',
+      cli_json    TEXT NOT NULL DEFAULT '',
       pinned      INTEGER NOT NULL DEFAULT 0,
       created_at  TEXT NOT NULL,
       updated_at  TEXT NOT NULL
@@ -716,6 +717,9 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('ai_tools', 'console_url', "console_url TEXT DEFAULT ''");
   // T05784：厂商业务属性（国内直连/国际直连/聚合路由/本地部署），与 type（适配器协议）分离
   ensureColumn('ai_tools', 'provider_type', "provider_type TEXT DEFAULT ''");
+  // T05796：CLI Process Adapter 的 command/args/promptMode/env 等配置，JSON 存储；
+  // 空串=未配置，不能把命令塞进 endpoint 或 remark。
+  ensureColumn('ai_tools', 'cli_json', "cli_json TEXT NOT NULL DEFAULT ''");
   // T03164（PRD AI-301 / D-05）：老库幂等补 ai_usage.card_key，历史行随默认值标 unknown
   ensureColumn('ai_usage', 'card_key', "card_key TEXT NOT NULL DEFAULT 'unknown'");
   // T04003：一次 job 往往有多次模型调用（需求拆分段 + 逐块用例段），只按 kind/card_key 聚合看不出

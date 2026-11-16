@@ -4,6 +4,7 @@ import { v4 as uuid } from 'uuid';
 import { listAdapterTypes, testAdapter, listAdapterModels, probeAdapter } from '../adapters';
 import { checkToolConfig, summarizeIssues } from '../adapters/configCheck';
 import type { ConfigIssue } from '../adapters/configCheck';
+import type { CliProcessConfig } from '../adapters/types';
 import { cacheGet, cacheSet, cacheClear } from '../util/ttl-cache';
 
 export interface AIToolRow {
@@ -25,6 +26,8 @@ export interface AIToolRow {
   console_url: string;
   /** T05784：厂商业务属性（国内直连/国际直连/聚合路由/本地部署），与 type（适配器协议）分离 */
   provider_type: string;
+  /** T05796：CLI Process 配置（JSON 文本，空串=未配置） */
+  cli_json: string | null;
   pinned: number;
   created_at: string;
   updated_at: string;
@@ -47,12 +50,25 @@ export interface AIToolInput {
   consoleUrl?: string;
   /** T05784：厂商业务属性（国内直连/国际直连/聚合路由/本地部署） */
   providerType?: string;
+  /** T05796：CLI Process 配置；仅 type=cli-process 时生效 */
+  cli?: CliProcessConfig;
   /** 置顶：true=固定到列表顶部 */
   pinned?: boolean;
 }
 
 function now(): string {
   return new Date().toISOString();
+}
+
+/** T05796：cli_json 文本 → 运行时配置；坏 JSON 不阻断工具，按未配置处理。 */
+function parseCliConfig(raw: string | null | undefined): CliProcessConfig | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as CliProcessConfig;
+    return parsed && typeof parsed.command === 'string' && parsed.command.trim() ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // 模型列表内存缓存：按 type|endpoint 维度缓存 5 分钟。
@@ -71,6 +87,7 @@ function toSafe(row: AIToolRow) {
     pinned: Boolean(row.pinned),
     hasApiKey: Boolean(api_key_enc),
     apiKeyMasked: api_key_enc ? maskSecret(decrypt(api_key_enc)) : null,
+    hasCli: Boolean(row.cli_json),
   };
 }
 
@@ -108,13 +125,14 @@ export const ConfigService = {
     const id = uuid();
     const t = now();
     db.prepare(
-      `INSERT INTO ai_tools (id, name, type, purpose, endpoint, api_key_enc, model, model_notes, temperature, max_tokens, timeout_ms, enabled, remark, console_url, provider_type, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO ai_tools (id, name, type, purpose, endpoint, api_key_enc, model, model_notes, temperature, max_tokens, timeout_ms, enabled, remark, console_url, provider_type, cli_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id, input.name, input.type, input.purpose ?? 'develop', input.endpoint,
       input.apiKey ? encrypt(input.apiKey) : null,
       input.model ?? null, input.modelNotes ?? '', input.temperature ?? 0.2, input.maxTokens ?? 4096, input.timeoutMs ?? 60000,
-      input.enabled === false ? 0 : 1, input.remark ?? '', input.consoleUrl ?? '', input.providerType ?? '', t, t,
+      input.enabled === false ? 0 : 1, input.remark ?? '', input.consoleUrl ?? '', input.providerType ?? '',
+      input.cli ? JSON.stringify(input.cli) : '', t, t,
     );
     cacheClear('aitools'); // 工具列表缓存失效，新建立即可见
     // T02208：保存时本地体检（零外部请求）——命中即以 warnings 点名，不阻断保存
@@ -156,15 +174,17 @@ export const ConfigService = {
       remark: patch.remark ?? row.remark ?? '',
       consoleUrl: patch.consoleUrl ?? row.console_url ?? '',
       providerType: patch.providerType ?? row.provider_type ?? '',
+      cli: patch.cli ?? parseCliConfig(row.cli_json),
     };
     // apiKey 留空/未传 → 保留原密文，避免编辑时覆盖丢失密钥（FR3.5）
     const apiKeyEnc = patch.apiKey ? encrypt(patch.apiKey) : row.api_key_enc;
+    const cliJson = next.cli ? JSON.stringify(next.cli) : '';
     db.prepare(
-      `UPDATE ai_tools SET name=?, type=?, purpose=?, endpoint=?, api_key_enc=?, model=?, model_notes=?, temperature=?, max_tokens=?, timeout_ms=?, enabled=?, remark=?, console_url=?, provider_type=?, updated_at=? WHERE id=?`
+      `UPDATE ai_tools SET name=?, type=?, purpose=?, endpoint=?, api_key_enc=?, model=?, model_notes=?, temperature=?, max_tokens=?, timeout_ms=?, enabled=?, remark=?, console_url=?, provider_type=?, cli_json=?, updated_at=? WHERE id=?`
     ).run(
       next.name, next.type, next.purpose, next.endpoint, apiKeyEnc,
       next.model ?? null, next.modelNotes, next.temperature, next.maxTokens, next.timeoutMs,
-      next.enabled ? 1 : 0, next.remark, next.consoleUrl ?? '', next.providerType ?? '', now(), id,
+      next.enabled ? 1 : 0, next.remark, next.consoleUrl ?? '', next.providerType ?? '', cliJson, now(), id,
     );
     // 置顶独立处理：pinned 是列表展示元数据，不与编辑表单字段耦合，仅当显式传入时更新
     if (patch.pinned !== undefined) {
@@ -216,18 +236,20 @@ export const ConfigService = {
       model: row.model ?? undefined,
       apiKey,
       timeoutMs: row.timeout_ms,
+      cli: parseCliConfig(row.cli_json),
     });
     return withLocalCheck(result, checkToolConfig({ endpoint: row.endpoint, apiKey, model: row.model ?? undefined }));
   },
 
   /** FR3.3 草稿连接测试：用表单未保存的值提前验证连通性，避免保存后才发现配置错误 */
-  async testDraft(input: { type: string; endpoint: string; apiKey?: string; model?: string }) {
+  async testDraft(input: { type: string; endpoint: string; apiKey?: string; model?: string; cli?: CliProcessConfig }) {
     if (!input?.type || !input?.endpoint) throw new Error('缺少厂商类型或 Endpoint');
     const result = await testAdapter(input.type, {
       endpoint: input.endpoint,
       model: input.model || undefined,
       apiKey: input.apiKey || undefined,
       timeoutMs: 15000,
+      cli: input.cli,
     });
     return withLocalCheck(result, checkToolConfig({ endpoint: input.endpoint, apiKey: input.apiKey, model: input.model }));
   },
@@ -326,6 +348,7 @@ export const ConfigService = {
         maxTokens: row.max_tokens,
         timeoutMs: row.timeout_ms,
         apiKey: row.api_key_enc ? decrypt(row.api_key_enc) : undefined,
+        cli: parseCliConfig(row.cli_json),
       },
     };
   },

@@ -16,6 +16,30 @@ export interface TaskContext {
   workspacePath?: string;
 }
 
+/** T05796：CLI Process Adapter 的平台无关配置；命令与参数只从这里读取，不塞进 endpoint。 */
+export interface CliProcessConfig {
+  /** 可执行文件或命令名；禁止来自任务正文 */
+  command: string;
+  /** 固定参数数组，spawn 参数化传递，不经过 shell 拼接 */
+  args?: string[];
+  /** prompt 传递方式：stdin（默认）/ file（需在 args 中用 {promptFile}）/ arg（需用 {prompt}） */
+  promptMode?: 'stdin' | 'file' | 'arg';
+  /** 工作目录：'project' 表示任务 workspacePath；其他值为绝对目录 */
+  cwd?: string;
+  /** stdout 解析方式；markdown 默认原样作为结果 */
+  output?: 'markdown' | 'json' | 'jsonl';
+  /** 成功退出码，默认 [0] */
+  successExitCodes?: number[];
+  /** stdout 上限（bytes），默认 2MB */
+  maxOutputBytes?: number;
+  /** 连接测试参数，默认 --version */
+  probeArgs?: string[];
+  /** 仅运行时注入的环境变量；token/密码只允许走这里，不得放入 args */
+  env?: Record<string, string>;
+  /** 进程超时，优先于 ToolConfig.timeoutMs */
+  timeoutMs?: number;
+}
+
 export interface ToolConfig {
   endpoint: string;
   model?: string;
@@ -24,6 +48,8 @@ export interface ToolConfig {
   timeoutMs?: number;
   /** 仅运行时由 ConfigService 解密后传入，绝不写日志 */
   apiKey?: string;
+  /** T05796：CLI 专用配置块 */
+  cli?: CliProcessConfig;
 }
 
 /**
@@ -113,7 +139,7 @@ export interface AIAdapter {
 }
 
 /** 由 AI 工具类型映射到适配器实例 */
-export type AdapterType = 'openai-compatible' | 'claude' | 'ollama' | 'workbuddy' | 'codebuddy-gateway';
+export type AdapterType = 'openai-compatible' | 'claude' | 'ollama' | 'workbuddy' | 'codebuddy-gateway' | 'cli-process';
 
 /**
  * T00779：流式输出触顶截断的统一错误文案（与 T00714 非流式 finish_reason=length 判定同语义）。
