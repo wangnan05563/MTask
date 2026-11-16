@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Bell, CheckCircle2, FileText, ListTodo, ShieldCheck } from 'lucide-react';
 import { api } from '../api/client';
 import { focusTaskByNo, type FocusOpenMode } from './focusTask';
 import { relTime } from './format';
+import { ScrollArrows } from './ScrollArrows';
 
 /**
  * T05767：执行会话页右栏通知流。
@@ -51,6 +52,7 @@ export function NotificationFeed({ limit = 50 }: { readonly limit?: number }) {
   const [lastSeen] = useState(readLastSeen);
   const [error, setError] = useState('');
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
+  const feedRef = useRef<HTMLDivElement | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -92,6 +94,10 @@ export function NotificationFeed({ limit = 50 }: { readonly limit?: number }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%' }}>
+      <style>{`
+        .notify-feed-scroll { scrollbar-width: none; -ms-overflow-style: none; }
+        .notify-feed-scroll::-webkit-scrollbar { display: none; }
+      `}</style>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 2px 10px', flexShrink: 0 }}>
         <Bell size={15} style={{ color: 'var(--accent)' }} />
         <span style={{ fontSize: 'calc(var(--fs-m) + 0.5px)', fontWeight: 600, color: 'var(--text)' }}>通知中心</span>
@@ -107,12 +113,14 @@ export function NotificationFeed({ limit = 50 }: { readonly limit?: number }) {
 
       {error && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)', padding: '0 2px 8px', flexShrink: 0 }}>通知加载失败：{error}</div>}
 
-      <div
-        data-lck="notification-feed"
-        className="notify-feed-scroll"
-        aria-label={`通知消息列表，共 ${items.length} 条`}
-        style={{ flex: 1, minHeight: 0, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 12, background: 'var(--card-bg)' }}
-      >
+      <div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
+        <div
+          ref={feedRef}
+          data-lck="notification-feed"
+          className="notify-feed-scroll"
+          aria-label={`通知消息列表，共 ${items.length} 条`}
+          style={{ height: '100%', overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 12, background: 'var(--card-bg)', paddingBottom: 28 }}
+        >
         {items.length === 0 && (
           <div style={{ padding: 22, fontSize: 'var(--fs-s)', color: 'var(--text-muted)', textAlign: 'center' }}>暂无通知消息</div>
         )}
@@ -156,6 +164,8 @@ export function NotificationFeed({ limit = 50 }: { readonly limit?: number }) {
             </button>
           );
         })}
+        </div>
+        <ScrollArrows targetRef={feedRef} label="通知消息" />
       </div>
     </div>
   );

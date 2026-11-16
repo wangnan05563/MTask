@@ -6,6 +6,7 @@ import { focusTaskByNo } from '../ui/focusTask';
 import { fullTime, relTime } from '../ui/format';
 import { NotificationFeed } from '../ui/NotificationFeed';
 import { PlatformLogo, platformDisplayName } from '../ui/PlatformLogo';
+import { ScrollArrows } from '../ui/ScrollArrows';
 import { desktopApi } from '../ui/desktop';
 
 /**
@@ -26,9 +27,10 @@ const HIDDEN_POLL_MS = 15000;
 /** 可重派状态（PRD §8：心跳超时→stalled、平台报错→failed 才有一键重派；其余状态服务端整单拒绝） */
 const REDISPATCHABLE = new Set(['stalled', 'failed']);
 
-/** T05767：左右分栏默认严格 3:1（左 75% / 右 25%），拖动范围留出两侧安全边界。 */
-const SPLIT_KEY = 'mtask.execSessions.splitPct';
-const DEFAULT_LEFT_PCT = 75;
+/** T05767：左右分栏默认 4:1（左 80% / 右 20%），拖动范围留出两侧安全边界。
+ *  换新键避免沿用旧版 75% 默认值，让已升级用户的初始比例也落到 4:1。 */
+const SPLIT_KEY = 'mtask.execSessions.splitPct.v2';
+const DEFAULT_LEFT_PCT = 80;
 const MIN_LEFT_PCT = 55;
 const MAX_LEFT_PCT = 85;
 
@@ -75,15 +77,15 @@ const card: CSSProperties = {
   background: 'var(--card-bg)',
   border: '1px solid var(--border)',
   borderRadius: 14,
-  padding: '10px 12px',
+  padding: '8px 10px',
 };
 
 const chip: CSSProperties = {
-  fontSize: 'calc(var(--fs-xs) + 0.5px)',
+  fontSize: 'var(--fs-xs)',
   color: 'var(--text-secondary)',
   background: 'var(--surface-2)',
   borderRadius: 6,
-  padding: '2px 8px',
+  padding: '1px 6px',
   maxWidth: 320,
   overflow: 'hidden',
   textOverflow: 'ellipsis',
@@ -127,7 +129,7 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
   const [error, setError] = useState('');
   /** L3 丁档：最近一次摘要指纹——相同就跳过整行重取 */
   const sigRef = useRef('');
-  /** T05767：左右分栏宽度（左栏百分比）与拖动状态；默认严格 3:1。 */
+  /** T05767：左右分栏宽度（左栏百分比）与拖动状态；默认 4:1（左 80% / 右 20%）。 */
   const [leftPct, setLeftPct] = useState(readSplitPct);
   const [dragging, setDragging] = useState(false);
   const splitRef = useRef<HTMLDivElement | null>(null);
@@ -298,7 +300,7 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
     );
   } else {
     content = (
-      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${columns.length}, minmax(190px, 1fr))`, gap: 12, alignItems: 'start', overflowX: 'auto', paddingBottom: 8 }}>
+      <div className="exec-kanban-grid" style={{ display: 'grid', gridTemplateColumns: `repeat(${columns.length}, minmax(190px, 1fr))`, gap: 12, alignItems: 'stretch', height: '100%', minHeight: 0, paddingBottom: 2 }}>
         {columns.map((col) => (
           <KanbanColumn
             key={col.key}
@@ -361,9 +363,12 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
         @media (prefers-reduced-motion: reduce) {
           .exec-card-running::before { animation: none; }
         }
-        .exec-column { scrollbar-width: thin; }
+        .exec-column-scroll { scrollbar-width: none; -ms-overflow-style: none; }
+        .exec-column-scroll::-webkit-scrollbar { display: none; }
+        .exec-monitor-pane { scrollbar-width: thin; }
+        .notify-feed-scroll { scrollbar-width: none; -ms-overflow-style: none; }
+        .notify-feed-scroll::-webkit-scrollbar { display: none; }
         .exec-split-handle:hover span, .exec-split-handle:focus-visible span { background: var(--accent) !important; }
-        .notify-feed-scroll { scrollbar-width: thin; }
         /* T05792：无边框图标按钮——悬浮/聚焦给轻微底色反馈，功能靠 title/aria-label 识别 */
         .exec-icon-btn { transition: background .15s ease, color .15s ease; }
         .exec-icon-btn:hover, .exec-icon-btn:focus-visible { background: var(--surface-2) !important; }
@@ -418,13 +423,13 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
           gridTemplateColumns: `${leftPct}% 10px minmax(0, 1fr)`,
           gap: 0,
           minHeight: 520,
-          height: standalone ? 'calc(100vh - 96px)' : 'calc(100vh - 210px)',
+          height: standalone ? 'calc(100vh - 96px)' : 'calc(100vh - 140px)',
           padding: standalone ? '0 16px 12px' : 0,
           boxSizing: 'border-box',
           minWidth: 0,
         }}
       >
-        <div data-lck="exec-monitor-column" style={{ minWidth: 0, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', paddingRight: 10 }}>
+        <div data-lck="exec-monitor-column" className="exec-monitor-pane" style={{ minWidth: 0, minHeight: 0, height: '100%', overflowX: 'auto', overflowY: 'hidden', paddingRight: 10, paddingBottom: 2 }}>
           {content}
         </div>
         <div
@@ -443,7 +448,7 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
             else if (e.key === 'ArrowRight') { e.preventDefault(); adjustSplit(3); }
             else if (e.key === 'Home') { e.preventDefault(); setLeftPct(DEFAULT_LEFT_PCT); try { localStorage.setItem(SPLIT_KEY, String(DEFAULT_LEFT_PCT)); } catch { /* 忽略 */ } }
           }}
-          title="拖动调整左右栏宽度（默认 3:1）；双击恢复 3:1"
+          title="拖动调整左右栏宽度（默认 4:1，左 80%）；双击恢复 4:1"
           onDoubleClick={() => { setLeftPct(DEFAULT_LEFT_PCT); try { localStorage.setItem(SPLIT_KEY, String(DEFAULT_LEFT_PCT)); } catch { /* 忽略 */ } }}
           style={{ position: 'relative', cursor: 'col-resize', touchAction: 'none', userSelect: 'none', background: 'transparent', border: 'none', padding: 0, minWidth: 10 }}
         >
@@ -471,35 +476,46 @@ function KanbanColumn({
   readonly rows: ExecSession[];
   readonly onCardRef: (id: string, el: HTMLDivElement | null) => void;
 }) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   return (
     <section
       className="exec-column"
       aria-label={`${title}，${rows.length} 个会话`}
       style={{
-        minWidth: 0, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14,
-        padding: 10, display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 'calc(100vh - 300px)', overflowY: 'auto',
+        minWidth: 0, height: '100%', minHeight: 0, position: 'relative',
+        background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14,
+        padding: 10, display: 'flex', flexDirection: 'column', overflow: 'hidden',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '1px 2px', position: 'sticky', top: -10, zIndex: 1, background: 'var(--surface)' }}>
-        <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, boxShadow: `0 0 0 3px ${tone}` }} />
-        <span style={{ fontSize: 'calc(var(--fs-s) + 0.5px)', fontWeight: 600, color: 'var(--text)' }}>{title}</span>
-        <span style={{ marginLeft: 'auto', minWidth: 22, height: 20, padding: '0 6px', borderRadius: 999, background: 'var(--card-bg)', border: '1px solid var(--border)', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
-          {rows.length}
-        </span>
-      </div>
-      {rows.length === 0 && (
-        <div style={{ padding: '18px 8px', textAlign: 'center', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', border: '1px dashed var(--border)', borderRadius: 10 }}>
-          暂无{title}会话
+      <div
+        ref={scrollRef}
+        className="exec-column-scroll"
+        data-lck="exec-column-scroll"
+        aria-label={`${title}泳道内容`}
+        style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, paddingBottom: 32, paddingRight: 2 }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '1px 2px', position: 'sticky', top: 0, zIndex: 1, background: 'var(--surface)' }}>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, boxShadow: `0 0 0 3px ${tone}` }} />
+          <span style={{ fontSize: 'calc(var(--fs-s) + 0.5px)', fontWeight: 600, color: 'var(--text)' }}>{title}</span>
+          <span style={{ marginLeft: 'auto', minWidth: 22, height: 20, padding: '0 6px', borderRadius: 999, background: 'var(--card-bg)', border: '1px solid var(--border)', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+            {rows.length}
+          </span>
         </div>
-      )}
-      {rows.map((s) => (
-        <SessionCard
-          key={s.id}
-          s={s}
-          cardRef={(el) => onCardRef(s.id, el)}
-          enterAnimation
-        />
-      ))}
+        {rows.length === 0 && (
+          <div style={{ padding: '18px 8px', textAlign: 'center', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', border: '1px dashed var(--border)', borderRadius: 10 }}>
+            暂无{title}会话
+          </div>
+        )}
+        {rows.map((s) => (
+          <SessionCard
+            key={s.id}
+            s={s}
+            cardRef={(el) => onCardRef(s.id, el)}
+            enterAnimation
+          />
+        ))}
+      </div>
+      <ScrollArrows targetRef={scrollRef} label={`${title}泳道`} />
     </section>
   );
 }
@@ -510,6 +526,7 @@ function SessionCard({ s, cardRef, enterAnimation = false }: { readonly s: ExecS
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const redispatchable = REDISPATCHABLE.has(s.status);
+  const projectLabels = Array.from(new Set(s.tasks.map((t) => t.project_name?.trim()).filter(Boolean))) as string[];
 
   const redispatch = async () => {
     setBusy(true);
@@ -544,16 +561,30 @@ function SessionCard({ s, cardRef, enterAnimation = false }: { readonly s: ExecS
       className={`exec-kanban-card${s.status === 'active' ? ' exec-card-running' : ''}`}
       data-lck="exec-session-card"
       data-status={s.status}
-      style={{ ...card, display: 'flex', flexDirection: 'column', gap: 7, animation: enterAnimation ? 'exec-card-in .24s ease-out' : undefined }}
+      style={{ ...card, display: 'flex', flexDirection: 'column', gap: 6, animation: enterAnimation ? 'exec-card-in .24s ease-out' : undefined }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <PlatformLogo platform={s.platform} size={28} />
         <span style={{ fontSize: 'calc(var(--fs-m) + 0.5px)', fontWeight: 600, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
           {platformDisplayName(s.platform)}
         </span>
-        <span style={{ fontSize: 'calc(var(--fs-xs) + 0.5px)', color: meta.color, border: `1px solid ${meta.color}`, borderRadius: 999, padding: '1px 8px' }}>
-          {meta.label}
-        </span>
+        {/* T05767：状态已由泳道顶部表达，卡片重复徽标改为项目标签 */}
+        {projectLabels.length > 0 ? (
+          <>
+            {projectLabels.slice(0, 2).map((name) => (
+              <span key={name} data-lck="session-project-tag" title={`所属项目：${name}`} style={projectBadge}>
+                {name}
+              </span>
+            ))}
+            {projectLabels.length > 2 && (
+              <span data-lck="session-project-tag-more" title={`全部项目：${projectLabels.join('、')}`} style={{ ...projectBadge, maxWidth: 36 }}>
+                +{projectLabels.length - 2}
+              </span>
+            )}
+          </>
+        ) : (
+          <span data-lck="session-project-tag" title="未分配项目" style={projectBadge}>未分配项目</span>
+        )}
         <span style={{ flex: 1 }} />
         <span title={fullTime(s.last_heartbeat)} style={{ fontSize: 'var(--fs-xs)', color: redispatchable ? 'var(--danger)' : 'var(--text-muted)' }}>
           {relTime(s.last_heartbeat)}
@@ -561,7 +592,7 @@ function SessionCard({ s, cardRef, enterAnimation = false }: { readonly s: ExecS
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-        <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <span data-lck="session-id" title={s.session_id ?? s.id} aria-label={`会话 ID ${s.session_id ?? s.id}`} style={{ fontFamily: 'ui-monospace, monospace', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {s.session_id ?? '-'}
         </span>
         {redispatchable && (
@@ -598,17 +629,18 @@ function SessionCard({ s, cardRef, enterAnimation = false }: { readonly s: ExecS
             <button
               key={t.id}
               data-lck="task-chip"
+              data-task-id={t.id}
               onClick={() => void focusTaskByNo(t.task_no, 'notice')}
-              title={`${t.project_name ?? '未分配项目'}｜${t.task_no ?? ''} ${t.title}——点击直达任务`}
+              title={`任务ID：${t.id}｜${t.project_name ?? '未分配项目'}｜${t.task_no ?? ''} ${t.title}——点击直达任务`}
               style={{
-                ...chip, display: 'inline-flex', alignItems: 'center', gap: 5,
+                ...chip, display: 'inline-flex', alignItems: 'center', gap: 4, lineHeight: '16px',
                 border: '1px solid var(--border)', cursor: 'pointer', background: 'var(--surface-2)', textAlign: 'left', font: 'inherit',
               }}
             >
               <span data-lck="task-project-badge" title={t.project_name ?? '未分配项目'} style={projectBadge}>
                 {t.project_name ?? '未分配'}
               </span>
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <span style={{ fontSize: 'var(--fs-xs)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {t.task_no ? `${t.task_no} · ` : ''}{t.title}
               </span>
             </button>
