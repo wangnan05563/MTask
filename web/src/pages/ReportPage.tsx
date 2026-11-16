@@ -840,16 +840,14 @@ function ReadyPlansBar({ plans }: { readonly plans: readonly ReadyPlanRow[] }) {
   );
 }
 
-/** T00816 / T02458：工作台标题行 + 控制台全屏切换（无文字、带动画） */
+/** T00816 / T02458 / T05792：工作台标题行 + 控制台全屏切换（无文字、带动画）。
+ *  T05792：移除与左侧菜单重复的「AI 工作台」整行标题与其说明文字，仅保留必要的全屏切换操作区。 */
 function WorkbenchHeader({ consoleCollapsed, onToggleConsole }: {
   readonly consoleCollapsed: boolean;
   readonly onToggleConsole: () => void;
 }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-      <h2 style={{ fontSize: 'var(--fs-2xl)', margin: 0 }}>AI 工作台</h2>
-      <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>AI 能力入口与报表生成（按周期聚合任务数据生成 Excel / Word 报表）</span>
-      <span style={{ flex: 1 }} />
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, marginBottom: 4 }}>
       {/* 点击隐藏右侧控制台让本窗格全屏，再点还原；全屏中按钮仍在本窗格内可见，无需额外恢复入口 */}
       <button
         type="button"

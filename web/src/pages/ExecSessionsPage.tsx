@@ -364,49 +364,46 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
         .exec-column { scrollbar-width: thin; }
         .exec-split-handle:hover span, .exec-split-handle:focus-visible span { background: var(--accent) !important; }
         .notify-feed-scroll { scrollbar-width: thin; }
+        /* T05792：无边框图标按钮——悬浮/聚焦给轻微底色反馈，功能靠 title/aria-label 识别 */
+        .exec-icon-btn { transition: background .15s ease, color .15s ease; }
+        .exec-icon-btn:hover, .exec-icon-btn:focus-visible { background: var(--surface-2) !important; }
+        .exec-icon-btn:active { background: var(--accent-soft, var(--surface-2)) !important; }
       `}</style>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0, paddingTop: standalone ? 12 : 0, paddingLeft: standalone ? 16 : 0, paddingRight: standalone ? 16 : 0 }}>
-        <Activity size={20} style={{ color: 'var(--accent)' }} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <h2 style={{ margin: 0, fontSize: 'var(--fs-2xl)', color: 'var(--text)' }}>{standalone ? '执行会话监控' : '执行会话'}</h2>
-          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginTop: 2 }}>
-            {standalone
-              ? '独立置顶窗口：主应用最小化后仍持续刷新，左右栏与主应用共用同一份服务端数据。'
-              : '左侧看板按状态分列，同列按最新状态更新时间倒序；右侧通知流自动刷新。拖动中间分隔线可调整 3:1 默认比例。'}
-          </div>
-        </div>
+      {/* T05792：移除与左侧菜单重复的整行标题 + 说明文字 + 图标，仅保留必要的操作区 */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, flexShrink: 0, paddingTop: standalone ? 12 : 0, paddingLeft: standalone ? 16 : 0, paddingRight: standalone ? 16 : 0 }}>
         {standalone ? (
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-s)', color: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 999, padding: '4px 10px' }}>
             <Pin size={13} /> 置顶监控中
           </span>
         ) : (
           <>
+            {/* T05792：去文字 + 无边框图标按钮；title/aria-label 保留完整功能说明，悬浮有轻微反馈 */}
             <button
-              className="tbtn-anim"
+              className="tbtn-anim exec-icon-btn"
               onClick={() => void openMonitor()}
               title="弹出置顶监控窗口 — 独立于主应用运行，主应用最小化后仍可见"
               aria-label="弹出置顶监控窗口"
               style={{
-                display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'calc(var(--fs-s) + 0.5px)', padding: '6px 12px',
-                background: 'var(--card-bg)', color: 'var(--accent)', border: '1px solid var(--accent)',
-                borderRadius: 8, cursor: 'pointer',
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 30, height: 30, padding: 0,
+                background: 'transparent', color: 'var(--accent)', border: 'none',
+                borderRadius: 6, cursor: 'pointer',
               }}
             >
-              <Pin size={14} /> 弹出置顶
+              <Pin size={16} />
             </button>
             <button
-              className="tbtn-anim"
+              className="tbtn-anim exec-icon-btn"
               onClick={() => void load()}
               title="刷新列表"
               aria-label="刷新：重新拉取执行会话列表"
               style={{
-                display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'calc(var(--fs-s) + 0.5px)', padding: '6px 12px',
-                background: 'var(--surface-2)', color: 'var(--text)', border: '1px solid var(--border)',
-                borderRadius: 8, cursor: 'pointer',
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 30, height: 30, padding: 0,
+                background: 'transparent', color: 'var(--text-secondary)', border: 'none',
+                borderRadius: 6, cursor: 'pointer',
               }}
             >
-              <RefreshCw size={14} /> 刷新
+              <RefreshCw size={16} />
             </button>
           </>
         )}
