@@ -1,0 +1,180 @@
+/**
+ * T05784：AI 厂商预制配置目录（后端单源）。
+ *
+ * 只放在服务端：前端通过 GET /api/aitools/providers 读取，新增厂商不需要改前端。
+ * 说明：放在 `server/src/config/` 而不是 `server/src/data/`——`server/.gitignore` 的 `data/`
+ * 规则会忽略运行时数据目录，若放在 src/data 会导致预制目录无法提交。
+ * `icon_url` 优先使用厂商官网 favicon/CDN；前端加载失败时用首字母兜底。
+ * `adapter_type` 必须是 server/src/adapters/index.ts 已注册的适配器类型。
+ */
+export interface AIProviderPreset {
+  id: string;
+  provider_name: string;
+  provider_type: string;
+  adapter_type: string;
+  base_url: string;
+  console_url: string;
+  icon_url: string;
+  default_model: string;
+  docs_url: string;
+  description: string;
+}
+
+export const AI_PROVIDER_PRESETS: readonly AIProviderPreset[] = [
+  {
+    id: 'deepseek',
+    provider_name: 'DeepSeek',
+    provider_type: '国内直连',
+    adapter_type: 'openai-compatible',
+    base_url: 'https://api.deepseek.com/v1',
+    console_url: 'https://platform.deepseek.com/api_keys',
+    icon_url: 'https://www.deepseek.com/favicon.ico',
+    default_model: 'deepseek-chat',
+    docs_url: 'https://api-docs.deepseek.com/',
+    description: 'DeepSeek 官方 API，兼容 OpenAI Chat Completions 协议。',
+  },
+  {
+    id: 'openrouter',
+    provider_name: 'OpenRouter',
+    provider_type: '聚合路由',
+    adapter_type: 'openai-compatible',
+    base_url: 'https://openrouter.ai/api/v1',
+    console_url: 'https://openrouter.ai/settings/keys',
+    icon_url: 'https://openrouter.ai/favicon.ico',
+    default_model: 'openai/gpt-4o-mini',
+    docs_url: 'https://openrouter.ai/docs/quickstart',
+    description: '聚合多家模型提供商的统一路由，按模型计费。',
+  },
+  {
+    id: 'openai',
+    provider_name: 'OpenAI',
+    provider_type: '国际直连',
+    adapter_type: 'openai-compatible',
+    base_url: 'https://api.openai.com/v1',
+    console_url: 'https://platform.openai.com/api-keys',
+    icon_url: 'https://openai.com/favicon.ico',
+    default_model: 'gpt-4o-mini',
+    docs_url: 'https://platform.openai.com/docs/api-reference',
+    description: 'OpenAI 官方 API，使用标准 OpenAI 兼容协议。',
+  },
+  {
+    id: 'anthropic',
+    provider_name: 'Anthropic Claude',
+    provider_type: '国际直连',
+    adapter_type: 'claude',
+    base_url: 'https://api.anthropic.com',
+    console_url: 'https://console.anthropic.com/settings/keys',
+    icon_url: 'https://www.anthropic.com/favicon.ico',
+    default_model: 'claude-sonnet-4-5',
+    docs_url: 'https://docs.anthropic.com/en/api/',
+    description: 'Anthropic 官方 Claude API，走原生 Messages 协议。',
+  },
+  {
+    id: 'gemini',
+    provider_name: 'Google Gemini',
+    provider_type: '国际直连',
+    adapter_type: 'openai-compatible',
+    base_url: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+    console_url: 'https://aistudio.google.com/app/apikey',
+    icon_url: 'https://ai.google.dev/favicon.ico',
+    default_model: 'gemini-2.5-flash',
+    docs_url: 'https://ai.google.dev/gemini-api/docs/openai',
+    description: 'Gemini 的 OpenAI 兼容端点，使用 Google AI Studio Key。',
+  },
+  {
+    id: 'groq',
+    provider_name: 'Groq',
+    provider_type: '国际直连',
+    adapter_type: 'openai-compatible',
+    base_url: 'https://api.groq.com/openai/v1',
+    console_url: 'https://console.groq.com/keys',
+    icon_url: 'https://groq.com/favicon.ico',
+    default_model: 'llama-3.3-70b-versatile',
+    docs_url: 'https://console.groq.com/docs/openai',
+    description: 'Groq 低延迟推理服务，兼容 OpenAI 协议。',
+  },
+  {
+    id: 'mistral',
+    provider_name: 'Mistral AI',
+    provider_type: '国际直连',
+    adapter_type: 'openai-compatible',
+    base_url: 'https://api.mistral.ai/v1',
+    console_url: 'https://console.mistral.ai/api-keys',
+    icon_url: 'https://mistral.ai/favicon.ico',
+    default_model: 'mistral-large-latest',
+    docs_url: 'https://docs.mistral.ai/',
+    description: 'Mistral 官方 API，兼容 OpenAI 协议。',
+  },
+  {
+    id: 'zhipu',
+    provider_name: '智谱 GLM',
+    provider_type: '国内直连',
+    adapter_type: 'openai-compatible',
+    base_url: 'https://open.bigmodel.cn/api/paas/v4',
+    console_url: 'https://open.bigmodel.cn/usercenter/apikeys',
+    icon_url: 'https://open.bigmodel.cn/favicon.ico',
+    default_model: 'glm-4.5',
+    docs_url: 'https://open.bigmodel.cn/dev/api',
+    description: '智谱开放平台 GLM 系列，Base URL 已包含 /v4 版本段。',
+  },
+  {
+    id: 'moonshot',
+    provider_name: 'Moonshot Kimi',
+    provider_type: '国内直连',
+    adapter_type: 'openai-compatible',
+    base_url: 'https://api.moonshot.cn/v1',
+    console_url: 'https://platform.moonshot.cn/console/api-keys',
+    icon_url: 'https://platform.moonshot.cn/favicon.ico',
+    default_model: 'moonshot-v1-8k',
+    docs_url: 'https://platform.moonshot.cn/docs/api/chat',
+    description: 'Moonshot 开放平台 Kimi 模型，兼容 OpenAI 协议。',
+  },
+  {
+    id: 'dashscope',
+    provider_name: '阿里云百炼',
+    provider_type: '国内直连',
+    adapter_type: 'openai-compatible',
+    base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    console_url: 'https://bailian.console.aliyun.com/',
+    icon_url: 'https://bailian.console.aliyun.com/favicon.ico',
+    default_model: 'qwen-plus',
+    docs_url: 'https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope',
+    description: '阿里云百炼 DashScope 的 OpenAI 兼容模式。',
+  },
+  {
+    id: 'volcengine',
+    provider_name: '火山方舟',
+    provider_type: '国内直连',
+    adapter_type: 'openai-compatible',
+    base_url: 'https://ark.cn-beijing.volces.com/api/v3',
+    console_url: 'https://console.volcengine.com/ark',
+    icon_url: 'https://www.volcengine.com/favicon.ico',
+    default_model: 'doubao-seed-1-6-250615',
+    docs_url: 'https://www.volcengine.com/docs/82379',
+    description: '火山引擎方舟大模型服务平台，使用推理接入点或模型名。',
+  },
+  {
+    id: 'siliconflow',
+    provider_name: 'SiliconFlow 硅基流动',
+    provider_type: '国内聚合',
+    adapter_type: 'openai-compatible',
+    base_url: 'https://api.siliconflow.cn/v1',
+    console_url: 'https://cloud.siliconflow.cn/account/ak',
+    icon_url: 'https://www.siliconflow.cn/favicon.ico',
+    default_model: 'deepseek-ai/DeepSeek-V3',
+    docs_url: 'https://docs.siliconflow.cn/',
+    description: '硅基流动聚合推理平台，兼容 OpenAI 协议。',
+  },
+  {
+    id: 'ollama',
+    provider_name: 'Ollama 本地',
+    provider_type: '本地部署',
+    adapter_type: 'ollama',
+    base_url: 'http://127.0.0.1:11434',
+    console_url: 'https://ollama.com/library',
+    icon_url: 'https://ollama.com/favicon.ico',
+    default_model: 'llama3.1',
+    docs_url: 'https://github.com/ollama/ollama/tree/main/docs',
+    description: '本机 Ollama 服务，默认监听 127.0.0.1:11434。',
+  },
+] as const;

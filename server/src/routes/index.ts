@@ -21,6 +21,7 @@ import { PushService } from '../services/PushService'; // T01440：Web Push
 import { TaskExportService, type ExportFormat } from '../services/TaskExportService'; // T01480：任务导出
 import { listBackups, runBackup, restoreBackup, backupStatus } from '../services/BackupService'; // T01061-FR5.1
 import { ConfigService } from '../services/ConfigService';
+import { AIProviderService } from '../services/AIProviderService'; // T05784：厂商预制目录（后端单源）
 import { ConsoleJobService } from '../services/ConsoleJobService';
 import { renderPromptTemplate } from '../services/PromptTemplate'; // T03247（AI-104①）：模板变量渲染（服务端单源）
 import { QueueService } from '../services/QueueService';
@@ -1794,6 +1795,12 @@ api.delete('/images/:id', (req, res) => {
 // ---------- AI 工具配置 ----------
 api.get('/aitools', (_req, res) => {
   res.json(ConfigService.list());
+});
+
+// T05784：厂商预制目录——前端据此展示厂商卡片，选中后写入配置记录表单。
+// 目录在后端单源维护（server/src/config/aiProviderPresets.ts），前端不硬编码厂商。
+api.get('/aitools/providers', (_req, res) => {
+  res.json(AIProviderService.list());
 });
 
 api.get('/aitools/types', (_req, res) => {

@@ -23,6 +23,8 @@ export interface AIToolRow {
   is_default_develop: number;
   remark: string;
   console_url: string;
+  /** T05784：厂商业务属性（国内直连/国际直连/聚合路由/本地部署），与 type（适配器协议）分离 */
+  provider_type: string;
   pinned: number;
   created_at: string;
   updated_at: string;
@@ -43,6 +45,8 @@ export interface AIToolInput {
   remark?: string;
   /** 厂商官方控制台页面 URL（仅用于 UI 链接跳转，不参与连接逻辑） */
   consoleUrl?: string;
+  /** T05784：厂商业务属性（国内直连/国际直连/聚合路由/本地部署） */
+  providerType?: string;
   /** 置顶：true=固定到列表顶部 */
   pinned?: boolean;
 }
@@ -104,13 +108,13 @@ export const ConfigService = {
     const id = uuid();
     const t = now();
     db.prepare(
-      `INSERT INTO ai_tools (id, name, type, purpose, endpoint, api_key_enc, model, model_notes, temperature, max_tokens, timeout_ms, enabled, remark, console_url, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO ai_tools (id, name, type, purpose, endpoint, api_key_enc, model, model_notes, temperature, max_tokens, timeout_ms, enabled, remark, console_url, provider_type, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id, input.name, input.type, input.purpose ?? 'develop', input.endpoint,
       input.apiKey ? encrypt(input.apiKey) : null,
       input.model ?? null, input.modelNotes ?? '', input.temperature ?? 0.2, input.maxTokens ?? 4096, input.timeoutMs ?? 60000,
-      input.enabled === false ? 0 : 1, input.remark ?? '', input.consoleUrl ?? '', t, t,
+      input.enabled === false ? 0 : 1, input.remark ?? '', input.consoleUrl ?? '', input.providerType ?? '', t, t,
     );
     cacheClear('aitools'); // 工具列表缓存失效，新建立即可见
     // T02208：保存时本地体检（零外部请求）——命中即以 warnings 点名，不阻断保存
@@ -151,15 +155,16 @@ export const ConfigService = {
       enabled: patch.enabled ?? Boolean(row.enabled),
       remark: patch.remark ?? row.remark ?? '',
       consoleUrl: patch.consoleUrl ?? row.console_url ?? '',
+      providerType: patch.providerType ?? row.provider_type ?? '',
     };
     // apiKey 留空/未传 → 保留原密文，避免编辑时覆盖丢失密钥（FR3.5）
     const apiKeyEnc = patch.apiKey ? encrypt(patch.apiKey) : row.api_key_enc;
     db.prepare(
-      `UPDATE ai_tools SET name=?, type=?, purpose=?, endpoint=?, api_key_enc=?, model=?, model_notes=?, temperature=?, max_tokens=?, timeout_ms=?, enabled=?, remark=?, console_url=?, updated_at=? WHERE id=?`
+      `UPDATE ai_tools SET name=?, type=?, purpose=?, endpoint=?, api_key_enc=?, model=?, model_notes=?, temperature=?, max_tokens=?, timeout_ms=?, enabled=?, remark=?, console_url=?, provider_type=?, updated_at=? WHERE id=?`
     ).run(
       next.name, next.type, next.purpose, next.endpoint, apiKeyEnc,
       next.model ?? null, next.modelNotes, next.temperature, next.maxTokens, next.timeoutMs,
-      next.enabled ? 1 : 0, next.remark, next.consoleUrl ?? '', now(), id,
+      next.enabled ? 1 : 0, next.remark, next.consoleUrl ?? '', next.providerType ?? '', now(), id,
     );
     // 置顶独立处理：pinned 是列表展示元数据，不与编辑表单字段耦合，仅当显式传入时更新
     if (patch.pinned !== undefined) {

@@ -449,8 +449,27 @@ export interface AITool {
   remark: string;
   /** 厂商官方控制台页面 URL */
   console_url: string | null;
+  /** T05784：厂商业务属性（国内直连/国际直连/聚合路由/本地部署），与 type（适配器协议）分离 */
+  provider_type: string;
   hasApiKey: boolean;
   apiKeyMasked: string | null;
+}
+
+/**
+ * T05784：后端厂商预制目录条目。
+ * 前端只消费该接口，不在页面里硬编码厂商名/Base URL/图标。
+ */
+export interface AIProviderPreset {
+  id: string;
+  provider_name: string;
+  provider_type: string;
+  adapter_type: string;
+  base_url: string;
+  console_url: string;
+  icon_url: string;
+  default_model: string;
+  docs_url: string;
+  description: string;
 }
 
 export interface QueueJob {

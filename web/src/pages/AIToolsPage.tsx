@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { FIELD_BLOCK } from '../ui/primitives'; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
-import { Archive, ChevronDown, ChevronUp, Code2, Cpu, Copy, Eye, EyeOff, Loader2, Pencil, PlugZap, Plus, Power, Save, Star, X, Check, Zap } from 'lucide-react';
-import { api, type AITool, type ConfigIssue } from '../api/client';
+import { Archive, ChevronDown, ChevronUp, Code2, Cpu, Copy, Eye, EyeOff, Loader2, Pencil, PlugZap, Plus, Power, RotateCcw, Save, Star, X, Check, Zap } from 'lucide-react';
+import { api, type AIProviderPreset, type AITool, type ConfigIssue } from '../api/client';
 import { UsagePanel } from './UsagePanel';
 import { askConfirm } from '../ui/dialogs';
 import { PinToggle } from '../ui/PinToggle';
+import { ProviderIcon, ProviderPresetGrid } from './AIProviderPresets';
 
 /** 配置记录表单草稿（apiKey 留空 = 编辑时保留原密钥） */
 interface ToolForm {
   name: string;
   type: string;
+  /** T05784：厂商业务属性（国内直连/国际直连/聚合路由/本地部署），与 type（适配器协议）分离 */
+  providerType: string;
   endpoint: string;
   apiKey: string;
   model: string;
@@ -19,6 +22,8 @@ interface ToolForm {
   remark: string;
   /** 厂商官方控制台页面 URL（仅用于跳转展示） */
   consoleUrl: string;
+  /** 当前表单对应的厂商预制 id；为空表示非预制创建 */
+  presetId: string;
 }
 
 const PURPOSE_LABEL: Record<string, string> = { organize: '整理', develop: '开发' };
@@ -30,8 +35,8 @@ const labelStyle: CSSProperties = { fontSize: 'var(--fs-s)', color: 'var(--text-
 
 function emptyForm(defaultType: string): ToolForm {
   return {
-    name: '', type: defaultType, endpoint: '', apiKey: '',
-    model: '', modelNotes: '', purpose: 'develop', enabled: true, remark: '', consoleUrl: '',
+    name: '', type: defaultType, providerType: '', endpoint: '', apiKey: '',
+    model: '', modelNotes: '', purpose: 'develop', enabled: true, remark: '', consoleUrl: '', presetId: '',
   };
 }
 
@@ -370,6 +375,11 @@ function ToolRow(props: ToolRowProps) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <PinToggle pinned={tool.pinned} onToggle={() => props.onTogglePin(tool)} />
           <span style={{ fontWeight: 600 }}>{tool.name}</span>
+          {tool.provider_type ? (
+            <span title={`厂商属性：${tool.provider_type}`} style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', background: 'var(--accent-soft)', borderRadius: 4, padding: '1px 5px', whiteSpace: 'nowrap' }}>
+              {tool.provider_type}
+            </span>
+          ) : null}
           {/* 备注展开/收起箭头：与提示词页一致用 lucide 图标，蓝色 13px；有备注才显示 */}
           {tool.remark && (
             <button
@@ -478,6 +488,7 @@ interface ToolFormDialogProps {
   readonly formFetching: boolean;
   readonly formTest: { msg: string; ok: boolean } | null;
   readonly formModels: readonly string[];
+  readonly preset: AIProviderPreset | null;
   /** T02208：保存/草稿测试时服务端本地体检回传的问题项（含可一键规范化的目标值） */
   readonly formWarnings: readonly ConfigIssue[];
   readonly onFieldChange: (patch: Partial<ToolForm>) => void;
@@ -485,6 +496,7 @@ interface ToolFormDialogProps {
   readonly onSave: () => void;
   readonly onTestDraft: () => void;
   readonly onFetchModels: () => void;
+  readonly onResetPreset: () => void;
   readonly onFixWarning: (w: ConfigIssue) => void;
 }
 
@@ -507,16 +519,36 @@ function ToolFormDialog(props: ToolFormDialogProps) {
     <div style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
       <div ref={panelRef} style={{ background: 'var(--card-bg)', borderRadius: 8, padding: 20, width: 520, maxWidth: '92vw', maxHeight: '88vh', overflowY: 'auto', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
         <div style={{ fontSize: 'var(--fs-xl)', fontWeight: 600, marginBottom: 14 }}>{props.editingId ? '编辑配置记录' : '新增配置记录'}</div>
+        {props.preset && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '8px 10px', marginBottom: 12, background: 'var(--accent-soft)', border: '1px solid var(--border)', borderRadius: 8 }}>
+            <ProviderIcon preset={props.preset} size={28} />
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600 }}>已选择预制厂商：{props.preset.provider_name}</div>
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {props.preset.provider_type} · {props.preset.base_url}
+              </div>
+            </div>
+          </div>
+        )}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           <div>
             <label htmlFor="aitool-name" style={labelStyle}>名称（厂商/工具名）*</label>
             <input id="aitool-name" style={fieldStyle} value={form.name} onChange={(e) => props.onFieldChange({ name: e.target.value })} placeholder="例如 DeepSeek 官方" />
           </div>
           <div>
-            <label htmlFor="aitool-type" style={labelStyle}>厂商类型 *</label>
+            <label htmlFor="aitool-type" style={labelStyle}>接入协议（厂商适配器）*</label>
             <select id="aitool-type" style={fieldStyle} value={form.type} onChange={(e) => props.onFieldChange({ type: e.target.value })}>
               {props.types.map((tp) => <option key={tp} value={tp}>{tp}</option>)}
             </select>
+          </div>
+          <div>
+            <label htmlFor="aitool-provider-type" style={labelStyle}>厂商属性（业务分类）</label>
+            <input id="aitool-provider-type" style={fieldStyle} value={form.providerType} onChange={(e) => props.onFieldChange({ providerType: e.target.value })} placeholder="例如 国内直连 / 聚合路由" />
+          </div>
+          <div>
+            <label htmlFor="aitool-console-url" style={labelStyle}>厂商控制台 URL（可选）</label>
+            <input id="aitool-console-url" style={fieldStyle} value={form.consoleUrl} onChange={(e) => props.onFieldChange({ consoleUrl: e.target.value })} placeholder="例如 https://platform.deepseek.com" />
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>填写后，列表「控制台」按钮可直接打开该厂商官方控制台页面</div>
           </div>
           <div style={{ gridColumn: '1 / -1' }}>
             <label htmlFor="aitool-endpoint" style={labelStyle}>Endpoint / Base URL *</label>
@@ -525,11 +557,6 @@ function ToolFormDialog(props: ToolFormDialogProps) {
             <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>
               未带版本段时自动补 <code>/v1</code>；已带版本段（<code>/v1</code>、<code>/v4</code> 等）则原样使用，勿再补一段。例：DeepSeek 填 <code>https://api.deepseek.com</code>（或 <code>…/v1</code>），智谱填 <code>https://open.bigmodel.cn/api/paas/v4</code>。
             </div>
-          </div>
-          <div style={{ gridColumn: '1 / -1' }}>
-            <label htmlFor="aitool-console-url" style={labelStyle}>厂商控制台 URL（可选）</label>
-            <input id="aitool-console-url" style={fieldStyle} value={form.consoleUrl} onChange={(e) => props.onFieldChange({ consoleUrl: e.target.value })} placeholder="例如 https://platform.deepseek.com" />
-            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>填写后，列表「控制台」按钮可直接打开该厂商官方控制台页面</div>
           </div>
           {/* 草稿连接测试：未保存即可验证 Endpoint + Key 连通性 */}
           <div style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -591,6 +618,16 @@ function ToolFormDialog(props: ToolFormDialogProps) {
           </div>
         </div>
         <div style={{ marginTop: 14, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          {props.preset && (
+            <button
+              onClick={props.onResetPreset}
+              title="重置为厂商默认值 — 恢复该厂商预制的 Base URL、控制台地址与厂商属性"
+              aria-label="重置为厂商默认值"
+              style={{ padding: '6px 14px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+            >
+              <RotateCcw size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} /> 重置默认
+            </button>
+          )}
           <button onClick={props.onClose} title="取消 — 关闭弹窗，放弃未保存的修改" aria-label="取消：关闭弹窗，放弃未保存的修改" style={{ padding: '6px 14px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}>
             <X size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
           </button>
@@ -616,6 +653,8 @@ export function AIToolsPage() {
   const [toolOverId, setToolOverId] = useState('');
   const [tools, setTools] = useState<AITool[]>([]);
   const [types, setTypes] = useState<string[]>([]);
+  const [providers, setProviders] = useState<AIProviderPreset[]>([]);
+  const [providerError, setProviderError] = useState('');
   const [testResult, setTestResult] = useState<Record<string, { ok: boolean; msg: string }>>({});
   // T02208：实调探测结果（与连接测试分列——两者口径不同，合并展示会重新制造「测试成功=能调用」的误读）
   const [probeResult, setProbeResult] = useState<Record<string, { ok: boolean; msg: string }>>({});
@@ -665,6 +704,13 @@ export function AIToolsPage() {
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
     }
+    // T05784：厂商预制目录与配置列表分开加载；目录失败不阻断已有配置记录的使用。
+    try {
+      setProviders(await api.get<AIProviderPreset[]>('/aitools/providers'));
+      setProviderError('');
+    } catch (e) {
+      setProviderError(e instanceof Error ? e.message : String(e));
+    }
   }, []);
 
   useEffect(() => { void load(); }, [load]);
@@ -687,12 +733,34 @@ export function AIToolsPage() {
     setFormWarnings([]);
   }
 
+  /** T05784：从厂商预制卡片打开新增表单，Base URL / 控制台 / 厂商属性 / 接入协议一次联动填入。 */
+  function openCreateFromPreset(preset: AIProviderPreset) {
+    setForm({
+      name: preset.provider_name,
+      type: preset.adapter_type,
+      providerType: preset.provider_type,
+      endpoint: preset.base_url,
+      apiKey: '',
+      model: preset.default_model,
+      modelNotes: preset.description,
+      purpose: 'develop',
+      enabled: true,
+      remark: '',
+      consoleUrl: preset.console_url,
+      presetId: preset.id,
+    });
+    setEditingId('');
+    setFormTest(null);
+    setFormModels([]);
+    setFormWarnings([]);
+  }
+
   function openEdit(t: AITool) {
     setForm({
-      name: t.name, type: t.type, endpoint: t.endpoint, apiKey: '',
+      name: t.name, type: t.type, providerType: t.provider_type ?? '', endpoint: t.endpoint, apiKey: '',
       model: t.model ?? '', modelNotes: t.model_notes ?? '',
       purpose: t.purpose === 'organize' ? 'organize' : 'develop',
-      enabled: t.enabled, remark: t.remark ?? '', consoleUrl: t.console_url ?? '',
+      enabled: t.enabled, remark: t.remark ?? '', consoleUrl: t.console_url ?? '', presetId: '',
     });
     setEditingId(t.id);
     setFormTest(null);
@@ -714,6 +782,23 @@ export function AIToolsPage() {
     setFormWarnings((prev) => (prev.length === 0 ? prev : prev.filter((w) => !changed.includes(w.field))));
   };
 
+  const formPreset = form?.presetId ? (providers.find((p) => p.id === form.presetId) ?? null) : null;
+
+  /** T05784：重置为厂商默认值——只恢复预制联动字段，API Key / 用途 / 备注等人工输入保留。 */
+  function resetToPreset() {
+    if (!formPreset) return;
+    patchForm({
+      name: formPreset.provider_name,
+      type: formPreset.adapter_type,
+      providerType: formPreset.provider_type,
+      endpoint: formPreset.base_url,
+      consoleUrl: formPreset.console_url,
+      model: formPreset.default_model,
+      modelNotes: formPreset.description,
+    });
+    flash(`已恢复 ${formPreset.provider_name} 的预置默认值`);
+  }
+
   /** T02208：一键规范化——用服务端给出的 ASCII 等价文本回填对应字段 */
   function fixWarning(w: ConfigIssue) {
     if (w.fixed === undefined) return;
@@ -727,6 +812,7 @@ export function AIToolsPage() {
     const payload: Record<string, unknown> = {
       name: form.name.trim(),
       type: form.type,
+      providerType: form.providerType,
       endpoint: form.endpoint.trim(),
       model: form.model.trim() || undefined,
       modelNotes: form.modelNotes,
@@ -969,7 +1055,10 @@ export function AIToolsPage() {
         @keyframes rowflush { 0% { background: var(--accent-soft); } 100% { background: transparent; } }
         .arena-row.flush td { animation: rowflush 1.4s ease; }
         .tool-dragging { opacity: .5; transform: scale(1.01); box-shadow: 0 6px 18px rgba(0,0,0,.22); background: var(--surface-2); }
-        .tool-over { box-shadow: inset 0 3px 0 var(--accent); background: var(--accent-soft, rgba(9,105,218,.08)); }`}</style>
+        .tool-over { box-shadow: inset 0 3px 0 var(--accent); background: var(--accent-soft, rgba(9,105,218,.08)); }
+        button.provider-preset { transition: transform .15s ease, border-color .15s ease, box-shadow .15s ease; }
+        button.provider-preset:hover { transform: translateY(-2px) !important; border-color: var(--accent) !important; box-shadow: 0 5px 14px rgba(0,0,0,.10); }
+        button.provider-preset:active { transform: translateY(0) scale(.99) !important; }`}</style>
       {/* 工具栏（T00522 修正：op-host 宿主 + 筛选下拉/搜索框默认隐藏悬浮显示）
           T03162（U39/U06 回归用例）：op-host 首个可聚焦元素必须常驻可见且排在 op-hidden 之前——
           原实现 h3 后直接是三个 op-hidden 控件，纯键盘 Tab 掠过工具栏后整段筛选/搜索不可达。
@@ -987,9 +1076,9 @@ export function AIToolsPage() {
         </button>
         {/* UX-03②：原生 select 的可访问名不来自当前 option，必须显式 aria-label；title 同步给出操作说明 */}
         <select className="op-hidden" value={filterType} onChange={(e) => setFilterType(e.target.value)}
-          aria-label="筛选厂商类型" title="厂商类型筛选 — 按厂商类型过滤配置记录"
+          aria-label="筛选接入协议" title="接入协议筛选 — 按接入协议过滤配置记录"
           style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
-          <option value="">全部厂商类型</option>
+          <option value="">全部接入协议</option>
           {types.map((tp) => <option key={tp} value={tp}>{tp}</option>)}
         </select>
         <select className="op-hidden" value={filterPurpose} onChange={(e) => setFilterPurpose(e.target.value)}
@@ -1011,6 +1100,25 @@ export function AIToolsPage() {
         {notice && <output className="flash-toast">{notice}</output>}
       </div>
 
+      {/* T05784：厂商预制目录——后端接口动态返回；点击卡片即打开已预填的新增表单。 */}
+      {(providers.length > 0 || providerError) && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap', marginBottom: 7 }}>
+            <h4 style={{ fontSize: 'var(--fs-l)', margin: 0 }}>厂商预制</h4>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+              选择厂商后自动填充 Base URL、控制台地址、厂商属性与接入协议；填入后仍可手动修改。
+            </span>
+          </div>
+          {providerError ? (
+            <div style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', padding: 8, border: '1px solid var(--border)', borderRadius: 6 }}>
+              厂商预制目录加载失败，仍可使用「新增配置」手工录入：{providerError}
+            </div>
+          ) : (
+            <ProviderPresetGrid providers={providers} onSelect={openCreateFromPreset} />
+          )}
+        </div>
+      )}
+
       {/* 列表：九列在窄窗口靠横向滚动保读，不靠压缩列宽把 Endpoint/备注挤成竖排（UX-03③）。
           滚动容器用原生 section + 可访问名，不再自造 region 角色，也不抢占 Tab 序；
           键盘用户 Tab 到行内按钮时浏览器会自动把该列滚动到可见区。 */}
@@ -1019,7 +1127,7 @@ export function AIToolsPage() {
         <thead>
           <tr style={{ textAlign: 'left', color: 'var(--text-secondary)' }}>
             <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>名称</th>
-            <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>厂商类型</th>
+            <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>接入协议</th>
             <th style={{ padding: 8, borderBottom: '1px solid var(--border)', minWidth: 64, whiteSpace: 'nowrap' }}>用途</th>
             <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>Endpoint</th>
             <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>默认模型</th>
@@ -1095,11 +1203,13 @@ export function AIToolsPage() {
           formFetching={formFetching}
           formTest={formTest}
           formModels={formModels}
+          preset={formPreset}
           formWarnings={formWarnings}
           onFieldChange={patchForm}
           onClose={closeForm}
           onSave={() => void saveForm()}
           onTestDraft={() => void testDraftFromForm()}
+          onResetPreset={resetToPreset}
           onFixWarning={fixWarning}
           onFetchModels={() => void fetchFormModels()}
         />
