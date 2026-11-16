@@ -20,6 +20,7 @@
 import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const WORKSPACE_NODE = path.join('node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node');
@@ -88,6 +89,114 @@ function findElectronFromRelease(root) {
   return null;
 }
 
+/** 从已安装的 MTask 桌面应用找 Electron ABI 二进制（release 被整体清理后的兜底）。 */
+function findElectronFromInstalledApp() {
+  const local = process.env.LOCALAPPDATA || '';
+  const programFiles = process.env.PROGRAMFILES || '';
+  const programFilesX86 = process.env['PROGRAMFILES(X86)'] || '';
+  const bases = [
+    path.join(local, 'Programs', 'MTask'),
+    path.join(local, 'Programs', 'mtask'),
+    path.join(local, 'MTask'),
+    path.join(programFiles, 'MTask'),
+    path.join(programFilesX86, 'MTask'),
+  ].filter(Boolean);
+  for (const base of bases) {
+    const p = path.join(
+      base, 'resources', 'app.asar.unpacked',
+      'node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node',
+    );
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+/** 从历史恢复目录读 Electron 缓存；兼容本机曾生成的 mtask-recovery 副本。 */
+function findElectronFromRecoveryCache() {
+  const candidates = [
+    path.join(os.tmpdir(), 'mtask-recovery', 'build', 'native', 'electron', 'better_sqlite3.node'),
+    path.join(os.tmpdir(), 'mtask-recovery', 'release', '.mtask-abi-cache', 'electron', 'better_sqlite3.node'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+function abiOfBuffer(buf) {
+  const m = /node_register_module_v(\d+)/.exec(buf.toString('latin1'));
+  return m ? Number(m[1]) : null;
+}
+
+function restoreSnapshot(root, snapshot) {
+  const dst = workspaceNodePath(root);
+  if (snapshot) {
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    fs.writeFileSync(dst, snapshot);
+  } else {
+    fs.rmSync(dst, { force: true });
+  }
+}
+
+/**
+ * 最后的自动兜底：用 prebuild-install 下载当前 Electron 版本的 better-sqlite3 预编译包。
+ * 下载会先覆盖工作区二进制，因此下载前快照、下载后按字节还原；成功返回临时文件路径。
+ */
+function downloadElectronPrebuild(root, { log = (m) => console.log(m) } = {}) {
+  const betterDir = path.join(root, 'node_modules', 'better-sqlite3');
+  const bin = path.join(root, 'node_modules', 'prebuild-install', 'bin.js');
+  const electronPkg = path.join(root, 'node_modules', 'electron', 'package.json');
+  if (!fs.existsSync(bin) || !fs.existsSync(electronPkg)) return null;
+
+  let electronVersion;
+  try {
+    electronVersion = JSON.parse(fs.readFileSync(electronPkg, 'utf8')).version;
+  } catch {
+    return null;
+  }
+  if (!electronVersion) return null;
+
+  const snapshot = snapshotWorkspaceAbi(root);
+  let temp = null;
+  try {
+    log(`[ABI][WARN] electron 缓存缺失，尝试下载 Electron ${electronVersion} 预编译包…`);
+    const r = spawnSync(process.execPath, [
+      bin,
+      '--runtime=electron',
+      `--target=${electronVersion}`,
+      '--arch=x64',
+      '--platform=win32',
+      '--tag-prefix=v',
+    ], {
+      cwd: betterDir,
+      stdio: 'inherit',
+      timeout: 180000,
+      windowsHide: true,
+    });
+    if (r.status !== 0) {
+      log('[ABI][WARN] prebuild-install 下载失败，无法自动创建 electron 缓存。');
+      return null;
+    }
+    const built = path.join(betterDir, 'build', 'Release', 'better_sqlite3.node');
+    if (!fs.existsSync(built)) return null;
+    const data = fs.readFileSync(built);
+    if (snapshot && sha256Buffer(data) === sha256Buffer(snapshot)) {
+      log('[ABI][WARN] prebuild-install 未产出不同 ABI 的二进制，跳过。');
+      return null;
+    }
+    temp = path.join(os.tmpdir(), `mtask-electron-prebuild-${process.pid}.node`);
+    fs.writeFileSync(temp, data);
+    log(`[ABI] 已下载 electron ABI ${abiOfBuffer(data) ?? '未知'} 预编译包`);
+    return temp;
+  } catch (err) {
+    log(`[ABI][WARN] electron 缓存下载异常：${err?.message || err}`);
+    return null;
+  } finally {
+  // 无论下载成功还是失败，都恢复工作区原有的 dev 二进制。
+    try { restoreSnapshot(root, snapshot); } catch { /* 还原失败不阻断缓存写入 */ }
+  }
+}
+
 /**
  * 构建前自动补齐缺失的 dev/electron ABI 缓存：
  * - 先找本项目逻辑根目录（junction 场景下 process.cwd() 是 D 盘真实入口）；
@@ -127,6 +236,12 @@ export function ensureCache(root, { fail, log = (m) => console.log(m) } = {}) {
         source = findElectronFromRelease(r);
         if (source) break;
       }
+      if (!source) source = findElectronFromInstalledApp();
+      if (!source) source = findElectronFromRecoveryCache();
+      if (!source) {
+        log('[ABI][WARN] 本地未找到 electron 缓存，尝试 prebuild-install 自动下载…');
+        source = downloadElectronPrebuild(root, { log });
+      }
     }
     if (!source) {
       fail(`ABI 缓存缺失且无法自动创建：${mode}\n`
@@ -136,6 +251,9 @@ export function ensureCache(root, { fail, log = (m) => console.log(m) } = {}) {
 
     const data = fs.readFileSync(source);
     const dest = writeCache(root, mode, data);
+    if (path.basename(source).startsWith('mtask-electron-prebuild-')) {
+      fs.rmSync(source, { force: true });
+    }
     log(`[ABI] ${mode} 缓存缺失，已自动创建：${dest}（来源 ${source}）`);
   }
   return 0;
