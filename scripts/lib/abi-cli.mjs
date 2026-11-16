@@ -9,7 +9,7 @@
  *   switch  —— 快照当前二进制 → 切到指定 ABI（重试 + 改名接管 + 哈希校验），状态落盘；
  *   restore —— 按快照逐字节还原并校验，失败即非 0。
  *
- * 用法：node scripts/lib/abi-cli.mjs probe|switch <dev|electron>|restore
+ * 用法：node scripts/lib/abi-cli.mjs ensure|probe|switch <dev|electron>|restore
  * 状态目录：node_modules/.cache/mtask-pack（node_modules 已被 .gitignore 忽略，不留仓库噪音）
  */
 import fs from 'node:fs';
@@ -17,11 +17,23 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import {
-  cachePath, describeHolders, lockSidecarPath, restoreWorkspaceAbi,
+  cachePath, describeHolders, ensureCache, lockSidecarPath, restoreWorkspaceAbi,
   sha256File, snapshotWorkspaceAbi, switchAbi, waitForWritable, workspaceNodePath,
 } from './abi-switch.mjs';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const SCRIPT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+function resolveRoot() {
+  const cwd = process.cwd();
+  if (process.env.MTASK_PROJECT_ROOT) return path.resolve(process.env.MTASK_PROJECT_ROOT);
+  // junction 下 import.meta.url 会落到真实 target，process.cwd() 才是仓库入口；
+  // 仅在 cwd 确实是 workspace 根目录时采用，避免从 server/web 子目录运行时误判。
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8'));
+    if (pkg.workspaces) return cwd;
+  } catch { /* 非 workspace 根，回退到脚本所在仓库 */ }
+  return SCRIPT_ROOT;
+}
+const ROOT = resolveRoot();
 const STATE_DIR = path.join(ROOT, 'node_modules', '.cache', 'mtask-pack');
 const STATE_FILE = path.join(STATE_DIR, 'abi-state.json');
 const SNAPSHOT_FILE = path.join(STATE_DIR, 'workspace-before.node');
@@ -80,6 +92,7 @@ function probe() {
 
 function main() {
   const [cmd, mode] = process.argv.slice(2);
+  if (cmd === 'ensure') return ensureCache(ROOT, { fail, log });
   if (cmd === 'probe') return probe();
 
   if (cmd === 'switch') {
@@ -101,7 +114,7 @@ function main() {
     return 0;
   }
 
-  return fail('用法：abi-cli.mjs probe|switch <dev|electron>|restore');
+  return fail('用法：abi-cli.mjs ensure|probe|switch <dev|electron>|restore');
 }
 
 process.exit(main());

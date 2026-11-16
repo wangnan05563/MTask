@@ -25,8 +25,116 @@ import path from 'node:path';
 const WORKSPACE_NODE = path.join('node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node');
 const LOCK_SIDECAR = `${WORKSPACE_NODE}.mtask-lock`;
 
+const RELEASE_CACHE = path.join('release', '.mtask-abi-cache');
+
+/** 主缓存优先；build\native 不可写时允许 release\.mtask-abi-cache 兜底。 */
+export function cacheCandidates(root, mode) {
+  return [
+    path.join(root, 'build', 'native', mode, 'better_sqlite3.node'),
+    path.join(root, RELEASE_CACHE, mode, 'better_sqlite3.node'),
+  ];
+}
+
 export function cachePath(root, mode) {
-  return path.join(root, 'build', 'native', mode, 'better_sqlite3.node');
+  const candidates = cacheCandidates(root, mode);
+  return candidates.find((p) => fs.existsSync(p)) || candidates[0];
+}
+
+/** 写入缺失的 ABI 缓存；首选 build\native，失败再落 release\.mtask-abi-cache。 */
+export function writeCache(root, mode, data) {
+  const candidates = cacheCandidates(root, mode);
+  let lastErr = null;
+  for (const p of candidates) {
+    try {
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, data);
+      return p;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw new Error(`无法写入 ${mode} ABI 缓存（${candidates.join(' / ')}）：${lastErr?.message || '未知错误'}`);
+}
+
+function readCacheSource(root, mode) {
+  for (const p of cacheCandidates(root, mode)) {
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+/** 当前工作区二进制能否被当前 Node 加载；用来判断它是否可充当 dev 缓存。 */
+function isNodeLoadable(root) {
+  const r = spawnSync(process.execPath, ['-e', 'require("better-sqlite3")'], {
+    cwd: root, stdio: 'ignore', timeout: 15000, windowsHide: true,
+  });
+  return r.status === 0;
+}
+
+/** 从历史安装包 win-unpacked 找 Electron ABI 二进制（release 被清理时可能不存在）。 */
+function findElectronFromRelease(root) {
+  const dirs = ['release', 'release2', 'release3', 'release4', 'release5', 'release6', 'release7', 'release8', 'release9'];
+  for (const dir of dirs) {
+    const p = path.join(
+      root, dir, 'win-unpacked', 'resources', 'app.asar.unpacked',
+      'node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node',
+    );
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+/**
+ * 构建前自动补齐缺失的 dev/electron ABI 缓存：
+ * - 先找本项目逻辑根目录（junction 场景下 process.cwd() 是 D 盘真实入口）；
+ * - 再找当前 root（可能是 E 盘真实 target）；
+ * - dev 最后允许用「当前 Node 能加载的工作区二进制」播种；
+ * - electron 最后允许从历史 release\win-unpacked\app.asar.unpacked 播种；
+ * - 仍找不到才 fail，并明确列出候选路径。
+ */
+export function ensureCache(root, { fail, log = (m) => console.log(m) } = {}) {
+  const logicalRoot = process.cwd();
+  const roots = [...new Set([root, logicalRoot])];
+
+  for (const mode of ['dev', 'electron']) {
+    const existing = roots.map((r) => readCacheSource(r, mode)).find(Boolean);
+    if (existing) {
+      const primary = cacheCandidates(root, mode)[0];
+      if (!fs.existsSync(primary)) {
+        const dest = writeCache(root, mode, fs.readFileSync(existing));
+        log(`[ABI] ${mode} 缓存缺失，已自动创建：${dest}（来源 ${existing}）`);
+      } else {
+        log(`[ABI] ${mode} 缓存已存在：${primary}`);
+      }
+      continue;
+    }
+
+    let source = null;
+    for (const r of roots) {
+      source = readCacheSource(r, mode);
+      if (source) break;
+    }
+    if (!source && mode === 'dev') {
+      const ws = workspaceNodePath(root);
+      if (fs.existsSync(ws) && isNodeLoadable(root)) source = ws;
+    }
+    if (!source && mode === 'electron') {
+      for (const r of roots) {
+        source = findElectronFromRelease(r);
+        if (source) break;
+      }
+    }
+    if (!source) {
+      fail(`ABI 缓存缺失且无法自动创建：${mode}\n`
+        + `  已查找：${roots.map((r) => cacheCandidates(r, mode).join(' / ')).join('\n          ')}\n`
+        + '  可先执行 scripts\\native-switch.bat dev/electron 生成，或从历史安装包 app.asar.unpacked 复制。');
+    }
+
+    const data = fs.readFileSync(source);
+    const dest = writeCache(root, mode, data);
+    log(`[ABI] ${mode} 缓存缺失，已自动创建：${dest}（来源 ${source}）`);
+  }
+  return 0;
 }
 
 export function workspaceNodePath(root) {

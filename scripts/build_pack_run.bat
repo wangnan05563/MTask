@@ -149,7 +149,16 @@ REM The old probe was also unsound: it opened the file with FileShare.None and p
 REM through a shared %TEMP% file read with "set /p". Any PowerShell hiccup, or a concurrent build
 REM touching the same temp file, left the variable empty and the empty value was judged LOCKED.
 REM The check now lives in scripts\lib\abi-cli.mjs: real write open, bounded retries, holder PIDs.
+REM T05738: auto-seed a missing ABI cache before the hard probe. This repo may run
+REM through junctions (web/node_modules/scripts -> E:\mtask-build-cache), so the cache
+REM path resolved from import.meta.url can differ from the project entry root.
 echo [7/7] Preflight native module...
+node "scripts\lib\abi-cli.mjs" ensure
+if errorlevel 1 (
+    echo [ERROR] native module auto-seed failed - nothing was built and the version is unchanged.
+    pause
+    exit /b 1
+)
 node "scripts\lib\abi-cli.mjs" probe
 if errorlevel 1 (
     echo [ERROR] native module preflight failed - nothing was built and the version is unchanged.

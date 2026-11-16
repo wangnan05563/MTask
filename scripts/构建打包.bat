@@ -150,6 +150,12 @@ REM through a shared %TEMP% file read with "set /p". Any PowerShell hiccup, or a
 REM touching the same temp file, left the variable empty and the empty value was judged LOCKED.
 REM The check now lives in scripts\lib\abi-cli.mjs: real write open, bounded retries, holder PIDs.
 echo [7/7] Preflight native module...
+node "scripts\lib\abi-cli.mjs" ensure
+if errorlevel 1 (
+    echo [ERROR] native module auto-seed failed - nothing was built and the version is unchanged.
+    pause
+    exit /b 1
+)
 node "scripts\lib\abi-cli.mjs" probe
 if errorlevel 1 (
     echo [ERROR] native module preflight failed - nothing was built and the version is unchanged.
