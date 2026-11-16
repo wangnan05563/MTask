@@ -12,6 +12,11 @@ import { api } from '../api/client';
  * + 缩放门控标签（labelRenderedSizeThreshold 即 Obsidian 的 text fade threshold）+ 点击节点开详情面板。
  * 动效：参考 KarpathyWiki 的 vis-network 常开物理手感——FA2 只做种子布局，随后 rAF 持续单步迭代；
  * 原生拖拽期间暂停物理、松手续跑；边宽随相位轻微脉冲形成「流动感」。
+ *
+ * T05790 三项优化（对应工单「记忆管理图谱进一步优化」）：
+ * 1. 回弹力反馈——拖拽时一跳邻居橡皮筋牵引，松手后阻尼弹簧回位（带轻微过冲），全局参数单一来源 BOUNCE；
+ * 2. 放大后标题全量显示——相机 ratio 低于 LABEL_ZOOM_RATIO 时所有节点强制 visible 标签，缩回时恢复悬停态避免堆字；
+ * 3. 页面切换状态保持——相机/节点坐标/选中项存 sessionStorage（按 productKey 隔离），切走再回来自动还原。
  */
 
 interface GraphTheme {
@@ -174,6 +179,50 @@ const LIVE_PHYSICS = {
   slowDown: 2.4,
 };
 
+/**
+ * T05790-① 回弹力反馈：全局统一参数（所有节点一致，避免不同节点弹性感差异）。
+ * 拖拽中被拖节点的一跳邻居按「橡皮筋」被牵引一段距离，松手后以欠阻尼弹簧回位（带轻微过冲＝回弹手感）。
+ * 位移用图坐标（与世界坐标一致，min/maxCameraRatio 限定缩放），每个邻居独立衰减，簇内互不干扰。
+ */
+const BOUNCE = {
+  pull: 0.28,        // 邻居跟随被拖节点的牵引系数（占位移比例）
+  maxPull: 12,       // 邻居最大牵引距离，防止被拖到图外
+  stiffness: 0.22,   // 弹簧刚度：越大回位越快
+  damping: 0.74,     // 阻尼：<1 欠阻尼产生轻微过冲（回弹），>1 过阻尼无回弹
+  settleEps: 0.05,   // 回位收敛阈值（图坐标），低于此值停止 rAF 省电
+};
+
+/**
+ * T05790-② 放大后标题全量显示阈值：相机 ratio ≤ 该值即视为「放大」，
+ * nodeReducer 对所有节点强制 labelVisibility=visible，让记忆标题全量可读。
+ * sigma 相机 ratio 越小＝越放大（minCameraRatio=0.08 为最放大，1 为默认全览）。
+ */
+const LABEL_ALL_RATIO = 0.62;
+
+/** T05790-③ 图谱视图状态：相机 + 节点坐标 + 选中项；按 productKey 存 sessionStorage，切页/刷新后还原。 */
+interface GraphViewState {
+  camera: { x: number; y: number; ratio: number };
+  positions: Record<string, { x: number; y: number }>;
+  selectedId: string | null;
+  savedAt: number;
+}
+const viewStateKey = (productKey: string) => `mtask.memoryGraph.view.${productKey}`;
+
+function readViewState(productKey: string): GraphViewState | null {
+  try {
+    const raw = sessionStorage.getItem(viewStateKey(productKey));
+    if (!raw) return null;
+    const v = JSON.parse(raw) as GraphViewState;
+    if (!v?.camera || typeof v.camera.ratio !== 'number' || !v.positions || !Array.isArray(Object.keys(v.positions))) return null;
+    return v;
+  } catch {
+    return null;
+  }
+}
+function writeViewState(productKey: string, v: GraphViewState): void {
+  try { sessionStorage.setItem(viewStateKey(productKey), JSON.stringify(v)); } catch { /* 配额/隐私模式忽略 */ }
+}
+
 interface GraphNode {
   id: string;
   kind: 'memory' | 'project' | 'task';
@@ -221,6 +270,30 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
   // 常开物理循环：rAF 句柄 + 拖拽暂停标志（拖拽时让用户完全控制节点，松手后自然收敛）
   const simRafRef = useRef<number | null>(null);
   const simPausedRef = useRef(false);
+  // T05790-① 拖拽回弹：被拖节点 + 一跳邻居的 rest/offset/速度；phase=drag 牵引、release 欠阻尼回位
+  const dragBounceRef = useRef<{
+    dragged: string;
+    phase: 'drag' | 'release';
+    neighbors: Map<string, { restX: number; restY: number; offX: number; offY: number; vx: number; vy: number }>;
+  } | null>(null);
+  // T05790-② 相机缩放 → 标题全量显示：ratio 与「是否放大态」放 ref，camera updated 时按需 sigma.refresh
+  const cameraRatioRef = useRef(1);
+  const labelsAllRef = useRef(false);
+  // T05790-③ 视图状态持久化：selected 镜像（供 effect 内的 saveView 读最新值）+ 保存节流时间戳
+  const selectedRef = useRef<GraphNode | null>(null);
+  const lastSaveRef = useRef(0);
+  // 「重排布局」显式要求重新播种：置 true 后本次 load 跳过视图恢复（产品切换不带此标记）
+  const skipRestoreRef = useRef(false);
+
+  /** effect 内的 saveView 以 ref 暴露给事件回调，避免闭包捕获旧 state。 */
+  const saveViewRef = useRef<(() => void) | null>(null);
+  /** 统一选中入口：镜像 ref + 触发 reducer 重算高亮（nodeReducer 闭包读 selectedRef）。 */
+  const selectNode = useCallback((node: GraphNode | null) => {
+    selectedRef.current = node;
+    setSelected(node);
+    sigmaRef.current?.refresh();
+    saveViewRef.current?.();
+  }, []);
 
   const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3000); };
   const [notice, setNotice] = useState('');
@@ -260,6 +333,7 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
     if (!productKey) { setData(null); return; }
     stopReplay();
     setLoading(true);
+    selectedRef.current = null;
     setSelected(null);
     try {
       const r = await api.get<GraphData>(`/memories/graph?productKey=${encodeURIComponent(productKey)}`);
@@ -278,10 +352,17 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
 
     const graph = new Graph({ multi: false, type: 'undirected' });
     const startPositions = new Map<string, { x: number; y: number }>();
+    // T05790-③ 视图状态恢复：仅当上次保存的节点集覆盖当前 ≥80% 时视为可复用，避免数据增删后错位。
+    const saved = skipRestoreRef.current ? null : readViewState(productKey);
+    skipRestoreRef.current = false;
+    const savedIds = saved ? Object.keys(saved.positions) : [];
+    const canRestore = !!saved && savedIds.length > 0
+      && data.nodes.filter((n) => saved.positions[n.id]).length >= Math.ceil(data.nodes.length * 0.8);
     for (const n of data.nodes) {
-      // 随机初始位置（记录下来供入场动画插值；FA2 assign 会覆盖为布局终位）
-      const x = Math.random() * 100;
-      const y = Math.random() * 100;
+      // T05790-③ 有可复用视图时直接用上次的坐标，否则随机初始位置（FA2 assign 会覆盖为布局终位）
+      const prev = canRestore ? saved!.positions[n.id] : null;
+      const x = prev ? prev.x : Math.random() * 100;
+      const y = prev ? prev.y : Math.random() * 100;
       startPositions.set(n.id, { x, y });
       // nodeUpdatedAt：回放生长的时间轴锚点（记忆/任务节点有时间戳；项目聚簇节点恒可见）
       graph.addNode(n.id, { x, y, size: n.size, color: nodeColor(n, theme), label: n.title, nodeKind: n.kind, nodeUpdatedAt: n.updatedAt ?? null });
@@ -295,10 +376,13 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
 
     // 第一步：FA2 种子布局（90 次），给节点一个稳定的初始骨架；
     // 真正的「持续力模拟」交给下面的 rAF 单步循环，避免一次性跑几百次造成首屏卡顿。
-    ForceAtlas2.assign(graph, {
-      iterations: 90,
-      settings: { ...LIVE_PHYSICS, barnesHutOptimize: data.nodes.length > 300 },
-    });
+    // T05790-③ 可恢复视图时跳过种子重排，保住上次坐标（随后入场动画为 no-op）。
+    if (!canRestore) {
+      ForceAtlas2.assign(graph, {
+        iterations: 90,
+        settings: { ...LIVE_PHYSICS, barnesHutOptimize: data.nodes.length > 300 },
+      });
+    }
 
     // sigma v4：settings 与 styles 分层——门控/相机在 settings，标签颜色/字号在 styles.nodes
     const sigma = new Sigma(graph, container, {
@@ -359,6 +443,9 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
         // T05738：默认隐藏标签，仅 hover/选中时显示。主题切换会重建画布并改变缩放，
         // 若依赖 labelRenderedSizeThreshold，缩放变大时全部标签会同时出现并互相压字。
         res.labelVisibility = 'hidden';
+        // T05790-② 放大态（相机 ratio ≤ LABEL_ALL_RATIO）：所有可见/已加载节点强制显示记忆标题。
+        // 放在 hover 逻辑之前作为基线，hover/选中再在其上做高亮；回放隐藏的节点上面已 return，不会被强制显示。
+        if (labelsAllRef.current) res.labelVisibility = 'visible';
         const hovered = hoveredRef.current;
         if (hovered === node) {
           res.size = baseSize;
@@ -377,7 +464,8 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
             res.labelVisibility = 'hidden';
           }
         }
-        if (selected?.id === node) { res.opacity = 1; res.labelVisibility = 'visible'; }
+        // T05790-③ 用 ref 读选中态：selectNode 会 sigma.refresh()，选中/恢复都能即时高亮（原闭包 selected 会陈旧）
+        if (selectedRef.current?.id === node) { res.opacity = 1; res.labelVisibility = 'visible'; }
         return res;
       },
       edgeReducer: (edge, attrs) => {
@@ -407,12 +495,78 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
     });
     sigmaRef.current = sigma;
 
+    // T05790-③ 视图状态保存：相机 + 节点坐标 + 选中项，节流写入 sessionStorage。
+    // 用 ref 暴露给 selectNode / 拖拽结束等外部回调；卸载前再强制写一次兜底。
+    const saveView = () => {
+      const now = performance.now();
+      if (now - lastSaveRef.current < 400) return; // 节流：拖拽/回放每帧触发，400ms 一次足够
+      lastSaveRef.current = now;
+      const cam = sigma.getCamera().getState();
+      const positions: Record<string, { x: number; y: number }> = {};
+      graph.nodes().forEach((id) => {
+        positions[id] = { x: graph.getNodeAttribute(id, 'x'), y: graph.getNodeAttribute(id, 'y') };
+      });
+      writeViewState(productKey, {
+        camera: { x: cam.x, y: cam.y, ratio: cam.ratio },
+        positions,
+        selectedId: selectedRef.current?.id ?? null,
+        savedAt: Date.now(),
+      });
+    };
+    saveViewRef.current = saveView;
+
     // 第二步：常开物理——每 ~32ms 跑一次单步 FA2，让图持续轻微收敛/回弹（KarpathyWiki 的 physics.enabled 手感）。
-    // 拖拽期间由 simPausedRef 暂停，松手后自动续跑；rAF 循环本身保持，避免频繁重建定时器。
+    // 拖拽/回弹期间由 simPausedRef 暂停 FA2；rAF 循环本身保持，避免频繁重建定时器。
+    // T05790-① 回弹：drag 阶段一跳邻居被牵引跟随；release 阶段以欠阻尼弹簧回位（off→0，带轻微过冲）。
     let lastPhysicsStep = 0;
+    const stepBounce = () => {
+      const bs = dragBounceRef.current;
+      if (!bs) return;
+      const g = graphRef.current;
+      if (!g || !g.hasNode(bs.dragged)) { dragBounceRef.current = null; simPausedRef.current = false; return; }
+      const dx = g.getNodeAttribute(bs.dragged, 'x') as number;
+      const dy = g.getNodeAttribute(bs.dragged, 'y') as number;
+      if (bs.phase === 'drag') {
+        // 橡皮筋牵引：邻居朝被拖节点位移方向靠拢，限幅 maxPull
+        bs.neighbors.forEach((n, id) => {
+          if (!g.hasNode(id)) return;
+          let tx = (dx - n.restX) * BOUNCE.pull;
+          let ty = (dy - n.restY) * BOUNCE.pull;
+          const dist = Math.hypot(tx, ty);
+          if (dist > BOUNCE.maxPull) { tx = (tx / dist) * BOUNCE.maxPull; ty = (ty / dist) * BOUNCE.maxPull; }
+          n.offX = tx; n.offY = ty; n.vx = 0; n.vy = 0;
+          g.setNodeAttribute(id, 'x', n.restX + n.offX);
+          g.setNodeAttribute(id, 'y', n.restY + n.offY);
+        });
+      } else {
+        // 欠阻尼弹簧回位：v = (v - k·off)·damping；off += v。带轻微过冲＝回弹手感。
+        let settled = true;
+        bs.neighbors.forEach((n, id) => {
+          if (!g.hasNode(id)) return;
+          n.vx = (n.vx - BOUNCE.stiffness * n.offX) * BOUNCE.damping;
+          n.vy = (n.vy - BOUNCE.stiffness * n.offY) * BOUNCE.damping;
+          n.offX += n.vx; n.offY += n.vy;
+          if (Math.abs(n.offX) + Math.abs(n.offY) + Math.abs(n.vx) + Math.abs(n.vy) > BOUNCE.settleEps) settled = false;
+          g.setNodeAttribute(id, 'x', n.restX + n.offX);
+          g.setNodeAttribute(id, 'y', n.restY + n.offY);
+        });
+        if (settled) {
+          // 收敛后归位到 rest 并恢复 FA2，避免邻居永久停在偏移位置
+          bs.neighbors.forEach((n, id) => {
+            if (g.hasNode(id)) { g.setNodeAttribute(id, 'x', n.restX); g.setNodeAttribute(id, 'y', n.restY); }
+          });
+          dragBounceRef.current = null;
+          simPausedRef.current = false;
+        }
+      }
+    };
     const stepSimulation = () => {
       if (!graphRef.current || graphRef.current.order === 0) return;
-      if (!simPausedRef.current) {
+      if (dragBounceRef.current) {
+        // 回弹接管：拖拽期间停 FA2，由弹簧把邻居牵引/释放回位
+        stepBounce();
+        sigma.refresh();
+      } else if (!simPausedRef.current) {
         const now = performance.now();
         if (now - lastPhysicsStep >= 32) {
           lastPhysicsStep = now;
@@ -434,10 +588,26 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
     // 入场动画 700ms；等它结束（780ms）再开物理，避免两套 x/y 插值互相拉扯
     const simulationStartTimer = window.setTimeout(startSimulation, 780);
 
-    // 相机复位到画布中心：避免默认视角把已经铺开的图压在左下角
-    sigma.getCamera().setState({ x: 0.5, y: 0.5, ratio: 1 });
+    // T05790-③ 相机恢复：有可复用视图时还原上次的中心与缩放，否则复位到画布中心（默认全览）
+    const initCam = canRestore && saved!.camera
+      ? { x: saved!.camera.x, y: saved!.camera.y, ratio: saved!.camera.ratio }
+      : { x: 0.5, y: 0.5, ratio: 1 };
+    sigma.getCamera().setState(initCam);
+    cameraRatioRef.current = initCam.ratio;
+    labelsAllRef.current = initCam.ratio <= LABEL_ALL_RATIO;
+
+    // T05790-③ 相机 updated → 更新放大态（标题全显门控）+ 节流保存视角；只在门控翻转时 refresh
+    const onCamera = () => {
+      const ratio = sigma.getCamera().ratio;
+      cameraRatioRef.current = ratio;
+      const all = ratio <= LABEL_ALL_RATIO;
+      if (all !== labelsAllRef.current) { labelsAllRef.current = all; sigma.refresh(); }
+      saveView();
+    };
+    sigma.getCamera().on('updated', onCamera);
 
     // T05738 P1 入场动画：节点从随机初始位置滑向 FA2 终位（卡片切换/产品切换时重建即重播）
+    // T05790-③ 可恢复视图时 startPositions 已是终位，动画为 no-op
     animateNodesIn(graph, startPositions, sigma);
 
     // 方案 A：悬停只做一跳邻域高亮；不做呼吸式缩放，也不接管节点拖拽的邻域位移
@@ -450,19 +620,51 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
       sigma.refresh();
     });
 
-    // 原生拖拽：拖拽期间完全交给 sigma 的拖拽控制器（物理暂停），松手后继续慢速收敛。
-    // 不接管节点坐标，也不做邻域弹簧，保持 KarpathyWiki 那种「手动摆位后自然回弹」的手感。
-    sigma.on('nodeDragStart', () => { simPausedRef.current = true; });
-    sigma.on('nodeDragEnd', () => { simPausedRef.current = false; });
+    // 原生拖拽 + T05790-① 回弹力：拖拽开始记录一跳邻居 rest 坐标，结束转入 release 弹簧回位。
+    sigma.on('nodeDragStart', ({ node }) => {
+      simPausedRef.current = true;
+      const neighbors = new Map<string, { restX: number; restY: number; offX: number; offY: number; vx: number; vy: number }>();
+      graph.neighbors(node).forEach((id) => {
+        neighbors.set(id, {
+          restX: graph.getNodeAttribute(id, 'x') as number,
+          restY: graph.getNodeAttribute(id, 'y') as number,
+          offX: 0, offY: 0, vx: 0, vy: 0,
+        });
+      });
+      dragBounceRef.current = { dragged: node, phase: 'drag', neighbors };
+    });
+    sigma.on('nodeDragEnd', () => {
+      if (dragBounceRef.current && dragBounceRef.current.neighbors.size > 0) {
+        dragBounceRef.current.phase = 'release'; // 交回弹簧，收敛后自动恢复 FA2
+      } else {
+        dragBounceRef.current = null;
+        simPausedRef.current = false;
+      }
+      saveViewRef.current?.();
+      lastSaveRef.current = 0; // 拖拽结束立即允许下一次保存
+    });
 
     sigma.on('clickNode', ({ node }) => {
       const hit = data.nodes.find((n) => n.id === node);
-      setSelected(hit ?? null);
+      selectNode(hit ?? null);
     });
-    sigma.on('clickStage', () => { setSelected(null); });
+    sigma.on('clickStage', () => { selectNode(null); });
+
+    // T05790-③ 选中项恢复：可恢复视图时按 id 找回上次选中的节点，回填面板与 ref
+    if (canRestore && saved!.selectedId) {
+      const hit = data.nodes.find((n) => n.id === saved!.selectedId) ?? null;
+      selectedRef.current = hit;
+      setSelected(hit);
+    }
 
     return () => {
+      // 离开页面前最后保存一次视角（节流窗口内也强制写），供切回时还原
+      lastSaveRef.current = 0;
+      saveView();
+      saveViewRef.current = null;
+      sigma.getCamera().removeListener('updated', onCamera);
       hoveredRef.current = null;
+      dragBounceRef.current = null;
       window.clearTimeout(simulationStartTimer);
       stopSimulation();
       simPausedRef.current = false;
@@ -519,10 +721,11 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
             borderRadius: 5, background: replayActive ? 'var(--accent)' : 'var(--card-bg)',
             color: replayActive ? 'var(--accent-text)' : 'var(--text-secondary)', cursor: 'pointer',
           }}>{replayActive ? '⏸ 停止回放' : '▶ 回放生长'}</button>
-        <button onClick={() => void load()} style={{
-          fontSize: 'var(--fs-xs)', padding: '2px 8px', border: '1px solid var(--border-strong)',
-          borderRadius: 5, background: 'var(--card-bg)', color: 'var(--text-secondary)', cursor: 'pointer',
-        }}>重排布局</button>
+        <button onClick={() => { skipRestoreRef.current = true; void load(); }} title="重排布局 — 忽略上次保存的视角与坐标，重新播种力导向布局"
+          style={{
+            fontSize: 'var(--fs-xs)', padding: '2px 8px', border: '1px solid var(--border-strong)',
+            borderRadius: 5, background: 'var(--card-bg)', color: 'var(--text-secondary)', cursor: 'pointer',
+          }}>重排布局</button>
         {replayActive && (
           <span style={{ color: 'var(--accent)' }} data-lck="memory-graph-replay-progress">
             回放中：已显现 {shownCount}/{totalDated}
@@ -553,7 +756,7 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
                 fontSize: 'var(--fs-xs)', color: '#fff', padding: '1px 8px', borderRadius: 999,
                 background: nodeColor(selected, theme),
               }}>{selected.kind === 'project' ? '项目' : selected.kind === 'task' ? '来源任务' : (TYPE_LABELS[selected.type ?? ''] ?? selected.type)}</span>
-              <button onClick={() => setSelected(null)} aria-label="关闭详情" style={{
+              <button onClick={() => selectNode(null)} aria-label="关闭详情" style={{
                 background: 'none', border: 'none', color: theme.panelHint, cursor: 'pointer', fontSize: 14, lineHeight: 1,
               }}>✕</button>
             </div>
