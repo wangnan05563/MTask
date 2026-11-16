@@ -3731,8 +3731,7 @@ export function TasksPage() {
           </>
         )}
         {includeRename && <button onClick={() => toggleTitleEdit(t)} title={titleEditing ? '取消 — 取消重命名' : '改名 — 重命名该任务标题'} aria-label={titleEditing ? '取消重命名' : '重命名该任务标题'} className="task-op" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{titleEditing ? <X size={13} /> : <SquarePen size={13} />}</button>}
-        {/* T01562：真抽屉——右侧滑入完整操作台（描述/结果/摘要/时间线/关联计划），与行内展开互补 */}
-        <button onClick={() => openDetailDrawer(t)} title="展开详情抽屉 — 在右侧抽屉中查看并编辑任务完整详情" aria-label="展开详情抽屉 — 在右侧抽屉中查看并编辑任务完整详情" className="task-op" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><PanelRightOpen size={13} /></button>
+        {/* T05778：详情抽屉入口已归并到「更多操作」菜单，标题操作区不再保留独立图标。 */}
       </>
     );
   }
