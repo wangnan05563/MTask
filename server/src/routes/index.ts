@@ -19,7 +19,7 @@ import { readPoolStatus, setPoolLimit } from '../services/ConcurrencyPool'; // T
 import { ExecSessionService } from '../services/ExecSessionService'; // T01271：执行会话面板数据源
 import { PushService } from '../services/PushService'; // T01440：Web Push
 import { TaskExportService, type ExportFormat } from '../services/TaskExportService'; // T01480：任务导出
-import { listBackups, runBackup, restoreBackup, backupStatus } from '../services/BackupService'; // T01061-FR5.1
+import { listBackups, runBackup, restoreBackup, backupStatus, deleteBackup, BackupDeleteError } from '../services/BackupService'; // T01061-FR5.1 / T05791
 import { ConfigService } from '../services/ConfigService';
 import { AIProviderService } from '../services/AIProviderService'; // T05784：厂商预制目录（后端单源）
 import { ConsoleJobService } from '../services/ConsoleJobService';
@@ -676,6 +676,21 @@ api.post('/backups/restore', (req, res) => {
   void restoreBackup(name)
     .then(() => res.json({ ok: true, message: '已从快照恢复当前数据库（online 恢复，无需重启）；界面数据如未刷新请手动刷新页面。' }))
     .catch((e: unknown) => res.status(500).json({ error: e instanceof Error ? e.message : String(e) }));
+});
+// T05791-FR：删除指定备份快照（物理文件 + 状态一致性）。路径参数经 deleteBackup 的 FILE_RE 白名单校验，
+// 挡路径穿越；鉴权走全局 accessToken/CSRF 中间件（本机管理员才有令牌），与恢复/数据维护同一权限面。
+api.delete('/backups/:name', (req, res) => {
+  const name = typeof req.params?.name === 'string' ? String(req.params.name) : '';
+  try {
+    const removed = deleteBackup(name);
+    // 审计留痕：与提示词分组调整同款 logService 通道（后台日志页可见），单机环境操作人留空。
+    logService.log('INFO', 'backup',
+      `[备份删除] 快照「${removed.name}」(${removed.size} bytes) 已删除；操作人留空（单机环境），操作时间 ${new Date().toISOString()}`);
+    res.json({ ok: true, deleted: removed.name, backups: listBackups(), status: backupStatus() });
+  } catch (e) {
+    const status = e instanceof BackupDeleteError ? e.status : 500;
+    res.status(status).json({ error: e instanceof Error ? e.message : String(e) });
+  }
 });
 
 // T01064-FR1.4：通知中心数据源——最近任务事件（projectId 可选、since 未读增量、limit 上限 200）

@@ -201,6 +201,24 @@ export function DbAdminTab() {
       flash(`恢复失败：${e instanceof Error ? e.message : String(e)}`);
     } finally { setBkBusy(''); }
   }
+  /** T05791：删除指定备份快照——二次确认（本页危险操作统一 CONFIRM_DELETE 确认码），成功后同步列表与最近状态 */
+  async function deleteBackupFile(name: string) {
+    if (bkBusy) return;
+    const ok = await confirmDanger(`确认删除备份快照「${name}」？`, '物理备份文件将被永久删除、不可恢复；数据库当前数据不受影响。');
+    if (!ok) return;
+    const busyKey = `del:${name}`;
+    setBkBusy(busyKey);
+    try {
+      const d = await api.del<{ ok: boolean; deleted: string; backups: typeof backups; status: { lastRun: { file: string; at: string; reason: string } | null; lastError: string | null } }>(`/backups/${encodeURIComponent(name)}`);
+      setBackups(d.backups);
+      const lr = d.status.lastRun;
+      setLastBackup(lr ? `${lr.file}（${lr.reason === 'manual' ? '手动' : '自动'}，${lr.at.slice(0, 19).replace('T', ' ')}）` : '暂无');
+      setLastError(d.status.lastError ?? '');
+      flash(`已删除备份「${name}」`);
+    } catch (e) {
+      flash(`删除备份失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally { setBkBusy(''); }
+  }
 
   // T01064 后续：task_events 保留期（默认 90 天，0 = 不清理）+ 手动立即清理
   const [retDays, setRetDays] = useState('');
@@ -389,6 +407,12 @@ export function DbAdminTab() {
                   title="从该快照恢复整个数据库 — 恢复前会先自动备份当前状态"
                   style={{ fontSize: 'var(--fs-xs)', padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--danger)', cursor: bkBusy ? 'wait' : 'pointer', whiteSpace: 'nowrap' }}>
                   {bkBusy === b.name ? '恢复中…' : '恢复'}
+                </button>
+                {/* T05791：删除指定备份快照——二次确认（CONFIRM_DELETE），物理文件移除且不影响当前库 */}
+                <button onClick={() => void deleteBackupFile(b.name)} disabled={bkBusy !== ''}
+                  title="删除该备份快照 — 物理删除备份文件，需确认码；当前数据库不受影响"
+                  style={{ fontSize: 'var(--fs-xs)', padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--text-secondary)', cursor: bkBusy ? 'wait' : 'pointer', whiteSpace: 'nowrap' }}>
+                  {bkBusy === `del:${b.name}` ? '删除中…' : '删除'}
                 </button>
               </div>
             ))}

@@ -84,6 +84,38 @@ export async function runBackup(reason: 'auto' | 'manual'): Promise<{ name: stri
   }
 }
 
+/**
+ * T05791：删除指定备份快照。
+ * 备份「记录」以文件为唯一载体（listBackups 直接读目录），故删除＝物理文件移除，天然无「库/文件双写」不一致。
+ * 三点防护：① 文件名必须过 FILE_RE 白名单（挡 ../ 路径穿越与任意文件删除）；② 删除前 stat 确认存在与大小；
+ * ③ 若删的正是 lastRun 指向的文件，清空 lastRun，避免「最近备份」指向已删文件。
+ * 失败抛 BackupDeleteError 带 HTTP 语义，由路由转成明确错误码/文案（文件被移动或损坏时不误报成功）。
+ */
+export class BackupDeleteError extends Error {
+  constructor(message: string, readonly status: number) { super(message); this.name = 'BackupDeleteError'; }
+}
+
+export function deleteBackup(name: string): { name: string; size: number } {
+  if (!FILE_RE.test(name)) throw new BackupDeleteError('非法的备份文件名（仅允许 mtask-backup-YYYYMMDD-HHMMSS.db）', 400);
+  const file = path.join(backupDir(), name);
+  let size: number;
+  try {
+    size = fs.statSync(file).size;
+  } catch {
+    throw new BackupDeleteError('备份文件不存在或已被移动', 404);
+  }
+  try {
+    fs.unlinkSync(file);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`[backup] 删除备份失败: ${name}: ${msg}`);
+    throw new BackupDeleteError(`删除备份文件失败：${msg}`, 500);
+  }
+  if (lastRun?.file === name) lastRun = null; // 一致性：最近备份指向的文件被删则清空
+  console.log(`[backup] 已删除备份快照: ${name} (${size} bytes)`);
+  return { name, size };
+}
+
 /** 列出备份文件（新→旧） */
 export function listBackups(): BackupMeta[] {
   const dir = backupDir();
