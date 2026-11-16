@@ -6,7 +6,7 @@ import { FONT_OPTIONS, FONT_SIZE_OPTIONS, useSettings, type ImportMode } from '.
 import { Ban, Download, ExternalLink, FileUp, FolderPlus, MonitorCog, Moon, Pencil, RefreshCw, RotateCcw, Save, ShieldCheck, Sun, Trash2 } from 'lucide-react';
 import { getLang, setLang, onLangChange, type Lang } from '../i18n'; // T01071-FR5.4：i18n 底座
 import { usePersistentState } from '../ui/session'; // T03271（UX-09③）：Tab 选中态跨页面/跨会话保持（沿用 T02977 口径）
-import { SETTINGS_TABS, SETTINGS_TAB_LABELS, filterSettingsGroups, normalizeSettingsTab } from '../ui/settingsTabs'; // T03271（UX-09①②）：页签与分组单源；T05772：子页统一图标头
+import { SETTINGS_TAB_LABELS, filterSettingsGroups, normalizeSettingsTab } from '../ui/settingsTabs'; // T03271（UX-09①②）：页签与分组单源
 import { updateCardStore, shownProgressOf, type UpdateCheckInfo } from '../stores/updateCardStore';
 
 /** T01060-FR4.1：强调色预设色板（与主题内置 accent 同源的六色系） */
@@ -49,8 +49,6 @@ export function SettingsPage() {
   // T03271（UX-09③）：沿用 T02977 口径——切走返回、整页刷新后仍停原页签；脏值由单源兜底回「通用设置」
   const [st, setSt] = usePersistentState<string>('settings.tab', 'general');
   const active = normalizeSettingsTab(st);
-  const activeMeta = SETTINGS_TABS.find((t) => t.key === active) ?? SETTINGS_TABS[0];
-  const ActiveIcon = activeMeta.icon;
   // T03271（UX-09②）：命令面板直达时设置页可能已挂载——只写存储不会重渲染，故另派事件即时切页签
   useEffect(() => {
     const onFocus = (e: Event) => setSt(normalizeSettingsTab((e as CustomEvent<{ key?: string }>).detail?.key));
@@ -119,17 +117,7 @@ export function SettingsPage() {
         )}
       </nav>
 
-      {/* T05772：所有设置子页共用一个图标头；原页面级文字标题已从各子页移除。 */}
-      <div
-        data-settings-header
-        role="img"
-        aria-label={activeMeta.label}
-        title={activeMeta.label}
-        style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 34, height: 34, margin: '2px 0 10px', borderRadius: 9, border: '1px solid var(--border)', background: 'var(--surface-2)', color: 'var(--text-secondary)' }}
-      >
-        <ActiveIcon size={20} aria-hidden="true" />
-      </div>
-
+      {/* T05789：去掉设置子页的标题图标（原 T05772 统一图标头），子页直接接内容。 */}
       {active === 'general' && <GeneralTab />}
       {active === 'dashboard' && <DashboardPage />} {/* T01154：仪表盘迁入设置页 */}
       {active === 'supervisor' && <SupervisorPanel />} {/* T01286：监督状态与审计（FR-5.2~5.4） */}
