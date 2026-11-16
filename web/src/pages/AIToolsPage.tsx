@@ -6,6 +6,7 @@ import { UsagePanel } from './UsagePanel';
 import { askConfirm } from '../ui/dialogs';
 import { PinToggle } from '../ui/PinToggle';
 import { ProviderIcon, ProviderPresetGrid } from './AIProviderPresets';
+import { LOCAL_PROVIDER_LOGOS, inferProviderId } from '../ui/providerLogos';
 
 /** 配置记录表单草稿（apiKey 留空 = 编辑时保留原密钥） */
 interface ToolForm {
@@ -349,6 +350,27 @@ interface ToolRowProps {
   readonly overId?: string;
 }
 
+/**
+ * T05780 二轮：配置记录名称列在名称前展示推断出的厂商 logo。
+ * 依据 name / type / endpoint 关键词匹配预制 id，命中本地打包图标才渲染；推断不出则不显示（不阻塞名称）。
+ */
+function ToolVendorLogo({ tool }: { readonly tool: AITool }) {
+  const id = inferProviderId(`${tool.name} ${tool.type} ${tool.endpoint}`);
+  const src = id ? LOCAL_PROVIDER_LOGOS[id] : undefined;
+  if (!src) return null;
+  return (
+    <img
+      data-t05780="name-vendor-logo"
+      data-provider-id={id ?? ''}
+      src={src}
+      alt=""
+      title={tool.name}
+      referrerPolicy="no-referrer"
+      style={{ width: 16, height: 16, flex: '0 0 16px', objectFit: 'contain' }}
+    />
+  );
+}
+
 /** 表格行（S3776 拆分）：单行渲染逻辑从页面组件抽出，API Key 列与操作列再下沉到单元格组件 */
 function ToolRow(props: ToolRowProps) {
   const { tool } = props;
@@ -374,6 +396,7 @@ function ToolRow(props: ToolRowProps) {
       <td style={cellStyle}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <PinToggle pinned={tool.pinned} onToggle={() => props.onTogglePin(tool)} />
+          <ToolVendorLogo tool={tool} />
           <span style={{ fontWeight: 600 }}>{tool.name}</span>
           {tool.provider_type ? (
             <span title={`厂商属性：${tool.provider_type}`} style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', background: 'var(--accent-soft)', borderRadius: 4, padding: '1px 5px', whiteSpace: 'nowrap' }}>

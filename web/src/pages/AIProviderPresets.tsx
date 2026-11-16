@@ -1,15 +1,17 @@
 import { useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 import type { AIProviderPreset } from '../api/client';
+import { LOCAL_PROVIDER_LOGOS } from '../ui/providerLogos';
 
 /**
  * T05784：厂商预制卡片与图标。
- * 图标来自后端返回的 icon_url（厂商官网 favicon/CDN）；加载失败时用首字母兜底，
- * 不把厂商名或图标硬编码在页面里。
+ * T05780 二轮：优先用随前端本地打包的图标（LOCAL_PROVIDER_LOGOS，按预制 id 命中），
+ * 保证 file:// 打包版离线可用；未收录的厂商回落后端 icon_url，再失败才用首字母兜底。
  */
 export function ProviderIcon({ preset, size = 32 }: { readonly preset: AIProviderPreset; readonly size?: number }) {
   const [failed, setFailed] = useState(false);
   const initial = preset.provider_name.trim().slice(0, 1).toUpperCase() || '?';
+  const logoSrc = LOCAL_PROVIDER_LOGOS[preset.id] ?? preset.icon_url;
   return (
     <span
       aria-hidden="true"
@@ -29,9 +31,11 @@ export function ProviderIcon({ preset, size = 32 }: { readonly preset: AIProvide
         fontSize: size >= 30 ? 'var(--fs-l)' : 'var(--fs-s)',
       }}
     >
-      {!failed && preset.icon_url ? (
+      {!failed && logoSrc ? (
         <img
-          src={preset.icon_url}
+          data-t05780="provider-logo"
+          data-provider-id={preset.id}
+          src={logoSrc}
           alt=""
           width={size}
           height={size}
