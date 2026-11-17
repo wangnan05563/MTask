@@ -5,7 +5,7 @@ import { EmptyState } from '../ui/EmptyState';
 import { focusTaskByNo } from '../ui/focusTask';
 import { fullTime, relTime } from '../ui/format';
 import { NotificationFeed } from '../ui/NotificationFeed';
-import { PlatformLogo, platformDisplayName } from '../ui/PlatformLogo';
+import { PlatformLogo } from '../ui/PlatformLogo';
 import { ScrollArrows } from '../ui/ScrollArrows';
 import { desktopApi } from '../ui/desktop';
 
@@ -565,9 +565,7 @@ function SessionCard({ s, cardRef, enterAnimation = false }: { readonly s: ExecS
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <PlatformLogo platform={s.platform} size={28} />
-        <span style={{ fontSize: 'calc(var(--fs-m) + 0.5px)', fontWeight: 600, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          {platformDisplayName(s.platform)}
-        </span>
+        {/* T05793 二轮：卡片只保留来源平台 Logo，工具名移入 Logo 的 title/aria-label，给项目与任务信息让出横向空间。 */}
         {/* T05767：状态已由泳道顶部表达，卡片重复徽标改为项目标签 */}
         {projectLabels.length > 0 ? (
           <>
