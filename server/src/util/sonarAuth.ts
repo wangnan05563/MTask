@@ -14,7 +14,7 @@ export function normalizeSonarToken(raw: string): string {
   return String(raw ?? '')
     .trim()
     .replace(/^Bearer\s+/i, '')
-    .replace(/^["'`]|["'`]$/g, '')
+    .replaceAll(/(?:^["'`]|["'`]$)/g, '')
     .trim();
 }
 

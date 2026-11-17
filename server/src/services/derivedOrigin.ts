@@ -91,7 +91,7 @@ export function alreadyMerged(handleResult: string | null | undefined, taskNo: s
  *  两个形态各把「前缀」和「日期槽」分成一组：日期为空也能定位槽位——
  *  早先用 `indexOf(日期串)` 反查，空串会命中行首，把日期写到标题最前面。 */
 const MERGED_HEADINGS = (no: string) => {
-  const esc = no.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const esc = no.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(
     `^(?:(【派生单 ${esc} 处理结果 )([^】]*)】|(##\\s*派生单回填 ${esc}（)([^）]*)）)[ \\t]*$`,
     'gm',
@@ -159,7 +159,7 @@ export function findMergedSections(handleResult: string | null | undefined, task
 
 /** 比较用的归一化：行尾统一 LF、去掉节正文首尾空行与行末空白 */
 const normalizeBody = (s: string): string =>
-  s.replace(/\r\n/g, '\n').split('\n').map((l) => l.replace(/[ \t]+$/, '')).join('\n').trim();
+  s.replaceAll('\r\n', '\n').split('\n').map((l) => l.replace(/[ \t]+$/, '')).join('\n').trim();
 
 /**
  * 内容等价判据（T04546 的核心）：母单最新那节快照的正文是否与本次结论一致。
@@ -168,7 +168,7 @@ const normalizeBody = (s: string): string =>
 export function mergedContentMatches(handleResult: string | null | undefined, taskNo: string | null | undefined, result: string): boolean {
   const sections = findMergedSections(handleResult, taskNo);
   if (!sections.length) return false;
-  const last = sections[sections.length - 1];
+  const last = sections.at(-1)!;
   const text = handleResult ?? '';
   return normalizeBody(text.slice(last.bodyStart, last.bodyEnd)) === normalizeBody(result ?? '');
 }
@@ -194,7 +194,7 @@ export function refreshMergedBody(
     return prev ? `${prev}\n\n${block}` : block;
   }
   // 只刷新最后一节：更早的节是历史留痕，留着便于对照
-  const last = sections[sections.length - 1];
+  const last = sections.at(-1)!;
   const heading = text.slice(last.headingStart, last.headingEnd);
   const dated = heading.slice(0, last.dateStart - last.headingStart) + stamp + heading.slice(last.dateEnd - last.headingStart);
   // 标题行与正文之间的换行由这里补；正文与下一节之间原本靠空行分隔，替换正文后要把空行还回去

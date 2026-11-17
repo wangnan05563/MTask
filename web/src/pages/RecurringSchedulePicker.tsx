@@ -58,7 +58,7 @@ export function scheduleFromRule(r: { freq?: string; cron_expr?: string; interva
   if (!cron && (r.freq === 'daily' || r.freq === 'weekly' || r.freq === 'monthly')) return { ...base, kind: r.freq, advancedFreq: r.freq };
   // 常见引导式 cron 反向识别；不是这些形态就原样留在高级 cron，绝不静默改成别的周期
   const m = /^(\d{1,2})\s+(\d{1,2})\s+(\S+)\s+(\S+)\s+(\S+)$/.exec(cron);
-  if (!m) return { ...base, advanced: true, advancedCron: cron, advancedFreq: 'cron' };
+  if (!m) return { ...base, advanced: true, advancedCron: cron, advancedFreq: 'weekly' };
   const minute = Number(m[1]); const hour = Number(m[2]);
   const dom = m[3]; const month = m[4]; const dow = m[5];
   if (dom === '*' && month === '*' && dow === '*') return { ...base, kind: 'daily', hour, minute, advancedFreq: 'daily' };
@@ -66,7 +66,7 @@ export function scheduleFromRule(r: { freq?: string; cron_expr?: string; interva
   if (dom === '*' && month === '*' && /^\d$/.test(dow)) return { ...base, kind: 'weekly', hour, minute, weekday: Number(dow), advancedFreq: 'weekly' };
   if (/^\d{1,2}$/.test(dom) && month === '*' && dow === '*') return { ...base, kind: 'monthly', hour, minute, monthDay: Number(dom), advancedFreq: 'monthly' };
   if (/^\d{1,2}$/.test(dom) && month === '1,4,7,10' && dow === '*') return { ...base, kind: 'quarterly', hour, minute, monthDay: Number(dom), advancedFreq: 'monthly' };
-  return { ...base, advanced: true, advancedCron: cron, advancedFreq: 'cron' };
+  return { ...base, advanced: true, advancedCron: cron, advancedFreq: 'weekly' };
 }
 
 /** 生成提交给后端的字段。 */
@@ -142,6 +142,22 @@ export function RecurringSchedulePicker({
   readonly error?: string;
 }) {
   const rule = useMemo(() => ruleFromSchedule(value), [value]);
+  // T05823 复查：切换高级模式时把当前引导式规则带入，否则只改 advanced 标志会把 09:00 的周期悄悄降级为粗粒度 freq。
+  // 反向切回引导式时尽量反解；无法反解的复杂 cron 留在「自定义 cron」kind，保证表达式不丢。
+  const toggleAdvanced = () => {
+    if (value.advanced) {
+      const parsed = scheduleFromRule({ freq: rule.freq, cron_expr: rule.cron, interval_n: rule.intervalN });
+      if (parsed.advanced) onChange({ ...value, advanced: false, kind: 'cron', cron: rule.cron });
+      else onChange({ ...parsed, advanced: false });
+    } else {
+      onChange({
+        ...value, advanced: true,
+        advancedFreq: rule.freq === 'cron' ? 'weekly' : rule.freq,
+        advancedCron: rule.cron,
+        intervalN: rule.intervalN,
+      });
+    }
+  };
   return (
     <div data-t05823="schedule-picker" style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 10, background: 'var(--surface)', display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
@@ -150,7 +166,7 @@ export function RecurringSchedulePicker({
         <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>引导式选择树（常用周期无需手写 cron）</span>
         <span style={{ flex: 1 }} />
         <button type="button"
-          onClick={() => onChange({ ...value, advanced: !value.advanced })}
+          onClick={toggleAdvanced}
           title={value.advanced ? '切回引导式选择' : '高级模式：保留原频率下拉与 cron 输入'}
           aria-pressed={value.advanced}
           style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 8px', fontSize: 'var(--fs-xs)', borderRadius: 6, border: '1px solid var(--border-strong)', background: value.advanced ? 'var(--accent-soft, rgba(9,105,218,.10))' : 'var(--card-bg)', color: value.advanced ? 'var(--accent)' : 'var(--text)', cursor: 'pointer' }}>
@@ -162,11 +178,22 @@ export function RecurringSchedulePicker({
       {value.advanced ? (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
           <select value={value.advancedFreq} onChange={(e) => onChange({ ...value, advancedFreq: e.target.value, advancedCron: '' })}
-            aria-label="高级模式频率" title="原频率下拉（daily/weekly/monthly）" style={field}>
+            aria-label="高级模式频率" title="原频率下拉（daily/weekly/monthly/interval）" style={field}>
             <option value="daily">每天（daily）</option>
             <option value="weekly">每周（weekly）</option>
             <option value="monthly">每月（monthly）</option>
+            <option value="interval_days">每 N 天（interval_days）</option>
+            <option value="interval_weeks">每 N 周（interval_weeks）</option>
           </select>
+          {(value.advancedFreq === 'interval_days' || value.advancedFreq === 'interval_weeks') && (
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
+              每
+              <input type="number" min={1} max={365} value={value.intervalN}
+                onChange={(e) => onChange({ ...value, intervalN: Math.max(1, Math.min(365, Number(e.target.value) || 1)) })}
+                aria-label="高级模式间隔数量" style={{ ...field, width: 66 }} />
+              {value.advancedFreq === 'interval_days' ? '天' : '周'}
+            </label>
+          )}
           <input value={value.advancedCron}
             onChange={(e) => onChange({ ...value, advancedCron: e.target.value })}
             placeholder="cron 可选，如 0 9 * * 1"

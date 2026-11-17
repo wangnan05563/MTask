@@ -66,12 +66,12 @@ function stripExt(name: string): string {
 export function normalizeDocTopic(filename: string | null | undefined): string {
   let s = stripExt((filename ?? '').trim()).toLowerCase();
   if (!s) return '';
-  s = s.replace(/20\d{2}[-._年]?\d{1,2}[-._月]?\d{1,2}日?/g, ' '); // 2026-11-06 / 20261106 / 2026年11月6日
-  s = s.replace(/\b20\d{6}\b/g, ' ');
-  s = s.replace(/[-_ ]?v\d+(?:\.\d+)*/g, ' '); // -v6 / _V2.1
-  s = s.replace(/第\s*\d+\s*版/g, ' ');
+  s = s.replaceAll(/20\d{2}[-._年]?\d{1,2}[-._月]?\d{1,2}日?/g, ' '); // 2026-11-06 / 20261106 / 2026年11月6日
+  s = s.replaceAll(/\b20\d{6}\b/g, ' ');
+  s = s.replaceAll(/[-_ ]?v\d+(?:\.\d+)*/g, ' '); // -v6 / _V2.1
+  s = s.replaceAll(/第\s*\d+\s*版/g, ' ');
   for (const w of DOC_KIND_WORDS) s = s.split(w).join(' ');
-  s = s.replace(/[\s\-_—–·.,，。、:：;；()（）[\]【】「」《》"'!?！？~]+/g, '');
+  s = s.replaceAll(/[\s\-_—–·.,，。、:：;；()（）[\]【】「」《》"'!?！？~]+/g, '');
   return s.replace(/\d+$/, ''); // 主题末尾的流水号（"…改动2"）不参与比较
 }
 

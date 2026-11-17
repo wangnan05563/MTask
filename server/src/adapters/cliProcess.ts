@@ -23,6 +23,22 @@ const DEFAULT_MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 const MAX_STDERR_CHARS = 16 * 1024;
 const STATE_TTL_MS = 30 * 60 * 1000;
 
+/**
+ * T05796 复审：CLI 只继承进程环境中的非敏感项，令牌/密钥必须由 cli.env 显式注入。
+ * 原实现直接把整个 process.env 交给第三方 CLI（任务正文又可能被提示注入），
+ * 会让 CLI 读到 MTask/Sonar/模型密钥等与任务无关的秘密。
+ */
+const SENSITIVE_ENV_RE = /(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL|AUTH|COOKIE|SESSION|ENCRYPT)/i;
+
+function buildCliEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined || SENSITIVE_ENV_RE.test(key)) continue;
+    env[key] = value;
+  }
+  return { ...env, ...(extra ?? {}) };
+}
+
 interface CliRunState {
   child: ChildProcess;
   status: 'starting' | 'running' | 'success' | 'failed' | 'timeout';
@@ -108,7 +124,11 @@ function resolveCwd(context: TaskContext, config: ToolConfig): string {
     if (fs.existsSync(abs) && fs.statSync(abs).isDirectory()) return abs;
   }
   // chat/probe 等没有任务工作空间的场景，允许显式配置或回落到服务进程目录；
-  // 真实任务派发必须带 workspacePath，避免 CLI 在任意目录执行。
+  // 真实任务必须带 workspacePath：否则第三方 CLI 会在 MTask 服务目录里执行，
+  // 一次提示注入就可能改到服务源码/配置。这里改为明确拒绝，而不是静默回落。
+  if (context.taskId !== 'chat' && context.taskId !== 'probe') {
+    throw new Error(`CLI 任务 ${context.taskId} 缺少可用的项目工作空间（projects.workspace_path），拒绝在服务进程目录执行`);
+  }
   return process.cwd();
 }
 
@@ -193,6 +213,10 @@ function startState(state: CliRunState, context: TaskContext, config: ToolConfig
   state.child.stderr?.on('data', (chunk: string) => {
     if (state.stderr.length < MAX_STDERR_CHARS) state.stderr += chunk.slice(0, MAX_STDERR_CHARS - state.stderr.length);
   });
+  // stdin 的 EPIPE 是异步流错误，外层 try/catch 捕不到；不挂 error 监听会让进程抛未捕获异常。
+  state.child.stdin?.on('error', (err) => {
+    finish('failed', `CLI stdin 写入失败：${describeError(err)}`);
+  });
   state.child.on('error', (err) => {
     finish('failed', `CLI 启动失败：${describeError(err)}`);
   });
@@ -259,7 +283,7 @@ export class CliProcessAdapter implements AIAdapter {
       let done = false;
       const child = spawn(cfg.command, probeArgs, {
         cwd: resolveCwd({ taskId: 'probe', title: 'probe', description: '', projectName: '' }, config),
-        env: { ...process.env, ...(cfg.env ?? {}) },
+        env: buildCliEnv(cfg.env),
         shell: false,
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -267,9 +291,11 @@ export class CliProcessAdapter implements AIAdapter {
       const finish = (result: { ok: boolean; message: string }) => {
         if (done) return;
         done = true;
+        if (timer) { clearTimeout(timer); timer = null; }
         try { child.kill(); } catch { /* ignore */ }
         resolve(result);
       };
+      let timer: NodeJS.Timeout | null = null;
       let out = '';
       let err = '';
       child.stdout?.setEncoding('utf8');
@@ -286,7 +312,7 @@ export class CliProcessAdapter implements AIAdapter {
             : `CLI 探测失败（exitCode=${code}）${detail ? `：${detail}` : ''}`,
         });
       });
-      setTimeout(() => finish({ ok: false, message: `CLI 探测超时（${timeoutMs}ms）` }), timeoutMs);
+      timer = setTimeout(() => finish({ ok: false, message: `CLI 探测超时（${timeoutMs}ms）` }), timeoutMs);
     });
   }
 
@@ -312,8 +338,7 @@ export class CliProcessAdapter implements AIAdapter {
       const child = spawn(cfg.command, args, {
         cwd,
         env: {
-          ...process.env,
-          ...(cfg.env ?? {}),
+          ...buildCliEnv(cfg.env),
           MTASK_TASK_ID: context.taskId,
           MTASK_PROJECT_NAME: context.projectName ?? '',
         },

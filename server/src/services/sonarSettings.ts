@@ -401,7 +401,7 @@ export function expandEnvTokens(value: string, env: NodeJS.ProcessEnv): string {
   if (!value || !value.includes('%')) return value ?? '';
   const upper = new Map<string, string>();
   for (const [k, v] of Object.entries(env)) if (typeof v === 'string') upper.set(k.toUpperCase(), v);
-  return value.replace(/%([A-Za-z_][A-Za-z0-9_]*)%/g, (match, name: string) => upper.get(name.toUpperCase()) ?? match);
+  return value.replaceAll(/%([A-Za-z_][A-Za-z0-9_]*)%/g, (match, name: string) => upper.get(name.toUpperCase()) ?? match);
 }
 
 /** java 可执行文件的候选拼写：Windows 上只认裸名 `java` 会漏掉 `.exe` 之外的包装脚本 */

@@ -7,8 +7,6 @@ import { describeStreamFailure } from '../api/streamError'; // T03999：传输�
 import type { Project } from '../api/client';
 import { ProjectScopePicker } from '../ui/projectScopePicker';
 import { GitTreePickerModal } from '../ui/GitTreePickerModal';
-import { AuthorMultiSelect, BranchPicker, DateRangeField } from '../ui/GitScopeControls';
-import { buildSinceWindow, type BranchOption } from '../utils/scopeControls';
 import { checkLectureScopeWorkspaces } from '../utils/lectureScopeCheck';
 import { FlowButton } from '../ui/FlowButton';
 import { FlowProgress } from '../ui/FlowProgress';
@@ -63,18 +61,20 @@ import { AiProvenanceSection } from '../components/AiProvenance'; // T03262（AI
  * 同里程碑后续单接手：导出链路（T02874，本单只留状态条槽位）、预检面板与超限两条路（T02875）。
  */
 
-const RANGE_SHAPES = [
-  { key: 'base-head', label: 'base..head（分支/标签/SHA）' },
-  { key: 'first-last', label: '首末 SHA' },
-  { key: 'since', label: '时间窗（--since）' },
-] as const;
-type RangeShape = (typeof RANGE_SHAPES)[number]['key'];
 /** 导出格式（S4323：union 收成类型别名，状态与子组件入参共用同一口径） */
 type ExportFormat = 'md' | 'docx' | 'pptx';
 
 const fieldStyle: React.CSSProperties = FIELD_QUIET; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 const chipStyle: React.CSSProperties = PILL; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 const FONT_MONO = 'Consolas, Menlo, monospace';
+
+/** 预检/差异区的项目唯一键：projectId + 子仓库；用拼接而非嵌套模板，避免 S4624 */
+function projectRepoKey(p: { projectId: string; repoSub?: string }): string {
+  return p.projectId + '::' + (p.repoSub ?? '');
+}
+function projectLckKey(prefix: string, p: { projectId: string; repoSub?: string }): string {
+  return prefix + p.projectId + (p.repoSub ? '-' + p.repoSub : '');
+}
 
 /** 文件级展开态键 */
 const fileKey = (projectId: string, path: string) => `${projectId}|${path}`;
@@ -357,19 +357,6 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
   readonly onClose: () => void;
 }) {
   const snap = useCodeReviewLecture();
-  const [shape, setShape] = useSessionState<RangeShape>('lecture.rangeShape', 'base-head');
-  const [base, setBase] = useSessionState('lecture.base', '');
-  const [head, setHead] = useSessionState('lecture.head', '');
-  const [since, setSince] = useSessionState('lecture.since', '');
-  // T03590：时间窗右端（日期范围控件的结束日）；空 = 与改造前的单 since 完全一致
-  const [until, setUntil] = useSessionState('lecture.until', '');
-  // T03303：提交人过滤（甲 / 甲, 乙（且）/ 甲 | 乙（或）），与区间一起提交，服务端按 author+committer 精确比对
-  const [authorFilter, setAuthorFilter] = useSessionState('lecture.authorFilter', '');
-  // T03590：分支/标签候选（所选项目的引用并集）与提交人候选（仓库最近提交的 author/committer）
-  const [branchOptions, setBranchOptions] = useState<BranchOption[]>([]);
-  const [authorOptions, setAuthorOptions] = useState<string[]>([]);
-  const branchRequested = useRef(false);
-  const authorsRequested = useRef(false);
   /** T03302：Git 树点选的提交（按项目分别存）——非空即该项目走 `shape='commits'`，优先于手填区间 */
   const [selectedCommits, setSelectedCommits] = useSessionState<Record<string, string[]>>('lecture.selectedCommits', {});
   // T05682：已完成任务勾选——每个任务带自己的关联提交，与 Git 树点选可叠加
@@ -378,8 +365,6 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
   /** T04576：Git 树确认时一并记住仓库维度（与 selectedCommits 同生命周期；空串 = 项目根仓库） */
   const [selectedRepoSubs, setSelectedRepoSubs] = useSessionState<Record<string, string>>('lecture.selectedRepoSubs', {});
   const [gitTreeOpen, setGitTreeOpen] = useState(false);
-  const [patchMode, setPatchMode] = useSessionState('lecture.patchMode', false);
-  const [patchText, setPatchText] = useState('');
   const [exportFormat, setExportFormat] = useSessionState<ExportFormat>('lecture.exportFormat', 'md');
   // T05696：导出/预检运行态改从 store 快照读——卡片切走再切回，按钮 loading 不再丢
   const exporting = snap.exporting;
@@ -440,53 +425,6 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
   const toggleTask = useCallback((id: string, checked: boolean) => {
     setCheckedTaskIds((prev) => (checked ? [...new Set([...prev, id])] : prev.filter((x) => x !== id)));
   }, []);
-  const projectKey = selectedIds.join('|');
-
-  // 项目集合变了：上一批候选可能来自别的仓库，作废缓存（真正取数推迟到展开下拉时）
-  useEffect(() => {
-    branchRequested.current = false;
-    authorsRequested.current = false;
-    setBranchOptions([]);
-    setAuthorOptions([]);
-  }, [projectKey]);
-
-  /**
-   * T03590：分支下拉的选项来自所选项目的引用装饰（`git log --all` 已有口径）——只做并集，不引入新 git 语义。
-   * 按需触发（展开下拉才取）：默认范围是「全部项目」，进面板就逐仓取数会把打开卡片变成一次批量扫描。
-   * 取不到就留空：输入框始终可以手输，下拉只是少了一份候选，不阻塞任何采集路径。
-   * 窗口取 200 条而非首页默认 100：refs 是「当前页提交上的装饰」，窗口太窄会只剩 HEAD 那一条的分支名。
-   */
-  async function loadBranchOptions() {
-    if (branchRequested.current) return;
-    branchRequested.current = true;
-    const merged = new Map<string, BranchOption>();
-    for (const projectId of selectedIds) {
-      try {
-        const r = await api.post<{ ok: boolean; refs?: BranchOption[] }>('/plans/code-review-lecture/git-log', { projectId, all: true, limit: 200 });
-        (r.refs ?? []).forEach((ref) => merged.set(`${ref.type}:${ref.name}`, ref));
-      } catch {
-        // 单项目取不到不影响其他项目，也不影响手输
-      }
-    }
-    setBranchOptions([...merged.values()]);
-  }
-
-  /** T03590：提交人候选按需拉取（展开下拉才请求），多项目取并集，失败保持空列表 */
-  async function loadAuthorOptions() {
-    if (authorsRequested.current) return;
-    authorsRequested.current = true;
-    const names = new Set<string>();
-    for (const projectId of selectedIds) {
-      try {
-        const r = await api.post<{ ok: boolean; authors?: string[] }>('/plans/code-review-lecture/git-authors', { projectId });
-        (r.authors ?? []).forEach((n) => names.add(n));
-      } catch {
-        // 候选名单只提升输入效率，取不到就让用户手输
-      }
-    }
-    setAuthorOptions([...names]);
-  }
-
   /** T03302：Git 树点选摘要——只报当前报表范围里确实点过的项目，范围外残留不显示也不参与采集 */
   const pickedProjects = useMemo(() => selectedIds
     .map((projectId) => ({ projectId, projectName: projects.find((p) => p.id === projectId)?.name ?? projectId, shas: selectedCommits[projectId] ?? [] }))
@@ -766,14 +704,8 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
       )}
 
       <LectureScopeSection projects={projects} projectIds={projectIds} onProjectIdsChange={onProjectIdsChange}
-        selectedIds={selectedIds} shape={shape} setShape={setShape}
-        base={base} setBase={setBase} head={head} setHead={setHead}
-        since={since} until={until} setSince={setSince} setUntil={setUntil}
-        authorFilter={authorFilter} setAuthorFilter={setAuthorFilter}
-        branchOptions={branchOptions} authorOptions={authorOptions}
-        loadBranchOptions={loadBranchOptions} loadAuthorOptions={loadAuthorOptions}
+        selectedIds={selectedIds}
         pickedProjects={pickedProjects} clearPicked={clearPicked}
-        patchMode={patchMode} setPatchMode={setPatchMode} patchText={patchText} setPatchText={setPatchText}
         streaming={snap.streaming} diffLoading={snap.diffLoading} preflightLoading={preflightLoading}
         onLoadDiff={() => void loadDiff()} onPreflight={openPreflight} onOpenGitTree={() => setGitTreeOpen(true)}
         outline={outline} onOpenOutline={() => void openPreflight({ outlineOnly: true }, '只出大纲')}
@@ -899,28 +831,8 @@ interface ScopeSectionProps {
   readonly projectIds: string[];
   readonly onProjectIdsChange: (ids: string[]) => void;
   readonly selectedIds: string[];
-  readonly shape: RangeShape;
-  readonly setShape: (s: RangeShape) => void;
-  readonly base: string;
-  readonly setBase: (v: string) => void;
-  readonly head: string;
-  readonly setHead: (v: string) => void;
-  readonly since: string;
-  readonly until: string;
-  readonly setSince: (v: string) => void;
-  readonly setUntil: (v: string) => void;
-  readonly authorFilter: string;
-  readonly setAuthorFilter: (v: string) => void;
-  readonly branchOptions: BranchOption[];
-  readonly authorOptions: string[];
-  readonly loadBranchOptions: () => Promise<void>;
-  readonly loadAuthorOptions: () => Promise<void>;
   readonly pickedProjects: ReadonlyArray<{ readonly projectId: string; readonly projectName: string; readonly shas: string[] }>;
   readonly clearPicked: (projectId: string) => void;
-  readonly patchMode: boolean;
-  readonly setPatchMode: (v: boolean) => void;
-  readonly patchText: string;
-  readonly setPatchText: (v: string) => void;
   readonly streaming: boolean;
   readonly diffLoading: boolean;
   readonly preflightLoading: boolean;
@@ -938,10 +850,8 @@ interface ScopeSectionProps {
 /** 采集范围区：项目范围 + 区间形态 + 提交人 + Git 树点选摘要 + patch 降级通道 + 采集/预检入口 */
 function LectureScopeSection(props: ScopeSectionProps) {
   const {
-    projects, projectIds, onProjectIdsChange, selectedIds, shape, setShape, base, setBase, head, setHead,
-    since, until, setSince, setUntil, authorFilter, setAuthorFilter, branchOptions, authorOptions,
-    loadBranchOptions, loadAuthorOptions, pickedProjects, clearPicked, patchMode, setPatchMode, patchText,
-    setPatchText, streaming, diffLoading, preflightLoading, onLoadDiff, onPreflight, onOpenGitTree, onOpenOutline, outline,
+    projects, projectIds, onProjectIdsChange, selectedIds,
+    pickedProjects, clearPicked, streaming, diffLoading, preflightLoading, onLoadDiff, onPreflight, onOpenGitTree, onOpenOutline, outline,
     doneTasks, checkedTaskIds, onToggleTask,
   } = props;
   return (
@@ -1172,7 +1082,7 @@ function PreflightOverlay({ preflight, continueLabel, onCancel, onContinue }: {
 
         <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
           {preflight.projects.map((p) => (
-            <section key={`${p.projectId}::${p.repoSub ?? ''}`} data-lck={`preflight-project-${p.projectId}${p.repoSub ? `-${p.repoSub}` : ''}`}
+            <section key={projectRepoKey(p)} data-lck={projectLckKey('preflight-project-', p)}
               style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 8, background: 'var(--surface)' }}>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
                 <strong style={{ fontSize: 'var(--fs-s)' }}>{p.projectName}</strong>
@@ -1256,7 +1166,7 @@ function LectureDiffPane({ projects, openFiles, foldedHunks, flashRows, hoverRow
   return (
     <>
       {projects.map((p) => (
-        <section key={`${p.projectId}::${p.repoSub ?? ''}`} data-lck={`diff-project-${p.projectId}${p.repoSub ? `-${p.repoSub}` : ''}`} style={{ marginBottom: 10 }}>
+        <section key={projectRepoKey(p)} data-lck={projectLckKey('diff-project-', p)} style={{ marginBottom: 10 }}>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
             <strong style={{ fontSize: 'var(--fs-s)' }}>{p.projectName}</strong>
             <span style={chipStyle}>{p.mode === 'patch' ? '粘贴 patch' : p.rangeLabel}</span>

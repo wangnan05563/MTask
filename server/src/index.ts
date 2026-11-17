@@ -212,7 +212,7 @@ if (existsSync(path.join(webDist, 'index.html'))) {
   // 只影响浏览器/隧道访问；Electron 壳走 file:// 读同一份 dist，不受响应头影响。
   app.use(express.static(webDist, {
     setHeaders(res, filePath) {
-      const posix = filePath.replace(/\\/g, '/');
+      const posix = filePath.replaceAll('\\', '/');
       if (/\/assets\//.test(posix)) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
       else if (/\/(index\.html|sw\.js)$/.test(posix)) res.setHeader('Cache-Control', 'no-cache');
     },

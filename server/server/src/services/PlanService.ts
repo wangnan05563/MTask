@@ -1,0 +1,3971 @@
+/**
+ * 项目计划服务（T00431）：计划任务 CRUD、串行瀑布时间线重排（避开周末与节假日）、
+ * Excel 导入/导出（exceljs）、计划→待办状态联动。设计文档见 docs/PRD-项目计划.md。
+ */
+import { getDb } from '../db/connection';
+import type Database from 'better-sqlite3';
+import { createHash } from 'node:crypto'; // T01156-3：PRD 导入内容哈希——同名/同内容覆盖去重
+import { v4 as uuid } from 'uuid';
+import ExcelJS from 'exceljs';
+import { AIService } from './AIService';
+import { clampComplexity } from './PlanComplexity'; // T02122：复杂度钳位单源
+import { nextTaskNo } from './TaskService'; // T00662：PRD 导入生成待办复用统一编号生成器
+import { ArchiveService } from './ArchiveService'; // T01874：计划彻底删除时连带归档其派生孤儿待办，走既有归档通道（含父进度重算）
+import { notifyChange } from './ChangeBus';
+// pizzip：docxtemplater 既有依赖，用于解压 .docx 提取 word/document.xml（T00439）
+import PizZip from 'pizzip';
+import { scalarText } from '../util/scalarText';
+import { stripWordFieldCodes } from '../util/wordFields'; // T00814：清洗 Word 域代码（目录/页码/交叉引用）
+import { logService } from './LogService'; // T00821：覆盖录入行为留痕（覆盖时间/文件名/项目，单机无账号故操作人留空）
+import { parsePlanDeps, depsSatisfied } from '../util/planDeps'; // T01284：deps 判定统一实现（FR-3.7）
+import { addChildEdge, childParentIds, hasChildEdge, intervalChildEdges } from '../util/milestoneChild'; // T02090 口径 A：child 边纯函数单源
+import { recalcMilestoneProgress, recalcMilestonesOfChild, milestoneHasChildren } from './milestoneProgress'; // T02090：里程碑进度聚合
+import { resolveReqNo, groupDuplicateReqNos, isReqNoTaken } from '../util/reqNo'; // T01867：需求编号项目内唯一顺延
+import { inferDocKindFromFilename, linkImportedPrdDocs, listSddDocIndex } from '../util/prdDocLink'; // T05208：方案 B 显式关联（导入建边 / 矩阵 SDD 列）
+import { syncReqStatuses } from './reqStatusSync'; // T02087：需求状态随计划/待办完成度派生
+import { nextPlanTitle } from '../util/planTitle'; // T01875：计划标题撞名让号（与需求编号顺延同构）
+import { touchCompletedAt } from './IterationService'; // T03186（PM-201④）：完成时刻单点维护（燃尽回溯依赖它）
+import { WebhookService } from './WebhookService'; // T03196（PM-401）：计划事件外发
+import { isRateLimitError, sleepMs, rateLimitBackoffMs } from '../util/rateLimit'; // T03700：限流识别与退避单源
+import { htmlToMarkdown, decodeHtmlBuffer } from './htmlDoc'; // T03730：HTML 版 PRD → 层级文本（零新依赖）
+import { dedupeDraftsByNormalizedTitle, detectWbsGroups, formatWbsNote, isGapFillPlan, applySourceEntryGapFill, SOURCE_ENTRY_GAP_DESC, normalizeWbsGroups } from '../util/prdWbs'; // 2026-11-10：分片 WBS 归一化 / 补齐行判定（质量复核优化）+ T05571 源文档条目补齐 + T05573 WBS 自动收敛
+
+/** T01361：需求跟踪矩阵行（prd_requirements 全列 + 联表摘要）——具体化类型替代 Record<string, unknown>（Sonar S6551） */
+export interface RequirementRow {
+  id: string;
+  project_id: string;
+  req_no: string | null;
+  title: string | null;
+  content: string | null;
+  source_ref: string | null;
+  priority: string | null;
+  status: string | null;
+  sort_order: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+  prd_id: string | null;
+  linkedPlans: Array<{ id: string; title: string; status: string }>;
+  linkedTasks: Array<{ taskNo: string | null; title: string | null; status: string; verified: boolean }>;
+  prdDoc: { id: string; filename: string } | null;
+  /** T05208（方案 B）：该需求所属主 PRD 的配套设计文档（SDD，显式关联边；无则 null） */
+  sddDoc?: { id: string; filename: string } | null;
+}
+
+export interface PlanTaskRow {
+  id: string;
+  project_id: string;
+  title: string;
+  description: string;
+  start_date: string; // YYYY-MM-DD
+  end_date: string;   // YYYY-MM-DD（含当天）
+  duration_days: number;
+  progress: number;
+  status: PlanStatus;
+  assignee: string;
+  sort_order: number;
+  /** 关联待办 tasks.id；待办已删除时保留原值并由查询附带 linked_task_missing 提示 */
+  linked_task_id: string | null;
+  /** 需求追溯关联：本计划覆盖的需求编号数组（JSON），供矩阵「需求→计划」关联与计划完成态向待办传播 */
+  req_ids: string | null;
+  /** T00490：记录字体颜色，空串=默认色 */
+  color: string;
+  /** T00499：前置依赖 JSON [{id,type:'serial'|'parallel'}]，空=无依赖 */
+  deps: string;
+  /** T01058-FR2.1：AI 复杂度评级（1~5，≥4 建议拆分）；DB 列经 ensureColumn 补齐，历史行/未评估行为 NULL（T01689 起随 MCP 露出） */
+  complexity?: number | null;
+  /** T00506：任务类型 normal=普通、milestone=阶段里程碑、daily=日常任务 */
+  kind: string;
+  /** 归档标记（T00442 扩展）：1=已归档（时间线移除，归档菜单可恢复/彻底删除） */
+  archived: number;
+  archived_at: string | null;
+  /** T03186（PRD PM-201③）：所属迭代 id（project_iterations.id）；NULL=未规划。单列即单归属约束。 */
+  iteration_id?: string | null;
+  /** T03186（PRD PM-201④）：迁入 done 的时刻；燃尽实际线按它回溯，不能用 updated_at 顶替 */
+  completed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+  /** 查询附带：关联待办标题（不存在则为 null） */
+  linked_task_title?: string | null;
+  /** 查询附带：关联待办是否已删除 */
+  linked_task_missing?: boolean;
+}
+
+export type PlanStatus = 'todo' | 'doing' | 'done' | 'blocked';
+
+/** T01001：计划条目类型——normal=普通任务、milestone=阶段里程碑、daily=日常任务（对齐 plan_tasks.kind） */
+export type PlanKind = 'normal' | 'milestone' | 'daily';
+
+const PLAN_STATUSES = new Set<PlanStatus>(['todo', 'doing', 'done', 'blocked']);
+
+/** AI 解析输入的行数上限：超出的内容截断，避免超大文件拖垮模型上下文（T00438） */
+const MAX_PARSE_ROWS = 300;
+/** T01156：PRD 解析首轮输出预算下限。
+ *  PRD 拆 WBS + 逐条需求可能产出较长 JSON，工具默认 max_tokens(4096) 常被触顶截断 → 触发精简重试硬砍 requirements≤20，静默丢需求。
+ *  但预算也绝非越大越好：本轮实测把 16384 顶上去后，上游网关对单次输出上限/响应体大小有硬限制，或生成过久导致网关自身超时 → 直接报 HTTP 502（Bad Gateway）。
+ *  实测该 PRD 实际输出约 4000 token，8192 给 2 倍余量既不截断、又远离网关上限，是最稳取值。 */
+// T03296（G-2 覆盖率）：本文件通用通道的显式卡归属（按导入来源区分，避免落 unknown）
+const PRD_IMPORT_CARD = 'ai.prd_import';
+const PLAN_IMPORT_CARD = 'ai.plan_import';
+const PRD_PARSE_MIN_OUTPUT_TOKENS = 8_192;
+/** T01156-4：PRD 解析超时下限。maxTokens 抬到 16K 后生成更耗时，工具默认 timeoutMs(60000) 必触顶 →
+ *  「连接超时（超过 60000ms）」报错（与上一轮抬高预算是同一连锁反应）。显式给 300s 兜底。 */
+const PRD_PARSE_TIMEOUT_MS = 300_000;
+/** T02401-A：PRD 解析**总预算**。桌面壳 api 代理与 Node fetch 的默认 headers/body 超时都是 300s，
+ *  一旦首轮 + 精简重试 + 分片多轮串起来超过它，前端只会收到 `api proxy error: fetch failed`，
+ *  真实原因（分片解析还在跑）被代理层吞掉。这里把整次解析压到 270s 内，超预算即明确报错，
+ *  不让请求活到代理层被无声掐断。 */
+const PRD_PARSE_TOTAL_TIMEOUT_MS = 270_000;
+/** T02401-B：长 PRD 分片参数——按标题边界切到 ≤6k 字、最多 8 片，控制多轮 AI 成本与等待。 */
+const PRD_CHUNK_CHARS = 6_000;
+const PRD_CHUNK_MAX = 8;
+/** T02270 复议：长文档直接分片阈值——实测 25k 字文档先跑单轮全模式白耗 147s、精简重试再耗 19s，
+ *  留给分片的预算只剩 104s，5 片根本跑不完就被总预算中止。超过该阈值直接走分片，把预算全留给
+ *  有效轮次；小文档仍走原单轮路径（行为逐字不变）。 */
+const PRD_DIRECT_CHUNK_CHARS = 12_000;
+/** T02983：分片并发度——25k 文档切 5 片，并发 2 要跑 3 波（实测 208.9~218s）；提到 5 后 5 片同一波起跑，
+ *  实测总耗时 106~157s（瓶颈是供应商单次尾延迟 28~191s，不是排队）。3 并发实测反被重试拖到 270s 总预算中止，
+ *  故取「片数即并发」：再多也没有第 6 片可并行。 */
+const PRD_CHUNK_CONCURRENCY = 5;
+/** T03700：限流自适应——单条分片最多解析轮数（首轮 + 2 次退避重试）；首次撞 429 后波次并发降到该值，
+ *  给免费档供应商的并发/RPM 限制让路（实测：7 片并发 5 + 立即重试，第 6/7 片撞 429 整链作废）。 */
+const PRD_CHUNK_RATE_ROUNDS = 3;
+const PRD_CHUNK_RATE_CONCURRENCY = 2;
+
+/**
+ * T03700+：缺失分片诊断——片号、原因类别与**该片原文**。
+ * 只回一句「第 8 片失败」时用户无从补处理；把原文带回前端，界面就能展示/复制/另存并支持单片补解析。
+ */
+export interface PrdFailedChunk {
+  /** 1-based 片号（与提示文案同口径） */
+  index: number;
+  total: number;
+  /** rate-limit=限流退避后仍失败；error=其它解析错误；aborted=总预算中止；not-run=中止后未发起 */
+  reason: 'rate-limit' | 'error' | 'aborted' | 'not-run';
+  /** 最近一次失败原因（截断 300 字） */
+  message?: string;
+  chars: number;
+  /** T04010：该片在 PRD 全文中的字符区间（左闭右开）——落库只存区间，原文按 prd_docs.content_md 现切 */
+  start: number;
+  end: number;
+  /** 该片原文，供查看/复制/单独补解析 */
+  text: string;
+}
+
+/** T02401-C：分片解析的中间结果类型（与 aiParsePrd 返回值同构，供合并去重）。 */
+interface PrdParsePart {
+  requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }>;
+  drafts: Array<{ title: string; description: string; durationDays: number; startDate: string; reqNos: string[]; status: PlanStatus; kind: PlanKind; complexity?: number }>;
+}
+
+/** T00500 验证修正：计划表共用美化（模板/导出同源）——冻结首行由 addWorksheet views 配置，
+ *  此处负责深蓝表头白字加粗 + 指定列居中；centerKeys 由调用方显式传入（getColumn 对未知 key 会新建列导致越界，T00516 冒烟实测） */
+function applyPlanSheetStyle(ws: ExcelJS.Worksheet, centerKeys: string[]): void {
+  const header = ws.getRow(1);
+  header.height = 22;
+  header.eachCell((c) => {
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F4E79' } };
+    c.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+    c.alignment = { vertical: 'middle', horizontal: 'center' };
+    c.border = { bottom: { style: 'thin', color: { argb: 'FF1F4E79' } } };
+  });
+  for (const key of centerKeys) ws.getColumn(key).alignment = { horizontal: 'center' };
+}
+
+/**
+ * 从 AI 输出中提取 JSON 数组，带截断恢复（T00439）：
+ * 大文档拆分时输出可能被 max_tokens 截断（JSON 未闭合），此时退化到
+ * 「最后一个完整对象 + ]」补全重试，尽量抢救已生成的大部分条目。
+ */
+/** T00652+：扫描文本中所有**顶层 {...} 对象**（括号配平，跳过字符串与转义）。
+ *  兼容大模型 JSON 瑕疵：数组元素间缺逗号、NDJSON、夹杂说明文字、尾部截断。 */
+function extractTopLevelObjects(text: string): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  let depth = 0;
+  let startIdx = -1;
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inStr) {
+      const next = nextStringState(ch, inStr, esc);
+      inStr = next.inStr;
+      esc = next.esc;
+      continue;
+    }
+    if (ch === '"') { inStr = true; continue; }
+    if (ch === '{') {
+      if (depth === 0) startIdx = i;
+      depth += 1;
+      continue;
+    }
+    if (ch === '}') {
+      const r = flushCloseBrace(text, depth, startIdx, i, out);
+      depth = r.depth;
+      startIdx = r.startIdx;
+    }
+  }
+  return out;
+}
+
+/** 字符串内逐字符推进状态机（跳过转义）：返回新的 inStr/esc */
+function nextStringState(ch: string, inStr: boolean, esc: boolean): { inStr: boolean; esc: boolean } {
+  if (esc) return { inStr, esc: false };
+  if (ch === String.fromCodePoint(92)) return { inStr, esc: true };
+  if (ch === '"') return { inStr: false, esc };
+  return { inStr, esc };
+}
+
+/** 解析 [startIdx, endIdx] 区间内的顶层对象并追加到 out（解析失败则跳过） */
+function pushTopLevelObject(text: string, startIdx: number, endIdx: number, out: Record<string, unknown>[]): void {
+  try {
+    const o = JSON.parse(text.slice(startIdx, endIdx + 1)) as unknown;
+    if (o && typeof o === 'object' && !Array.isArray(o)) out.push(o as Record<string, unknown>);
+  } catch { /* 跳过损坏对象 */ }
+}
+
+/** 处理右花括号：depth-1 后若闭合顶层对象则解析入列；越界 depth 归零 */
+function flushCloseBrace(text: string, depth: number, startIdx: number, endIdx: number, out: Record<string, unknown>[]): { depth: number; startIdx: number } {
+  const newDepth = depth - 1;
+  if (newDepth === 0 && startIdx >= 0) {
+    pushTopLevelObject(text, startIdx, endIdx, out);
+    return { depth: newDepth, startIdx: -1 };
+  }
+  if (newDepth < 0) return { depth: 0, startIdx };
+  return { depth: newDepth, startIdx };
+}
+
+function parseJsonArrayWithRecovery(text: string, notFoundMsg: string): unknown[] {
+  const bare = text.replaceAll(/```json/gi, '').replaceAll(/```/gi, '').trim();
+  const start = bare.indexOf('[');
+  if (start === -1) throw new Error(notFoundMsg);
+  const end = bare.lastIndexOf(']');
+  try {
+    const arr: unknown = JSON.parse(bare.slice(start, end > start ? end + 1 : start + 1));
+    if (Array.isArray(arr)) return arr;
+  } catch {
+    // 截断恢复：JSON.parse 完整数组失败，尝试到「最后一个 }」为止补 ]
+    const lastObj = bare.lastIndexOf('}');
+    if (lastObj > start) {
+      try {
+        const arr: unknown = JSON.parse(bare.slice(start, lastObj + 1) + ']');
+        if (Array.isArray(arr)) return arr;
+      } catch { /* 落到对象扫描回退 */ }
+    }
+  }
+  // T00652+ 回退：逐对象扫描——模型常在数组元素间**漏写逗号**（整体 parse 必失败），
+  // 逐对象提取可完整救回（原实现直接抛错，导致「有结论却无数据」）
+  const objs = extractTopLevelObjects(bare);
+  if (objs.length > 0) return objs;
+  throw new Error(notFoundMsg);
+}
+
+/** T00662：对象型 JSON 恢复解析（PRD 解析返回 {requirements, plans}）——剥离围栏、截断续补 */
+function parseJsonObjectWithRecovery(text: string, notFoundMsg: string): Record<string, unknown> {
+  const bare = text.replaceAll(/```json/gi, '').replaceAll(/```/gi, '').trim();
+  const start = bare.indexOf('{');
+  if (start === -1) throw new Error(notFoundMsg);
+  const end = bare.lastIndexOf('}');
+  if (end <= start) throw new Error(notFoundMsg);
+  let obj: unknown;
+  try {
+    obj = JSON.parse(bare.slice(start, end + 1));
+  } catch {
+    throw new Error(notFoundMsg);
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) throw new Error(notFoundMsg);
+  return obj as Record<string, unknown>;
+}
+
+/** CSV 行文本：按行拆分 + 逗号切分（含引号单元格原样保留，粒度足够 AI 理解） */
+function csvToText(buffer: Buffer): string {
+  return buffer.toString('utf-8')
+    .split(/\r?\n/)
+    .filter((l) => l.trim())
+    .slice(0, MAX_PARSE_ROWS)
+    .map((l) => l.split(',').map((c) => c.trim()).join(' | '))
+    .join('\n');
+}
+
+function now(): string {
+  return new Date().toISOString();
+}
+
+// ---------- 工作日计算 ----------
+
+/** YYYY-MM-DD → 本地零点 Date（避免 toISOString 时区偏移） */
+function parseDate(s: string): Date {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) throw new Error(`日期格式非法：${s}（应为 YYYY-MM-DD）`);
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  // 回写不一致说明是非法日（如 02-31 会被 Date 进位到 3 月）
+  if (fmt(d) !== s) throw new Error(`日期非法：${s}`);
+  return d;
+}
+
+function fmt(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/**
+ * Excel 单元格值 → 文本：Date 走 fmt，富文本对象取其 text，其余 object 显式 JSON 化
+ * （避免隐式 String() 得到 "[object Object]"）。
+ */
+function cellValueText(v: unknown): string {
+  if (v == null) return '';
+  if (v instanceof Date) return fmt(v);
+  if (typeof v === 'object' && 'text' in v) return String((v as { text: unknown }).text);
+  if (typeof v === 'object') return JSON.stringify(v);
+  // 到这里只剩标量：交给 scalarText 统一转文本（与 HTTP/AI 回包同一口径）
+  return scalarText(v);
+}
+
+/** T00764：日历上下文——holidays=放假日（工作日排除），overtime=加班日（周末/节假日上班，强制算工作日） */
+interface WorkdayCal { holidays: Set<string>; overtime: Set<string>; }
+
+function loadCalendar(): WorkdayCal {
+  const rows = getDb().prepare('SELECT date, kind FROM holidays').all() as { date: string; kind: string | null }[];
+  const cal: WorkdayCal = { holidays: new Set(), overtime: new Set() };
+  for (const r of rows) (r.kind === 'overtime' ? cal.overtime : cal.holidays).add(r.date);
+  return cal;
+}
+
+/** 工作日 = 加班日优先视为工作日；否则非周六日 且 不在节假日表 */
+function isWorkday(d: Date, cal: WorkdayCal): boolean {
+  if (cal.overtime.has(fmt(d))) return true;
+  const wd = d.getDay();
+  if (wd === 0 || wd === 6) return false;
+  return !cal.holidays.has(fmt(d));
+}
+
+/** 起始日起 duration_days 个工作日的含尾结束日 */
+/** T02090：本次 update 可能影响的里程碑集合——自身（若本就是里程碑，聚合可能改写其 status/progress）
+ *  + deps 变更前后的全部父里程碑（child 边指向它们的行）。 */
+function affectedMilestones(row: PlanTaskRow, patch: { deps?: string }): string[] {
+  const ids = new Set<string>();
+  if (row.kind === 'milestone') ids.add(row.id);
+  for (const d of childParentIds(row.deps ?? '')) ids.add(d);
+  if (patch.deps !== undefined) for (const d of childParentIds(patch.deps)) ids.add(d);
+  return [...ids];
+}
+
+/** T01704：[start, end] 闭区间内的工作日数（含首尾，跳过周末/节假日、含加班日） */
+function workdaysInRange(start: string, end: string, cal: WorkdayCal): number {
+  const d = parseDate(start);
+  const last = parseDate(end);
+  let n = 0;
+  while (d <= last) {
+    if (isWorkday(d, cal)) n += 1;
+    d.setDate(d.getDate() + 1);
+  }
+  return Math.max(1, n);
+}
+
+/** 定宽 YYYY-MM-DD 日期串比较器：与 Array#sort 默认的 UTF-16 码元字典序逐字等价，不抛、不用三元 */
+function byIsoDateOrder(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
+/** T01704：里程碑包络重算——里程碑的起止与工期取自其下子任务（deps 内 type='child' 指向该里程碑）
+ *  的包络，替代 durationDays 推导值（swork 20 条日期失真痛点：里程碑止期晚于其子任务包络）。
+ *  无子任务或包络未变时不动。
+ *  T02090：子项枚举改走 util/milestoneChild 单源（与进度聚合、导入补边同一判据）。 */
+function recalcMilestoneEnvelope(db: ReturnType<typeof getDb>, milestoneId: string): void {
+  const m = db.prepare('SELECT id, project_id, start_date, end_date FROM plan_tasks WHERE id = ?').get(milestoneId) as
+    | { id: string; project_id: string; start_date: string; end_date: string }
+    | undefined;
+  if (!m) return;
+  const rows = db.prepare('SELECT start_date, end_date, duration_days, deps FROM plan_tasks WHERE project_id = ? AND archived = 0').all(m.project_id) as
+    Array<{ start_date: string; end_date: string; duration_days: number; deps: string }>;
+  const kids = rows.filter((r) => hasChildEdge(r.deps, milestoneId));
+  if (kids.length === 0) return;
+  // 包络取最早开始日 / 最晚结束日：日期串定宽 YYYY-MM-DD，字典序即时间序。
+  // 显式比较器排序后取首尾，与旧「无比较器 sort() 取 [0]/.at(-1)」逐字等价（UTF-16 码元序），
+  // 且不抛——上一版 `reduce((min,d)=>…)` 无初值，空 kids 会抛 TypeError（S6959），此处还原为不抛口径。
+  const startDates = kids.map((k) => k.start_date).sort(byIsoDateOrder);
+  const endDates = kids.map((k) => k.end_date).sort(byIsoDateOrder);
+  const start = startDates[0];
+  const end = endDates.at(-1);
+  if (!start || !end || (start === m.start_date && end === m.end_date)) return;
+  // T05438（P0-2）：工期口径统一——日历包络与「子项工期之和」取较大者。
+  // 旧实现直接用包络覆盖 duration_days：子项并行（同一天起跑）时包络只有几天，
+  // 会把 milestoneDurations() 刚写好的汇总值（如 51）冲成 4，造成「4 天 / 24 个子项 51 天」。
+  // 串行排期下两者相等，行为与改造前一致；并行时工期保留工作量语义，start/end 仍是真实跨度。
+  const cal = loadCalendar();
+  const envelope = workdaysInRange(start, end, cal);
+  const sumKids = kids.reduce((n, k) => n + Math.max(1, Math.round(Number(k.duration_days) || 1)), 0);
+  const duration = Math.max(envelope, sumKids);
+  // 工期取到「子项之和」时，end 必须同步按工期推移，否则会出现「工期 51 天 / 跨度 4 天」的自相矛盾。
+  // 取舍：数据自洽优先于 T01704 的「止期不长于子任务」——并行排期下里程碑代表工作量，跨度本就短于工作量。
+  const endFinal = duration > envelope ? calcEndDate(start, duration, cal) : end;
+  db.prepare('UPDATE plan_tasks SET start_date = ?, end_date = ?, duration_days = ?, updated_at = ? WHERE id = ?')
+    .run(start, endFinal, duration, now(), milestoneId);
+}
+
+function calcEndDate(start: string, durationDays: number, cal: WorkdayCal): string {
+  const d = parseDate(start);
+  let left = durationDays;
+  while (left > 0) {
+    if (isWorkday(d, cal)) left -= 1;
+    if (left > 0) d.setDate(d.getDate() + 1);
+  }
+  return fmt(d);
+}
+
+/** 某结束日之后的下一个工作日（串行重排用） */
+function nextWorkday(after: string, cal: WorkdayCal): string {
+  const d = parseDate(after);
+  do { d.setDate(d.getDate() + 1); } while (!isWorkday(d, cal));
+  return fmt(d);
+}
+
+// ---------- T00561：显式依赖驱动排期（去掉默认串行链） ----------
+// 旧行为：rescheduleFrom 把全部任务按串行瀑布隐式串联——任意任务日期/工期变动，后续全部顺延。
+// 新行为：任务默认无依赖（各自保持日期）；仅当显式配置 deps（serial/parallel 指向前置任务）时联动：
+//   serial：start = 全部串行前置 end 的下一工作日；parallel：start = 前置任务 start。
+// 传播：从变更任务出发沿 deps 引用关系 BFS，日期有变化才继续向下传播。
+
+/** 单任务工期收尾：end = start 起按工作日计 duration 天 */
+function refreshTaskEnd(db: ReturnType<typeof getDb>, id: string, start: string, duration: number): void {
+  const end = calcEndDate(start, Math.max(1, duration), loadCalendar());
+  db.prepare("UPDATE plan_tasks SET start_date = COALESCE(NULLIF(?, ''), start_date), end_date = ?, updated_at = ? WHERE id = ?")
+    .run(start, end, now(), id);
+}
+
+/** 沿显式 deps 依赖图传播重算（BFS）：serial 后移 / parallel 对齐前置开始日。
+ *  T02090：本地 parseDeps 副本删除，统一走 util/planDeps.parsePlanDeps（T01284 单源）；
+ *  `child` 边（结构性归属）**不参与**日期传播——否则子任务 start 会被对齐到里程碑 start
+ *  （里程碑 start 又取自子任务包络，互为前提造成日期污染与抖动）。 */
+function rescheduleDependents(db: ReturnType<typeof getDb>, projectId: string, seedId: string): void {
+  const cal = loadCalendar();
+  const all = db.prepare(
+    'SELECT id, title, start_date, end_date, duration_days, deps, kind FROM plan_tasks WHERE project_id = ? AND archived = 0',
+  ).all(projectId) as Array<{ id: string; title: string; start_date: string; end_date: string; duration_days: number; deps: string; kind: string }>;
+  const map = new Map(all.map((r) => [r.id, { ...r }]));
+  const upd = db.prepare('UPDATE plan_tasks SET start_date = ?, end_date = ?, updated_at = ? WHERE id = ?');
+  const t = now();
+  const queue = [seedId];
+  const touched = new Set<string>([seedId]);
+
+  const dependStart = (
+    rel: { id: string; type: string },
+    seed: { id: string; start_date: string; end_date: string },
+    deps: Array<{ id: string; type: string }>,
+  ): string | null => {
+    if (rel.type === 'serial') {
+      const ends = deps.filter((d) => d.type === 'serial')
+        .map((d) => map.get(d.id)?.end_date)
+        .filter(isDate)
+        .sort((a, b) => a.localeCompare(b));
+      if (ends.length > 0) return nextWorkday(ends.at(-1)!, cal);
+      return null;
+    }
+    if (rel.type !== 'parallel') return null; // child（T02090）：归属边，不排期
+    if (!isDate(seed.start_date)) return null;
+    return seed.start_date;
+  };
+  const commit = (row: { id: string; start_date: string; end_date: string }, start: string, end: string): void => {
+    if (start !== row.start_date || end !== row.end_date) {
+      upd.run(start, end, t, row.id);
+      row.start_date = start; row.end_date = end;
+      touched.add(row.id); queue.push(row.id);
+    }
+  };
+
+  while (queue.length > 0) {
+    const seed = map.get(queue.shift()!);
+    if (!seed) continue;
+    for (const row of all) {
+      if (touched.has(row.id)) continue;
+      const deps = parsePlanDeps(row.deps);
+      const rel = deps.find((d) => d.id === seed.id);
+      if (!rel) continue;
+      const start = dependStart(rel, seed, deps);
+      if (start === null) continue;
+      const end = calcEndDate(start, Math.max(1, row.duration_days), cal);
+      commit(row, start, end);
+    }
+  }
+}
+
+// ---------- 时间线重排 ----------
+
+interface RescheduleOpts {
+  /** 首行显式开始日（用户改开始日时传入；缺省=首行保持自身 start_date 作锚点） */
+  firstStartDate?: string;
+  /** 前一任务结束日（中间删除/改工期时传入，后续从其下一工作日顺延） */
+  afterEndDate?: string;
+}
+
+/**
+ * 从指定 sort_order 起向后串行重排（单事务）：
+ * 首行开始日 = firstStartDate ?? afterEndDate 的下一工作日 ?? 自身 start_date；
+ * 后续每行开始日 = 前一任务结束日之后的下一个工作日（串行瀑布，跳过周末与节假日）。
+ *
+ * 性能：UPDATE 语句**预编译一次**（原实现把 db.prepare 放在循环体内，重排 N 行要编译 N 次语句，
+ * 在 2000+ 计划规模下是主要开销）；updated_at 取同一次 now()，避免逐行构造时间戳。
+ */
+function rescheduleFrom(db: ReturnType<typeof getDb>, projectId: string, fromOrder: number, opts: RescheduleOpts = {}): void {
+  const cal = loadCalendar();
+  const rows = db.prepare(
+    'SELECT id, start_date, duration_days, sort_order FROM plan_tasks WHERE project_id = ? AND archived = 0 AND sort_order >= ? ORDER BY sort_order',
+  ).all(projectId, fromOrder) as Array<Pick<PlanTaskRow, 'id' | 'start_date' | 'duration_days' | 'sort_order'>>;
+  if (rows.length === 0) return;
+  const upd = db.prepare('UPDATE plan_tasks SET start_date = ?, end_date = ?, updated_at = ? WHERE id = ?');
+  const t = now();
+  let prevEnd: string | null = null;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    let start: string;
+    if (i === 0) {
+      start = opts.firstStartDate ?? (opts.afterEndDate ? nextWorkday(opts.afterEndDate, cal) : (r.start_date || fmt(new Date())));
+    } else {
+      start = nextWorkday(prevEnd!, cal);
+    }
+    const end = calcEndDate(start, Math.max(1, r.duration_days), cal);
+    upd.run(start, end, t, r.id);
+    prevEnd = end;
+  }
+}
+
+/** 合法 YYYY-MM-DD 判定（用于容忍建行后尚未重排的 end_date='' 过渡态） */
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+function isDate(s: string | null | undefined): s is string {
+  return typeof s === 'string' && DATE_RE.test(s);
+}
+
+/**
+ * 首个「可能受某日期变更影响」行的 sort_order；无则 null（该项目在该日期前已全部结束，时间线不受影响）。
+ *
+ * 依据：串行瀑布下 end_date 随 sort_order 单调不减，故 end_date < sinceDate 的行不可能受影响
+ * （其 start/end 全落在 sinceDate 之前，工作日计数与串行推导均不变）。
+ * end_date='' （建行后未重排的过渡态）视为受影响，避免漏排。
+ */
+function firstAffectedOrder(db: ReturnType<typeof getDb>, projectId: string, sinceDate: string): number | null {
+  const row = db.prepare(
+    "SELECT sort_order FROM plan_tasks WHERE project_id = ? AND archived = 0 AND (end_date = '' OR end_date >= ?) ORDER BY sort_order LIMIT 1",
+  ).get(projectId, sinceDate) as { sort_order: number } | undefined;
+  return row ? row.sort_order : null;
+}
+
+/** 某 sort_order 之前最近一行的结束日（用于「从某位置起衔接」时取锚点） */
+function prevEndBefore(db: ReturnType<typeof getDb>, projectId: string, sortOrder: number): string | null {
+  const prev = db.prepare(
+    'SELECT end_date FROM plan_tasks WHERE project_id = ? AND archived = 0 AND sort_order < ? ORDER BY sort_order DESC LIMIT 1',
+  ).get(projectId, sortOrder) as { end_date: string } | undefined;
+  return prev && isDate(prev.end_date) ? prev.end_date : null;
+}
+
+/**
+ * T00470：启动对账——待办与计划状态一致性兜底。
+ * 背景：AI/脚本可能直写 sqlite（绕过 TaskService.update 的 syncPlanOnStatusChange），
+ * 导致 task=done 而关联 plan 仍非 done。启动时按「task done → plan done + progress 100」
+ * 单向对齐（保守：不反向改写 plan→待办/doing，避免覆盖用户手动排期语义）。
+ * T02090：**带子项的里程碑除外**——其状态由进度聚合作主（recalcMilestoneProgress，
+ * 见下方启动链末尾），若这里按关联待办抢先置 done，会出现「子项未齐里程碑已 done」
+ * （正是 T02042 红线要防的）。聚合作主意味着：子项没齐，即使关联待办 done 也不放行。
+ * 返回对齐行数（用于启动日志观测）。
+ */
+export function reconcileLinkedPlanStatuses(): number {
+  const db = getDb();
+  const cands = db.prepare(
+    `SELECT p.id FROM plan_tasks p JOIN tasks t ON t.id = p.linked_task_id
+      WHERE p.archived = 0 AND p.status != 'done' AND t.status = 'done'`,
+  ).all() as Array<{ id: string }>;
+  const own = cands.map((c) => c.id).filter((id) => !milestoneHasChildren(db, id));
+  if (own.length === 0) return 0;
+  // T03186：对账也是一条「置 done」的写入路径，须同步记完成时刻——否则燃尽图会把它们
+  // 归入 unknownCompleted（既非缺失也不画下降点），完成日口径失真。
+  const upd = db.prepare("UPDATE plan_tasks SET status = 'done', progress = 100, completed_at = COALESCE(completed_at, ?), updated_at = ? WHERE id = ?");
+  let fixed = 0;
+  db.transaction(() => {
+    for (const id of own) {
+      const ts = now();
+      fixed += upd.run(ts, ts, id).changes;
+    }
+  })();
+  return fixed;
+}
+
+/** 计划状态 → 关联待办状态映射（MTask 待办仅「待办/完成」两态） */
+function taskStatusForPlan(ps: PlanStatus): 'todo' | 'done' {
+  return ps === 'done' ? 'done' : 'todo';
+}
+
+/**
+ * T01266：需求追溯维度（req_ids）的计划→待办状态同步。
+ * 需求跟踪矩阵里「需求→计划」与「需求→待办」是通过 req_ids 建立的追溯关联，
+ * 与计划页 plan_tasks.linked_task_id 直接关联是两套独立机制。仅 linked_task_id 关联的
+ * 待办会在计划完成时被同步（见 update / linkTodo），而矩阵 req_ids 关联的待办不会跟随——
+ * 表现为「矩阵里关联了待办、再把计划标记完成，待办状态不动」。本函数把计划状态传播到
+ * 所有与该计划共享至少一个需求的未归档待办，实现需求闭环。语义与 linked_task_id 同步一致：
+ * 计划完成→待办同步完成；其余→待办回到待办（可回退）。
+ */
+function syncReqLinkedTasks(db: ReturnType<typeof getDb>, projectId: string, planReqIds: string[], planStatus: PlanStatus): void {
+  if (planReqIds.length === 0) return;
+  const tasks = db.prepare(
+    `SELECT id, req_ids FROM tasks WHERE project_id = ? AND archived = 0 AND req_ids IS NOT NULL AND req_ids != '' AND req_ids != '[]'`,
+  ).all(projectId) as Array<{ id: string; req_ids: string | null }>;
+  if (tasks.length === 0) return;
+  const ts = taskStatusForPlan(planStatus);
+  const upd = db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?');
+  for (const tk of tasks) {
+    const tIds = parseLinkIds(tk.req_ids);
+    if (tIds.some((x) => planReqIds.includes(x))) upd.run(ts, now(), tk.id);
+  }
+}
+
+/** AI 条目标准结构（草稿） */
+type PlanDraft = { title: string; description: string; startDate: string; durationDays: number; assignee: string; status: PlanStatus };
+
+/** AI 原始条目 → 标准计划草稿：title 必填，startDate 规范化，durationDays≥1，status 枚举兜底；非法条目返回 null */
+function normalizeDraft(entry: unknown): PlanDraft | null {
+  if (!entry || typeof entry !== 'object') return null;
+  const o = entry as Record<string, unknown>;
+  const title = typeof o.title === 'string' ? o.title.trim() : '';
+  if (!title) return null;
+  const statusRaw = String(o.status);
+  const status = PLAN_STATUSES.has(statusRaw as PlanStatus) ? (statusRaw as PlanStatus) : 'todo';
+  const startDate = typeof o.startDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(o.startDate.trim()) ? o.startDate.trim() : '';
+  return {
+    title,
+    description: typeof o.description === 'string' ? o.description : '',
+    startDate,
+    durationDays: Math.max(1, Math.floor(Number(o.durationDays) || 1)),
+    assignee: typeof o.assignee === 'string' ? o.assignee : '',
+    status,
+  };
+}
+
+// ---------- 服务 ----------
+
+/** 工期归一：直接整数≥1 或 由 开始/结束日期 自然日差换算（≥1）；否则返回 null（调用方报错） */
+function resolveDuration(durationRaw: string, start: string, endDate: string): number | null {
+  let duration = Number(durationRaw);
+  if (!Number.isInteger(duration) || duration < 1) {
+    if (endDate) {
+      try {
+        const s0 = new Date(start).getTime();
+        const e0 = new Date(fmt(parseDate(endDate))).getTime();
+        if (Number.isFinite(s0) && Number.isFinite(e0) && e0 >= s0) duration = Math.max(1, Math.round((e0 - s0) / 86400000) + 1);
+      } catch { /* 保持非法判定 */ }
+    }
+  }
+  return (!Number.isInteger(duration) || duration < 1) ? null : duration;
+}
+
+/** 解析 req_ids JSON 字段为字符串数组（非法/空 → 空数组） */
+function parseLinkIds(json: string | null): string[] {
+  try {
+    const a = json ? (JSON.parse(json) as unknown) : [];
+    return Array.isArray(a) ? a.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * M6-6.1（T01156）：反向覆盖检查——需求清单中有、却未被任何 WBS 计划 reqNos 关联的需求编号。
+ * 旧 coverageWarn 仅当「所有计划 reqNos 全空」时才告警，漏掉了「部分需求无人认领」的静默缺口
+ * （典型表现：需求清单 25 条、WBS 22 条，但仅前 15 条需求被关联，后 10 条 REQ-016…REQ-025 不可追溯）。
+ */
+function collectUncoveredReqNos(
+  requirements: Array<{ reqNo: string }>,
+  drafts: Array<{ reqNos: string[] }>,
+): string[] {
+  // T03700+：两侧都按归一化编号比对——写法差异（REQ-1 / REQ-001 / 需求1）不再算作「未关联」
+  const referenced = new Set<string>();
+  for (const d of drafts) for (const n of d.reqNos) referenced.add(normalizedReqNoKey(n));
+  return requirements.map((r) => r.reqNo).filter((no) => !referenced.has(normalizedReqNoKey(no)));
+}
+
+/** M6-6.1：可追溯性缺口 → 人话告警（全未关联 / 部分未关联两种情况文案不同）
+ *  T03700+：只报编号会让用户无法跨次比对（编号每次解析都按出现顺序重排，缺口集合看起来「每次都不一样」），
+ *  因此带出需求标题，并明确说明编号会重排。 */
+function buildCoverageWarn(draftCount: number, requirements: Array<{ reqNo: string; title: string }>, uncovered: string[]): string {
+  if (draftCount === 0 || requirements.length === 0) return '';
+  if (uncovered.length === 0) return '';
+  if (uncovered.length === requirements.length) return '本次解析的计划节点未关联到任何需求编号——可在矩阵面板中手动建立关联';
+  const titleOf = new Map(requirements.map((r) => [r.reqNo, r.title]));
+  const list = uncovered.slice(0, 8).map((no) => `${no}《${(titleOf.get(no) ?? '').slice(0, 16)}》`).join('、');
+  const more = uncovered.length > 8 ? '…' : '';
+  return `有 ${uncovered.length} 条需求未被任何 WBS 计划关联（${list}${more}）——这些需求当前不可追溯，建议补计划或在矩阵面板手动关联；`
+    + '编号每次解析会按出现顺序重排，跨次比对请以需求标题为准';
+}
+
+/** 自动补齐行的标记文案——前端据此识别并播报，用户可在计划表改标题或取消勾选 */
+const AUTO_GAP_FILL_DESC = '自动补齐：该需求在 AI 拆解的 WBS 中没有对应节点（可改标题或取消勾选后再导入）';
+
+type PrdPlanDraft = {
+  title: string;
+  description: string;
+  durationDays: number;
+  startDate: string;
+  reqNos: string[];
+  status: PlanStatus;
+  kind: PlanKind;
+  complexity?: number;
+};
+
+/**
+ * T03700+：缺口需求确定性补齐——提示词虽要求模型为无人认领的需求在 plans 末尾补一条 normal 任务，
+ * 但分片规模上限（32 需求/45 计划，压缩重试 20/25）会让补偿行最先被裁掉，模型也未必遵守，
+ * 表现为同一文档每轮「不可追溯」集合都不一样。这里在返回前由系统兜底：每条仍无计划关联的需求各追加一行，
+ * 关联指向自身；无标题的需求无法生成可读任务，留给告警继续提示。
+ */
+function applyAutoGapFill(
+  requirements: Array<{ reqNo: string; title: string }>,
+  drafts: Array<PrdPlanDraft>,
+): { drafts: Array<PrdPlanDraft>; filledReqNos: string[] } {
+  const uncovered = collectUncoveredReqNos(requirements, drafts);
+  if (uncovered.length === 0) return { drafts, filledReqNos: [] };
+  const byNo = new Map(requirements.map((r) => [r.reqNo, r]));
+  const rows: PrdPlanDraft[] = [];
+  for (const no of uncovered) {
+    const req = byNo.get(no);
+    if (!req?.title.trim()) continue;
+    rows.push({
+      title: `${req.reqNo} ${req.title.slice(0, 24)} 实现/验证`,
+      description: AUTO_GAP_FILL_DESC,
+      durationDays: 1,
+      startDate: '',
+      reqNos: [req.reqNo],
+      status: 'todo' as PlanStatus,
+      kind: 'normal' as PlanKind,
+      complexity: 1,
+    });
+  }
+  return { drafts: [...drafts, ...rows], filledReqNos: rows.map((r) => r.reqNos[0]) };
+}
+
+/** M6-6.1：导出 Markdown 的单元格转义（管道符转义 + 换行压平，避免撑坏表格） */
+type MdCell = (s: string | null | undefined) => string;
+
+/** M6-6.1：WBS 类型 → 表内人话标签 */
+function planKindLabel(kind: string | undefined): string {
+  if (kind === 'milestone') return '里程碑';
+  if (kind === 'daily') return '日常';
+  return '任务';
+}
+
+/** M6-6.1：追加「任务清单」表到导出正文 */
+function pushTaskTable(
+  lines: string[],
+  tasks: Array<{ task_no: string | null; title: string; status: string; priority: string; verified: number }>,
+  esc: MdCell,
+): void {
+  lines.push(`## 任务清单（${tasks.length} 条）`, '', '| 编号 | 标题 | 状态 | 优先级 | 验证 |', '| --- | --- | --- | --- | --- |');
+  for (const t of tasks) {
+    lines.push(`| ${t.task_no ?? '—'} | ${esc(t.title)} | ${t.status} | ${t.priority} | ${t.verified ? '✓' : ''} |`);
+  }
+  lines.push('');
+}
+
+/** M6-6.1：追加「项目计划 / WBS」表到导出正文 */
+function pushPlanTable(lines: string[], plans: PlanTaskRow[], esc: MdCell): void {
+  lines.push(`## 项目计划 / WBS（${plans.length} 条）`, '', '| 类型 | 标题 | 开始 | 结束 | 工期 | 进度 | 状态 | 负责人 |', '| --- | --- | --- | --- | --- | --- | --- | --- |');
+  for (const p of plans) {
+    const kindLabel = planKindLabel((p as { kind?: string }).kind);
+    lines.push(`| ${kindLabel} | ${esc(p.title)} | ${p.start_date} | ${p.end_date} | ${p.duration_days} | ${p.progress}% | ${p.status} | ${esc(p.assignee) || '—'} |`);
+  }
+  lines.push('');
+}
+
+/** M6-6.1：追加「需求跟踪矩阵」表（T01361：关联计划读真实字段 linkedPlans，与界面矩阵同源） */
+function pushReqTable(lines: string[], reqs: RequirementRow[], esc: MdCell): void {
+  lines.push(`## 需求跟踪矩阵（${reqs.length} 条）`, '', '| 编号 | 需求 | 状态 | 关联计划 |', '| --- | --- | --- | --- |');
+  for (const r of reqs) {
+    const reqNo = r.req_no == null ? '—' : String(r.req_no);
+    const status = r.status == null ? 'todo' : String(r.status);
+    lines.push(`| ${reqNo} | ${esc(r.title)} | ${status} | ${r.linkedPlans.map((x) => esc(x.title)).join('、') || '—'} |`);
+  }
+  lines.push('');
+}
+
+function applyLinkToggle(ids: string[], reqId: string, linked: boolean): { ids: string[]; added: boolean } {
+  const has = ids.includes(reqId);
+  if (linked && !has) ids.push(reqId);
+  if (!linked && has) ids.splice(ids.indexOf(reqId), 1);
+  return { ids, added: linked && !has };
+}
+
+/**
+ * M6-6.1（T01266）：需求追溯的反向同步——把待办关联到某需求时，若该需求已被某个「已完成」计划覆盖，
+ * 则该待办同步标记完成（与计划页 linked_task_id 同步语义一致），避免「先完成计划、后关联待办」的状态滞后。
+ */
+function syncTaskCoveredDone(db: ReturnType<typeof getDb>, projectId: string, taskId: string, reqId: string): void {
+  const donePlans = db.prepare(
+    `SELECT req_ids FROM plan_tasks WHERE project_id = ? AND archived = 0 AND status = 'done' AND req_ids IS NOT NULL AND req_ids != ''`,
+  ).all(projectId) as Array<{ req_ids: string }>;
+  if (!donePlans.some((p) => parseLinkIds(p.req_ids).includes(reqId))) return;
+  db.prepare("UPDATE tasks SET status = 'done', updated_at = ? WHERE id = ?").run(now(), taskId);
+}
+
+/**
+ * T03700+：需求编号归一化——只用于**匹配**，不改变文档语义。
+ * 模型对同一编号的写法会漂移（REQ-1 / REQ-001 / 需求1 / 001），按字符串精确匹配会让计划
+ * 的 reqNos 关联整条落空，进而把「已覆盖」误报成「不可追溯」（实测同一份覆盖关系仅因写法
+ * 不补零就产生 24/24 条假缺口）。无法识别的写法（如 NFR-001、REQ-001-2）原样保留。
+ */
+function normalizedReqNoKey(raw: string): string {
+  const s = raw.trim().replaceAll(/\s+/g, '').replaceAll(/[０-９]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 0xFEE0)).replaceAll('－', '-');
+  if (!s) return '';
+  const m = /^(?:REQ(?:UIREMENT)?|R|需求(?:编号)?|要求)?[-_:：]?0*(\d+)$/i.exec(s);
+  if (!m) return s.toUpperCase();
+  return `REQ-${String(Number(m[1])).padStart(3, '0')}`;
+}
+
+/** T04010：PRD 正文内容哈希——失败片索引与 prd_docs 正文按同一哈希对齐，正文改过则不拿旧区间硬切 */
+function prdDocHash(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex');
+}
+
+/** T03700+：模型常把多个编号塞进一个字符串（"REQ-001、REQ-002" / "REQ-001 REQ-002"），先拆后归一 */
+function splitReqNoRefs(raw: string): string[] {
+  return raw.split(/[,，、;；/|]+/).map((x) => x.trim()).filter(Boolean).flatMap((part) => {
+    // 空白分隔仅在**每一段都像编号**时才拆，避免把 "REQ-001 实现" 里的说明文字当成编号
+    const segs = part.split(/\s+/);
+    return segs.length > 1 && segs.every((s) => /^(?:REQ(?:UIREMENT)?|R|需求(?:编号)?|要求)?[-_:：]?\d+$/i.test(s)) ? segs : [part];
+  });
+}
+
+/** PRD 解析：单条原始需求 → 归一化需求（reqNo 查重去重 + priority 枚举兜底；标题缺失返回 null） */
+function normalizeRequirement(
+  r: unknown,
+  requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }>,
+  seenNo: Set<string>,
+): void {
+  if (!r || typeof r !== 'object') return;
+  const o = r as Record<string, unknown>;
+  const title = typeof o.title === 'string' ? o.title.trim() : '';
+  if (!title) return;
+  let reqNo = typeof o.reqNo === 'string' && o.reqNo.trim() ? o.reqNo.trim() : `REQ-${String(requirements.length + 1).padStart(3, '0')}`;
+  // T03700+：编号统一为 REQ-### 形式再查重——REQ-1 与 REQ-001 是同一个编号，不能各占一行
+  reqNo = normalizedReqNoKey(reqNo) || reqNo;
+  if (seenNo.has(reqNo)) reqNo = `${reqNo}-${requirements.length + 1}`;
+  seenNo.add(reqNo);
+  const pr = typeof o.priority === 'string' && ['low', 'normal', 'high', 'urgent'].includes(o.priority) ? o.priority : 'normal';
+  requirements.push({
+    reqNo,
+    title,
+    content: typeof o.content === 'string' ? o.content : '',
+    sourceRef: typeof o.sourceRef === 'string' ? o.sourceRef : '',
+    priority: pr,
+  });
+}
+
+/** PRD 解析：原始需求条目 → 归一化需求数组（reqNo 顺序编号 + 查重去重，priority 枚举兜底） */
+function normalizeRequirements(raw: unknown[]): Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }> {
+  const requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }> = [];
+  const seenNo = new Set<string>();
+  for (const r of raw) {
+    normalizeRequirement(r, requirements, seenNo);
+  }
+  return requirements;
+}
+
+/** T01001：解析 AI 是否已明确给出计划类型；未给时按 WBS 编号的层级结构兜底判定里程碑。
+ *  多级编号（如 "1.1 需求评审"）必为明细任务；一级编号开头（如 "1 M1 平台搭建"）即顶层=阶段里程碑。
+ *  用结构（WBS 层级）而非关键词识别，避免把普通任务误判为里程碑。 */
+function resolvePrdKind(title: string, kindRaw: unknown): PlanKind {
+  // T01361（S6551）：kindRaw 非 string 时不再做 String() 兜底——来源均为 TEXT 列/JSON 字符串，
+  // 非字符串值原本也匹配不到任何 PlanKind，行为等价（同样落按编号兜底分支）
+  const k = (typeof kindRaw === 'string' ? kindRaw : '').trim().toLowerCase();
+  if (k === 'milestone' || k === 'normal' || k === 'daily') return k as PlanKind;
+  // 多级编号（1.1/2.3）→ 明细任务
+  if (/^\s*\d+(\.\d+)+\s*[.\sA-Za-z0-9]/.test(title)) return 'normal';
+  // 单级编号开头（1 xxx / M1 xxx）→ 该 PRD 的两级结构中顶层即阶段里程碑
+  if (/^\s*(?:\d+|M\d+)\s+/.test(title)) return 'milestone';
+  return 'normal';
+}
+
+/**
+ * T01001 二轮：里程碑工期汇总——里程碑的工期 = 其下明细任务工期之和（原地改写）。
+ * 口径与项目管理页「里程碑汇总（milestoneMeta）」一致：本里程碑之后、下一里程碑之前的非里程碑条目即其明细。
+ * 目的：AI 给出的里程碑工期常与其明细合计不相等（实测 M1=4、明细合计 5），导入后两边对不上；
+ * 这里在落库前统一按明细汇总，保证里程碑工期与其子任务合计恒等（无明细时保留原值）。
+ */
+function milestoneDurations(
+  items: Array<{ kind?: PlanKind; durationDays?: number }>,
+  /** 2026-11-10 质量复核：系统补齐占位行不计入里程碑汇总（与 intervalChildEdges 的 child 归属口径一致） */
+  skip?: (index: number) => boolean,
+): number[] {
+  const out = items.map((it) => Math.max(1, Math.floor(Number(it?.durationDays) || 1)));
+  for (let i = 0; i < items.length; i++) {
+    if (items[i]?.kind !== 'milestone') continue;
+    let sum = 0;
+    for (let j = i + 1; j < items.length; j++) {
+      if (items[j]?.kind === 'milestone') break;
+      if (skip?.(j)) continue;
+      sum += out[j] ?? 1;
+    }
+    if (sum > 0) out[i] = sum; // 无明细的里程碑保留 AI 给的工期
+  }
+  return out;
+}
+
+/** PRD 解析：原始计划条目 → 归一化计划草稿数组（reqNos 字符串过滤，durationDays≥1，status 固定为待办初始态）
+ *  T01001：新增 kind 字段——AI 显式输出优先，否则按 WBS 层级推断里程碑。 */
+function normalizePrdPlans(raw: unknown[]): Array<{ title: string; description: string; durationDays: number; startDate: string; reqNos: string[]; status: PlanStatus; kind: PlanKind; complexity?: number }> {
+  const drafts: Array<{ title: string; description: string; durationDays: number; startDate: string; reqNos: string[]; status: PlanStatus; kind: PlanKind; complexity?: number }> = [];
+  for (const r of raw) {
+    if (!r || typeof r !== 'object') continue;
+    const o = r as Record<string, unknown>;
+    const title = typeof o.title === 'string' ? o.title.trim() : '';
+    if (!title) continue;
+    const rawReqNos = Array.isArray(o.reqNos) ? o.reqNos.filter((x): x is string => typeof x === 'string') : [];
+    // T03700+：编号写法漂移必须在落库前摊平——"REQ-001、REQ-002" 拆成两条、"REQ-1" 补零为 REQ-001，
+    // 否则分片合并按字符串精确匹配会整条丢掉关联（表现为随机的「需求不可追溯」）
+    const reqNos = [...new Set(rawReqNos.flatMap(splitReqNoRefs).map(normalizedReqNoKey).filter(Boolean))];
+    // T01058-FR2.1 / T02122：AI 复杂度评级（1~5；非法/缺失为 undefined），钳位走单源函数
+    const cClamped = clampComplexity(o.complexity);
+    const complexity = cClamped ?? undefined;
+    drafts.push({
+      title,
+      description: typeof o.description === 'string' ? o.description : '',
+      durationDays: Math.max(1, Math.floor(Number(o.durationDays) || 1)),
+      startDate: '',
+      reqNos,
+      status: 'todo',
+      kind: resolvePrdKind(title, o.kind),
+      complexity,
+    });
+  }
+  return drafts;
+}
+
+/** T02401-D：把长文档切成多片供多轮 AI 解析。策略与安装版 T02401 同口径：
+ *  1) 文档不超 targetChars 直接单片段（调用方据此回退单轮路径）；
+ *  2) 按行贪心装箱到 targetChars，优先在 Markdown/中文序号/数字编号标题行断开，保住语义完整性；
+ *  3) 片数超 maxChunks 时合并最小相邻对，保证总轮次有上界（AI 调用成本可控）。 */
+/** 切片边界行：Markdown 标题 / 中文序号 / 数字编号标题（在这些行断开语义更完整） */
+function isPrdBoundaryLine(line: string): boolean {
+  return /^\s*#{1,6}\s/.test(line)
+    || /^\s*[一二三四五六七八九十]+\s*[、.]/.test(line)
+    || /^\s*\d+(\.\d+)*\s+\S/.test(line);
+}
+
+/** 片数超上限：合并体量最小的一对相邻片（保证总轮次有上界） */
+function mergeSmallestChunkPair(chunks: string[]): void {
+  let idx = 0;
+  let best = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < chunks.length - 1; i += 1) {
+    const sum = chunks[i].length + chunks[i + 1].length;
+    if (sum < best) {
+      best = sum;
+      idx = i;
+    }
+  }
+  chunks.splice(idx, 2, `${chunks[idx]}\n${chunks[idx + 1]}`);
+}
+
+function splitPrdChunks(docText: string, targetChars: number, maxChunks: number): string[] {
+  if (docText.length <= targetChars) return [docText];
+  const target = Math.max(targetChars, Math.ceil(docText.length / maxChunks));
+  const chunks: string[] = [];
+  let buf: string[] = [];
+  let lastBoundary = -1;
+  for (const line of docText.split('\n')) {
+    buf.push(line);
+    if (isPrdBoundaryLine(line)) lastBoundary = buf.length - 1;
+    if (buf.join('\n').length >= target) {
+      if (lastBoundary > 0) {
+        chunks.push(buf.slice(0, lastBoundary).join('\n'));
+        buf = buf.slice(lastBoundary);
+      } else {
+        chunks.push(buf.join('\n'));
+        buf = [];
+      }
+      lastBoundary = -1;
+    }
+  }
+  if (buf.length) chunks.push(buf.join('\n'));
+  while (chunks.length > maxChunks) mergeSmallestChunkPair(chunks);
+  return chunks.filter((c) => c.trim().length > 0);
+}
+
+/** 标题归一：去空白 + 小写，作为跨片去重键 */
+function normalizedReqTitle(t: string): string {
+  return t.replaceAll(/\s+/g, '').toLowerCase();
+}
+
+/** 同标题需求合并：保留正文更长者，补齐 sourceRef 与非 normal 优先级 */
+function mergeRequirementInto(
+  kept: PrdParsePart['requirements'][number],
+  r: PrdParsePart['requirements'][number],
+): void {
+  if ((r.content?.length ?? 0) > (kept.content?.length ?? 0)) kept.content = r.content;
+  if (!kept.sourceRef && r.sourceRef) kept.sourceRef = r.sourceRef;
+  if (r.priority && r.priority !== 'normal' && kept.priority === 'normal') kept.priority = r.priority;
+}
+
+/** 跨片需求去重与全局编号的累积状态 */
+interface ChunkMergeState {
+  requirements: PrdParsePart['requirements'];
+  reqNoByKey: Map<string, string>;
+  seq: number;
+}
+
+/** 一片的需求并入全局：重复标题计入原编号，新标题分配全局 REQ-NNN；返回片内编号 → 全局编号映射 */
+function mergePartRequirements(part: PrdParsePart, st: ChunkMergeState): Map<string, string> {
+  const partNoMap = new Map<string, string>();
+  // T03700+：片内同一编号被多条需求重复使用时（模型常见写法），关联归**首条**——旧实现后写覆盖先写，
+  // 会让先出现那条需求凭空变成「无关联」，且随模型输出顺序漂移。
+  const setRef = (ref: string, no: string): void => {
+    if (!partNoMap.has(ref)) partNoMap.set(ref, no);
+    const key = normalizedReqNoKey(ref);
+    if (key && !partNoMap.has(key)) partNoMap.set(key, no);
+  };
+  for (const r of part.requirements) {
+    const k = normalizedReqTitle(r.title);
+    const exist = st.reqNoByKey.get(k);
+    if (exist) {
+      const kept = st.requirements.find((x) => x.reqNo === exist);
+      if (kept) mergeRequirementInto(kept, r);
+      setRef(r.reqNo, exist);
+      continue;
+    }
+    st.seq += 1;
+    const no = `REQ-${String(st.seq).padStart(3, '0')}`;
+    st.requirements.push({ ...r, reqNo: no });
+    st.reqNoByKey.set(k, no);
+    setRef(r.reqNo, no);
+  }
+  return partNoMap;
+}
+
+/** 一片的计划并入全局：按标题精确去重（首见优先），reqNos 改写为全局编号后取并集 */
+function mergePartDrafts(part: PrdParsePart, partNoMap: Map<string, string>, drafts: PrdParsePart['drafts']): void {
+  for (const d of part.drafts) {
+    // T03700+：除精确命中外再按归一化编号兜底——旧编号写法（REQ-1 / 需求1）不再被静默丢弃
+    const mapped = [...new Set(d.reqNos.map((no) => partNoMap.get(no) ?? partNoMap.get(normalizedReqNoKey(no))).filter((x): x is string => !!x))];
+    const exist = drafts.find((x) => x.title.trim() === d.title.trim());
+    if (exist) {
+      exist.reqNos = [...new Set([...exist.reqNos, ...mapped])];
+      continue;
+    }
+    drafts.push({ ...d, reqNos: mapped });
+  }
+}
+
+/** T02401-E：合并各分片解析结果。
+ *  需求：按规范化标题去重，重复条目保留信息量最大者，然后按文档顺序全局重排 REQ-001..N；
+ *  计划：按标题精确去重（首见优先，reqNos 并集），reqNos 经片内映射改写为全局编号。 */
+function mergeChunkedPrdParts(parts: PrdParsePart[]): PrdParsePart {
+  const requirements: PrdParsePart['requirements'] = [];
+  const drafts: PrdParsePart['drafts'] = [];
+  const st: ChunkMergeState = { requirements, reqNoByKey: new Map(), seq: 0 };
+  for (const part of parts) {
+    const partNoMap = mergePartRequirements(part, st);
+    mergePartDrafts(part, partNoMap, drafts);
+  }
+  return { requirements, drafts };
+}
+
+/** T01874：计划彻底删除时的派生待办清点——命中返回待办 id，否则 null */
+interface PurgePlanRow {
+  id: string;
+  title: string;
+  req_ids: string | null;
+  linked_task_id: string | null;
+}
+
+/**
+ * 「无源孤儿」判定（T01874）：计划→待办的派生关系只存在 plan_tasks.linked_task_id 上（tasks 表无来源列），
+ * 计划行一删关系即消失，待办留下「来源计划已删除」的孤儿——标题带派生前缀却无任何入口解释它为何存在。
+ * 派生用两条创建通道的命名约定识别：createLinkedTodo 写 `[计划] <标题>`、importPrd 写 `[PRD] <标题>`；
+ * 手工建好后仅「关联」到计划的待办不在其中。仍另有来源的一律不动：被其它未归档计划行指向、
+ * 或本身挂在别的任务下（parent_id）。需求关联（req_ids）不算来源——它是追溯维度，随待办一并归档，
+ * 条数由 purge 的破坏面回传并写进前端确认文案，不再静默变化。
+ */
+function derivedTaskOfPurgedPlan(db: ReturnType<typeof getDb>, plan: PurgePlanRow): string | null {
+  const lid = plan.linked_task_id;
+  if (!lid) return null;
+  const t = db.prepare('SELECT id, title, parent_id FROM tasks WHERE id = ? AND archived = 0').get(lid) as
+    { id: string; title: string; parent_id: string | null } | undefined;
+  if (!t || t.parent_id) return null;
+  const base = (plan.title ?? '').replaceAll('\n', ''); // 对齐 createLinkedTodo 的 REPLACE(title, char(10)) 去重口径
+  const title = t.title.replaceAll('\n', '');
+  if (title !== `[计划] ${base}` && title !== `[PRD] ${base}`) return null;
+  if (db.prepare('SELECT 1 FROM plan_tasks WHERE archived = 0 AND linked_task_id = ? AND id != ? LIMIT 1').get(lid, plan.id)) return null;
+  return t.id;
+}
+
+/** 计划行 req_ids 里仍存活的需求行数——物理删除计划行会连带抹掉这些「已关联计划」指向 */
+function countLiveReqLinks(db: ReturnType<typeof getDb>, reqIdsJson: string | null): number {
+  const ids = parseLinkIds(reqIdsJson);
+  if (ids.length === 0) return 0;
+  const exists = db.prepare('SELECT 1 FROM prd_requirements WHERE id = ? LIMIT 1');
+  return ids.filter((x) => exists.get(x)).length;
+}
+
+// ---------- PRD 导入（importPrd）的分段辅助：自原方法体逐段搬移，行为与落库口径完全不变，抽出仅为降认知复杂度 ----------
+
+/** importPrd 的 plans 入参行（与该方法内联签名同构，供下面的辅助按此传参） */
+type PrdImportPlanItem = { title: string; description?: string; durationDays?: number; startDate?: string; reqNos?: string[]; assignee?: string; kind?: PlanKind; complexity?: number; status?: PlanStatus };
+
+/** importPrd 的 requirements 入参行（与该方法内联签名同构） */
+type PrdImportReqItem = { reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string; sourceIndex?: number };
+
+/** T04064：批量导入时每个来源文件各自落一条 prd_docs；filename 保留原名，同名批内加序号。
+ *  T04897：docKind 标注文档类型（'prd'/'design'/'test'），缺省 'prd'——主 PRD 与设计/测试文档据此区分 */
+type PrdImportDocItem = { filename?: string; contentMd?: string; docKind?: 'prd' | 'design' | 'test' };
+
+/** importPrd 的 planTargets 元素：实际落库标题 + 复用的原行 id（null=新建） */
+interface PrdImportPlanTarget { title: string; reuseId: string | null }
+
+/** importPrd 的同名计划回传明细（T01869 只回传事实，T01875 定处置口径） */
+interface PrdImportDupPlanTitle { title: string; existing: number; renamedTo?: string; reusedPlanId?: string }
+
+/**
+ * T00763：PRD 原文完整保留（Markdown 不截断），导入即生成文档记录并关联需求行。
+ * T01156-3：同名/同内容覆盖——重复导入不再堆重复文档（对齐 createPrdDoc 的 T00821 覆盖模式）：
+ *   ① 同项目 + 同内容哈希(origin_hash) → 覆盖复用该行；② 同项目 + 同文件名 → 覆盖复用（保留状态流转）。
+ *   此前每次导入都 INSERT 新行，同一 PRD 导 N 次堆 N 份相同文档，旧需求删除后沦为孤儿（aimsg 实测 3 份同文档、2 份零引用）。
+ * 返回本次导入使用的 prd_docs.id；未带原文（或原文全空白）时返回 undefined（与原实现一致：整段不执行）。
+ */
+/**
+ * T02300：PRD 原文判重的**纯读半段**（口径与 T01156-3 一字不改，抽出来供 import 与 preview 共用）。
+ * preview 若在自身里另写一套「同内容/同名」判定，两边会立刻分叉——这正是本单「边界」段落禁止的事。
+ */
+type PrdDocTarget = { action: 'none' } | { action: 'reuse'; id: string; by: 'hash' | 'name' } | { action: 'create' };
+
+function resolvePrdDocTarget(
+  db: ReturnType<typeof getDb>, projectId: string, rawPrdMd: string | undefined, rawFilename: string | undefined,
+): { target: PrdDocTarget; prdMd: string; filename: string; contentHash: string } {
+  const prdMd = typeof rawPrdMd === 'string' ? rawPrdMd : '';
+  const filename = (rawFilename ?? '').trim();
+  if (!prdMd.trim()) return { target: { action: 'none' }, prdMd, filename, contentHash: '' };
+  const contentHash = createHash('sha256').update(prdMd).digest('hex').slice(0, 24);
+  const byHash = db.prepare('SELECT id FROM prd_docs WHERE project_id = ? AND origin_hash = ?').get(projectId, contentHash) as { id: string } | undefined;
+  const byName = filename
+    ? db.prepare('SELECT id FROM prd_docs WHERE project_id = ? AND filename = ? ORDER BY created_at DESC LIMIT 1').get(projectId, filename) as { id: string } | undefined
+    : undefined;
+  const existing = byHash ?? byName;
+  return existing
+    ? { target: { action: 'reuse', id: existing.id, by: byHash ? 'hash' : 'name' }, prdMd, filename, contentHash }
+    : { target: { action: 'create' }, prdMd, filename, contentHash };
+}
+
+function persistPrdDocForImport(
+  db: ReturnType<typeof getDb>, projectId: string, rawPrdMd: string | undefined, rawFilename: string | undefined, t: string,
+  docKind?: 'prd' | 'design' | 'test',
+): string | undefined {
+  const { target, prdMd, filename, contentHash } = resolvePrdDocTarget(db, projectId, rawPrdMd, rawFilename);
+  if (target.action === 'none') return undefined;
+  // T05208：调用方未显式标注类型时按文件名推断——「方案设计/测试用例」被当主 PRD 导入时
+  // doc_kind 会一律落缺省 'prd'，下游 docs[] 就分不清哪篇是设计文档（实测 T05082 两份均为 prd）。
+  // 显式值优先，推断只兜底。
+  const kind = docKind ?? inferDocKindFromFilename(filename);
+  if (target.action === 'reuse') {
+    // 覆盖：更新正文/哈希/时间戳；filename 仅在本次带值时覆盖；status 保留原值（不重置用户确认态）
+    // T04897：doc_kind 仅在本次显式带值（非默认 'prd'）时覆盖，避免把已标注 design 的文档误回退成 prd
+    // T05208：同上——本轮判不出类型时不把已标注 design/test 的文档降级回 prd
+    const prev = db.prepare('SELECT doc_kind FROM prd_docs WHERE id = ?').get(target.id) as { doc_kind: string } | undefined;
+    const prevKind = prev?.doc_kind;
+    const finalKind = kind === 'prd' && (prevKind === 'design' || prevKind === 'test') ? prevKind : kind;
+    db.prepare("UPDATE prd_docs SET content_md = ?, filename = CASE WHEN ? <> '' THEN ? ELSE filename END, origin_hash = ?, doc_kind = ?, updated_at = ? WHERE id = ?")
+      .run(prdMd, filename, filename, contentHash, finalKind, t, target.id);
+    logService.log('INFO', 'prd', `[PRD导入覆盖] project=${projectId} doc=${target.id} filename=${filename} kind=${finalKind}（同内容/同名复用，不新建）`);
+    return target.id;
+  }
+  const createdId = uuid();
+  db.prepare(
+    `INSERT INTO prd_docs (id, project_id, filename, content_md, origin_hash, doc_kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(createdId, projectId, filename, prdMd, contentHash, kind, t, t);
+  return createdId;
+}
+
+/**
+ * T04064：多 PRD 导入的文件名规划——每份来源保留原名；同一批内重名按 ` (2)`、` (3)` 区分，
+ * 以满足「同名文档也必须各自独立展示」的约束。import 与 preview 共用本函数，两边落点才不会分叉。
+ */
+function planPrdDocNames(docs: PrdImportDocItem[]): Array<{ filename: string; contentMd: string; docKind: 'prd' | 'design' | 'test' }> {
+  const seen = new Map<string, number>();
+  return docs.map((d) => {
+    const base = (d.filename ?? '').trim() || '未命名 PRD.md';
+    // T05208：显式 docKind 优先；缺省时按文件名推断（设计/测试文档被当主 PRD 导入也能贴对类型）
+    const docKind = d.docKind ?? inferDocKindFromFilename(base);
+    const n = (seen.get(base) ?? 0) + 1;
+    seen.set(base, n);
+    if (n === 1) return { filename: base, contentMd: d.contentMd ?? '', docKind };
+    const dot = base.lastIndexOf('.');
+    const filename = dot > 0 ? `${base.slice(0, dot)} (${n})${base.slice(dot)}` : `${base} (${n})`;
+    return { filename, contentMd: d.contentMd ?? '', docKind };
+  });
+}
+
+/**
+ * T04064：来源文件 → prd_docs 行。多文件时逐份落库并返回与 docs 下标对齐的 id；
+ * 未带 prdDocs（旧调用方）时退回单文档口径，行为与 T00763 完全一致。
+ */
+function persistPrdDocsForImport(
+  db: ReturnType<typeof getDb>, projectId: string, input: { prdDocs?: PrdImportDocItem[]; prdMd?: string; prdFilename?: string }, t: string,
+): { docIds: string[]; legacyPrdId: string | undefined } {
+  if (Array.isArray(input.prdDocs) && input.prdDocs.length > 0) {
+    const planned = planPrdDocNames(input.prdDocs).map((d) => ({
+      ...d,
+      id: persistPrdDocForImport(db, projectId, d.contentMd, d.filename, t, d.docKind),
+    }));
+    const docIds = planned.map((d) => d.id).filter((id): id is string => !!id);
+    // T05208（裁决方案 B）：同批导入的「方案设计/测试用例」显式挂到本批主 PRD，无需人工挂接；
+    // 单文档口径（prdMd）没有配套文档，不产生边。
+    linkImportedPrdDocs(projectId, planned, t);
+    return { docIds, legacyPrdId: undefined };
+  }
+  return { docIds: [], legacyPrdId: persistPrdDocForImport(db, projectId, input.prdMd, input.prdFilename, t) };
+}
+
+/** T04064：预演文档落点的输出形状——与 previewPrdImport 声明的 prdDocs 字段对齐（判重动作摊平成可选字段） */
+type PrdDocPreviewItem = { filename: string; action: 'none' | 'reuse' | 'create'; id?: string; by?: 'hash' | 'name' };
+
+/** T04064：预演侧的文档落点（只读），与 persistPrdDocsForImport 共用同一套文件名规则与判重口径 */
+function previewPrdDocs(
+  db: ReturnType<typeof getDb>, projectId: string, input: { prdDocs?: PrdImportDocItem[]; prdMd?: string; prdFilename?: string },
+): PrdDocPreviewItem[] {
+  const toItem = (target: PrdDocTarget, filename: string): PrdDocPreviewItem =>
+    target.action === 'reuse'
+      ? { filename, action: 'reuse', id: target.id, by: target.by }
+      : { filename, action: target.action };
+  if (Array.isArray(input.prdDocs) && input.prdDocs.length > 0) {
+    return planPrdDocNames(input.prdDocs)
+      .map((d) => {
+        const { target, filename } = resolvePrdDocTarget(db, projectId, d.contentMd, d.filename);
+        return target.action === 'none' ? null : toItem(target, filename);
+      })
+      .filter((x): x is PrdDocPreviewItem => !!x);
+  }
+  const { target, filename } = resolvePrdDocTarget(db, projectId, input.prdMd, input.prdFilename);
+  return target.action === 'none' ? [] : [toItem(target, filename)];
+}
+
+/**
+ * T01869：同名计划回传——重导同一份 PRD 时计划按标题新建而不覆盖，列表里会出现两行同名、
+ * 状态一行「未开始/0%」一行原值，极易被读成「原有计划的任务被重置」。T01869 只回传事实，
+ * T01875 把口径定下来并给出处置（两种都不动已有行）：
+ *   new（默认）：撞名的新行换「（N）」区分后缀——与 T01867/T01921 需求编号顺延同构；
+ *   reuse     ：撞名不新建，命中未归档同名原行做补写，原行 status/progress 一字不动。
+ * planTargets[i] 与 planItems[i] 一一对应：实际落库标题 + 命中的原行 id（null=新建）。
+ */
+function resolveImportPlanTargets(
+  db: ReturnType<typeof getDb>, projectId: string, planItems: PrdImportPlanItem[], reuseMode: boolean,
+  planKinds: PlanKind[],
+): { planTargets: PrdImportPlanTarget[]; dupPlanTitles: PrdImportDupPlanTitle[] } {
+  const planTargets: PrdImportPlanTarget[] = [];
+  const dupPlanTitles: PrdImportDupPlanTitle[] = [];
+  // T02881：判重按 kind + '\u0000' + title 分键——里程碑标题不得命中 kind=normal 的存量行（反之亦然），
+  // 否则传入的里程碑整行不建（数据丢失）；taken 仍按 title 全量，保证让号后缀不造同名行。
+  const rows = db.prepare('SELECT id, title, kind FROM plan_tasks WHERE project_id = ? AND archived = 0').all(projectId) as Array<{ id: string; title: string; kind: string }>;
+  const firstIdByKindTitle = new Map<string, string>();
+  const countByKindTitle = new Map<string, number>();
+  const taken = new Set<string>();
+  for (const r of rows) {
+    const key = r.kind + '\u0000' + r.title;
+    if (!firstIdByKindTitle.has(key)) firstIdByKindTitle.set(key, r.id);
+    countByKindTitle.set(key, (countByKindTitle.get(key) ?? 0) + 1);
+    taken.add(r.title);
+  }
+  const reported = new Set<string>();
+  for (let pi = 0; pi < planItems.length; pi++) {
+    const base = planItems[pi].title.trim();
+    const key = planKinds[pi] + '\u0000' + base;
+    const existing = countByKindTitle.get(key) ?? 0;
+    if (existing > 0 && reuseMode) {
+      const reuseId = firstIdByKindTitle.get(key)!;
+      planTargets.push({ title: base, reuseId });
+      if (!reported.has(key)) { reported.add(key); dupPlanTitles.push({ title: base, existing, reusedPlanId: reuseId }); }
+      continue;
+    }
+    // 无撞名时 nextPlanTitle 原样返回；本批内部自己撞名（同一份拆解两条同标题）也一样让号
+    const renamed = nextPlanTitle(base, taken);
+    taken.add(renamed);
+    planTargets.push({ title: renamed, reuseId: null });
+    if (renamed !== base && !reported.has(key)) {
+      reported.add(key);
+      dupPlanTitles.push({ title: base, existing, renamedTo: renamed });
+    }
+  }
+  return { planTargets, dupPlanTitles };
+}
+
+/**
+ * 需求项（矩阵行）落库。
+ * T01995：两个编号空间分开登记——
+ *   noToId         落库编号（顺延后的实际编号）→ id，权威；
+ *   requestedToId  PRD 原编号 → id，计划条目引用的就是这个空间（T01921 的顺延不断链靠它）。
+ * T01867：编号在项目内唯一——AI 每次解析都从 REQ-001 起号，增量导入必与存量撞号，
+ * 撞号后「按编号定位需求」（矩阵导出、用例 importDraft 的 reqNo→id 复用）变成不确定命中，
+ * 删掉其中一行会连带清掉另一行的引用。故落库前按项目现有最大编号顺延，旧编号一律不改。
+ * T02303（裁定口径甲）：`onDuplicatePlan:'reuse'` 时需求侧也幂等——同标题且同内容的存量行直接复用其 id，
+ * 不再新建。实测原坑：reuse 只让计划侧幂等，需求行整批新建（35→70）、关联边翻倍（57→114），
+ * 等于把 T01869 的「同标题双行被读成 待办/0%」从计划侧搬到了需求侧。
+ * 复用命中时绝不改写存量行（status/编号/标题/内容一律不动，与 T01875 对计划行的保护同构）；
+ * 同一「标题+内容」键在存量里命中多行时不复用——宁可新建也不静默合并歧义行。
+ */
+/**
+ * T02300：需求侧「判重 + 让号」的**纯读半段**（`importPrd` 与 `previewPrdImport` 共用同一张查找表，
+ * 杜绝「preview 里另写一套判重」的分叉——那是本单「边界」段落明令禁止的事）。
+ * 判据与 T01867/T01995/T02303 甲一字未改，只是不再 INSERT：每行给出「实际落库编号 + 复用命中的存量 id」，
+ * 写侧由 `insertPrdRequirementsForImport` 消费、预演侧直接计数，两侧计数因此不可能分叉。
+ * `targetRef` 是行身份替身：复用命中=存量行 id，新建=`:new:<下标>`。可以用占位符是因为
+ * `requestedToId`/`noToId`/`linkedReqIds` 三处判定只看「是否同一身份」，新建行的真实 uuid 与占位符
+ * 在这些判定里等价（批内互不相同，且不等于任何存量 id）。
+ */
+interface PrdImportReqPlanRow {
+  requested: string;
+  reqNo: string;
+  reuseId: string | null;
+  targetRef: string;
+  title: string;
+  ambiguousRequested: boolean;
+  src: PrdImportReqItem;
+}
+
+function resolveImportReqPlan(
+  db: ReturnType<typeof getDb>, projectId: string, reqs: PrdImportReqItem[], reuseMode: boolean,
+  reqNoMap: Array<{ from: string; to: string }>,
+): { rows: PrdImportReqPlanRow[]; willCreate: number; willReuse: number } {
+  const usedNos = new Set<string>(
+    (db.prepare('SELECT req_no FROM prd_requirements WHERE project_id = ?').all(projectId) as Array<{ req_no: string | null }>)
+      .map((r) => String(r.req_no ?? '').trim()).filter(Boolean),
+  );
+  // T02303 甲的复用查找表：按项目隔离，键 = trim(标题)+trim(内容)；值为 null 表示该键在存量里歧义命中多行
+  const reqKey = (title: unknown, content: unknown) => `${scalarText(title ?? '').trim()}\u0000${scalarText(content ?? '').trim()}`;
+  const reusable = new Map<string, { id: string; reqNo: string } | null>();
+  if (reuseMode) {
+    const existRows = db.prepare('SELECT id, req_no, title, content FROM prd_requirements WHERE project_id = ?')
+      .all(projectId) as Array<{ id: string; req_no: string | null; title: string; content: string | null }>;
+    for (const row of existRows) {
+      const k = reqKey(row.title, row.content);
+      reusable.set(k, reusable.has(k) ? null : { id: row.id, reqNo: String(row.req_no ?? '').trim() });
+    }
+  }
+  const rows: PrdImportReqPlanRow[] = [];
+  const claimedByRequested = new Map<string, string>();
+  let willCreate = 0;
+  let willReuse = 0;
+  reqs.forEach((r, i) => {
+    const requested = (r.reqNo ?? '').trim();
+    const title = r.title.trim();
+    const push = (targetRef: string, reqNo: string, reuseId: string | null) => {
+      // T01995 ①：同一原编号被本次两行争用时点名（后登记者仍按既有覆盖口径胜出），不再静默
+      let ambiguousRequested = false;
+      if (requested) {
+        const claimed = claimedByRequested.get(requested);
+        ambiguousRequested = claimed !== undefined && claimed !== targetRef;
+        claimedByRequested.set(requested, targetRef);
+      }
+      rows.push({ requested, reqNo, reuseId, targetRef, title, ambiguousRequested, src: r });
+    };
+    if (reuseMode) {
+      const hit = reusable.get(reqKey(r.title, r.content));
+      if (hit) {
+        // 让号明细照记：请求编号 → 复用到的既有编号（调用方据此知道「这条编号落在了哪一行」）
+        if (requested && requested !== hit.reqNo) reqNoMap.push({ from: requested, to: hit.reqNo });
+        push(hit.id, hit.reqNo, hit.id);
+        willReuse += 1;
+        return;
+      }
+    }
+    const reqNo = resolveReqNo(usedNos, requested);
+    usedNos.add(reqNo);
+    if (requested && requested !== reqNo) reqNoMap.push({ from: requested, to: reqNo });
+    push(`:new:${i}`, reqNo, null);
+    willCreate += 1;
+  });
+  return { rows, willCreate, willReuse };
+}
+
+/**
+ * 需求项（矩阵行）落库——只消费 `resolveImportReqPlan` 的判定结果做写，判据不在这里。
+ * T01995：两个编号空间分开登记——
+ *   noToId         落库编号（顺延后的实际编号）→ id，权威；
+ *   requestedToId  PRD 原编号 → id，计划条目引用的就是这个空间（T01921 的顺延不断链靠它）。
+ * T02303 甲：复用命中时绝不改写存量行（status/编号/标题/内容一律不动，与 T01875 对计划行的保护同构）。
+ */
+function insertPrdRequirementsForImport(
+  db: ReturnType<typeof getDb>, projectId: string, plan: { rows: PrdImportReqPlanRow[] }, ctx: {
+    t: string;
+    /** T04064：与 import prdDocs 下标对齐的文档 id；行内 sourceIndex 命中则取对应文档 */
+    prdIds: string[];
+    /** 单文档（旧口径）或行未带 sourceIndex 时的归属 */
+    fallbackPrdId: string | undefined;
+    noToId: Map<string, string>;
+    requestedToId: Map<string, string>;
+    ambiguousReqNos: Set<string>;
+    newReqs: Array<{ id: string; reqNo: string; title: string }>;
+    reusedReqs: Array<{ id: string; reqNo: string; title: string }>;
+  },
+): void {
+  const { t, prdIds, fallbackPrdId, noToId, requestedToId, ambiguousReqNos, newReqs, reusedReqs } = ctx;
+  const prdIdFor = (src: PrdImportReqItem): string | null => {
+    const i = src.sourceIndex;
+    if (typeof i === 'number' && Number.isInteger(i) && i >= 0 && i < prdIds.length) return prdIds[i];
+    return fallbackPrdId ?? null;
+  };
+  const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM prd_requirements WHERE project_id = ?').get(projectId) as { m: number }).m;
+  let order = maxOrder;
+  const insReq = db.prepare(
+    `INSERT INTO prd_requirements (id, project_id, req_no, title, content, source_ref, priority, status, sort_order, prd_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?)`,
+  );
+  for (const row of plan.rows) {
+    if (row.reuseId) {
+      noToId.set(row.reqNo, row.reuseId);
+      if (row.requested) {
+        if (row.ambiguousRequested) ambiguousReqNos.add(row.requested);
+        requestedToId.set(row.requested, row.reuseId);
+      }
+      reusedReqs.push({ id: row.reuseId, reqNo: row.reqNo, title: row.title });
+      continue;
+    }
+    const id = uuid();
+    order += 1;
+    const r = row.src;
+    insReq.run(id, projectId, row.reqNo, row.title, r.content ?? '', r.sourceRef ?? '', r.priority ?? 'normal', order, prdIdFor(r), t, t);
+    noToId.set(row.reqNo, id);
+    // 计划条目仍按 PRD 里的原编号引用：把「请求编号 → 本行 id」登记到原编号空间（顺延后关联不断链，T01921）
+    if (row.requested) {
+      if (row.ambiguousRequested) ambiguousReqNos.add(row.requested);
+      requestedToId.set(row.requested, id);
+    }
+    newReqs.push({ id, reqNo: row.reqNo, title: row.title });
+  }
+}
+
+/**
+ * T02090 口径 A：补 child 边——按区间规则（里程碑之后、下一里程碑之前的 normal 行）
+ *  给子行 deps 并集写入 {id:<里程碑id>,type:'child'}（addChildEdge 已有边原样返回，幂等；
+ *  不动 status/progress/日期）。新行与 reuse 行都补边，重导同一份 PRD 不产生重复边。
+ *  包络/进度重算**只对新建里程碑**做：reuse 行的 status/progress/起止日期受 T01875 保护
+ *  （重导不得打回 0%），其聚合由启动对账 reconcileMilestoneProgresses 权威收敛。
+ *  ⚠ 重算必须在**全部边写完之后**统一做：包络/进度都读全量子项，边写一半就重算会漏算后继子项。
+ */
+function applyImportMilestoneChildEdges(
+  db: ReturnType<typeof getDb>, ctx: {
+    t: string;
+    planItems: PrdImportPlanItem[];
+    planKinds: PlanKind[];
+    planTargets: PrdImportPlanTarget[];
+    planIds: Array<string | null>;
+  },
+): void {
+  const { t, planItems, planKinds, planTargets, planIds } = ctx;
+  // 2026-11-10 质量复核优化⑥：系统补齐占位行不补 child 边（与 milestoneDurations 的跳过口径一致），
+  // 否则段尾的补齐行会整批挂到最后一个里程碑下，实测出现「工期 2 / 25 个子项」的失真归属。
+  const skipGapFill = (i: number): boolean => isGapFillPlan({ title: planItems[i]?.title, description: planItems[i]?.description });
+  const edges = intervalChildEdges(planItems.map((_, i) => ({ kind: planKinds[i] })), { skip: skipGapFill });
+  const updDeps = db.prepare('UPDATE plan_tasks SET deps = ?, updated_at = ? WHERE id = ?');
+  const newMs = new Set(planTargets.map((x, i) => (x.reuseId ? null : planIds[i])).filter((x): x is string => !!x));
+  const touchedParents = new Set<string>();
+  for (const { index, parentIndex } of edges) {
+    // T02881：planIds 只覆盖新建行，reuse 命中行须回退到 planTargets 的 reuseId，否则整段补边被静默跳过
+    const childId = planTargets[index]?.reuseId ?? planIds[index];
+    const parentId = planTargets[parentIndex]?.reuseId ?? planIds[parentIndex];
+    if (!childId || !parentId) continue;
+    const cur = db.prepare('SELECT deps FROM plan_tasks WHERE id = ?').get(childId) as { deps: string | null } | undefined;
+    if (!cur) continue;
+    const next = addChildEdge(cur.deps, parentId);
+    if (next !== (cur.deps ?? '')) updDeps.run(next, t, childId);
+    touchedParents.add(parentId);
+  }
+  for (const parentId of touchedParents) {
+    if (!newMs.has(parentId)) continue;
+    // T01704：里程碑起止/工期取自子任务包络（导入产物不再「止期晚于子任务」）
+    recalcMilestoneEnvelope(db, parentId);
+    // T02090：进度聚合（新里程碑 + 全新待办子项 → 待开始态/0%，通常零变化；防的是「导完就 0% 常驻」）
+    recalcMilestoneProgress(db, parentId);
+  }
+}
+
+/**
+ * WBS → 待办任务（便于 AI 推进执行），待办同样携带 req_ids；返回本次新建的待办条数。
+ * T00754：导入的待办必须与计划建立关联（plan_tasks.linked_task_id）——
+ * 任务列表的「计划」徽标（TaskService.list 反查）与项目管理页「待办联动」均依赖该字段，
+ * 缺失会导致任务无「计划」标签、项目管理页显示「未关联」。
+ */
+function createPrdImportTodos(
+  db: ReturnType<typeof getDb>, ctx: {
+    t: string;
+    projectId: string;
+    createTasks: boolean;
+    planItems: PrdImportPlanItem[];
+    planTargets: PrdImportPlanTarget[];
+    planIds: Array<string | null>;
+    findReqId: (n: string) => string | null;
+  },
+): number {
+  const { t, projectId, createTasks, planItems, planTargets, planIds, findReqId } = ctx;
+  if (!createTasks || planItems.length === 0) return 0;
+  const insTask = db.prepare(
+    `INSERT INTO tasks (id, task_no, project_id, title, description, priority, status, verified, archived, pinned, req_ids, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'todo', 0, 0, 0, ?, ?, ?)`,
+  );
+  const linkPlan = db.prepare('UPDATE plan_tasks SET linked_task_id = ?, updated_at = ? WHERE id = ? AND linked_task_id IS NULL');
+  const updTaskReq = db.prepare('UPDATE tasks SET req_ids = ?, updated_at = ? WHERE id = ?');
+  let created = 0;
+  planTargets.forEach((target, i) => {
+    const p = planItems[i];
+    if (!p) return;
+    const ids = (p.reqNos ?? []).map((n) => findReqId(n)).filter((x): x is string => !!x);
+    if (target.reuseId) {
+      // T01875 reuse：原行已有派生待办 → 不再造第二条（同标题待办会在任务列表并排重复，
+      // 也破坏 T01874 的「一个待办只由一个计划承载」口径）；未归档的那条只把本次需求编号并入 req_ids（只增不减），
+      // 已归档的既有承载不擅自复活。
+      const linkedTaskId = (db.prepare('SELECT linked_task_id FROM plan_tasks WHERE id = ?').get(target.reuseId) as { linked_task_id: string | null } | undefined)?.linked_task_id;
+      if (linkedTaskId) {
+        const liveTask = db.prepare('SELECT id, req_ids FROM tasks WHERE id = ? AND archived = 0').get(linkedTaskId) as { id: string; req_ids: string | null } | undefined;
+        if (liveTask) {
+          const curIds = parseLinkIds(liveTask.req_ids);
+          const added = ids.filter((x) => !curIds.includes(x));
+          if (added.length > 0) updTaskReq.run(JSON.stringify([...curIds, ...added]), t, liveTask.id);
+        }
+        return;
+      }
+    }
+    const planId = planIds[i];
+    if (!planId) return;
+    const taskId = uuid();
+    // T01875：待办标题跟随实际落库标题（撞名让号后与计划行保持一致，便于反查）
+    insTask.run(taskId, nextTaskNo(), projectId, `[PRD] ${target.title}`, p.description ?? '', 'normal', ids.length ? JSON.stringify(ids) : null, t, t);
+    linkPlan.run(taskId, t, planId);
+    created += 1;
+  });
+  return created;
+}
+
+/**
+ * 按 req_no 定位存量需求行——import 与 preview 共用同一实现，
+ * 避免两边各写一份「三层回落」的第三层后在口径上分叉。
+ *
+ * T04009：查重键走 `normalizedReqNoKey`，与计划侧 `splitReqNoRefs` 同一口径。此前按字面
+ * `req_no = ?` 精确匹配，存量行若写作 REQ-001 而新导入写 REQ-1（或反之），第三层回落整条
+ * 落空——关联被丢进 unlinkedReqNos，反复导入还会再建一行同义需求。这里只改「怎么找到既有行」，
+ * 不合并、不改写存量数据；同键多行（历史双写法）按 sort_order、created_at 取首行，与列表顺序一致。
+ */
+function makeExistingReqLookup(db: ReturnType<typeof getDb>, projectId: string): (n: string) => string | null {
+  const byKey = new Map<string, string>();
+  const rows = db.prepare(
+    'SELECT id, req_no FROM prd_requirements WHERE project_id = ? ORDER BY sort_order, created_at',
+  ).all(projectId) as Array<{ id: string; req_no: string }>;
+  for (const row of rows) {
+    const key = normalizedReqNoKey(row.req_no);
+    if (key && !byKey.has(key)) byKey.set(key, row.id);
+  }
+  return (n: string): string | null => {
+    const key = normalizedReqNoKey(n);
+    return key ? byKey.get(key) ?? null : null;
+  };
+}
+
+/** 段内锚点：该里程碑之后、下一里程碑之前最后一个非里程碑行的 sort_order（没有后继则取里程碑自身） */
+function reuseMilestoneAnchor(rows: Array<{ kind: string; sort_order: number }>, milestoneSort: number): number {
+  let anchor = milestoneSort;
+  for (const r of rows) {
+    if (r.sort_order <= milestoneSort) continue;
+    if (r.kind === 'milestone') break;
+    anchor = r.sort_order;
+  }
+  return anchor;
+}
+
+/** 按「批内最近的前置里程碑」把新建行归到 reuse 命中的里程碑段下（与 intervalChildEdges 同一区间口径） */
+function groupRowsByReuseMilestone(
+  planKinds: PlanKind[],
+  planTargets: PrdImportPlanTarget[],
+  planIds: Array<string | null>,
+  rows: Array<{ id: string; kind: string; sort_order: number }>,
+): Map<string, { anchor: number; rows: string[] }> {
+  const ownerOf = new Map<number, number>();
+  let lastMs = -1;
+  planKinds.forEach((k, i) => {
+    if (k === 'milestone') { lastMs = i; return; }
+    if (planTargets[i] && !planTargets[i].reuseId) ownerOf.set(i, lastMs);
+  });
+  const groups = new Map<string, { anchor: number; rows: string[] }>();
+  for (const [i, owner] of ownerOf) {
+    if (owner < 0) continue;
+    const reuseId = planTargets[owner]?.reuseId;
+    const rid = planIds[i];
+    if (!reuseId || !rid) continue;
+    const mrow = rows.find((r) => r.id === reuseId);
+    if (!mrow) continue;
+    const g = groups.get(reuseId) ?? { anchor: reuseMilestoneAnchor(rows, mrow.sort_order), rows: [] };
+    g.rows.push(rid);
+    groups.set(reuseId, g);
+  }
+  return groups;
+}
+
+/**
+ * T02881 RC3 第三刀（裁定 a）：reuse 命中里程碑时，其段内新行不得一律追加表尾——
+ * 列表侧 milestoneMeta 按 sort_order 位置切片（PlanPage.tsx），表尾追加会把新明细错挂给
+ * 下一个里程碑。把「批内归属里程碑为 reuse 命中行」的新行插到该里程碑现有分段末尾
+ * （该里程碑与下一里程碑之间非里程碑行的最大 sort_order），其余行整体后移让位。
+ * 只挪 sort_order 不碰 updated_at，T01869 保护的 status/progress 不受影响；
+ * rename/new 模式整批按批次序连排，位置切片天然正确，无需此通道。
+ */
+function repositionReusedMilestoneRows(
+  db: ReturnType<typeof getDb>,
+  projectId: string,
+  planKinds: PlanKind[],
+  planTargets: PrdImportPlanTarget[],
+  planIds: Array<string | null>,
+): void {
+  const rows = db.prepare('SELECT id, kind, sort_order FROM plan_tasks WHERE project_id = ? AND archived = 0 ORDER BY sort_order, created_at')
+    .all(projectId) as Array<{ id: string; kind: string; sort_order: number }>;
+  const groups = groupRowsByReuseMilestone(planKinds, planTargets, planIds, rows);
+  // 从最深的锚点往表头方向插：后面的插入只会整体后移更大 sort_order 的行，
+  // 不会打乱已插段的相对位置（多 reuse 里程碑场景两段互不越界）
+  const updShift = db.prepare('UPDATE plan_tasks SET sort_order = sort_order + ? WHERE project_id = ? AND archived = 0 AND sort_order > ?');
+  const updOrder = db.prepare('UPDATE plan_tasks SET sort_order = ? WHERE id = ?');
+  const ordered = [...groups.values()].sort((a, b) => b.anchor - a.anchor);
+  for (const g of ordered) {
+    if (g.rows.length === 0) continue;
+    updShift.run(g.rows.length, projectId, g.anchor);
+    g.rows.forEach((rid, j) => updOrder.run(g.anchor + 1 + j, rid));
+  }
+}
+
+/** better-sqlite3 预编译语句（拆分辅助函数时显式标注，避免 any） */
+type PlanStatement = Database.Statement;
+
+/**
+ * T01875 reuse：只补差异字段与需求关联——
+ * 需求关联取「并集」（只增不减；覆盖式写入会让原行手工加的关联消失），
+ * 描述/复杂度仅在原值为空时补填；status、progress、起止日期一律不写
+ * （T01869 硬约束：重导不得把已有进度打回 0%／未开始）。
+ */
+function updateReusedPlanRow(
+  db: ReturnType<typeof getDb>,
+  updReuse: PlanStatement,
+  reuseId: string,
+  p: PrdImportPlanItem,
+  ids: string[],
+  t: string,
+): void {
+  const cur = db.prepare('SELECT description, complexity, req_ids FROM plan_tasks WHERE id = ? AND archived = 0')
+    .get(reuseId) as { description: string | null; complexity: number | null; req_ids: string | null } | undefined;
+  if (!cur) return;
+  const description = (cur.description ?? '').trim() ? cur.description : (p.description ?? '');
+  const complexity = cur.complexity ?? (p.complexity ?? null);
+  const curReqIds = parseLinkIds(cur.req_ids);
+  const added = ids.filter((x) => !curReqIds.includes(x));
+  updReuse.run(description ?? '', complexity, added.length > 0 ? JSON.stringify([...curReqIds, ...added]) : null, t, reuseId);
+}
+
+/** 计划行需求关联回写所需的上下文（T00709 / T00712 / T01995 的计数集合一并带入） */
+interface ImportPlanLinkCtx {
+  t: string;
+  planItems: PrdImportPlanItem[];
+  planTargets: PrdImportPlanTarget[];
+  planIds: Array<string | null>;
+  findReqId: (n: string) => string | null;
+  unlinkedReqNos: Set<string>;
+  linkedReqIds: Set<string>;
+}
+
+/**
+ * T00709（D-1 修复）：按 createBatch 返回的 id（与 planItems 同一下标序，两侧 title 过滤口径一致）回写 req_ids，
+ * 废弃按标题 find 匹配——同名计划会命中同一行导致关联互相覆盖丢失。
+ * T00712（D-5）：引用了不存在的需求编号 → 记入 unlinkedReqNos 供调用方提示。
+ */
+function writeBackImportPlanLinks(db: ReturnType<typeof getDb>, ctx: ImportPlanLinkCtx): void {
+  const { t, planItems, planTargets, planIds, findReqId, unlinkedReqNos, linkedReqIds } = ctx;
+  const updPlan = db.prepare('UPDATE plan_tasks SET req_ids = ?, updated_at = ? WHERE id = ?');
+  const updReuse = db.prepare(
+    `UPDATE plan_tasks SET description = ?, complexity = ?, req_ids = COALESCE(?, req_ids), updated_at = ?
+     WHERE id = ? AND archived = 0`,
+  );
+  planTargets.forEach((target, i) => {
+    const p = planItems[i];
+    if (!p) return;
+    const rawNos = p.reqNos ?? [];
+    for (const n of rawNos) if (!findReqId(n)) unlinkedReqNos.add(n);
+    const ids = rawNos.map((n) => findReqId(n)).filter((x): x is string => !!x);
+    for (const rid of ids) linkedReqIds.add(rid); // T01995：零关联清点用
+    if (target.reuseId) {
+      updateReusedPlanRow(db, updReuse, target.reuseId, p, ids, t);
+      return;
+    }
+    const planId = planIds[i];
+    if (planId && ids.length > 0) updPlan.run(JSON.stringify(ids), t, planId);
+  });
+}
+
+/** createBatch 的入参条目（T00561 各行独立日期 / T01688 可带 depsOn） */
+interface PlanBatchItem {
+  title: string;
+  description?: string;
+  startDate?: string;
+  durationDays?: number;
+  assignee?: string;
+  status?: PlanStatus;
+  kind?: PlanKind;
+  complexity?: number;
+  depsOn?: string[];
+  reqNos?: string[];
+}
+
+/** 批量落库的共享上下文（语句与查找器都在事务里建一次） */
+interface BatchInsertCtx {
+  projectId: string;
+  t: string;
+  cal: WorkdayCal;
+  maxOrder: number;
+  clean: PlanBatchItem[];
+  targets: PrdImportPlanTarget[] | null;
+  kindOf: (it: PlanBatchItem) => PlanKind;
+  ids: string[];
+  warnings: string[];
+  ins: PlanStatement;
+  updReqIds: PlanStatement;
+  updReuse: PlanStatement;
+  reqIdOf: (n: string) => string | null;
+}
+
+/**
+ * T01868 防重入：同一份计划拆解经 AI 通道重复落库会留下并排两套计划（四期 E 系列 / [PRD] M 系列事故）。
+ * dupPolicy=block（AI 通道默认）时同名占比过高直接拒写；warn（页面/PRD 导入）只提示不落库行为变更，沿用 T01869 口径。
+ */
+function warnDuplicateTitles(
+  db: ReturnType<typeof getDb>,
+  projectId: string,
+  clean: PlanBatchItem[],
+  opts: { dupPolicy?: 'warn' | 'block' },
+  warnings: string[],
+): void {
+  const titles = new Set(clean.map((it) => it.title.trim()));
+  const countSame = db.prepare('SELECT COUNT(*) AS n FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0');
+  const dups: string[] = [];
+  for (const title of titles) {
+    if ((countSame.get(projectId, title) as { n: number }).n > 0) dups.push(title);
+  }
+  if (dups.length === 0) return;
+  warnings.push(`本批 ${dups.length}/${titles.size} 个标题与该项目已有计划同名（示例：${dups.slice(0, 3).join('、')}）`);
+  if (opts.dupPolicy === 'block' && dups.length >= 3 && dups.length / titles.size >= 0.6) {
+    throw new Error(`防重入拦截：本批 ${dups.length}/${titles.size} 个标题与项目已有计划同名，判定为同一份拆解重复落库（示例：${dups.slice(0, 5).join('、')}）。确属新增条目请显式传 allowDuplicates`);
+  }
+}
+
+/** reuse 命中：不新建，只补差异字段（描述/复杂度仅在原值为空时补填；需求关联取并集；status/progress/日期不动） */
+function applyReuseBatchRow(
+  db: ReturnType<typeof getDb>,
+  ctx: BatchInsertCtx,
+  reuseId: string,
+  it: PlanBatchItem,
+): void {
+  const cur = db.prepare('SELECT description, complexity, req_ids FROM plan_tasks WHERE id = ? AND archived = 0')
+    .get(reuseId) as { description: string | null; complexity: number | null; req_ids: string | null } | undefined;
+  if (!cur) return;
+  const description = (cur.description ?? '').trim() ? cur.description : (it.description ?? '');
+  const complexity = cur.complexity ?? (it.complexity ?? null);
+  const curReqIds = parseLinkIds(cur.req_ids);
+  const idsHit = (it.reqNos ?? []).map(ctx.reqIdOf).filter((x): x is string => !!x);
+  const added = idsHit.filter((x) => !curReqIds.includes(x));
+  ctx.updReuse.run(description ?? '', complexity, added.length > 0 ? JSON.stringify([...curReqIds, ...added]) : null, ctx.t, reuseId);
+}
+
+/** 单条新建行：算工期/日期/状态后落库并写需求关联；返回是否带上了需求关联 */
+function insertNewBatchRow(ctx: BatchInsertCtx, it: PlanBatchItem, i: number): boolean {
+  const duration = Math.max(1, Math.floor(Number(it.durationDays) || 1));
+  const status = PLAN_STATUSES.has(it.status as PlanStatus) ? (it.status as PlanStatus) : 'todo';
+  // T01001：kind 仅接受里程碑/普通/日常三类，非法值兜底为 normal（不破坏其它批量创建调用）
+  const kind = ctx.kindOf(it);
+  // T00561：各行日期独立——开始日用自己的（空则今天），end 按工作日计算
+  const start = it.startDate && DATE_RE.test(it.startDate) ? it.startDate : fmt(new Date());
+  const end = calcEndDate(start, duration, ctx.cal);
+  const id = uuid();
+  ctx.ids.push(id);
+  // T02122：createBatch 复杂度钳位（此前直写 it.complexity ?? null，外部 Agent/Excel 可把 0/7/3.5 原样落库）
+  ctx.ins.run(id, ctx.projectId, (ctx.targets ? ctx.targets[i].title : it.title).trim(), it.description ?? '', start, end, duration, status, it.assignee ?? '', ctx.maxOrder + 1 + i, kind, clampComplexity(it.complexity), ctx.t, ctx.t);
+  // 需求关联：编号引用不到的进 unlinked 提示；新建行最终零关联计入回执「未关联」数
+  const rawNos = (it.reqNos ?? []).filter((n) => n?.trim());
+  const linked = rawNos.map(ctx.reqIdOf).filter((x): x is string => !!x);
+  for (const n of rawNos) if (!ctx.reqIdOf(n)) ctx.warnings.push(`条目「${it.title}」引用的需求编号「${n}」未找到（未关联）`);
+  if (linked.length > 0) ctx.updReqIds.run(JSON.stringify(linked), ctx.t, id);
+  return linked.length > 0;
+}
+
+/** 批量插行（事务内）：reuse 命中走补写，其余新建；返回三类回执计数 */
+function insertBatchRows(db: ReturnType<typeof getDb>, ctx: BatchInsertCtx): { inserted: number; reused: number; unlinked: number } {
+  let inserted = 0;
+  let reused = 0;
+  let unlinked = 0;
+  ctx.clean.forEach((it, i) => {
+    const reuseId = ctx.targets?.[i]?.reuseId;
+    if (reuseId) {
+      applyReuseBatchRow(db, ctx, reuseId, it);
+      reused += 1;
+      ctx.ids.push(reuseId);
+      return;
+    }
+    const linked = insertNewBatchRow(ctx, it, i);
+    inserted += 1;
+    if (!linked) unlinked += 1;
+  });
+  return { inserted, reused, unlinked };
+}
+
+/**
+ * T01688 项 1：依赖解析与落库（在建行之后：需要全部 id 与标题才能互引）。
+ *  - 引用目标为里程碑（kind=milestone）→ type='child'（归属，里程碑按子任务包络收口）；
+ *  - 其余 → type='serial'（串行前置，触发排期联动）。
+ * 无法解析的引用不静默丢弃：以 warnings 返回，供上层提示「依赖待补」。
+ */
+function linkBatchDeps(
+  db: ReturnType<typeof getDb>,
+  ctx: {
+    projectId: string;
+    clean: PlanBatchItem[];
+    ids: string[];
+    targets: PrdImportPlanTarget[] | null;
+    warnings: string[];
+    update: (id: string, patch: { deps: string }) => unknown;
+  },
+): void {
+  const titleToId = new Map<string, string>();
+  // T03160：reuse 让号后的实际落库标题也可被引用（同批内 depsOn 用基准标题寻址同样命中）
+  ctx.clean.forEach((it, i) => {
+    titleToId.set(it.title.trim(), ctx.ids[i]);
+    const tt = ctx.targets?.[i]?.title?.trim();
+    if (tt) titleToId.set(tt, ctx.ids[i]);
+  });
+  const rowOf = (id: string) => db.prepare('SELECT kind, title FROM plan_tasks WHERE id = ?').get(id) as { kind: string; title: string } | undefined;
+  ctx.clean.forEach((it, i) => {
+    const id = ctx.ids[i];
+    if (!id || !it.depsOn?.length) return;
+    const parsed: Array<{ id: string; type: string }> = [];
+    for (const dep of it.depsOn) {
+      const key = dep.trim();
+      if (!key) continue;
+      let target = titleToId.get(key);
+      if (!target) {
+        const row = db.prepare('SELECT id FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0').get(ctx.projectId, key) as { id: string } | undefined;
+        target = row?.id;
+      }
+      if (!target) { ctx.warnings.push(`条目「${it.title}」的依赖「${key}」未解析到（依赖待补）`); continue; }
+      parsed.push({ id: target, type: rowOf(target)?.kind === 'milestone' ? 'child' : 'serial' });
+    }
+    if (parsed.length > 0) ctx.update(id, { deps: JSON.stringify(parsed) });
+  });
+}
+
+export const PlanService = {
+  /** T01058-FR1.3：就绪任务推荐——依赖满足（serial 前置已完成；parallel 不阻塞）或无 deps 的普通执行行；
+   *  携带关联待办编号（linked_task_id → tasks.task_no）供「现在做这个」卡片跳转定位。
+   *  T01284：判定改为与排水链路（TaskService.readyAndOrder）共用 util/planDeps，避免「推荐说未就绪、排水说就绪」。 */
+  readyTasks(projectId: string, limit = 3): Array<{ id: string; title: string; duration_days: number; complexity: number | null; start_date: string; task_no: string | null }> {
+    const db = getDb();
+    const rows = db.prepare(
+      `SELECT id, title, duration_days, complexity, start_date, sort_order, deps, linked_task_id
+         FROM plan_tasks WHERE project_id = ? AND archived = 0 AND kind = 'normal' AND status NOT IN ('done','blocked')
+        ORDER BY start_date, sort_order`,
+    ).all(projectId) as Array<{ id: string; title: string; duration_days: number; complexity: number | null; start_date: string; sort_order: number; deps: string | null; linked_task_id: string | null }>;
+    const statusById = new Map(
+      (db.prepare('SELECT id, status FROM plan_tasks WHERE project_id = ? AND archived = 0').all(projectId) as Array<{ id: string; status: string }>)
+        .map((r) => [r.id, r.status]),
+    );
+    const taskNoById = new Map(
+      (db.prepare("SELECT id, task_no FROM tasks WHERE archived = 0 AND task_no IS NOT NULL").all() as Array<{ id: string; task_no: string }>)
+        .map((r) => [r.id, r.task_no]),
+    );
+    const out: Array<{ id: string; title: string; duration_days: number; complexity: number | null; start_date: string; task_no: string | null }> = [];
+    for (const r of rows) {
+      if (!depsSatisfied(parsePlanDeps(r.deps), statusById)) continue;
+      out.push({ id: r.id, title: r.title, duration_days: r.duration_days, complexity: r.complexity, start_date: r.start_date, task_no: r.linked_task_id ? taskNoById.get(r.linked_task_id) ?? null : null });
+      if (out.length >= limit) break;
+    }
+    return out;
+  },
+
+  /** 活跃计划列表（排除已归档；归档条目走 listArchived，T00442 语义：删除=归档） */
+  list(projectId: string): PlanTaskRow[] {    const rows = getDb().prepare(
+      `SELECT p.*, t.title AS linked_task_title
+       FROM plan_tasks p LEFT JOIN tasks t ON t.id = p.linked_task_id
+       WHERE p.project_id = ? AND p.archived = 0 AND COALESCE(p.history_at, '') = '' ORDER BY p.sort_order`,
+    ).all(projectId) as Array<PlanTaskRow & { linked_task_title: string | null }>;
+    return rows.map((r) => ({
+      ...r,
+      linked_task_missing: r.linked_task_id != null && r.linked_task_title == null,
+    }));
+  },
+
+  /**
+   * 归档计划列表（含项目名）——供「归档」菜单的恢复/彻底删除操作（T00442 扩展）。
+   * T02284：支持 keyword（标题/项目名，与归档页原本地过滤同口径）、projectId 服务端筛选与 limit/offset 分页。
+   * ⚠ 缺省 limit=全量：MCP（mtask_list_plans 归档分支）与 `scripts/verify-t01874.mjs` 依赖不带分页参数的全量语义。
+   */
+  listArchived(opts: { keyword?: string; projectId?: string; limit?: number; offset?: number } = {}): Array<PlanTaskRow & { project_name: string }> {
+    const where = ['p.archived = 1'];
+    const values: unknown[] = [];
+    if (opts.projectId) { where.push('p.project_id = ?'); values.push(opts.projectId); }
+    if (opts.keyword) {
+      // 转义 LIKE 通配符（%/_），让搜索词按字面匹配（与 TaskService.buildTaskFilter 同规则）
+      const kw = `%${opts.keyword.replaceAll(/[%_]/g, (m) => '\\' + m)}%`;
+      where.push(String.raw`(p.title LIKE ? ESCAPE '\' OR pr.name LIKE ? ESCAPE '\')`);
+      values.push(kw, kw);
+    }
+    let sql = `SELECT p.*, pr.name AS project_name, t.title AS linked_task_title
+       FROM plan_tasks p
+       JOIN projects pr ON pr.id = p.project_id
+       LEFT JOIN tasks t ON t.id = p.linked_task_id
+       WHERE ${where.join(' AND ')} ORDER BY p.archived_at DESC, p.project_id, p.sort_order`;
+    if (opts.limit) {
+      sql += ' LIMIT ? OFFSET ?';
+      values.push(opts.limit, opts.offset ?? 0);
+    }
+    return getDb().prepare(sql).all(...values) as Array<PlanTaskRow & { project_name: string; linked_task_title: string | null }>;
+  },
+
+  /** T02284：与 listArchived 同一套过滤条件的总数（归档页服务端分页的「共 N 条」） */
+  countArchived(opts: { keyword?: string; projectId?: string } = {}): number {
+    const where = ['p.archived = 1'];
+    const values: unknown[] = [];
+    if (opts.projectId) { where.push('p.project_id = ?'); values.push(opts.projectId); }
+    if (opts.keyword) {
+      const kw = `%${opts.keyword.replaceAll(/[%_]/g, (m) => '\\' + m)}%`;
+      where.push(String.raw`(p.title LIKE ? ESCAPE '\' OR pr.name LIKE ? ESCAPE '\')`);
+      values.push(kw, kw);
+    }
+    const row = getDb().prepare(
+      `SELECT COUNT(*) AS n
+       FROM plan_tasks p
+       JOIN projects pr ON pr.id = p.project_id
+       WHERE ${where.join(' AND ')}`,
+    ).get(...values) as { n: number };
+    return row.n;
+  },
+
+  get(id: string): PlanTaskRow | null {
+    return (getDb().prepare('SELECT * FROM plan_tasks WHERE id = ?').get(id) as PlanTaskRow | undefined) ?? null;
+  },
+
+  /** 新建：追加到序列尾部；首任务用传入 start_date 作锚点，否则全量重排 */
+  create(input: { projectId: string; title: string; description?: string; startDate?: string; durationDays?: number; assignee?: string; status?: PlanStatus; kind?: string }): PlanTaskRow {
+    const db = getDb();
+    const title = String(input.title ?? '').trim();
+    if (!title) throw new Error('标题必填');
+    if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(input.projectId)) throw new Error('项目不存在');
+    const status = PLAN_STATUSES.has(input.status as PlanStatus) ? (input.status as PlanStatus) : 'todo';
+    const duration = Math.max(1, Math.floor(Number(input.durationDays) || 1));
+    const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM plan_tasks WHERE project_id = ? AND archived = 0').get(input.projectId) as { m: number }).m;
+    const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+    // T00764 顺带修复（T00561 引入的缺陷）：非首条计划 start 误置空串 → refreshTaskEnd 抛「日期格式非法」，
+    // 同项目第二条计划经 POST /plans 无法创建。各行独立语义下 startDate 恒被尊重，缺省今天。
+    let start = input.startDate && dateRe.test(input.startDate) ? input.startDate : fmt(new Date());
+    const id = uuid();
+    const t = now();
+    db.transaction(() => {
+      db.prepare(
+        `INSERT INTO plan_tasks (id, project_id, title, description, start_date, end_date, duration_days,
+           progress, status, assignee, sort_order, linked_task_id, kind, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, ?, ?, ?)`,
+      ).run(id, input.projectId, title, input.description ?? '', start, start, duration, status, input.assignee ?? '', maxOrder + 1, (input as { kind?: string }).kind ?? 'normal', t, t);
+      // T00561：去掉默认串行依赖——新任务保持自身日期，不重排他人；显式依赖者（若引用新任务）传播
+      refreshTaskEnd(db, id, start, duration);
+      // T03186：以 done 状态新建的行同样要有完成时刻，否则燃尽把它算成「未开始就已完成」以外的值
+      touchCompletedAt(db, id, status);
+    })();
+    const created = this.get(id)!;
+    try { WebhookService.onPlanEvent(created.status === 'done' ? 'plan.done' : 'plan.created', created); } catch { /* noop */ }
+    return created;
+  },
+
+  /** 更新：标题/描述/工期/进度/状态/负责人；开始日与工期变化会触发从该任务起的时间线重排 */
+  update(id: string, patch: { title?: string; description?: string; startDate?: string; durationDays?: number; progress?: number; status?: PlanStatus; assignee?: string; color?: string; deps?: string; kind?: string }): PlanTaskRow | null {
+    const db = getDb();
+    const row = this.get(id);
+    if (!row) return null;
+    const title = patch.title === undefined ? row.title : String(patch.title).trim();
+    if (!title) throw new Error('标题必填');
+    const duration = patch.durationDays === undefined ? row.duration_days : Math.max(1, Math.floor(Number(patch.durationDays) || 1));
+    let status = row.status;
+    let linkedTaskId = row.linked_task_id;
+    db.transaction(() => {
+      // 状态变更先落列，再同步关联待办（同步读取最新 plan 状态）
+      if (patch.status !== undefined && PLAN_STATUSES.has(patch.status)) status = patch.status;
+      db.prepare(
+        `UPDATE plan_tasks SET title = ?, description = ?, start_date = ?, duration_days = ?,
+           progress = ?, status = ?, assignee = ?, color = ?, deps = ?, kind = ?, updated_at = ? WHERE id = ?`,
+      ).run(
+        title,
+        patch.description ?? row.description,
+        patch.startDate ?? row.start_date,
+        duration,
+        patch.progress === undefined ? row.progress : Math.min(100, Math.max(0, Math.floor(Number(patch.progress) || 0))),
+        status,
+        patch.assignee ?? row.assignee,
+        patch.color ?? (row.color ?? ''),
+        patch.deps ?? (row.deps ?? ''),
+        patch.kind ?? (row.kind ?? 'normal'),
+        now(),
+        id,
+      );
+      // T03186（PRD PM-201④ 燃尽实际线）：完成时刻只在迁入 done 时落、迁出 done 时清。
+      // 不复用 updated_at——任意编辑（改标题/工期）都会刷新它，拿它当完成时间会让燃尽线随无关改动跳变。
+      touchCompletedAt(db, id, status);
+      // T00561：去掉默认串行链——变更只影响本任务（end 重算），仅显式配置依赖的任务联动传播
+      const cur = this.get(id)!;
+      db.prepare('UPDATE plan_tasks SET end_date = ? WHERE id = ?')
+        .run(calcEndDate(cur.start_date, cur.duration_days, loadCalendar()), id);
+      rescheduleDependents(db, row.project_id, id);
+      // T01704：子任务日期/工期变动后，父里程碑按子任务包络收口（止期不再晚于其子任务）。
+      // T02090：一行可有多个 child 归属（脏数据/手动挂接），遍历全部父里程碑（旧实现只取第一个）
+      for (const pid of new Set(childParentIds(row.deps ?? ''))) recalcMilestoneEnvelope(db, pid);
+      if (patch.deps !== undefined) {
+        for (const pid of new Set(childParentIds(patch.deps))) recalcMilestoneEnvelope(db, pid);
+      }
+      // T02090：里程碑进度聚合——本次变更若涉及状态/进度/deps，受影响里程碑按子项 done 数重算。
+      // 聚合权威：人工 PATCH 里程碑 status/progress 后，若仍有子项则以子项实况为准
+      // （T02042 红线「先把里程碑标完成会让后续进度失去意义」的守卫）。
+      if (patch.status !== undefined || patch.progress !== undefined || patch.deps !== undefined) {
+        for (const msId of affectedMilestones(row, patch)) recalcMilestoneProgress(db, msId);
+      }
+      if (linkedTaskId) {
+        db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?').run(taskStatusForPlan(status), now(), linkedTaskId);
+      }
+      // T01266：需求追溯维度（req_ids）关联待办的同步（矩阵关联场景）。
+      // 仅当本次确实变更了计划状态才传播，避免普通字段编辑（标题/工期等）误触待办回退。
+      if (patch.status !== undefined && PLAN_STATUSES.has(patch.status)) {
+        const planReqIds = parseLinkIds(row.req_ids);
+        if (planReqIds.length > 0) syncReqLinkedTasks(db, row.project_id, planReqIds, status);
+        // T02087：需求状态随计划完成度派生（与上一行同一闸门：仅状态变更时触发）。
+        syncReqStatuses(db, row.project_id, planReqIds);
+      }
+    })();
+    const updated = this.get(id);
+    // T03196：迁入 done 发 plan.done，其余变更发 plan.updated
+    if (updated) {
+      const type = updated.status === 'done' && row.status !== 'done' ? 'plan.done' : 'plan.updated';
+      try { WebhookService.onPlanEvent(type, updated); } catch { /* noop */ }
+    }
+    return updated;
+  },
+
+  /** 归档（原「删除」语义，T00442 扩展）：软删——从时间线移除并衔接重排，可在归档菜单恢复。
+   *  T02090：归档会改变父里程碑的子项分母（done 子项被移出 → 进度可能回落），故重算父里程碑。 */
+  archive(id: string): boolean {
+    const db = getDb();
+    const row = this.get(id);
+    if (!row || row.archived) return false;
+    db.transaction(() => {
+      db.prepare('UPDATE plan_tasks SET archived = 1, archived_at = ?, updated_at = ? WHERE id = ?').run(now(), now(), id);
+      recalcMilestonesOfChild(db, id);
+    })();
+    notifyChange('plans');
+    const afterArchive = this.get(id);
+    if (afterArchive) { try { WebhookService.onPlanEvent('plan.updated', afterArchive); } catch { /* noop */ } }
+    return true;
+  },
+
+  /** 恢复：取消归档并插回原排序位衔接重排（前序取恢复位之前最近的未归档任务）。
+   *  T02090：恢复即子项重新计入分母，同样重算父里程碑。 */
+  restore(id: string): boolean {
+    const db = getDb();
+    const row = this.get(id);
+    if (!row?.archived) return false;
+    db.transaction(() => {
+      db.prepare('UPDATE plan_tasks SET archived = 0, archived_at = NULL, updated_at = ? WHERE id = ?').run(now(), id);
+      recalcMilestonesOfChild(db, id);
+    })();
+    notifyChange('plans');
+    const afterRestore = this.get(id);
+    if (afterRestore) { try { WebhookService.onPlanEvent('plan.updated', afterRestore); } catch { /* noop */ } }
+    return true;
+  },
+
+  /** 彻底删除的连带影响预览（T01874）：删除不可逆，前端确认文案须先写明连带条数。只读，不落库 */
+  purgeImpact(id: string): { strippedTasksArchived: number; strippedReqLinks: number } {
+    const db = getDb();
+    const row = db.prepare('SELECT id, title, req_ids, linked_task_id FROM plan_tasks WHERE id = ?').get(id) as PurgePlanRow | undefined;
+    if (!row) return { strippedTasksArchived: 0, strippedReqLinks: 0 };
+    return { strippedTasksArchived: derivedTaskOfPurgedPlan(db, row) ? 1 : 0, strippedReqLinks: countLiveReqLinks(db, row.req_ids) };
+  },
+
+  /**
+   * 彻底删除（归档菜单专用）：物理删除行；已归档行不参与时间线，无需重排。
+   * T01874：连带把「仅由该计划派生」的孤儿待办一并归档（不删数据，与「待办删除=归档」同口径，可在归档菜单还原），
+   * 并回传破坏面 { strippedTasksArchived, strippedReqLinks }——原实现只返回 boolean，
+   * 待办变孤儿、矩阵「已关联计划」列少一条这两处变化全静默（用户报的「RTM 关联需求记录消失」有一半是这个）。
+   */
+  purge(id: string): { deleted: boolean; strippedTasksArchived: number; strippedReqLinks: number } {
+    const db = getDb();
+    const row = db.prepare('SELECT id, title, req_ids, linked_task_id, archived FROM plan_tasks WHERE id = ?').get(id) as
+      (PurgePlanRow & { archived: number }) | undefined;
+    if (!row?.archived) return { deleted: false, strippedTasksArchived: 0, strippedReqLinks: 0 };
+    const derivedTaskId = derivedTaskOfPurgedPlan(db, row);
+    const strippedReqLinks = countLiveReqLinks(db, row.req_ids);
+    let deleted = false;
+    db.transaction(() => {
+      deleted = db.prepare('DELETE FROM plan_tasks WHERE id = ? AND archived = 1').run(id).changes > 0;
+      if (deleted && derivedTaskId) ArchiveService.archive([derivedTaskId]);
+    })();
+    if (deleted && derivedTaskId) notifyChange('tasks');
+    return { deleted, strippedTasksArchived: deleted && derivedTaskId ? 1 : 0, strippedReqLinks };
+  },
+
+  /**
+   * 拖拽排序（T00459）：前端传拖拽后的完整 id 顺序，事务内校验覆盖一致后重写 sort_order
+   * （0..n 连续化），再全量重排时间线。仅接受活跃计划，防止把归档行卷入。
+   */
+  reorder(projectId: string, orderedIds: string[]): { reordered: number } {
+    if (!getDb().prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
+    const active = getDb().prepare(
+      "SELECT id FROM plan_tasks WHERE project_id = ? AND archived = 0 ORDER BY sort_order",
+    ).all(projectId) as Array<{ id: string }>;
+    const activeIds = new Set(active.map((r) => r.id));
+    if (orderedIds.length !== activeIds.size || !orderedIds.every((id) => activeIds.has(id))) {
+      throw new Error('orderedIds 必须与当前活跃计划一一对应（数量与成员一致）');
+    }
+    // 首个顺序变化的位置：之前的行顺序未变 → 其日期链完全不受影响，无需重排（原实现无条件 rescheduleAll）
+    const before = active.map((r) => r.id);
+    let firstChanged = 0;
+    while (firstChanged < orderedIds.length && orderedIds[firstChanged] === before[firstChanged]) firstChanged++;
+    if (firstChanged >= orderedIds.length) return { reordered: orderedIds.length }; // 顺序一致，无副作用
+    const db = getDb();
+    const t = now();
+    db.transaction(() => {
+      const upd = db.prepare('UPDATE plan_tasks SET sort_order = ?, updated_at = ? WHERE id = ?');
+      orderedIds.forEach((id, i) => upd.run(i, t, id));
+      // 从首个变化位置起衔接：锚点取该位置前一行的结束日；位置 0 变化时保留首行自身 start_date
+      // T00561：排序仅改展示顺序，不再联动日期（去默认串行链）
+    })();
+    return { reordered: orderedIds.length };
+  },
+
+  /**
+   * 通用需求 → 计划草稿（PRD INT-5）：把通用需求条目转为计划任务（追加到目标项目计划尾部）。
+   * 标题带 [需求] 前缀；同项目查重（同标题已存在则报错提示）。
+   */
+  createFromReq(reqEntryId: string, projectId: string): { plan: PlanTaskRow } {
+    const db = getDb();
+    const entry = db.prepare('SELECT title, content FROM req_entries WHERE id = ?').get(reqEntryId) as { title: string; content: string } | undefined;
+    if (!entry) throw new Error('通用需求不存在');
+    if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) throw new Error('目标项目不存在');
+    const dup = db.prepare(
+      "SELECT id FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0",
+    ).get(projectId, `[需求] ${entry.title}`) as { id: string } | undefined;
+    if (dup) throw new Error('该需求已转存为计划任务，请勿重复转存');
+    // T00555 / PRD INT-5：来源标注——描述首行标注来源通用需求，便于计划侧溯源
+    this.createBatch(projectId, [{ title: `[需求] ${entry.title}`, description: `来源：通用需求「${entry.title}」\n\n${entry.content ?? ''}` }]);
+    return { plan: this.list(projectId).at(-1)! };
+  },
+
+  /**
+   * 任意位置插入（T00459）：在指定行之后插入新计划任务——
+   * 事务内后续行 sort_order+1 顺移、新行插入 after+1、全量重排时间线（新行无日期由锚点推导）。
+   */
+  insertAfter(afterId: string, title: string, description?: string): PlanTaskRow {
+    const db = getDb();
+    const after = this.get(afterId);
+    if (!after || after.archived) throw new Error('插入位置任务不存在或已归档');
+    const trimmed = title.trim();
+    if (!trimmed) throw new Error('标题必填');
+    const id = uuid();
+    const t = now();
+    db.transaction(() => {
+      db.prepare('UPDATE plan_tasks SET sort_order = sort_order + 1 WHERE project_id = ? AND archived = 0 AND sort_order > ?')
+        .run(after.project_id, after.sort_order);
+      const start = fmt(new Date());
+      db.prepare(
+        `INSERT INTO plan_tasks (id, project_id, title, description, start_date, end_date, duration_days,
+           progress, status, assignee, sort_order, linked_task_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 1, 0, 'todo', '', ?, NULL, ?, ?)`,
+      ).run(id, after.project_id, trimmed, description ?? '', start, start, after.sort_order + 1, t, t);
+      // T00561：新插入行保持自身日期（今天起 1 天），不重排后续
+      refreshTaskEnd(db, id, start, 1);
+    })();
+    return this.get(id)!;
+  },
+
+  /**
+
+  /** 关联待办：同项目校验 + 按当前计划状态立即同步该待办状态 */
+  linkTodo(id: string, taskId: string | null): PlanTaskRow | null {
+    const db = getDb();
+    const row = this.get(id);
+    if (!row) return null;
+    if (taskId) {
+      const task = db.prepare('SELECT id, project_id FROM tasks WHERE id = ?').get(taskId) as { project_id: string } | undefined;
+      if (!task) throw new Error('待办任务不存在');
+      if (task.project_id !== row.project_id) throw new Error('仅可关联同项目的待办任务');
+    }
+    db.transaction(() => {
+      db.prepare('UPDATE plan_tasks SET linked_task_id = ?, updated_at = ? WHERE id = ?').run(taskId, now(), id);
+      if (taskId) {
+        db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?').run(taskStatusForPlan(row.status), now(), taskId);
+      }
+    })();
+    return this.get(id);
+  },
+
+  /** 由计划任务创建新待办（接收计划标题/描述），并直接关联。
+   *  T00445 教训：多渠道创建易产生重复待办——创建前查同项目同标题，已存在则直接关联既有任务。 */
+  createLinkedTodo(id: string): { plan: PlanTaskRow; taskId: string; reused: boolean } {
+    const db = getDb();
+    const row = this.get(id);
+    if (!row) throw new Error('计划任务不存在');
+    if (row.linked_task_id) throw new Error('已关联待办，请先解除关联');
+    // 同项目查重：规范化标题一致的待办视为已存在，直接关联（避免重复创建）
+    const exist = db.prepare('SELECT id FROM tasks WHERE project_id = ? AND REPLACE(title, char(10), \'\') = ? LIMIT 1')
+      .get(row.project_id, `[计划] ${row.title}`) as { id: string } | undefined;
+    const t = now();
+    if (exist) {
+      db.transaction(() => {
+        db.prepare('UPDATE plan_tasks SET linked_task_id = ?, updated_at = ? WHERE id = ?').run(exist.id, now(), id);
+        db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?').run(taskStatusForPlan(row.status), now(), exist.id);
+      })();
+      return { plan: this.get(id)!, taskId: exist.id, reused: true };
+    }
+    const taskId = uuid();
+    db.transaction(() => {
+      db.prepare(
+        `INSERT INTO tasks (id, task_no, project_id, title, description, priority, status, verified, archived, pinned, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'normal', ?, 0, 0, 0, ?, ?)`,
+      ).run(taskId, nextTaskNo(), row.project_id, `[计划] ${row.title}`, row.description || '', taskStatusForPlan(row.status), t, t);
+      db.prepare('UPDATE plan_tasks SET linked_task_id = ?, updated_at = ? WHERE id = ?').run(taskId, now(), id);
+    })();
+    return { plan: this.get(id)!, taskId, reused: false };
+  },
+
+  // ---------- 节假日 ----------
+
+  listHolidays(): Array<{ date: string; name: string; kind: string }> {
+    return getDb().prepare('SELECT date, name, kind FROM holidays ORDER BY date').all() as Array<{ date: string; name: string; kind: string }>;
+  },
+
+  /** T00764：kind='holiday' 放假日 | 'overtime' 加班日（同日重复添加视为切换类型，upsert 覆盖） */
+  addHoliday(date: string, name: string, kind: 'holiday' | 'overtime' = 'holiday'): void {
+    if (!DATE_RE.test(date)) throw new Error('日期格式应为 YYYY-MM-DD');
+    if (kind !== 'holiday' && kind !== 'overtime') throw new Error('类型非法：应为 holiday 或 overtime');
+    getDb().prepare("INSERT INTO holidays (date, name, kind) VALUES (?, ?, ?) ON CONFLICT(date) DO UPDATE SET name = excluded.name, kind = excluded.kind")
+      .run(date, name.trim(), kind);
+    // 只有「结束日 ≥ 该日期」的计划行可能受影响（该日期前已结束的行工作日计数不变）
+    this.rescheduleFromDate(date);
+  },
+
+  removeHoliday(date: string): boolean {
+    const r = getDb().prepare('DELETE FROM holidays WHERE date = ?').run(date);
+    if (r.changes > 0) this.rescheduleFromDate(date);
+    return r.changes > 0;
+  },
+
+  /**
+   * 联网导入国家法定节假日（T00442）：后端代理请求 timor.tech 免费节假日 API（避免浏览器 CORS），
+   * 仅导入法定放假日期（holiday=true；调休补班日不导入——当前 isWorkday 把周末固定排除，无法表达补班）。
+   * upsert 幂等：重复导入同一年不产生脏数据；导入后全量重排受影响时间线。
+   */
+  async importNationalHolidays(year: number): Promise<{ imported: number; items: Array<{ date: string; name: string }> }> {
+    if (!Number.isInteger(year) || year < 2000 || year > 2100) throw new Error('年份非法（应为 2000-2100）');
+    const resp = await fetch(`https://timor.tech/api/holiday/year/${year}`, { signal: AbortSignal.timeout(15000) });
+    if (!resp.ok) throw new Error(`节假日数据源请求失败：HTTP ${resp.status}（请检查网络）`);
+    const data = (await resp.json()) as {
+      code?: number;
+      holiday?: Record<string, { holiday?: boolean; name?: string; date?: string } | undefined>;
+    };
+    if (data?.code !== 0 || !data?.holiday) throw new Error('节假日数据源返回异常');
+    const items: Array<{ date: string; name: string }> = [];
+    for (const [k, v] of Object.entries(data.holiday)) {
+      if (v?.holiday !== true) continue; // 跳过调休补班日
+      const date = (v.date && /^\d{4}-\d{2}-\d{2}$/.test(v.date)) ? v.date : `${year}-${k}`;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+      items.push({ date, name: (v.name ?? '').trim() });
+    }
+    if (items.length === 0) throw new Error('数据源未返回法定节假日，请稍后重试');
+    const db = getDb();
+    db.transaction(() => {
+      for (const it of items) {
+        db.prepare('INSERT INTO holidays (date, name) VALUES (?, ?) ON CONFLICT(date) DO UPDATE SET name = excluded.name')
+          .run(it.date, it.name);
+      }
+    })();
+    // 以导入的最早日期为界重排（更早的日期之前已结束的行不受影响）
+    this.rescheduleFromDate(items.map((i) => i.date).sort((a, b) => a.localeCompare(b))[0]);
+    return { imported: items.length, items };
+  },
+
+  /**
+   * 节假日变更后的时间线重排：只处理「结束日 ≥ sinceDate」的部分。
+   *
+   * 原实现无条件全量重排**所有项目的所有计划行**（PlanService.rescheduleAllProjects），
+   * 节假日多在未来时等于白算一遍全库；实测「新增节假日」单发 30ms@单线程 / 137ms@探针。
+   * 传入 sinceDate 后：该日期前已结束的项目整段跳过（firstAffectedOrder 返回 null），
+   * 其余项目从首个受影响行起串行重排。不传 sinceDate 时退化为全量重排（保留原语义）。
+   */
+  rescheduleFromDate(sinceDate?: string): void {
+    const db = getDb();
+    const ids = (db.prepare('SELECT DISTINCT project_id FROM plan_tasks WHERE archived = 0').all() as Array<{ project_id: string }>)
+      .map((r) => r.project_id);
+    for (const pid of ids) {
+      // T00561：新排期模型下任务日期独立——节假日变更只刷新各行 end（start 不动），不触发串行顺延
+      const rows = db.prepare('SELECT id, start_date, duration_days FROM plan_tasks WHERE project_id = ? AND archived = 0').all(pid) as Array<{ id: string; start_date: string; duration_days: number }>;
+      const cal = loadCalendar();
+      const upd = db.prepare('UPDATE plan_tasks SET end_date = ?, updated_at = ? WHERE id = ?');
+      const t = now();
+      db.transaction(() => {
+        for (const r of rows) {
+          if (!isDate(r.start_date)) continue;
+          upd.run(calcEndDate(r.start_date, Math.max(1, r.duration_days), cal), t, r.id);
+        }
+      })();
+    }
+  },
+
+  /** 节假日变更影响所有项目的时间线，全量重排（保留原语义，供需要强一致的场景调用） */
+  rescheduleAllProjects(): void {
+    this.rescheduleFromDate();
+  },
+
+  // ---------- Excel 导入 / 导出 ----------
+
+  /**
+   * 导入：逐行校验，任一行失败则整体不入库并返回全部行级错误（约束：事务一致性 + 行号定位）。
+   * 返回 { inserted, errors }。
+   */
+  async importExcel(projectId: string, buffer: Buffer): Promise<{ inserted: number; errors: Array<{ row: number; message: string }> }> {
+    if (!getDb().prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
+    const wb = new ExcelJS.Workbook();
+    try {
+      await wb.xlsx.load(buffer as unknown as ExcelJS.Buffer);
+    } catch {
+      throw new Error('Excel 文件解析失败，请使用导出/模板同构的 .xlsx 文件');
+    }
+    const ws = wb.worksheets[0];
+    if (!ws) throw new Error('Excel 中无工作表');
+
+    const errors: Array<{ row: number; message: string }> = [];
+    const parsed: Array<{ title: string; description: string; startDate: string; durationDays: number; assignee: string; status: PlanStatus }> = [];
+
+    // T00553：按表头名映射列（兼容任意列序）——导出列序调整后固定列序解析会把日期当工期
+    const colMap: Record<string, number> = {};
+    ws.getRow(1).eachCell((c, n) => {
+      const h = cellValueText(c.value).trim();
+      if (!h) return;
+      if (h.includes('标题') || h.includes('任务名称')) colMap['title'] = n;
+      else if (h.includes('描述')) colMap['description'] = n;
+      else if (h.includes('开始')) colMap['start'] = n;
+      else if (h.includes('结束')) colMap['end'] = n;
+      else if (h.includes('工期') || h.includes('工时')) colMap['duration'] = n;
+      else if (h.includes('进度')) colMap['progress'] = n;
+      else if (h.includes('状态')) colMap['status'] = n;
+      else if (h.includes('负责人')) colMap['assignee'] = n;
+    });
+    if (!colMap['title'] || !colMap['start']) throw new Error('表头缺少「标题」或「开始日期」列，请使用导出/模板同构的文件');
+    const existingTitles = new Set(
+      (getDb().prepare('SELECT title FROM plan_tasks WHERE project_id = ?').all(projectId) as Array<{ title: string }>).map((r) => r.title),
+    );
+    const seenTitles = new Set<string>();
+
+    ws.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) return; // 表头
+      const cell = (name: string): string => (colMap[name] ? cellValueText(row.getCell(colMap[name]).value).trim() : '');
+      const title = cell('title');
+      const description = cell('description');
+      const startDate = cell('start');
+      const endDate = cell('end');
+      const durationRaw = cell('duration');
+      const assignee = cell('assignee');
+      const statusRaw = cell('status').toLowerCase() || 'todo';
+      if (!title && !description && !startDate && !durationRaw && !endDate) return; // 整行空跳过
+      const fail = (message: string) => errors.push({ row: rowNumber, message });
+
+      if (!title) { fail('标题必填'); return; }
+      if (existingTitles.has(title) || seenTitles.has(title)) { fail(`标题与现有/前文计划重复：${title}`); return; }
+      let start: string;
+      try { start = fmt(parseDate(startDate)); } catch { fail(`开始日期非法：${startDate || '(空)'}（应为 YYYY-MM-DD）`); return; }
+      // T00553：工期缺失/非法但起止齐全时按自然日差换算（≥1）
+      const duration = resolveDuration(durationRaw, start, endDate);
+      if (duration === null) { fail(`工期非法：${durationRaw || '(空)'}（应为 ≥1 的整数，或提供开始/结束日期自动换算）`); return; }
+      if (!PLAN_STATUSES.has(statusRaw as PlanStatus)) { fail(`状态非法：${statusRaw}（应为 todo/doing/done/blocked）`); return; }
+      seenTitles.add(title);
+      parsed.push({ title, description, startDate: start, durationDays: duration, assignee, status: statusRaw as PlanStatus });
+    });
+
+    if (errors.length > 0) return { inserted: 0, errors };
+    if (parsed.length === 0) return { inserted: 0, errors: [{ row: 0, message: '未解析到任何数据行' }] };
+    if (parsed.length > 5000) throw new Error('单次导入上限 5000 行，请分批导入');
+
+    const db = getDb();
+    const t = now();
+    db.transaction(() => {
+      const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM plan_tasks WHERE project_id = ? AND archived = 0').get(projectId) as { m: number }).m;
+      const ins = db.prepare(
+        `INSERT INTO plan_tasks (id, project_id, title, description, start_date, end_date, duration_days,
+           progress, status, assignee, sort_order, linked_task_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, '', ?, 0, ?, ?, ?, NULL, ?, ?)`,
+      );
+      const cal = loadCalendar();
+      parsed.forEach((p, i) => {
+        // T00561：各行日期独立——开始日用自己的（空则今天），end 按工作日计算，不联动他人
+        const start = p.startDate || fmt(new Date());
+        const end = calcEndDate(start, p.durationDays, cal);
+        ins.run(uuid(), projectId, p.title, p.description, start, end, p.durationDays, p.status, p.assignee, maxOrder + 1 + i, t, t);
+      });
+    })();
+    return { inserted: parsed.length, errors: [] };
+  },
+
+  /** 导出：sheet1=计划任务（与模板同列序同样式，T00500 验证修正），sheet2=节假日 */
+  /** T01071-FR5.3：项目全量 Markdown 导出——任务清单 + WBS 计划 + 需求跟踪矩阵（单文档，人工可读/可归档） */
+  exportMarkdown(projectId: string): string {
+    const db = getDb();
+    const proj = db.prepare('SELECT name FROM projects WHERE id = ?').get(projectId) as { name: string } | undefined;
+    const name = proj?.name ?? projectId;
+    // T01361（S6551）：入参具体化为 string|null|undefined——调用点均传 DB TEXT 列值，行为等价
+    const esc = (s: string | null | undefined) => (s ?? '').replaceAll('|', String.raw`\|`).replaceAll('\n', ' ');
+    const lines: string[] = [];
+    lines.push(`# ${name} · 全量导出`, '', `> 生成时间：${new Date().toISOString().slice(0, 19).replace('T', ' ')}　|　来源：MTask 项目管理`, '');
+    // 任务清单
+    const tasks = db.prepare(
+      `SELECT task_no, title, status, priority, verified FROM tasks WHERE project_id = ? AND archived = 0 ORDER BY task_no`,
+    ).all(projectId) as Array<{ task_no: string | null; title: string; status: string; priority: string; verified: number }>;
+    pushTaskTable(lines, tasks, esc);
+    // WBS 计划
+    pushPlanTable(lines, this.list(projectId), esc);
+    // 需求跟踪矩阵
+    const reqs = this.listRequirements(projectId);
+    if (reqs.length > 0) pushReqTable(lines, reqs, esc);
+    return lines.join('\n');
+  },
+
+  async exportExcel(projectId: string): Promise<Buffer> {    const rows = this.list(projectId);
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('项目计划', { views: [{ state: 'frozen', ySplit: 1 }] });
+    ws.columns = [
+      { header: '标题', key: 'title', width: 36 },
+      { header: '描述', key: 'description', width: 40 },
+      { header: '开始日期', key: 'start_date', width: 14 },
+      { header: '结束日期', key: 'end_date', width: 14 },
+      { header: '工期(工作日)', key: 'duration_days', width: 14 },
+      { header: '进度(%)', key: 'progress', width: 10 },
+      { header: '状态', key: 'status', width: 10 },
+      { header: '负责人', key: 'assignee', width: 14 },
+    ];
+    for (const r of rows) ws.addRow({ title: r.title, description: r.description, start_date: r.start_date, end_date: r.end_date, duration_days: r.duration_days, progress: r.progress, status: r.status, assignee: r.assignee });
+    applyPlanSheetStyle(ws, ['start_date', 'end_date', 'duration_days', 'progress', 'status']);
+    const hws = wb.addWorksheet('节假日', { views: [{ state: 'frozen', ySplit: 1 }] });
+    hws.columns = [{ header: '日期', key: 'date', width: 14 }, { header: '名称', key: 'name', width: 24 }];
+    for (const h of this.listHolidays()) hws.addRow(h);
+    applyPlanSheetStyle(hws, ['date']);
+    const out = await wb.xlsx.writeBuffer();
+    return Buffer.from(out);
+  },
+
+  /** 模板：表头 + 1 行示例（列序与导出完全一致 8 列，T00500 验证修正：字段/样式三路径一致） */
+  async templateExcel(): Promise<Buffer> {    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('项目计划', { views: [{ state: 'frozen', ySplit: 1 }] }); // 冻结表头
+    ws.columns = [
+      { header: '标题', key: 'title', width: 36 },
+      { header: '描述', key: 'description', width: 40 },
+      { header: '开始日期', key: 'start_date', width: 14 },
+      { header: '结束日期', key: 'end_date', width: 14 },
+      { header: '工期(工作日)', key: 'duration_days', width: 14 },
+      { header: '进度(%)', key: 'progress', width: 10 },
+      { header: '状态', key: 'status', width: 10 },
+      { header: '负责人', key: 'assignee', width: 14 },
+    ];
+    ws.addRow({ title: '示例：完成登录模块联调', description: '示例描述（导入前请删除本行）', start_date: '2026-09-14', end_date: '2026-09-16', duration_days: 3, progress: 0, assignee: '张三', status: 'todo' });
+    applyPlanSheetStyle(ws, ['start_date', 'end_date', 'duration_days', 'progress', 'status']);
+    // 示例行：斜体灰字提示 + 浅分隔线（模板专属）
+    const sample = ws.getRow(2);
+    sample.font = { italic: true, color: { argb: 'FF808080' }, size: 10 };
+    sample.eachCell((c) => { c.border = { bottom: { style: 'hair', color: { argb: 'FFD9D9D9' } } }; });
+    const out = await wb.xlsx.writeBuffer();
+    return Buffer.from(out);
+  },
+
+  // ---------- AI 导入（T00438）：任意格式 Excel → 表格文本 → AI 语义解析 → 标准草稿 ----------
+
+  /**
+   * xlsx/csv → 行文本（每行一条、单元格以「 | 」分隔），交由 AI 做语义解析。
+   * 刻意不做任何字段映射假设——列的含义完全由 AI 识别（任务约束：不得硬编码字段映射）。
+   * 老式 .xls（BIFF 二进制）exceljs 不支持，抛出友好提示引导另存为 .xlsx。
+   */
+  async tableToTextAsync(buffer: Buffer, filename: string): Promise<string> {
+    const lower = filename.toLowerCase();
+    if (lower.endsWith('.csv')) return csvToText(buffer);
+    const wb = new ExcelJS.Workbook();
+    try {
+      await wb.xlsx.load(buffer as unknown as ExcelJS.Buffer);
+    } catch {
+      throw new Error('文件解析失败：仅支持 .xlsx / .csv；老式 .xls 请先用 Excel 另存为 .xlsx 再导入');
+    }
+    const ws = wb.worksheets[0];
+    if (!ws) throw new Error('Excel 中无工作表');
+    const lines: string[] = [];
+    ws.eachRow((row) => {
+      if (lines.length >= MAX_PARSE_ROWS) return;
+      const cells: string[] = [];
+      row.eachCell({ includeEmpty: false }, (cell) => {
+        // 多行单元格折成一行：去掉正则，改用 split/trim/join（等价于「换行及其两侧空白 → 单个空格」）
+        cells.push(cellValueText(cell.value).trim().split('\n').map((seg) => seg.trim()).filter(Boolean).join(' '));
+      });
+      const line = cells.join(' | ').replace(/[\s|]+$/, '').trim();
+      if (line) lines.push(line);
+    });
+    return lines.join('\n');
+  },
+
+  // ---------- 需求文档 → WBS → 项目计划（T00439）：Word/Markdown → 层级文本 → AI 拆分 → 标准草稿 ----------
+
+  /**
+   * Word(.docx) → Markdown 层级文本：pizzip 解压 OOXML，从 word/document.xml 提取段落；
+   * 标题样式（Heading1-4/内置中文标题）转 # 前缀，保留文档层级供 AI 识别 WBS 结构。
+   * 老式 .doc（BIFF 二进制）不支持，抛友好提示。零新依赖（pizzip 为 docxtemplater 既有依赖）。
+   */
+  docxToMarkdown(buffer: Buffer): string {
+    let zip: { file: (name: string) => { asText: () => string } | null };
+    try {
+      zip = new PizZip(buffer);
+    } catch {
+      throw new Error('Word 文档解析失败：仅支持 .docx；老式 .doc 请先用 Word 另存为 .docx 再导入');
+    }
+    const doc = zip.file('word/document.xml');
+    if (!doc) throw new Error('Word 文档结构异常（缺少 document.xml），请确认文件为有效的 .docx');
+    const xml = doc.asText();
+    // 按段落切分：<w:p ...>...</w:p>；每段提取样式与全部 <w:t> 文本
+    const paras = xml.match(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g) ?? [];
+    const lines: string[] = [];
+    for (const p of paras) {
+      const style = /<w:pStyle\s+w:val="([^"]+)"/.exec(p)?.[1] ?? '';
+      const text = (p.match(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g) ?? [])
+        .map((t) => t.replaceAll(/<[^>]+>/g, '').replaceAll('&amp;', '&').replaceAll('&lt;', '<').replaceAll('&gt;', '>'))
+        .join('')
+        .trim();
+      if (!text) continue;
+      // T00814：清洗 Word 域代码（目录/页码/交叉引用），并把「整行都是域码」的行丢弃
+      const cleanText = stripWordFieldCodes(text);
+      if (!cleanText.trim()) continue;
+      // 标题样式识别：Heading1-4 或**纯数字** styleId（中文版 Word 把「标题2」存为 styleId "2"）——统一转 # 前缀保留层级。
+      // T00814 修复：原文案里的 `/(\d)/`（任意位置含数字）会把普通段落样式误判成标题——
+      // 实测「编号/日期/描述」（styleId 149）、封面（214）、目录行（49/58/36）全部被标成 #~#### 标题，
+      // 正文结构被污染。这里只接受「恰好一位数字」的 styleId，不再做模糊兜底。
+      const level = Number((/^Heading\s*(\d)$/i.exec(style) ?? /^([1-9])$/.exec(style))?.[1] ?? 0);
+      if (level >= 1 && level <= 4) {
+        lines.push(`${'#'.repeat(level)} ${cleanText}`);
+      } else {
+        // 非标题段落直接保留文本（列表编号在文本内，AI 可从编号语义识别层级）
+        lines.push(cleanText);
+      }
+      if (lines.length >= MAX_PARSE_ROWS) break;
+    }
+    if (lines.length === 0) throw new Error('Word 文档中未提取到任何文本内容');
+    return lines.join('\n');
+  },
+
+  /**
+   * AI WBS 拆分：需求文档（Markdown 层级文本）→ 有序计划条目。
+   * 要求 AI 按 WBS 规范拆分（编号表达层级）、估算工期、保留原文关键信息、不虚构。
+   * startDate 不输出——保存后由系统工作日串行排期统一生成。
+   */
+  async aiParseWbs(toolId: string, docText: string): Promise<{
+    drafts: Array<{ title: string; description: string; startDate: string; durationDays: number; assignee: string; status: PlanStatus }>;
+  }> {
+    const system = [
+      '你是 MTask 的项目计划 WBS 拆分助手。给定一份需求文档（Markdown 层级文本，# 数量表示标题层级），请：',
+      '0. 先识别文档类型：若为「调研报告/PRD/优化建议」类文档（内含多条编号的优化需求/建议清单，如 P0/P1/P2 或 UX-1/AI-1 等），应拆分的是**文档中提出的需求条目**（每条建议=一个任务），而非文档的撰写步骤；若为「功能需求/说明书」类文档，才按功能模块拆分实施任务。',
+      '1. 按 WBS（工作分解结构）规范把识别出的内容拆分为有序的计划任务：用标题编号表达层级（如 "1 项目启动"、"1.1 需求评审"）',
+      '2. 为每个任务估算工期（工作日数，依据任务范围合理估计）',
+      '3. 输出 JSON 数组，每元素为：',
+      '{"title":"WBS 编号+任务名","description":"该任务对应的需求要点（保留原文关键信息，Markdown）","durationDays":工期工作日数,"assignee":"","status":"todo"}',
+      '要求：',
+      '1. 只输出 JSON 数组本身，不要任何解释或 Markdown 代码围栏',
+      '2. 保留原文关键信息，不虚构、不删改事实内容；文档中没有的负责人/日期字段留空',
+      '3. 粒度适中：建议 5~30 条，任务应可在数个工作日内完成',
+      '4. startDate 一律输出空串（保存后由系统按工作日串行排期自动生成）',
+      '5. status 一律输出 "todo"',
+      // T01688 项 1：依赖列解析——文档含「依赖」章节/「依赖：」行/「← 某某」表述时按此填 depsOn
+      '6. depsOn：本条依赖的其它条目的 WBS 编号或完整标题数组；仅当文档明确给出依赖时才填，判断不了就给空数组（严禁编造依赖）',
+      '7. 输出元素形如：{"title":"1.1 需求评审","description":"…","durationDays":2,"assignee":"","status":"todo","depsOn":["1 项目启动"]}',
+    ].join('\n');
+    // T00723：JSON 解析失败/输出截断自动重试 1 次，且解析成败计入 ai_usage（ask-json）
+    const ai = await AIService.askJson(toolId, system, `【需求文档】\n${docText}`, (content) =>
+      parseJsonArrayWithRecovery(content, 'AI 未返回有效的 WBS 数组，请检查文档内容或更换模型'),
+      { cardKey: PLAN_IMPORT_CARD },
+    );
+    if (!ai.ok) throw new Error(`AI 拆分失败：${ai.error}`);
+    const drafts = ai.data as unknown[];
+    const items: Array<{ title: string; description: string; startDate: string; durationDays: number; assignee: string; status: PlanStatus; depsOn: string[] }> = [];
+    for (const r of drafts) {
+      if (!r || typeof r !== 'object') continue;
+      const o = r as Record<string, unknown>;
+      const title = typeof o.title === 'string' ? o.title.trim() : '';
+      if (!title) continue;
+      items.push({
+        title,
+        description: typeof o.description === 'string' ? o.description : '',
+        startDate: '',
+        durationDays: Math.max(1, Math.floor(Number(o.durationDays) || 1)),
+        assignee: typeof o.assignee === 'string' ? o.assignee : '',
+        status: 'todo',
+        // T01688 项 1：依赖引用原样透出（落库时由 createBatch 解析为 deps；未解析到的会回 warnings「依赖待补」）
+        depsOn: Array.isArray(o.depsOn) ? o.depsOn.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map((x) => x.trim()) : [],
+      });
+    }
+    if (items.length === 0) throw new Error('AI 未能从文档中拆分出任何任务，请确认文档内容或更换模型');
+    return { drafts: items };
+  },
+
+  // ---------- T00662：从 PRD 导入（AI 拆 WBS + 需求跟踪矩阵） ----------
+
+  /**
+   * T00662：PRD 文档 → 文本（多格式分派）。老式 .doc/.xls 与不可解析 PDF 给出可操作的友好提示。
+   * T03730：新增 .html/.htm（Confluence 导出 / Wiki / 网页另存）——与既有分支并列，非 HTML 流程零改动。
+   */
+  async extractPrdText(buffer: Buffer, filename: string): Promise<string> {
+    return (await this.extractPrdTextDetailed(buffer, filename)).text;
+  },
+
+  /**
+   * T03730：与 extractPrdText 同一分派，额外带回 HTML 的「跳过片段」提示。
+   * 提示必须透出到导入界面——无法识别的内容宁可显式告知，也不静默丢弃（T03730 约束⑤）。
+   */
+  async extractPrdTextDetailed(buffer: Buffer, filename: string): Promise<{ text: string; warnings: string[] }> {
+    const lower = filename.toLowerCase();
+    if (lower.endsWith('.html') || lower.endsWith('.htm') || lower.endsWith('.xhtml')) {
+      const r = htmlToMarkdown(decodeHtmlBuffer(buffer));
+      return { text: r.markdown, warnings: r.warnings };
+    }
+    if (lower.endsWith('.md') || lower.endsWith('.markdown') || lower.endsWith('.txt')) return { text: buffer.toString('utf-8'), warnings: [] };
+    if (lower.endsWith('.docx')) return { text: this.docxToMarkdown(buffer), warnings: [] };
+    if (lower.endsWith('.xlsx') || lower.endsWith('.csv')) return { text: await this.tableToTextAsync(buffer, filename), warnings: [] };
+    if (lower.endsWith('.pdf')) {
+      try {
+        // 动态导入（编译为 CJS 时保留原生动态 import）：pdf-parse 为纯 JS 解析库，无原生依赖
+        const mod = (await import('pdf-parse')) as unknown as { default?: (b: Buffer) => Promise<{ text?: string }> } & ((b: Buffer) => Promise<{ text?: string }>);
+        const parse = mod.default ?? mod;
+        const r = await parse(buffer);
+        const text = String(r?.text ?? '').trim();
+        if (!text) throw new Error('未提取到可读文本（可能是扫描件/图片型 PDF）');
+        return { text, warnings: [] };
+      } catch (e) {
+        throw new Error(`PDF 解析失败：${e instanceof Error ? e.message : String(e)}。可将 PDF 另存为 .docx 或 .md 后重试`);
+      }
+    }
+    if (lower.endsWith('.doc')) throw new Error('老式 .doc 暂不支持，请用 Word 另存为 .docx 后导入');
+    if (lower.endsWith('.xls')) throw new Error('老式 .xls 暂不支持，请用 Excel 另存为 .xlsx 后导入');
+    throw new Error('不支持的文件格式（支持 .docx / .md / .markdown / .txt / .xlsx / .csv / .pdf / .html / .htm）');
+  },
+
+  /** PRD 解析：原始计划条目 → 归一化计划草稿数组（reqNos 字符串过滤，durationDays≥1，status 固定为待办初始态）——实现见模块底部 normalizePrdPlans */
+
+  /** T00662：AI 解析 PRD →（需求清单 + WBS 计划草稿，含需求关联）。 */
+  async aiParsePrd(toolId: string, docText: string): Promise<{
+    requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }>;
+    drafts: Array<{ title: string; description: string; durationDays: number; startDate: string; reqNos: string[]; status: PlanStatus; kind: PlanKind }>;
+    coverageWarn?: string;
+    /** T01156：反向覆盖——需求清单中存在、但未被任何 WBS 计划 reqNos 关联的需求编号（可追溯性缺口）。 */
+    uncoveredReqNos?: string[];
+    /** T01156：首轮输出被截断、已用精简模式重试（requirements≤20/plans≤24）——数量可能被压缩，需求可能静默丢失。 */
+    truncatedNote?: string;
+    /** T02270 复议：分片解析成功的**信息性**提示（结果完整，不应作为警示展示）——与 truncatedNote 分开，
+     *  否则前端把「已分片并完整合并」也渲染成 ⚠，用户无从区分「有损」与「无损」。 */
+    parseNote?: string;
+    /** T03700+：有损交付时缺失的分片（含原文），前端据此展示并提供单片补解析 */
+    failedChunks?: PrdFailedChunk[];
+    /** T03700+：系统自动补齐的计划行对应的需求编号（原缺口需求）——前端播报「已自动补齐 N 条」 */
+    autoFilledReqNos?: string[];
+    /** 2026-11-10 质量复核优化②：合并后检测到的并行 WBS 套数（>1 提示导入前归一化） */
+    wbsGroups?: number;
+    /** T05571：源文档条目补齐明细（原文有、解析结果无的 D/R/T/N/O/S/§x.y/Q-xx 编号）——前端播报补齐情况 */
+    sourceEntryFilled?: Array<{ id: string; label: string; title: string; description: string; excerpt: string }>;
+  }> {
+    const system = [
+      '你是 MTask 的 PRD 解析助手：既要拆分 WBS 计划，也要**逐条提取可跟踪需求**（用于生成需求跟踪矩阵）。',
+      '给定一份 PRD / 需求文档（Markdown 或纯文本），输出**一个 JSON 对象**（不是数组），结构：',
+      '{"requirements":[{"reqNo":"REQ-001","title":"需求简述","content":"需求原文要点","sourceRef":"原文定位（章节/小节/段落号）","priority":"low|normal|high|urgent"}],',
+      // T01001：plans 每行必须给出 kind，用于导入时区分「里程碑」与「普通任务」——顶层里程碑 kind="milestone"，明细任务 kind="normal"
+      // T02275：不再要 startDate——normalizePrdPlans 硬编码覆盖为 ''，让模型输出纯属浪费输出预算（约 15 字符/行 × 60 行）
+      ' "plans":[{"title":"WBS编号+任务名","description":"该节点要做的事（保留原文关键信息）","durationDays":工期工作日数,"reqNos":["REQ-001"],"kind":"milestone|normal","complexity":1到5的整数}]}',
+      // T00979：此前只让 AI 按 WBS 编号扁平输出，模型常停在里程碑层（如 M1-M4）不再向下拆明细。
+      // 现强制「里程碑 + 每个里程碑下的明细任务」两级展开，且顶层保留原文里程碑名，杜绝只出里程碑不出任务。
+      '要求：',
+      '1. **需求逐条提取，严禁合并**——PRD 中每条可跟踪的需求（功能/非功能/约束/验收要点）各生成一条 requirements，reqNo 从 REQ-001 顺序编号；',
+      '2. **plans 必须是「里程碑 + 里程碑下的明细任务」两级展开的扁平数组，每行一条**：',
+      '   - 顶层：PRD 中定义的里程碑/阶段（如 M1/M2/M3/M4 或「项目启动」「开发实施」「测试验收」等），标题写带编号的里程碑名（例：「1 M1 平台搭建」），**务必保留原文里程碑名称、不得重命名**；',
+      '   - 每个顶层里程碑之下，必须继续拆出该阶段可直接执行的任务明细（如 1 之下拆出「1.1 需求评审」「1.2 概要设计」，2 之下拆出「2.1 …」），用 WBS 编号表达层级（1 → 1.1、1.2；2 → 2.1 …），全部行放进同一个 plans 数组；',
+      '   - **绝对禁止只输出里程碑而不拆明细任务**；若某里程碑在原文确无可落实的独立任务，才允许仅保留该里程碑一行；',
+      '   - **每行必须填 kind**：顶层里程碑行填 "milestone"，其下的明细任务行填 "normal"（使用述求准确、不遗漏的这两类取值，不要用其它写法）；',
+      '   - 每行 reqNos 只填**该节点直接实现/覆盖的需求编号**；管理类节点（启动/计划/评审/验收等）若不对应具体需求，reqNos 输出 []，**不要把所有需求挂上**（关联过宽会让需求跟踪矩阵失去意义）；',
+      '   - **可追溯性约束（必须遵守）**：功能/非功能/约束类需求（REQ-xxx 各一条）至少应被一个明细任务（kind="normal" 行）的 reqNos 覆盖。若某需求确无现成 WBS 节点承载，必须在 plans 末尾为它补一条 normal 任务（标题含该 REQ 编号，如「REQ-016 相关实现/验证」）以保证**每条需求都可追溯到至少一条计划**；严禁出现「需求清单有、WBS 却无人认领」的缺口。',
+      '   - **每行（normal 明细任务）必须给出 complexity 复杂度评级（1~5 整数）**：1=琐碎（半天内）、2=简单、3=中等、4=复杂（不确定性高/跨模块耦合，建议再拆分）、5=极复杂（应拆分为多个任务）；里程碑行可不填或填其下平均；',
+      '3. **不要输出 startDate**（保存后系统按导入当日并行排布：各行独立取导入日为开始日，不做串行顺延，写了也会被覆盖）；status 一律 "todo"；durationDays 缺失默认 1；',
+      '4. 只输出 JSON 对象本身，不要任何解释或 Markdown 代码围栏；不虚构文档中没有的内容。',
+      // T00707：原「宁多勿漏」会把长文档的输出顶到 token 上限而截断（用户实测导入报错），改为规模约束
+      // T00979：上限从 25 条放宽到 60 条，以满足「里程碑 + 明细」两层组织；仍强制 JSON 完整闭合优先
+      '5. **输出规模控制（必须遵守）**：requirements 最多 40 条；plans 最多 60 条（需容纳里程碑与明细两级，先保证每个里程碑至少带其直接明细任务，再取舍更细的层级）；title ≤30 字、content/description ≤40 字。'
+      + '文档过长时合并同类需求与同级任务，**宁可少几条也不得把里程碑降级为无明细**，同时必须保证 JSON 完整闭合——输出被截断会导致整个导入失败。',
+      // 2026-11-10 质量复核优化②：长文档分片时每片都产一套完整 WBS 会拼出多套并行里程碑编号
+      '6. **多分片 WBS 一致性（长文档自动分片时必须遵守）**：只有包含原文「里程碑/阶段」定义章节的那一片输出里程碑行；'
+      + '其余片只输出 normal 明细任务，禁止另起一套 1/2/3 章号或 M1~Mn 里程碑编号；各片共用同一套全局 WBS，明细标题沿用原文编号、不臆造新阶段。',
+      // T05572：否定口径前移——标题命中"不新增|不变|不改造|不实施|不修正|不实现|不删|不迁移|不做|不得|废止|失效|禁止|仅移除|保持现状|保留不删|不下线|已闭环|已落地|无需开发|不参与|不新增下发"的条目，
+      // 属于"无需开发工作"的约束描述，**不得**生成 WBS 计划行（plans），但仍须提取为 requirements（供矩阵追溯）
+      '7. **否定口径约束（必须遵守）**：标题或需求描述命中以下任一词的条目——「不新增 / 不变 / 不改造 / 不实施 / 不修正 / 不实现 / 不删 / 不迁移 / 不做 / 不得 / 废止 / 失效 / 禁止 / 仅移除 / 保持现状 / 保留不删 / 不下线 / 已闭环 / 已落地 / 无需开发 / 不参与 / 不新增下发」——属于无需新增开发工作的约束描述，**不得为它们生成 plans 计划行**，但仍须逐条提取到 requirements 列表（reqNo 正常编号，title/content/sourceRef/priority 正常填写，用于需求跟踪矩阵追溯）。'
+      + '若某需求确实需要验证/确认其"不变"效果（如回归测试），可补一条 normal 计划行（标题含"验证"或"回归"字样）。',
+    ].join('\n');
+    // T00707：首轮若被截断/解析失败，重试改用精简提示词（压缩到更小规模，确保能完整闭合）
+    const systemCompact = [
+      system,
+      '【精简模式·仅本次重试】上次输出超出长度被截断。本次请大幅压缩：requirements ≤20 条（只输出 reqNo 与 title，content 与 sourceRef 输出空串）、'
+      + 'plans ≤24 条（只输出 title 与 reqNos，description 空串，**仍须保留里程碑并尽量带出各里程碑下最重要的 1~2 条明细**）；标题 ≤20 字。宁可少，也必须输出完整可解析的 JSON 对象。',
+    ].join('\n');
+    // T00723：JSON 解析失败/输出截断自动重试 1 次，且解析成败计入 ai_usage（ask-json）
+    // T01156：首轮预算抬到 PRD_PARSE_MIN_OUTPUT_TOKENS，避免长 PRD 触顶 max_tokens 截断 → 触发精简重试硬砍 requirements≤20 静默丢需求
+    // T02275：改传 minMaxTokens（下限语义）——工具 max_tokens 配得比 8192 高时**不再被硬覆盖砍回**，
+    //   模型管理里把该工具调到 16384 才真正生效；8192 底线保留（T01156 网关 502 教训：不盲目抬默认值）。
+    // T02401-F：整次解析一个总预算。首轮 + 精简重试 + 分片多轮串行很可能超过桌面壳 api 代理 /
+    // Node fetch 的 300s 默认超时；那种失败在前端只剩 `api proxy error: fetch failed`，真实原因被吞。
+    // 这里到点即 abort，并把人话错误抛给路由层，保证前端在代理层掐断前收到可执行提示。
+    const totalAc = new AbortController();
+    // T03700：预算截止时刻显式下传——分片限流退避用它钳制等待时长，保证退避不把总预算烧穿
+    const deadlineAt = Date.now() + PRD_PARSE_TOTAL_TIMEOUT_MS;
+    let totalTimedOut = false;
+    const totalTimer = setTimeout(() => {
+      totalTimedOut = true;
+      totalAc.abort();
+    }, PRD_PARSE_TOTAL_TIMEOUT_MS);
+    try {
+      // T02270 复议：长文档先跑单轮全模式必然截断（实测 147s 白跑 + 精简 19s），留给分片的预算只剩
+      // 104s，5 片跑不完就被总预算中止。这里直接走分片，把总预算全留给有效轮次。
+      if (docText.length > PRD_DIRECT_CHUNK_CHARS) {
+        const direct = await this.aiParsePrdChunked(toolId, docText, system, totalAc.signal, deadlineAt);
+        if (direct) return direct;
+        if (totalTimedOut) {
+          throw new Error(`PRD 解析超过 ${PRD_PARSE_TOTAL_TIMEOUT_MS / 1000}s 总预算已中止——请拆分文档或更换更快的模型后重试`);
+        }
+      }
+      const ai = await AIService.askJson(toolId, system, `【PRD 文档】\n${docText}`, (content) =>
+        parseJsonObjectWithRecovery(content, 'AI 未返回有效的 PRD 解析结果（需 JSON 对象），请检查文档内容或更换模型'),
+        { timeoutMs: PRD_PARSE_TIMEOUT_MS, retrySystem: systemCompact, minMaxTokens: PRD_PARSE_MIN_OUTPUT_TOKENS, signal: totalAc.signal, cardKey: PRD_IMPORT_CARD, rateLimitBackoffMs: 15_000 },
+      );
+      // T02401-G：首轮被截断（askJson 已自动精简重试）或整体失败时，降级为「分片多轮解析」：
+      // 按标题边界把文档切成 ≤PRD_CHUNK_MAX 片、逐片提取后合并去重，用多轮小输出换完整明细。
+      // 分片只有 1 片（文档本就不长）或分片链路失败 → 回退原单轮结果/报错，小文档行为与旧版完全一致。
+      if (!ai.ok || ai.retried) {
+        const chunked = await this.aiParsePrdChunked(toolId, docText, system, totalAc.signal, deadlineAt).catch(() => null);
+        if (chunked) return chunked;
+      }
+      if (totalTimedOut) {
+        throw new Error(`PRD 解析超过 ${PRD_PARSE_TOTAL_TIMEOUT_MS / 1000}s 总预算已中止——请拆分文档或更换更快的模型后重试`);
+      }
+      if (!ai.ok) throw new Error(`AI 解析失败：${ai.error}`);
+      // T01156：精简重试一旦触发（且分片多轮不可用），说明首轮输出被截断（需求/计划数量可能被压缩），必须显式告知，不能静默丢需求
+      const truncatedNote = ai.retried
+        ? '首轮 AI 输出超长被截断，已自动启用精简模式重试（需求≤20、计划≤24，且需求 content/原文定位被清空）——若需求数量明显偏少，建议调大该工具的 max_tokens 或更换模型后重跑'
+        : '';
+      const obj = ai.data as Record<string, unknown>;
+      const rawReqs = Array.isArray(obj.requirements) ? obj.requirements : [];
+      const requirements = normalizeRequirements(rawReqs);
+      const rawPlans = Array.isArray(obj.plans) ? obj.plans : [];
+      const drafts0 = normalizePrdPlans(rawPlans);
+      if (requirements.length === 0 && drafts0.length === 0) throw new Error('AI 未能从 PRD 中解析出需求或计划，请确认文档内容或更换模型');
+      // T03700+：先由系统为缺口需求确定性补行，再按补齐后的结果算剩余告警（剩余缺口只可能是无标题等无法补齐的极端情况）
+      const { drafts, filledReqNos } = applyAutoGapFill(requirements, drafts0);
+      // T05571：源文档条目按编号确定性补齐——设计文档独有的 D/R/T/N/O/S/§x.y/Q-xx 若未进解析结果，各补一条 normal 行。
+      // coveredText 含已解析 reqs + drafts（标题/描述），sourceText 用本轮 docText（主 PRD 全文，含勾选参与解析的 design）。
+      const coveredText = [
+        ...requirements.map((r) => `${r.reqNo} ${r.title} ${r.content}`),
+        ...drafts.map((p) => `${p.title} ${p.description}`),
+      ].join('\n');
+      const sourceEntryRows = applySourceEntryGapFill(docText, coveredText);
+      if (sourceEntryRows.length > 0) {
+        for (const e of sourceEntryRows) {
+          drafts.push({
+            title: e.title,
+            description: e.description,
+            durationDays: 1,
+            startDate: '',
+            reqNos: [],
+            status: 'todo' as PlanStatus,
+            kind: 'normal' as PlanKind,
+            complexity: 1,
+          });
+        }
+      }
+      // T01156：反向覆盖检查（collectUncoveredReqNos / buildCoverageWarn）——需求清单中存在、
+      // 但未被任何 WBS 计划 reqNos 关联的需求编号即可追溯性缺口。
+      const uncoveredReqNos = collectUncoveredReqNos(requirements, drafts);
+      const coverageWarn = buildCoverageWarn(drafts.length, requirements, uncoveredReqNos);
+      return {
+        requirements, drafts, coverageWarn, uncoveredReqNos, truncatedNote,
+        autoFilledReqNos: filledReqNos.length > 0 ? filledReqNos : undefined,
+        sourceEntryFilled: sourceEntryRows.length > 0 ? sourceEntryRows : undefined,
+        wbsGroups: detectWbsGroups(drafts).groups,
+      };
+    } finally {
+      clearTimeout(totalTimer);
+    }
+  },
+
+  /**
+   * T02401-H：长 PRD 分片多轮解析——首轮单次输出被截断时，把文档按标题边界切成 ≤PRD_CHUNK_MAX 片，
+   * 逐片独立提取（每片输出预算同样托底 PRD_PARSE_MIN_OUTPUT_TOKENS），再合并去重、全局重排编号。
+   * 片数 ≤1（文档不长，分片无意义）返回 null，调用方回退原单轮路径。
+   * T03700：片失败不再整链作废——限流（429）片先退避重试（20s/40s，钳制在剩余预算内）；退避后仍失败的片
+   * 记入 failedChunks，与预算中止同样按「有损交付」返回已解析片的合并结果（truncatedNote 显式标注缺失片），
+   * 避免 6/7 片已解析成果被一个限流片全数作废。仅当全部片都解析不出内容时才返回 null 回退单轮。
+   * `signal` 由调用方的总预算控制：到点即停止后续分片，并尽量返回已解析完的片，不把请求拖到代理层超时。
+   * `deadlineAt` 为总预算截止时刻：限流退避等待用它钳制时长，退避不会把 270s 预算烧穿。
+   */
+  async aiParsePrdChunked(toolId: string, docText: string, system: string, signal?: AbortSignal, deadlineAt?: number): Promise<{
+    requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }>;
+    drafts: Array<{ title: string; description: string; durationDays: number; startDate: string; reqNos: string[]; status: PlanStatus; kind: PlanKind; complexity?: number }>;
+    coverageWarn?: string;
+    uncoveredReqNos?: string[];
+    truncatedNote?: string;
+    /** T02270 复议：分片完整跑完时的信息性提示（见 aiParsePrd 同名字段口径） */
+    parseNote?: string;
+    /** T03700+：缺失分片（含原文）——有损交付时随响应透出，前端展示并提供单片补解析 */
+    failedChunks?: PrdFailedChunk[];
+    /** T03700+：系统自动补齐的计划行对应的需求编号（原缺口需求） */
+    autoFilledReqNos?: string[];
+    /** T05571：源文档条目补齐（设计/测试文档独有编号在合并草稿中缺失时生成的 normal 行） */
+    sourceEntryFilled?: Array<{ id: string; label: string; title: string; description: string; excerpt: string }>;
+    /** 2026-11-10 质量复核优化②：跨片合并后检测到的并行 WBS 套数 */
+    wbsGroups?: number;
+  } | null> {
+    const chunks = splitPrdChunks(docText, PRD_CHUNK_CHARS, PRD_CHUNK_MAX);
+    if (chunks.length <= 1) return null;
+    // T04010：记录每片在全文中的字符区间——失败片索引入库只存区间，原文按 prd_docs.content_md 现切，
+    // 不再为「关窗后还能补解析」另存一份正文（会与 PRD 管理视图的正文双轨）。
+    const chunkSpans: Array<{ start: number; end: number }> = [];
+    {
+      let cursor = 0;
+      for (const text of chunks) {
+        const at = docText.indexOf(text, cursor);
+        const start = at >= 0 ? at : cursor;
+        chunkSpans.push({ start, end: start + text.length });
+        cursor = start + text.length;
+      }
+    }
+    const n = chunks.length;
+    // T02270 复议：槽位按原片序号对齐——并发完成顺序是乱的，若按完成顺序收集，
+    // 合并去重的「首见优先」会随网络抖动漂移，同一文档两次解析可能得到不同的编号顺序。
+    const slots: Array<PrdParsePart | null> = new Array(n).fill(null);
+    let aborted = false;
+    // T03700：限流自适应并发——首次撞 429 后把后续波次并发降到 PRD_CHUNK_RATE_CONCURRENCY（本波内不回改），
+    // 给免费档供应商的并发/RPM 限制让路；未再撞限流则后续片沿用降档值跑完（宁慢勿废）。
+    let waveConcurrency = PRD_CHUNK_CONCURRENCY;
+    /** T03700：退避重试后仍失败的片序号——交外层按有损交付，不再抛错作废整链 */
+    const failedChunkIdx: number[] = [];
+    /** T03700+：失败片的归因（限流/解析错误），用于界面上区分「稍后重试」与「换模型/拆文档」 */
+    const failInfo = new Map<number, { reason: PrdFailedChunk['reason']; message?: string }>();
+    const parseOne = async (i: number): Promise<void> => {
+      // T02983：分片内再加一道输出规模上限——单轮耗时几乎全花在生成上（5 片 × 40 需求 + 60 计划），
+      // 把每片压到 32/45 后实测总耗时 106s（不改上限 121s）；按 5 片×32=160 的总容量仍覆盖 128 条需求。
+      const sysI = system
+        + `\n【分片解析·第 ${i + 1}/${n} 片】本片只是完整文档的一部分：只解析本片出现的需求与计划，不要臆测其它片的内容；`
+        + 'requirements 的 reqNo 从 REQ-001 起片内顺序编号（系统合并时会全局去重重排）；plans 的 WBS 编号保留原文写法。'
+        + '\n【分片规模控制】本片 requirements 最多 32 条、plans 最多 45 条，保证 JSON 完整闭合优先——宁可少几条也不得输出到被截断。'
+        // 2026-11-10 质量复核优化②：每片各产一套完整 WBS 是「7 套并行里程碑」的直接成因
+        + '\n【WBS 一致性】只有本片确实包含原文「里程碑/阶段」定义章节时才输出里程碑行；否则只输出 normal 明细任务，'
+        + '禁止另起一套 1/2/3 章号或 M1~Mn 里程碑编号——所有分片共用同一套全局 WBS。';
+      // T03700：片级解析循环——限流错误退避重试同一片（askJson 内部重试也按 rateLimitBackoffMs 先等再试），
+      // 非限流错误保持原语义立即失败；每轮等待前检查剩余预算与中止信号。
+      let lastError = '';
+      for (let round = 1; round <= PRD_CHUNK_RATE_ROUNDS; round += 1) {
+        const ai = await AIService.askJson(toolId, sysI, `【PRD 文档·第 ${i + 1}/${n} 片】\n${chunks[i]}`, (content) =>
+          parseJsonObjectWithRecovery(content, 'AI 未返回有效的 PRD 分片解析结果（需 JSON 对象）'),
+          // T02983：分片较重试一次时改用**更小规模**的提示词——实测单片 JSON 两次不闭合占 130s+101s 后整单失败，
+          // 同规模重试只是白等；压缩到 20/25 条能显著提高闭合率（缺的条目由合并后的覆盖告警暴露，不静默）。
+          { timeoutMs: PRD_PARSE_TIMEOUT_MS, minMaxTokens: PRD_PARSE_MIN_OUTPUT_TOKENS, signal, cardKey: PRD_IMPORT_CARD, rateLimitBackoffMs: 15_000, retrySystem: sysI
+            + '\n【压缩重试·必须闭合】上次输出无法解析为 JSON：本次 requirements ≤20 条、plans ≤25 条，title ≤20 字、content/description ≤30 字；只输出一个 JSON 对象，禁止解释与代码围栏。' },
+        );
+        if (ai.ok) {
+          const obj = ai.data as Record<string, unknown>;
+          slots[i] = {
+            requirements: normalizeRequirements(Array.isArray(obj.requirements) ? obj.requirements : []),
+            drafts: normalizePrdPlans(Array.isArray(obj.plans) ? obj.plans : []),
+          };
+          return;
+        }
+        lastError = ai.error ?? '';
+        // 总预算到点导致的停止不该作废已完成的片：标记后由外层收尾，把已解析部分交付给调用方。
+        if (signal?.aborted) { aborted = true; return; }
+        if (!isRateLimitError(lastError)) {
+          failInfo.set(i, { reason: 'error', message: lastError.slice(0, 300) });
+          break;
+        }
+        if (round >= PRD_CHUNK_RATE_ROUNDS) break;
+        // 限流退避：降档后续波次并发 + 指数等待（20s/40s，钳制在剩余预算内）；预算不足以再等则放弃该片
+        waveConcurrency = Math.min(waveConcurrency, PRD_CHUNK_RATE_CONCURRENCY);
+        const wait = rateLimitBackoffMs(round, deadlineAt);
+        if (wait <= 0) break;
+        await sleepMs(wait, signal);
+        if (signal?.aborted) { aborted = true; return; }
+      }
+      // T03700+：走到这里说明该片最终失败。限流轮次耗尽与「预算不足以再退避」都归类为 rate-limit，
+      // 但把原因写进 message，界面可据此提示「稍后重试」还是「换模型/拆文档」。
+      failInfo.set(i, {
+        reason: isRateLimitError(lastError) ? 'rate-limit' : 'error',
+        message: (lastError || '分片解析未成功').slice(0, 300),
+      });
+      failedChunkIdx.push(i);
+    };
+    // T02983：有界并发把总时长压到可用预算内；T03700：波次大小改读自适应值——限流降档后下一波自动变小，
+    // 已不抛错短路（片失败交给 failedChunks 有损交付），Promise.all 只等本波全部落定。
+    let start = 0;
+    while (start < n && !aborted) {
+      const size = Math.min(waveConcurrency, n - start);
+      const batch: Array<Promise<void>> = [];
+      for (let i = start; i < start + size; i += 1) batch.push(parseOne(i));
+      await Promise.all(batch);
+      start += size;
+    }
+    const parts = slots.filter((p): p is PrdParsePart => p !== null);
+    if (parts.length === 0) return null;
+    const merged = mergeChunkedPrdParts(parts);
+    if (merged.requirements.length === 0 && merged.drafts.length === 0) return null;
+    // 2026-11-10 质量复核优化②：跨片按归一化标题去重（reqNos 取并集，不丢关联）；
+    // 结构性的「多套 WBS 合并」不在此静默执行——交给导入前用户确认的一键归一化，避免误删业务不同的同题行。
+    const deduped = dedupeDraftsByNormalizedTitle(merged.drafts);
+    // T05573：多套并行 WBS 自动收敛——检测到多套时把后续套章号顺延到前一套最大章号之后
+    const wbsNormalized = normalizeWbsGroups(deduped.drafts);
+    const wbsFinal = wbsNormalized.drafts;
+    const wbsInfo = detectWbsGroups(wbsFinal);
+    const wbsNote = wbsNormalized.groups > 1
+      ? `已自动收敛 ${wbsNormalized.groups} 套并行 WBS（${wbsNormalized.renumberedMilestones} 个里程碑、${wbsNormalized.renumberedNormals} 条明细章号顺延）；${deduped.merged > 0 ? `已按归一化标题合并 ${deduped.merged} 条同题计划` : ''}`
+      : formatWbsNote(wbsInfo.groups, wbsInfo.milestones, deduped.merged);
+    // T03700+：合并后系统兜底补齐——模型漏挂的横切/非功能需求在此落行，缺口集合不再随每轮解析漂移
+    const wbsFinalTyped: PrdPlanDraft[] = wbsFinal as PrdPlanDraft[];
+    const { drafts: autoFilled, filledReqNos } = applyAutoGapFill(merged.requirements, wbsFinalTyped);
+    // T05571：源文档条目补齐——设计/测试文档独有编号（Q-xx/Sx/Dx/Rx/Tx/N-x/Ox/§x.y）在合并草稿中缺失时生成 normal 行
+    let finalDrafts = autoFilled;
+    let sourceEntryRows: Array<{ id: string; label: string; title: string; description: string; excerpt: string }> = [];
+    if (autoFilled.length > 0) {
+      const coveredText = [
+        ...merged.requirements.map((r) => `${r.reqNo} ${r.title} ${r.content}`),
+        ...autoFilled.map((p) => `${p.title} ${p.description}`),
+      ].join('\n');
+      sourceEntryRows = applySourceEntryGapFill(docText, coveredText);
+      for (const e of sourceEntryRows) {
+        finalDrafts.push({
+          title: e.title,
+          description: e.description,
+          durationDays: 1,
+          startDate: '',
+          reqNos: [],
+          status: 'todo',
+          kind: 'normal',
+          complexity: 1,
+        });
+      }
+    }
+    const drafts = finalDrafts;
+    const uncoveredReqNos = collectUncoveredReqNos(merged.requirements, drafts);
+    const coverageWarn = buildCoverageWarn(drafts.length, merged.requirements, uncoveredReqNos);
+    // T03700+：缺失片统一收集（失败 + 因预算中止而未跑的），并带上原文——前端据此展示/复制/单独补解析。
+    const failedChunks: PrdFailedChunk[] = [];
+    for (let i = 0; i < n; i += 1) {
+      if (slots[i]) continue;
+      const info = failInfo.get(i);
+      failedChunks.push({
+        index: i + 1,
+        total: n,
+        reason: info?.reason ?? (aborted || signal?.aborted ? 'aborted' : 'not-run'),
+        message: info?.message,
+        chars: chunks[i].length,
+        start: chunkSpans[i].start,
+        end: chunkSpans[i].end,
+        text: chunks[i],
+      });
+    }
+    const complete = !aborted && !signal?.aborted && failedChunks.length === 0;
+    // T02270 复议：分片跑完是**无损**结果（明细比精简模式完整），走 parseNote 普通日志；
+    // 只有真的没跑完（预算中止 / 存在失败片）才用 truncatedNote 触发 ⚠——否则用户无法区分「完整分片」与「有损降级」。
+    // T03700：失败片显式列出片号与原因类别，缺失内容不静默。
+    const failIdx = failedChunks.filter((f) => f.reason === 'rate-limit' || f.reason === 'error').map((f) => f.index);
+    const hasError = failedChunks.some((f) => f.reason === 'error');
+    const truncatedNote = failIdx.length > 0
+      ? `分片解析第 ${failIdx.join('、')} 片失败（${hasError ? '限流重试/解析错误，重试后仍未成功' : '限流退避重试后仍未成功'}），已返回其余 ${parts.length}/${n} 片合并结果——缺失片的内容未包含，可在下方「缺失分片」查看原文并单独补解析（或稍后重试该文档 / 更换模型工具）`
+      : complete
+        ? ''
+        : `文档较长且解析达到 ${PRD_PARSE_TOTAL_TIMEOUT_MS / 1000}s 总预算，已返回前 ${parts.length}/${n} 片合并结果——未解析的片已在下方「缺失分片」列出，可单独补解析或拆分文档后重试`;
+    const parseNote = complete
+      ? `文档较长，已自动分 ${n} 片解析并合并去重（需求 ${merged.requirements.length} 条、计划 ${drafts.length} 条${filledReqNos.length > 0 ? `，其中自动补齐 ${filledReqNos.length} 条缺口需求` : ''}）`
+        + (wbsNote ? `；${wbsNote}` : '')
+      : undefined;
+    return {
+      requirements: merged.requirements,
+      drafts,
+      coverageWarn,
+      uncoveredReqNos,
+      truncatedNote,
+      parseNote,
+      failedChunks: failedChunks.length > 0 ? failedChunks : undefined,
+      autoFilledReqNos: filledReqNos.length > 0 ? filledReqNos : undefined,
+      sourceEntryFilled: sourceEntryRows.length > 0 ? sourceEntryRows : undefined,
+      wbsGroups: wbsInfo.groups,
+    };
+  },
+
+  /** T00763：导入 PRD 解析结果——事务创建需求项 + 计划（含 req_ids 关联）+ 可选同步生成待办任务。 */
+  /** T00712（D-5）：返回 unlinkedReqNos——reqNos 引用了本次导入中不存在的需求编号时不再静默丢弃。 */
+  /** T00763：input.prdMd（PRD Markdown 原文）非空时完整落库 prd_docs，并回填需求行 prd_id——供矩阵「查看PRD」与 AI 上下文反查。 */
+  /**
+   * T01875：重复导入的计划行口径（T01869 只回传事实、不改落库，本单把口径定下来）——
+   * 默认 `onDuplicatePlan:'new'`：延续 T01867/T01921 已确立的「已有条目一律不动，新行让号」同构口径，
+   *   撞名不再并排同名，新行标题自动带 `（N）` 区分后缀；
+   * 显式 `'reuse'`：幂等重跑，按标题命中未归档同名原行补差异与需求关联，**绝不改原行 status/progress**。
+   */
+  importPrd(projectId: string, input: {
+    requirements?: Array<{ reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string; sourceIndex?: number }>;
+    // T01001：plans 行支持 kind（milestone=里程碑 / normal=普通任务），导入时据此区分，不再全部转成普通任务
+    plans?: Array<{ title: string; description?: string; durationDays?: number; startDate?: string; reqNos?: string[]; assignee?: string; kind?: PlanKind; complexity?: number; status?: PlanStatus }>;
+    createTasks?: boolean;
+    prdMd?: string;
+    prdFilename?: string;
+    /** T04064：多文件导入时逐份保留原文与原名，每份一条 prd_docs；T04897：docKind 标注文档类型 */
+    prdDocs?: Array<{ filename?: string; contentMd?: string; docKind?: 'prd' | 'design' | 'test' }>;
+    onDuplicatePlan?: 'new' | 'reuse';
+  }): { requirements: number; requirementsCreated: number; reusedRequirements: number; plans: number; tasks: number; unlinkedReqNos: string[]; prdId?: string; prdIds: string[]; reqNoMap: Array<{ from: string; to: string }>; dupPlanTitles: Array<{ title: string; existing: number; renamedTo?: string; reusedPlanId?: string }>; reusedPlans: number; ambiguousReqNos: string[]; orphanRequirements: Array<{ reqNo: string; title: string }>; planRowIds: Array<string | null> } {
+    const db = getDb();
+    if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
+    const reqs = (input.requirements ?? []).filter((r) => r?.title?.trim());
+    const planItems = (input.plans ?? []).filter((p) => p?.title?.trim());
+    if (reqs.length === 0 && planItems.length === 0) throw new Error('没有可导入的需求或计划条目');
+    // T01001 二轮：落库前统一汇总里程碑工期（= 其下明细之和），覆盖直接调 import-prd / MCP 未做汇总的路径
+    const planKinds = planItems.map((p) => (p.kind ?? resolvePrdKind(p.title, p.kind)));
+    // 2026-11-10 质量复核优化⑥：工期汇总与 child 归属共用同一「跳过补齐行」判定，杜绝两边口径漂移
+    const planDurations = milestoneDurations(
+      planItems.map((p, i) => ({ kind: planKinds[i], durationDays: p.durationDays })),
+      (i) => isGapFillPlan({ title: planItems[i]?.title, description: planItems[i]?.description }),
+    );
+    // T05440（P0-3）：导入默认排期。AI 只给 durationDays 不给 startDate，旧行为是全部落「今天」
+    // （insertNewBatchRow 的空则今天），实测 146/146 条 start_date 同一天，甘特图与里程碑包络全失真。
+    // 仅当「所有计划行都没给 startDate」时按 WBS 顺序串行补排（里程碑与明细一起排）：
+    // 这样每个里程碑的「日历包络」正好等于其子项工期之和，与 P0-2 的工期口径完全自洽；
+    // 任何一行给了 startDate 都视为调用方自己排了期，本段整段跳过，保留手工排期。
+    const hasAnyStart = planItems.some((p) => !!p.startDate);
+    const planStarts: Array<string | undefined> = planItems.map((p) => p.startDate);
+    if (!hasAnyStart) {
+      const calSchedule = loadCalendar();
+      let cursor = fmt(new Date());
+      for (let i = 0; i < planItems.length; i += 1) {
+        const d = Math.max(1, Math.round(Number(planDurations[i]) || 1));
+        planStarts[i] = cursor;
+        cursor = nextWorkday(calcEndDate(cursor, d, calSchedule), calSchedule);
+      }
+    }
+    const t = now();
+    let taskCount = 0;
+    const unlinkedReqNos = new Set<string>();
+    const reqNoMap: Array<{ from: string; to: string }> = []; // T01867：撞号顺延明细（请求编号 → 实际落库编号）
+    // T01995：多来源合并导入的两处静默缺陷补漏——
+    // ① ambiguousReqNos：同一「PRD 原编号」被本次 payload 的两行争用（两份 PRD 各自从 REQ-001 起号且调用方未分表重编号）。
+    //    旧实现只把歧义静默吸收成「后写覆盖先写」，前一份文档的关联被悄悄改挂到后一份的行上
+    //    （实测 mtask四期 前 20 行零关联），这里点名回传；归属仍沿用既有覆盖语义，不改 T01921 已复验的关联口径。
+    // ② orphanRequirements：本次新建却零计划/待办关联的需求行。unlinkedReqNos 只校验编号存在性，
+    //    「挂错行」因编号存在而完全不报警，这里按行清点，让同类问题不再静默通过。
+    const ambiguousReqNos = new Set<string>();
+    const newReqs: Array<{ id: string; reqNo: string; title: string }> = [];
+    // T02303 甲：reuse 模式下命中的存量需求行（不新建、不改写），供回传 reusedRequirements 计数
+    const reusedReqs: Array<{ id: string; reqNo: string; title: string }> = [];
+    const linkedReqIds = new Set<string>();
+    // T00763 / T01156-3：PRD 原文落库与同名/同内容覆盖复用（口径与逐段说明见 persistPrdDocForImport）
+    // T04064：多来源文件逐份落库，需求行按 sourceIndex 回填各自文档；单文档口径保持不变
+    const { docIds, legacyPrdId } = persistPrdDocsForImport(db, projectId, input, t);
+    const prdId = docIds[0] ?? legacyPrdId;
+    // T01869 / T01875：同名计划的处置口径与 planTargets/dupPlanTitles 生成见 resolveImportPlanTargets。
+    const reuseMode = input.onDuplicatePlan === 'reuse';
+    const { planTargets, dupPlanTitles } = resolveImportPlanTargets(db, projectId, planItems, reuseMode, planKinds);
+    const reusedPlans = planTargets.filter((x) => x.reuseId).length;
+    let insertedPlans = 0; // 实际新建的计划行数（reuse 命中的行不计数，返回给调用方区分「新建/复用」）
+    // T02131：与 planItems 下标对齐的计划行 id，事务内外都要用（返回值 planRowIds 给调用方回填依赖）
+    const planIds: Array<string | null> = new Array(planItems.length).fill(null);
+    db.transaction(() => {
+      // 1) 需求项（矩阵行）——reqNo → id 映射供计划/待办关联
+      // T01995：两个编号空间分开登记——
+      //   noToId         落库编号（顺延后的实际编号）→ id，权威；
+      //   requestedToId  PRD 原编号 → id，计划条目引用的就是这个空间（T01921 的顺延不断链靠它）。
+      // 查号按「原编号空间优先」：原编号 REQ-013 撞上别行的落库新号 REQ-013 属正常顺延产物，
+      // 不能被当成歧义误报（否则每次增量导入都会红一片），只有同一原编号被本次两行争用才是真歧义。
+      const noToId = new Map<string, string>();
+      const requestedToId = new Map<string, string>();
+      // T02131：编号解析补第三层回落——计划引用「上一次导入已建好的矩阵行」。
+      // 旧实现只认本次 payload 的编号空间，增量回写（计划挂到既有 REQ-021）会被判 unlinkedReqNos
+      // 并静默丢关联，正是四期 K1~K8「计划无矩阵、无待办」那类孤儿的成因之一。
+      // 项目内 req_no 唯一（T01872 唯一索引），按号定位是确定性的。
+      const existingReqId = makeExistingReqLookup(db, projectId);
+      const findReqId = (n: string) => requestedToId.get(n) ?? noToId.get(n) ?? existingReqId(n);
+      // T01867 / T01995：需求项落库与两个编号空间登记（口径见 insertPrdRequirementsForImport）
+      // T02300：判重+让号摘成纯读函数，落库只消费其结果——preview 与 import 从此共用同一张查找表，
+      // 「预演报的数」与「实落库的数」不可能分叉（分叉正是 T01869 那类误判的温床）。
+      const reqPlan = resolveImportReqPlan(db, projectId, reqs, reuseMode, reqNoMap);
+      insertPrdRequirementsForImport(db, projectId, reqPlan, {
+        t, prdIds: docIds, fallbackPrdId: legacyPrdId, noToId, requestedToId, ambiguousReqNos, newReqs, reusedReqs,
+      });
+      // 2) 计划（含 req_ids 关联）
+      // T01875：planIds 与 planItems 下标对齐，元素是该条目实际落库的计划 id——
+      // 新建行取 createBatch 返回值，reuse 行指向命中的原行（不新建）。
+      // 旧实现（T01869 口径）一律新建且不判重，重导同一份 PRD 会留下并排同名两套计划，无法幂等重跑。
+      const newIdx: number[] = [];
+      planTargets.forEach((target, i) => { if (!target.reuseId) newIdx.push(i); });
+      if (newIdx.length > 0) {
+        const created = this.createBatch(projectId, newIdx.map((i) => ({
+          title: planTargets[i].title,
+          description: planItems[i].description,
+          startDate: planStarts[i],
+          // T01001 二轮：工期用汇总后的值（里程碑 = 其下明细之和），保证导入后两边对得上
+          durationDays: planDurations[i],
+          assignee: planItems[i].assignee,
+          // T02131：经 MCP 计划回写通道进来的条目允许带自身状态（此前一律落到 PlanStatus 默认态「待开始」）；缺省仍是默认态
+          status: planItems[i].status ?? ('todo' as PlanStatus),
+          complexity: planItems[i].complexity, // T01058-FR2.1：AI 复杂度评级随导入落库
+          // T01001：里程碑/普通任务在导入时确定类型，避免全部落入默认 normal；
+          // AI 解析路径已由 normalizePrdPlans 推好 kind，此处的兜底覆盖直接调 import-prd/MCP 未显式传 kind 的场景
+          kind: planKinds[i],
+        })));
+        insertedPlans = created.inserted;
+        created.ids.forEach((id, k) => { const i = newIdx[k]; if (i !== undefined) planIds[i] = id; });
+      }
+      // T02881 RC3 第三刀（裁定 a）：口径与逐段说明见 repositionReusedMilestoneRows。
+      if (reuseMode) repositionReusedMilestoneRows(db, projectId, planKinds, planTargets, planIds);
+      // T00709 / T00712 / T01995：计划行需求关联回写（复用并集、新建覆盖，口径见 writeBackImportPlanLinks）
+      writeBackImportPlanLinks(db, { t, planItems, planTargets, planIds, findReqId, unlinkedReqNos, linkedReqIds });
+      // 2.5) T02090 口径 A：补 child 边 + 新建里程碑的包络/进度重算（口径与逐段说明见
+      //  applyImportMilestoneChildEdges；⚠ 必须在全部边写完之后统一重算）
+      applyImportMilestoneChildEdges(db, { t, planItems, planKinds, planTargets, planIds });
+      // 3) 可选：WBS → 待办任务（便于 AI 推进执行），待办同样携带 req_ids（口径见 createPrdImportTodos）
+      taskCount = createPrdImportTodos(db, {
+        t, projectId, createTasks: !!input.createTasks, planItems, planTargets, planIds, findReqId,
+      });
+      if (insertedPlans === 0 && reqs.length > 0) {
+        // 仅导入需求（无计划）时属合法场景，不抛错
+      }
+    })();
+    // T01995：本次新建却零计划/待办关联的需求行（仅在「有计划条目参与导入」时清点——
+    // 只导需求不导计划属合法场景，全部列为零关联会变成噪音）
+    const orphanRequirements = planItems.length > 0
+      ? newReqs.filter((x) => !linkedReqIds.has(x.id)).map((x) => ({ reqNo: x.reqNo, title: x.title }))
+      : [];
+    // T02131：把「输入 plans 下标 → 实际落库计划行 id」交还调用方。
+    // MCP 计划回写通道需要它来做依赖回填——撞名让号/复用命中都会让「按标题找 id」不可靠，只有下标对齐才准确。
+    const planRowIds = planTargets.map((x, i) => x.reuseId ?? planIds[i] ?? null);
+    return {
+      requirements: reqs.length,
+      // T02303 甲：把「本次 payload 需求数」与「实际新建/复用数」分开回传——
+      // 旧返回只有 requirements=reqs.length，调用方（含面板/MCP）无法看出 reuse 到底有没有真的幂等，
+      // 「补写一次就多出一套同标题需求行」因此长期静默。
+      requirementsCreated: newReqs.length,
+      reusedRequirements: reusedReqs.length,
+      plans: insertedPlans,
+      tasks: taskCount,
+      unlinkedReqNos: [...unlinkedReqNos],
+      prdId,
+      prdIds: docIds,
+      reqNoMap,
+      dupPlanTitles,
+      reusedPlans,
+      ambiguousReqNos: [...ambiguousReqNos],
+      orphanRequirements,
+      planRowIds,
+    };
+  },
+
+  /**
+   * T02300：PRD 导入**预演**（只读）。body 与 `importPrd` 完全一致，同一份 payload 可直接投。
+   * 零写库红线：不开 `db.transaction`、全文零 INSERT/UPDATE/DELETE——「点一下预演会不会动数据」正是
+   * 这条链路要消灭的顾虑，验收门用「preview 前后全库快照逐字节不变」守它。
+   * 判据同源：计划侧 `resolveImportPlanTargets` + 需求侧 `resolveImportReqPlan` + 原文侧 `resolvePrdDocTarget`，
+   * 全是 `importPrd` 自己在用的那几个函数；本方法不重复实现任何一条判定（另写一套判重即分叉，本单明令禁止）。
+   */
+  previewPrdImport(projectId: string, input: {
+    requirements?: Array<{ reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string; sourceIndex?: number }>;
+    plans?: Array<{ title: string; description?: string; durationDays?: number; startDate?: string; reqNos?: string[]; assignee?: string; kind?: PlanKind; complexity?: number; status?: PlanStatus }>;
+    createTasks?: boolean;
+    prdMd?: string;
+    prdFilename?: string;
+    /** T04064：多文件导入的逐份文档（只读预演同样逐份比对是否新建/复用）；T04897：docKind 标注文档类型 */
+    prdDocs?: Array<{ filename?: string; contentMd?: string; docKind?: 'prd' | 'design' | 'test' }>;
+    onDuplicatePlan?: 'new' | 'reuse';
+  }): {
+    willCreatePlans: number; willReusePlans: number; willRenamePlans: number;
+    dupPlanTitles: PrdImportDupPlanTitle[];
+    requirements: number; willCreateReqs: number; willReuseReqs: number;
+    reqNoMap: Array<{ from: string; to: string }>;
+    ambiguousReqNos: string[]; unlinkedReqNos: string[];
+    orphanRequirements: Array<{ reqNo: string; title: string }>;
+    prdDoc: { action: 'none' | 'reuse' | 'create'; id?: string; by?: 'hash' | 'name' };
+    prdDocs: Array<{ filename: string; action: 'none' | 'reuse' | 'create'; id?: string; by?: 'hash' | 'name' }>;
+    /** 2026-11-10 质量复核优化①：每份来源文档被需求行引用的条数——零引用即「文档未参与生成」的硬证据 */
+    docReferences: Array<{ filename: string; docKind: 'prd' | 'design' | 'test'; reqCount: number }>;
+    planRowsPreview: Array<{ title: string; reuseId: string | null }>;
+    createTasks: boolean;
+    readOnly: true;
+  } {
+    const db = getDb();
+    if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
+    const reqs = (input.requirements ?? []).filter((r) => r?.title?.trim());
+    const planItems = (input.plans ?? []).filter((p) => p?.title?.trim());
+    if (reqs.length === 0 && planItems.length === 0) throw new Error('没有可导入的需求或计划条目');
+    const reuseMode = input.onDuplicatePlan === 'reuse';
+    const reqNoMap: Array<{ from: string; to: string }> = [];
+    const planKinds = planItems.map((p) => (p.kind ?? resolvePrdKind(p.title, p.kind)));
+    const { planTargets, dupPlanTitles } = resolveImportPlanTargets(db, projectId, planItems, reuseMode, planKinds);
+    const reqPlan = resolveImportReqPlan(db, projectId, reqs, reuseMode, reqNoMap);
+    const prdDocsPreview = previewPrdDocs(db, projectId, input);
+    const firstDoc = prdDocsPreview[0];
+    const prdDoc = firstDoc
+      ? { action: firstDoc.action, id: firstDoc.id, by: firstDoc.by }
+      : { action: 'none' as const };
+    // 与 importPrd 的 findReqId 同三层口径：本次原编号空间 → 本次落库编号 → 存量按号定位（T02131 回落）
+    const requestedToId = new Map<string, string>();
+    const noToId = new Map<string, string>();
+    for (const row of reqPlan.rows) {
+      noToId.set(row.reqNo, row.targetRef);
+      if (row.requested) requestedToId.set(row.requested, row.targetRef);
+    }
+    const existingReqId = makeExistingReqLookup(db, projectId);
+    const findReqId = (n: string) => requestedToId.get(n) ?? noToId.get(n) ?? existingReqId(n);
+    const unlinkedReqNos = new Set<string>();
+    const linkedRefs = new Set<string>();
+    for (const p of planItems) {
+      for (const n of p.reqNos ?? []) {
+        const ref = findReqId(n);
+        if (ref) linkedRefs.add(ref); else unlinkedReqNos.add(n);
+      }
+    }
+    // T01995 ②：本次要新建却零计划引用的需求行（import 侧只对 newReqs 清点，这里同口径）
+    const orphanRequirements = planItems.length > 0
+      ? reqPlan.rows.filter((x) => !x.reuseId && !linkedRefs.has(x.targetRef)).map((x) => ({ reqNo: x.reqNo, title: x.title }))
+      : [];
+    const baseTitles = planItems.map((p) => p.title.trim());
+    // 2026-11-10 质量复核优化①：逐份统计来源文档的需求引用数。
+    // T04897 的关联 design/test 文档只归档、不参与 AI 解析，必然是 0；主 PRD 之外的 prd 文档若为 0
+    // 说明该文档虽落库却没有产出任何需求（多来源合并时容易被误认为「两份文档都生成了计划」）。
+    const docReferences = (input.prdDocs ?? []).map((d, i) => ({
+      filename: d.filename ?? `文档${i + 1}`,
+      docKind: (d.docKind ?? 'prd') as 'prd' | 'design' | 'test',
+      reqCount: reqs.filter((r) => (r.sourceIndex ?? 0) === i).length,
+    }));
+    return {
+      willCreatePlans: planTargets.filter((x) => !x.reuseId).length,
+      willReusePlans: planTargets.filter((x) => x.reuseId).length,
+      // 让号行：新建且实际标题被加了「（N）」后缀（与 dupPlanTitles 的 renamedTo 同源，计数按行）
+      willRenamePlans: planTargets.filter((x, i) => !x.reuseId && x.title !== baseTitles[i]).length,
+      dupPlanTitles,
+      requirements: reqs.length,
+      willCreateReqs: reqPlan.willCreate,
+      willReuseReqs: reqPlan.willReuse,
+      reqNoMap,
+      ambiguousReqNos: reqPlan.rows.filter((x) => x.ambiguousRequested).map((x) => x.requested),
+      unlinkedReqNos: [...unlinkedReqNos],
+      orphanRequirements,
+      prdDoc,
+      prdDocs: prdDocsPreview,
+      docReferences,
+      planRowsPreview: planTargets.map((x) => ({ title: x.title, reuseId: x.reuseId })),
+      createTasks: input.createTasks === true,
+      readOnly: true,
+    };
+  },
+
+  // ---------- T00763：PRD 原文文档（存储 / 查看 / 反向更新 / AI 上下文反查） ----------
+
+  /** PRD 文档列表（按项目；不含正文，列表轻量） */
+  listPrdDocs(projectId: string): Array<Record<string, unknown>> {
+    const db = getDb();
+    // T03159（U20）：带出 origin_hash，供前端在「确认版覆盖录入」前识别同源既有文档并给字符数摘要确认
+    // T04897：带出 doc_kind（'prd'/'design'/'test'），供 PRD 管理列表与 mtask_get_prd 区分文档类型
+    return db.prepare(
+      `SELECT id, project_id, filename, status, doc_kind, origin_hash, LENGTH(content_md) AS content_chars, created_at, updated_at
+       FROM prd_docs WHERE project_id = ? AND archived = 0 ORDER BY created_at DESC`,
+    ).all(projectId) as Array<Record<string, unknown>>;
+  },
+
+  /** T05080：已归档 PRD 文档列表（归档菜单展示；projectId 为空时返回全部项目） */
+  listArchivedPrdDocs(projectId: string): Array<Record<string, unknown>> {
+    const db = getDb();
+    const where = projectId ? 'project_id = ? AND archived = 1' : 'archived = 1';
+    const params = projectId ? [projectId] : [];
+    return db.prepare(
+      `SELECT id, project_id, filename, status, doc_kind, origin_hash, LENGTH(content_md) AS content_chars, created_at, updated_at, archived_at
+       FROM prd_docs WHERE ${where} ORDER BY archived_at DESC, created_at DESC`,
+    ).all(...params) as Array<Record<string, unknown>>;
+  },
+
+  /** T00959：导出件头部需要的项目简要信息（名称缺失时回退「未命名项目」，不抛错以不阻断导出） */
+  getProjectBrief(projectId: string): { id: string; name: string } {
+    const row = getDb().prepare('SELECT id, name FROM projects WHERE id = ?').get(projectId) as { id: string; name: string } | undefined;
+    return row ?? { id: projectId, name: '未命名项目' };
+  },
+
+  /** PRD 文档详情（含完整 Markdown 原文） */
+  getPrdDoc(id: string): Record<string, unknown> {
+    const db = getDb();
+    const row = db.prepare('SELECT * FROM prd_docs WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!row) throw new Error('PRD 文档不存在');
+    return row;
+  },
+
+  /** 反向更新 PRD 内容（全量覆盖）：AI 或用户经接口把修订后的 Markdown 回写原文 */
+  updatePrdDoc(id: string, patch: { contentMd?: string; filename?: string }): Record<string, unknown> {
+    const db = getDb();
+    const row = db.prepare('SELECT id FROM prd_docs WHERE id = ?').get(id);
+    if (!row) throw new Error('PRD 文档不存在');
+    const contentMd = typeof patch.contentMd === 'string' ? patch.contentMd : '';
+    if (!contentMd.trim()) throw new Error('contentMd 不能为空（反向更新为全量覆盖，请传入完整 Markdown 原文）');
+    db.prepare('UPDATE prd_docs SET content_md = ?, filename = COALESCE(?, filename), updated_at = ? WHERE id = ?')
+      .run(contentMd, typeof patch.filename === 'string' ? patch.filename : null, now(), id);
+    return this.getPrdDoc(id);
+  },
+
+  // ---------- T00770：PRD 管理视图（新建 / 删除 / 状态流转 / 待确认问题） ----------
+
+  /** 新建 PRD 文档（空白或导入的 Markdown 原文）；status 缺省 'prd'（草稿/评审中） */
+  createPrdDoc(input: { projectId: string; filename: string; contentMd: string; status?: string; originHash?: string }): Record<string, unknown> {
+    const db = getDb();
+    if (!input.projectId) throw new Error('projectId 必填');
+    if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(input.projectId)) throw new Error('项目不存在');
+    const status = input.status === 'confirmed' ? 'confirmed' : 'prd';
+    const originHash = input.originHash?.trim() ?? '';
+    // T00821：覆盖模式——按同源生成批次(origin_hash)识别已录入的 PRD，命中则覆盖该条（更新正文/文件名/状态）
+    // 并替换其待确认问题（先删旧，由调用方随后重新批量插入），不新建记录、不产生重复。
+    if (originHash) {
+      const existing = db.prepare('SELECT id FROM prd_docs WHERE project_id = ? AND origin_hash = ?').get(input.projectId, originHash) as { id: string } | undefined;
+      if (existing) {
+        const t = now();
+        db.prepare('UPDATE prd_docs SET content_md = ?, filename = ?, status = ?, updated_at = ? WHERE id = ?')
+          .run(input.contentMd ?? '', input.filename ?? '', status, t, existing.id);
+        db.prepare('DELETE FROM prd_issues WHERE prd_id = ?').run(existing.id);
+        logService.log('INFO', 'prd', `[PRD覆盖] project=${input.projectId} doc=${existing.id} filename=${input.filename} 覆盖时间=${t}（操作人留空）`);
+        return this.getPrdDoc(existing.id);
+      }
+    }
+    const id = uuid();
+    const t = now();
+    db.prepare('INSERT INTO prd_docs (id, project_id, filename, content_md, status, origin_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, input.projectId, input.filename ?? '', input.contentMd ?? '', status, originHash, t, t);
+    return this.getPrdDoc(id);
+  },
+
+  /** 删除 PRD 文档：改为软删（归档）；待确认问题一并标记删除（T02218 deleted_at 口径） */
+  deletePrdDoc(id: string): void {
+    const db = getDb();
+    if (!db.prepare('SELECT id FROM prd_docs WHERE id = ?').get(id)) throw new Error('PRD 文档不存在');
+    const t = now();
+    db.transaction(() => {
+      db.prepare("UPDATE prd_issues SET deleted_at = ? WHERE prd_id = ? AND COALESCE(deleted_at, '') = ''").run(t, id);
+      db.prepare('UPDATE prd_docs SET archived = 1, archived_at = ? WHERE id = ?').run(t, id);
+    })();
+  },
+
+  /** T05080：还原已归档的 PRD 文档（归档 -> 活动） */
+  restorePrdDoc(id: string): boolean {
+    const db = getDb();
+    const row = db.prepare('SELECT id, archived FROM prd_docs WHERE id = ?').get(id) as { id: string; archived: number } | undefined;
+    if (!row?.archived) return false;
+      db.prepare('UPDATE prd_docs SET archived = 0, archived_at = NULL, updated_at = ? WHERE id = ?').run(now(), id);
+    return true;
+  },
+
+  /** T05080：彻底删除已归档的 PRD 文档（物理删，不可逆） */
+  purgePrdDoc(id: string): { deleted: number } {
+    const db = getDb();
+    const row = db.prepare('SELECT id, archived FROM prd_docs WHERE id = ?').get(id) as { id: string; archived: number } | undefined;
+    if (!row?.archived) return { deleted: 0 };
+    const deleted = db.prepare('DELETE FROM prd_docs WHERE id = ? AND archived = 1').run(id).changes;
+    if (deleted) db.prepare("DELETE FROM prd_issues WHERE prd_id = ?").run(id);
+    return { deleted };
+  },
+
+  /** 状态流转：'prd'（草稿/评审中）↔ 'confirmed'（确认版） */
+  setPrdDocStatus(id: string, status: string): Record<string, unknown> {
+    const db = getDb();
+    if (status !== 'prd' && status !== 'confirmed') throw new Error("status 仅支持 'prd' | 'confirmed'");
+    if (!db.prepare('SELECT id FROM prd_docs WHERE id = ?').get(id)) throw new Error('PRD 文档不存在');
+    db.prepare('UPDATE prd_docs SET status = ?, updated_at = ? WHERE id = ?').run(status, now(), id);
+    return this.getPrdDoc(id);
+  },
+
+  /** 待确认问题列表（按项目；可按文档过滤；T02218：软删除条目不出现在任何列表） */
+  listIssues(projectId: string, prdId?: string): Array<Record<string, unknown>> {
+    const db = getDb();
+    if (prdId) {
+      return db.prepare("SELECT * FROM prd_issues WHERE project_id = ? AND prd_id = ? AND COALESCE(deleted_at, '') = '' ORDER BY sort_order, created_at").all(projectId, prdId) as Array<Record<string, unknown>>;
+    }
+    return db.prepare("SELECT * FROM prd_issues WHERE project_id = ? AND COALESCE(deleted_at, '') = '' ORDER BY sort_order, created_at").all(projectId) as Array<Record<string, unknown>>;
+  },
+
+  /** 新增待确认问题（prd_id 可空=项目级泛问题） */
+  addIssue(input: { projectId: string; prdId?: string; question: string }): Record<string, unknown> {
+    const db = getDb();
+    if (!input.projectId) throw new Error('projectId 必填');
+    if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(input.projectId)) throw new Error('项目不存在');
+    if (!input.question?.trim()) throw new Error('question 必填');
+    if (input.prdId && !db.prepare('SELECT id FROM prd_docs WHERE id = ?').get(input.prdId)) throw new Error('PRD 文档不存在');
+    const id = uuid();
+    const t = now();
+    const max = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM prd_issues WHERE project_id = ?').get(input.projectId) as { m: number };
+    db.prepare('INSERT INTO prd_issues (id, project_id, prd_id, question, answer, status, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, \'\', \'open\', ?, ?, ?)')
+      .run(id, input.projectId, input.prdId ?? null, input.question.trim(), max.m + 1, t, t);
+    return db.prepare('SELECT * FROM prd_issues WHERE id = ?').get(id) as Record<string, unknown>;
+  },
+
+  /** 编辑待确认问题（问题内容 / 结论 / 状态 open↔resolved / AI建议；T02218：已软删除的拒绝编辑） */
+  updateIssue(id: string, patch: { question?: string; answer?: string; status?: string; suggestion?: string }): Record<string, unknown> {
+    const db = getDb();
+    const row = db.prepare('SELECT * FROM prd_issues WHERE id = ?').get(id) as
+      { status: string; answer: string; deleted_at: string | null } | undefined;
+    if (!row) throw new Error('待确认问题不存在');
+    if (row.deleted_at) throw new Error('待确认问题已删除，无法编辑');
+    if (patch.status !== undefined && patch.status !== 'open' && patch.status !== 'resolved') {
+      throw new Error("status 仅支持 'open' | 'resolved'");
+    }
+    // H-1 修复：以「本次请求生效后的最终 answer」判空——传空串 + resolved 也必须拒绝（原先只查 patch.answer===undefined 分支，空串可绕过并清空已确认结论）
+    const finalAnswer = patch.answer ?? row.answer;
+    if (patch.status === 'resolved' && !String(finalAnswer).trim()) {
+      throw new Error('标记为已确认前请先填写结论（answer）');
+    }
+    db.prepare('UPDATE prd_issues SET question = COALESCE(?, question), answer = COALESCE(?, answer), status = COALESCE(?, status), suggestion = COALESCE(?, suggestion), updated_at = ? WHERE id = ?')
+      .run(patch.question?.trim() ?? null, patch.answer ?? null, patch.status ?? null, patch.suggestion?.trim() ?? null, now(), id);
+    return db.prepare('SELECT * FROM prd_issues WHERE id = ?').get(id) as Record<string, unknown>;
+  },
+
+  /** T02218：删除改为逻辑删除（deleted_at 置时间）——数据保留，可由管理员在「设置 → 数据维护」恢复；
+   *  单条与批量删除共用此通道，操作写入日志（T02218 约束：删除保留操作日志）。 */
+  deleteIssue(id: string): void {
+    const db = getDb();
+    const row = db.prepare('SELECT id, question FROM prd_issues WHERE id = ?').get(id) as { id: string; question: string } | undefined;
+    if (!row) throw new Error('待确认问题不存在');
+    const t = now();
+    db.prepare('UPDATE prd_issues SET deleted_at = ?, updated_at = ? WHERE id = ?').run(t, t, id);
+    logService.log('INFO', 'prd', `[待确认问题删除] 软删除 id=${id} question=${row.question.slice(0, 120)}（可在 设置→数据维护 恢复）`);
+  },
+
+  /** T00769：批量录入待确认问题（AI 生成的问题清单 + 用户自定义一次入库），返回新建行 */
+  addIssuesBatch(input: { projectId: string; prdId?: string; items: Array<{ question: string; answer?: string; level?: string; suggestion?: string }> }): Array<Record<string, unknown>> {
+    const db = getDb();
+    if (!input.projectId) throw new Error('projectId 必填');
+    if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(input.projectId)) throw new Error('项目不存在');
+    if (input.prdId && !db.prepare('SELECT id FROM prd_docs WHERE id = ?').get(input.prdId)) throw new Error('PRD 文档不存在');
+    const items = (input.items ?? []).filter((x) => typeof x.question === 'string' && x.question.trim());
+    if (items.length === 0) throw new Error('items 不能为空（至少一条非空 question）');
+    const LEVELS = new Set(['blocker', 'suggested', 'info', 'custom', '']);
+    const max = (db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM prd_issues WHERE project_id = ?').get(input.projectId) as { m: number }).m;
+    const out: Array<Record<string, unknown>> = [];
+    const t = now();
+    items.forEach((x, i) => {
+      const level = typeof x.level === 'string' && LEVELS.has(x.level) ? x.level : '';
+      const id = uuid();
+      // T00822：结转状态按「是否已填结论」区分——有 answer → resolved(已确认)，空 answer → open(待确认)。
+      // 此前统一写死 'open' 导致「已录结论的问题在 PRD 管理视图仍显示待确认」，反馈明确。
+      const answer = x.answer?.trim() ?? '';
+      const status = answer ? 'resolved' : 'open';
+      db.prepare("INSERT INTO prd_issues (id, project_id, prd_id, question, answer, status, level, suggestion, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(id, input.projectId, input.prdId ?? null, x.question.trim(), answer, status, level, x.suggestion?.trim() ?? '', max + 1 + i, t, t);
+      out.push(db.prepare('SELECT * FROM prd_issues WHERE id = ?').get(id) as Record<string, unknown>);
+    });
+    return out;
+  },
+
+  /**
+   * T02218：批量回写——逐条复用 writebackIssue（同一套判重/锚点/事务逻辑），
+   * 单条失败（未确认/无结论/未关联文档/已回写）不影响其余，原因逐项返回供前端展开；
+   * 不做整体事务：批量语义即「部分成功」。
+   */
+  batchWritebackIssues(ids: string[]): {
+    succeeded: Array<{ id: string; question: string; prdId: string; filename: string }>;
+    failed: Array<{ id: string; question: string; reason: string }>;
+  } {
+    const db = getDb();
+    const succeeded: Array<{ id: string; question: string; prdId: string; filename: string }> = [];
+    const failed: Array<{ id: string; question: string; reason: string }> = [];
+    for (const id of ids) {
+      const row = db.prepare('SELECT question FROM prd_issues WHERE id = ?').get(id) as { question: string } | undefined;
+      const question = row?.question ?? '';
+      try {
+        const r = this.writebackIssue(id);
+        succeeded.push({ id, question, prdId: scalarText(r.doc.id ?? ''), filename: scalarText(r.doc.filename ?? '') });
+      } catch (e) {
+        failed.push({ id, question, reason: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    return { succeeded, failed };
+  },
+
+  /** T02218：批量删除（逻辑删除）——逐条调用 deleteIssue（含操作日志），部分失败不阻断其余 */
+  batchDeleteIssues(ids: string[]): {
+    succeeded: Array<{ id: string; question: string }>;
+    failed: Array<{ id: string; question: string; reason: string }>;
+  } {
+    const db = getDb();
+    const succeeded: Array<{ id: string; question: string }> = [];
+    const failed: Array<{ id: string; question: string; reason: string }> = [];
+    for (const id of ids) {
+      const row = db.prepare('SELECT question FROM prd_issues WHERE id = ?').get(id) as { question: string } | undefined;
+      const question = row?.question ?? '';
+      try {
+        this.deleteIssue(id);
+        succeeded.push({ id, question });
+      } catch (e) {
+        failed.push({ id, question, reason: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    return { succeeded, failed };
+  },
+
+  /**
+   * 回写：把已确认问题的「问题 + 结论」写入对应 PRD 文档的 Markdown。
+   * 规则：文档含「## 待确认问题结论」节 → 条目插入该节标题后（节内最前，保证节内聚合）；
+   *       无该节 → 在文档末尾追加节 + 条目。重复回写同一问题会被拒绝（按问题文本判重）。
+   */
+  writebackIssue(id: string): { doc: Record<string, unknown>; issue: Record<string, unknown> } {
+    const db = getDb();
+    const issue = db.prepare('SELECT * FROM prd_issues WHERE id = ?').get(id) as
+      { id: string; prd_id: string | null; question: string; answer: string; status: string; deleted_at: string | null } | undefined;
+    if (!issue) throw new Error('待确认问题不存在');
+    if (issue.deleted_at) throw new Error('待确认问题已删除，无法回写');
+    if (issue.status !== 'resolved') throw new Error('问题尚未确认（status=resolved）——请先填写结论并确认');
+    if (!issue.answer.trim()) throw new Error('结论（answer）为空，无法回写');
+    if (!issue.prd_id) throw new Error('该问题未关联 PRD 文档，无法回写');
+    const prdId: string = issue.prd_id; // 属性收窄不入闭包（事务回调内引用），此处固化
+    const anchor = `<!-- issue:${issue.id} -->`;
+
+    // 走查 L-2：历史数据迁移——文档里已有同文条目但无锚点（锚点机制上线前的历史回写）时，
+    // 就地补锚后再判重拒绝。否则该问题日后被编辑文本，锚点/文本双不匹配会写出重复条目。
+    // （单条 UPDATE 自身原子，独立于下方写入事务执行——避免迁移随判重 throw 一起回滚）
+    const preDoc = this.getPrdDoc(issue.prd_id) as { content_md: string };
+    if (!preDoc.content_md.includes(anchor) && preDoc.content_md.includes(`### Q：${issue.question}\n`)) {
+      const qIdx = preDoc.content_md.indexOf(`### Q：${issue.question}\n`);
+      db.prepare('UPDATE prd_docs SET content_md = ?, updated_at = ? WHERE id = ?')
+        .run(preDoc.content_md.slice(0, qIdx) + `${anchor}\n` + preDoc.content_md.slice(qIdx), now(), issue.prd_id);
+      throw new Error('该问题的结论已回写至 PRD（历史条目已补锚点），无需重复回写');
+    }
+
+    // 走查 M-1：写入包事务——better-sqlite3 同步驱动下当前无让位点，此处为将来引入异步 IO 的防御，
+    // 保证「读全文→拼装→写回」不被未来的 await 打断产生丢失更新
+    const ts = now();
+    const write = db.transaction((): { doc: Record<string, unknown>; issue: Record<string, unknown> } => {
+      const doc = this.getPrdDoc(prdId) as { id: string; content_md: string };
+      const SECTION = '## 待确认问题结论';
+      // T00781：稳定锚点判重——以 issue id 为锚（不依赖可变的 question 文本），
+      // 问题被编辑后仍能识别「已回写」，避免同一问题重复写入导致正文堆积重复结论。
+      // 兼容：历史数据无锚点时回退按问题文本判定（L-2 已在上一步为命中的历史条目补锚）。
+      const entry = `\n\n${anchor}\n### Q：${issue.question}\n\n**结论**：${issue.answer.trim()}\n`;
+      if (doc.content_md.includes(anchor) || doc.content_md.includes(`### Q：${issue.question}\n`)) {
+        throw new Error('该问题的结论已回写至 PRD（按问题锚点判重），无需重复回写');
+      }
+      let next: string;
+      // T00781：节定位改行首正则——原先 indexOf('\n'+SECTION+'\n') 在「该节位于文档首行」时判不到，
+      // 会走到 else 分支追加第二个同名节；正则匹配行首可覆盖该边缘。
+      const secMatch = /^##[ \t]+待确认问题结论[ \t]*$/m.exec(doc.content_md);
+      if (secMatch) {
+        const lineEnd = secMatch.index + secMatch[0].length;
+        const insertAt = Math.min(lineEnd + 1, doc.content_md.length); // 越过标题行换行
+        next = doc.content_md.slice(0, insertAt) + entry.replace(/^\n\n/, '') + '\n' + doc.content_md.slice(insertAt);
+      } else {
+        next = `${doc.content_md.replace(/\n*$/, '\n\n')}${SECTION}\n${entry.replace(/^\n\n/, '')}\n`;
+      }
+      db.prepare('UPDATE prd_docs SET content_md = ?, updated_at = ? WHERE id = ?').run(next, ts, prdId);
+      // 走查 L-4：issue 本函数未修改、doc 仅 content_md/updated_at 变化——复用事务内首读对象，省两次查询
+      return { doc: { ...doc, content_md: next, updated_at: ts } as Record<string, unknown>, issue: issue as Record<string, unknown> };
+    });
+    return write();
+  },
+
+  // ---------- T00662：需求跟踪矩阵 CRUD ----------
+
+  /** 矩阵行列表（按项目；含关联的计划与待办摘要，供矩阵展示「需求 ← 计划/任务」关联关系） */
+  /**
+   * T01361：需求跟踪矩阵行（prd_requirements 全列 + 联表摘要）——具体化类型替代
+   * `Record<string, unknown>`（Sonar S6551：unknown/object 字符串化无法证明有 toString）。
+   */
+  listRequirements(projectId: string): RequirementRow[] {
+    const db = getDb();
+    const reqs = db.prepare('SELECT * FROM prd_requirements WHERE project_id = ? AND archived = 0 ORDER BY sort_order, created_at').all(projectId) as Array<Omit<RequirementRow, 'linkedPlans' | 'linkedTasks' | 'prdDoc'>>;
+    const plans = db.prepare('SELECT id, title, status, req_ids FROM plan_tasks WHERE project_id = ? AND archived = 0').all(projectId) as Array<{ id: string; title: string; status: string; req_ids: string | null }>;
+    const tasks = db.prepare('SELECT id, task_no, title, status, verified, req_ids FROM tasks WHERE project_id = ? AND archived = 0').all(projectId) as Array<{ id: string; task_no: string | null; title: string; status: string; verified: number; req_ids: string | null }>;
+    const parse = (v: string | null): string[] => {
+      if (!v) return [];
+      try { const a = JSON.parse(v) as unknown; return Array.isArray(a) ? a.filter((x): x is string => typeof x === 'string') : []; } catch { return []; }
+    };
+    // T00763：项目内 PRD 文档摘要——矩阵行经 prd_id 关联，前端「查看PRD」按钮按此取文档
+    const prdDocs = db.prepare('SELECT id, filename FROM prd_docs WHERE project_id = ? AND archived = 0').all(projectId) as Array<{ id: string; filename: string }>;
+    const docById = new Map(prdDocs.map((d) => [d.id, d]));
+    // T00784：反向索引替换 O(N×M) 逐需求 filter——原先每个需求都对全量 plans/tasks 重跑
+    // JSON.parse（N 需求 × M 计划/任务），压测实测 436 次调用累计 117.6s 事件循环时间，
+    // 并拖慢同进程所有其它端点。现改为对 plans/tasks 各遍历一次建 Map<reqId, 摘要[]>，
+    // 复杂度降为 O(N+M)，req_ids 仅解析一次。（不改返回结构与字段顺序）
+    const plansByReq = new Map<string, Array<{ id: string; title: string; status: string }>>();
+    for (const p of plans) {
+      for (const id of parse(p.req_ids)) {
+        const bucket = plansByReq.get(id);
+        const item = { id: p.id, title: p.title, status: p.status };
+        if (bucket) bucket.push(item); else plansByReq.set(id, [item]);
+      }
+    }
+    const tasksByReq = new Map<string, Array<{ id: string; taskNo: string | null; title: string; status: string; verified: boolean }>>();
+    for (const x of tasks) {
+      for (const id of parse(x.req_ids)) {
+        const bucket = tasksByReq.get(id);
+        const item = { id: x.id, taskNo: x.task_no, title: x.title, status: x.status, verified: !!x.verified };
+        if (bucket) bucket.push(item); else tasksByReq.set(id, [item]);
+      }
+    }
+    // T05208（方案 B）：主 PRD → 配套设计文档（SDD）显式关联索引，供矩阵「关联SDD」列按行展示
+    const sddByPrd = listSddDocIndex(projectId);
+    return reqs.map((r) => {
+      const rid = String(r.id);
+      const linkedPlans = plansByReq.get(rid) ?? [];
+      const linkedTasks = tasksByReq.get(rid) ?? [];
+      const prdId = typeof r.prd_id === 'string' ? r.prd_id : null;
+      const prdDoc = prdId ? docById.get(prdId) : undefined;
+      const sddDoc = prdId ? sddByPrd.get(prdId) : undefined;
+      return { ...r, linkedPlans, linkedTasks, prdDoc: prdDoc ?? null, sddDoc: sddDoc ?? null };
+    });
+  },
+
+  createRequirement(projectId: string, input: { reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string; status?: string }): Record<string, unknown> {
+    const db = getDb();
+    if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
+    const t = now();
+    const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM prd_requirements WHERE project_id = ?').get(projectId) as { m: number }).m;
+    const id = uuid();
+    // T01867：手工新增走「显式编号撞号即报错」——用户手打的编号是他引用的名字，静默改号比拒绝更糟；
+    // 自动编号（留空）走同一顺延器，不再用 MAX(sort_order)+1（删除中间行/改过排序后会与存量编号重复）。
+    const usedNos = new Set<string>(
+      (db.prepare('SELECT req_no FROM prd_requirements WHERE project_id = ?').all(projectId) as Array<{ req_no: string | null }>)
+        .map((r) => String(r.req_no ?? '').trim()).filter(Boolean),
+    );
+    const requested = (input.reqNo ?? '').trim();
+    // 占用判定按编号同一性（REQ-01 与 REQ-001 是同一个号），否则两种写法能并存、顺延也白做
+    if (requested && isReqNoTaken(usedNos, requested)) throw new Error(`需求编号「${requested}」在本项目已存在，请换一个或直接留空由系统顺延`);
+    const reqNo = resolveReqNo(usedNos, requested);
+    db.prepare(
+      `INSERT INTO prd_requirements (id, project_id, req_no, title, content, source_ref, priority, status, sort_order, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, projectId, reqNo, input.title.trim(), input.content ?? '', input.sourceRef ?? '', input.priority ?? 'normal', input.status ?? 'todo', maxOrder + 1, t, t);
+    return db.prepare('SELECT * FROM prd_requirements WHERE id = ?').get(id) as Record<string, unknown>;
+  },
+
+  updateRequirement(id: string, patch: { title?: string; content?: string; reqNo?: string; sourceRef?: string; priority?: string; status?: string; sortOrder?: number; prdId?: string }): Record<string, unknown> {
+    const db = getDb();
+    // T01867：改成已被占用的编号同样拒绝（编号是按编号定位需求的键，两行同号会让关联指向不确定）
+    const targetNo = patch.reqNo === undefined ? undefined : String(patch.reqNo).trim();
+    if (targetNo) {
+      const self = db.prepare('SELECT project_id FROM prd_requirements WHERE id = ?').get(id) as { project_id: string } | undefined;
+      if (!self) throw new Error('需求不存在');
+      // 同项目其余行按编号同一性判占用（SQL 等值比不出 REQ-01 与 REQ-001 这种混写同号）
+      const others = (db.prepare('SELECT req_no FROM prd_requirements WHERE project_id = ? AND id <> ?').all(self.project_id, id) as Array<{ req_no: string | null }>)
+        .map((r) => String(r.req_no ?? '').trim()).filter(Boolean);
+      if (isReqNoTaken(others, targetNo)) throw new Error(`需求编号「${targetNo}」在本项目已被其他需求占用`);
+    }
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    const map: Array<[keyof typeof patch, string]> = [['title', 'title'], ['content', 'content'], ['reqNo', 'req_no'], ['sourceRef', 'source_ref'], ['priority', 'priority'], ['status', 'status'], ['sortOrder', 'sort_order'], ['prdId', 'prd_id']];
+    for (const [k, col] of map) {
+      const v = patch[k];
+      if (v !== undefined) { sets.push(`${col} = ?`); vals.push(v); }
+    }
+    if (sets.length === 0) return db.prepare('SELECT * FROM prd_requirements WHERE id = ?').get(id) as Record<string, unknown>;
+    sets.push('updated_at = ?');
+    vals.push(now(), id);
+    const r = db.prepare(`UPDATE prd_requirements SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+    if (r.changes === 0) throw new Error('需求不存在');
+    return db.prepare('SELECT * FROM prd_requirements WHERE id = ?').get(id) as Record<string, unknown>;
+  },
+
+  /** T05080：已归档需求行列表（归档菜单展示；projectId 为空时返回全部项目） */
+  listArchivedRequirements(projectId: string): Array<Record<string, unknown>> {
+    const db = getDb();
+    const where = projectId ? 'project_id = ? AND archived = 1' : 'archived = 1';
+    const params = projectId ? [projectId] : [];
+    return db.prepare(
+      `SELECT id, project_id, req_no, title, priority, status, archived_at
+       FROM prd_requirements WHERE ${where} ORDER BY archived_at DESC, sort_order`,
+    ).all(...params) as Array<Record<string, unknown>>;
+  },
+
+  /**
+   * 删除需求行：清理计划/待办上的悬空引用，返回破坏面（T01869）。
+   * 原实现全表扫描 plan_tasks/tasks（连项目条件都没有），项目多时每次删一行都要重写
+   * 无关项目的 updated_at；现按需求所属项目过滤。test_cases.req_id 是 CASCADE 外键，
+   * 删除需求会物理带走其下用例，故把条数一并回传，供调用方核对（前端弹前已有确认文案）。
+   */
+  deleteRequirement(id: string): { strippedPlans: number; strippedTasks: number; deletedCases: number } {
+    const db = getDb();
+    const req = db.prepare('SELECT project_id FROM prd_requirements WHERE id = ?').get(id) as { project_id: string } | undefined;
+    if (!req) throw new Error('需求不存在');
+    const projectId = req.project_id;
+    const plans = db.prepare("SELECT id, req_ids FROM plan_tasks WHERE project_id = ? AND COALESCE(req_ids,'') != ''").all(projectId) as Array<{ id: string; req_ids: string }>;
+    const tasks = db.prepare("SELECT id, req_ids FROM tasks WHERE project_id = ? AND COALESCE(req_ids,'') != ''").all(projectId) as Array<{ id: string; req_ids: string }>;
+    const t = now();
+    const archivedCases = (db.prepare('SELECT COUNT(*) AS n FROM test_cases WHERE req_id = ? AND archived = 0').get(id) as { n: number }).n;
+    const strip = (json: string): string | null => {
+      try {
+        const a = (JSON.parse(json) as unknown[]).filter((x) => x !== id);
+        return a.length > 0 ? JSON.stringify(a) : null;
+      } catch { return null; }
+    };
+    let strippedPlans = 0;
+    let strippedTasks = 0;
+    db.transaction(() => {
+      for (const p of plans) { const n = strip(p.req_ids); if (n !== p.req_ids) { db.prepare('UPDATE plan_tasks SET req_ids = ?, updated_at = ? WHERE id = ?').run(n, now(), p.id); strippedPlans += 1; } }
+      for (const x of tasks) { const n = strip(x.req_ids); if (n !== x.req_ids) { db.prepare('UPDATE tasks SET req_ids = ?, updated_at = ? WHERE id = ?').run(n, now(), x.id); strippedTasks += 1; } }
+      // T05080：删除=归档——软删需求及其下用例，保留数据以备归档菜单恢复/彻底删除
+      db.prepare('UPDATE test_cases SET archived = 1, archived_at = ? WHERE req_id = ? AND archived = 0').run(t, id);
+      db.prepare('UPDATE prd_requirements SET archived = 1, archived_at = ? WHERE id = ?').run(t, id);
+    })();
+    return { strippedPlans, strippedTasks, deletedCases: archivedCases };
+  },
+
+  /** T05080：还原已归档的需求行（归档 -> 活动） */
+  restoreRequirement(id: string): boolean {
+    const db = getDb();
+    const row = db.prepare('SELECT id, archived FROM prd_requirements WHERE id = ?').get(id) as { id: string; archived: number } | undefined;
+    if (!row?.archived) return false;
+      db.prepare('UPDATE prd_requirements SET archived = 0, archived_at = NULL, updated_at = ? WHERE id = ?').run(now(), id);
+    return true;
+  },
+
+  /** T05080：彻底删除已归档的需求行（物理删，不可逆） */
+  purgeRequirement(id: string): { deleted: number } {
+    const db = getDb();
+    const row = db.prepare('SELECT id, archived FROM prd_requirements WHERE id = ?').get(id) as { id: string; archived: number } | undefined;
+    if (!row?.archived) return { deleted: 0 };
+    const deleted = db.prepare('DELETE FROM prd_requirements WHERE id = ? AND archived = 1').run(id).changes;
+    return { deleted };
+  },
+
+  /** T01867：项目内重复需求编号分组（存量脏数据可见化；新数据已不会再产生） */
+  duplicateReqNos(projectId: string): Array<{ reqNo: string; count: number; variants: string[]; ids: string[] }> {
+    const db = getDb();
+    // T01873：取 id 并按矩阵顺序返回——面板的行内标记与「点提示直达第一组」都依赖 id 与顺序
+    const rows = db.prepare('SELECT id, req_no FROM prd_requirements WHERE project_id = ? ORDER BY sort_order, created_at').all(projectId) as Array<{ id: string; req_no: string | null }>;
+    return groupDuplicateReqNos(rows);
+  },
+
+  /**
+   * T04010：失败片索引落库——只存片号/总数/归因/字符区间/文件名，正文不入库；
+   * 同项目同一份内容（doc_hash 相同）重新解析时整组替换，传空数组即清空（本次解析无损）。
+   * 原文恢复以 prd_docs.content_md + 区间现切，避免与 PRD 管理视图的正文双轨。
+   */
+  persistParseFailures(projectId: string, filename: string, docText: string, failedChunks: ReadonlyArray<PrdFailedChunk>): string[] {
+    const db = getDb();
+    const hash = prdDocHash(docText);
+    const t = now();
+    return db.transaction(() => {
+      db.prepare('DELETE FROM prd_parse_failures WHERE project_id = ? AND doc_hash = ?').run(projectId, hash);
+      const ins = db.prepare(
+        `INSERT INTO prd_parse_failures
+           (id, project_id, doc_hash, filename, chunk_index, chunk_total, chunk_start, chunk_end, reason, message, chars, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      const ids: string[] = [];
+      for (const f of failedChunks) {
+        const id = uuid();
+        ins.run(id, projectId, hash, filename, f.index, f.total, f.start, f.end, f.reason, f.message ?? '', f.chars, t, t);
+        ids.push(id);
+      }
+      return ids;
+    })();
+  },
+
+  /**
+   * T04010：恢复失败片——按 doc_hash 找到项目内同内容的 prd_docs 行，用落库区间现切原文。
+   * 找不到对应文档（尚未导入）或区间越界/失效的行不返回：宁可少一条，不切出别的段落冒充该片。
+   */
+  listParseFailures(projectId: string): Array<{
+    id: string; file: string; prdId: string; index: number; total: number;
+    reason: PrdFailedChunk['reason']; message?: string; chars: number; text: string; createdAt: string;
+  }> {
+    const db = getDb();
+    const rows = db.prepare(
+      'SELECT id, doc_hash, filename, chunk_index, chunk_total, chunk_start, chunk_end, reason, message, chars, created_at FROM prd_parse_failures WHERE project_id = ? ORDER BY filename, chunk_index',
+    ).all(projectId) as Array<{
+      id: string; doc_hash: string; filename: string; chunk_index: number; chunk_total: number;
+      chunk_start: number; chunk_end: number; reason: string; message: string; chars: number; created_at: string;
+    }>;
+    if (rows.length === 0) return [];
+    // 同内容可能有多份文档（重复导入同一 PRD）；取最近更新的一份，区间按该正文现切
+    const docs = db.prepare('SELECT id, filename, content_md FROM prd_docs WHERE project_id = ? ORDER BY updated_at DESC').all(projectId) as Array<{
+      id: string; filename: string | null; content_md: string;
+    }>;
+    const byHash = new Map<string, { id: string; filename: string | null; content_md: string }>();
+    for (const d of docs) {
+      const h = prdDocHash(d.content_md);
+      if (!byHash.has(h)) byHash.set(h, d);
+    }
+    const out: Array<{
+      id: string; file: string; prdId: string; index: number; total: number;
+      reason: PrdFailedChunk['reason']; message?: string; chars: number; text: string; createdAt: string;
+    }> = [];
+    for (const r of rows) {
+      const doc = byHash.get(r.doc_hash);
+      if (!doc) continue;
+      if (r.chunk_start < 0 || r.chunk_end <= r.chunk_start || r.chunk_end > doc.content_md.length) continue;
+      out.push({
+        id: r.id,
+        file: r.filename || doc.filename || '',
+        prdId: doc.id,
+        index: r.chunk_index,
+        total: r.chunk_total,
+        reason: r.reason as PrdFailedChunk['reason'],
+        message: r.message || undefined,
+        chars: r.chars,
+        text: doc.content_md.slice(r.chunk_start, r.chunk_end),
+        createdAt: r.created_at,
+      });
+    }
+    return out;
+  },
+
+  /** T04010：补解析成功后按 id 删除服务端失败片（与前端 sessionStorage 列表同步收口） */
+  deleteParseFailures(projectId: string, ids: ReadonlyArray<string>): number {
+    if (ids.length === 0) return 0;
+    const db = getDb();
+    const del = db.prepare('DELETE FROM prd_parse_failures WHERE id = ? AND project_id = ?');
+    return db.transaction(() => ids.reduce((n, id) => n + del.run(id, projectId).changes, 0))();
+  },
+
+  /** 关联调整：把需求关联到计划/待办（或解除）——矩阵面板的「关联调整」编辑入口 */
+  linkRequirement(reqId: string, target: { kind: 'plan' | 'task'; targetId: string; linked: boolean }): void {
+    const db = getDb();
+    const table = target.kind === 'plan' ? 'plan_tasks' : 'tasks';
+    // M6-6.1：目标种类 → 人话名词（原散落各处的三元命名统一后，错误文案不再重复）
+    const label = target.kind === 'plan' ? '计划' : '待办';
+    // T00710（D-2 修复）：校验需求与目标同项目（对齐 linkTodo 的同项目约束），防矩阵跨项目混入脏关联
+    const req = db.prepare('SELECT project_id FROM prd_requirements WHERE id = ?').get(reqId) as { project_id: string } | undefined;
+    if (!req) throw new Error('需求不存在');
+    const row = db.prepare(`SELECT req_ids, project_id FROM ${table} WHERE id = ?`).get(target.targetId) as { req_ids: string | null; project_id: string } | undefined;
+    if (!row) throw new Error(`${label}不存在`);
+    if (req.project_id !== row.project_id) throw new Error(`仅可关联同项目的${label}`);
+    const { ids, added } = applyLinkToggle(parseLinkIds(row.req_ids), reqId, target.linked);
+    db.prepare(`UPDATE ${table} SET req_ids = ?, updated_at = ? WHERE id = ?`).run(ids.length > 0 ? JSON.stringify(ids) : null, now(), target.targetId);
+    if (target.kind === 'task' && added) syncTaskCoveredDone(db, row.project_id, target.targetId, reqId);
+    // T02087：关联建立/解除都改变该需求的完成度读数（解除后可能从全 done 退回 doing），
+    // 与上一行的待办反向同步同一时机重算；无关联项时派生自动跳过（保持人工状态）。
+    syncReqStatuses(db, row.project_id, [reqId]);
+  },
+
+  /**
+   * AI 解析：把表格文本交给所选模型，识别计划条目并输出标准结构草稿（不入库，返回前端预览确认）。
+   * 校验与归一化在服务端完成：title 必填、startDate 规范化（非法置空由重排兜底）、durationDays≥1、status 枚举。
+   */
+  async aiParseDrafts(toolId: string, tableText: string): Promise<{
+    drafts: Array<{ title: string; description: string; startDate: string; durationDays: number; assignee: string; status: PlanStatus }>;
+    /** T00620：行数守恒提示（输入行数与解析条数差异过大时给出，供前端提示可能被归纳合并） */
+    coverageWarn?: string;
+  }> {
+    const system = [
+      '你是 MTask 的项目计划解析助手。给定来自用户上传 Excel 的表格文本（每行一条记录，单元格以「 | 」分隔，列含义未知，可能含表头/说明/汇总行）。',
+      '请识别其中的项目计划条目，输出 JSON 数组，每元素为：',
+      '{"title":"任务名称(必填)","description":"描述(无则空串)","startDate":"YYYY-MM-DD(无法识别则空串)","durationDays":工期工作日数(默认1),"assignee":"负责人(无则空串)","status":"todo|doing|done|blocked(默认todo)"}',
+      '要求：',
+      '1. 只输出 JSON 数组本身，不要任何解释或 Markdown 代码围栏',
+      '2. 中文/异构日期（如 9月14日、2026.9.14、14/9）转换为 YYYY-MM-DD；无法可靠识别则**给出合理日程建议**：以今天为基准，按条目顺序与工期并行/串行关系推算 startDate（如多条无日期任务可按顺序依次排开），建议值同样输出 YYYY-MM-DD；完全无法推断时才置空串',
+      '3. 工期/天数/持续列给出 durationDays；缺失默认 1；不允许小于 1',
+      '4. 状态列映射到 todo/doing/done/blocked；无法识别默认 todo',
+      '5. 跳过表头行、空行、纯说明/汇总行；不要虚构任务',
+      // T00620：行数守恒——源表常出现「同一工作项多行（不同产出物/阶段）」，严禁按标题合并归纳
+      '6. **逐行输出：表格中每个数据行都必须生成一个独立条目，严禁把同一工作项的多行合并成一条**；',
+      '   同一「工作项」出现多行时，用产出物/阶段信息区分标题（如「XX工具开发（bemp-test-common）」），确保每行可独立识别；',
+      '7. 输出条目数应尽量与表格数据行数一致（仅允许因表头/空行/汇总行而减少）',
+    ].join('\n');
+    // T00551：分块解析——整表一次性交给模型会被 max_tokens 截断（19 条只回 7 条），
+    // 按行分块（每块 ≤15 行）逐块解析合并
+    // T00620 修复：块内分隔符原为 '\nn'（「换行 + 字母 n」），使除首行外每行开头被字符 n 污染，
+    // 干扰 AI 逐行识别——修正为标准换行分隔
+    const tLines = tableText.split('\n').map((x) => x.trim()).filter(Boolean);
+    const CHUNK = 15;
+    const chunks: string[] = [];
+    for (let i = 0; i < tLines.length; i += CHUNK) chunks.push(tLines.slice(i, i + CHUNK).join('\n'));
+    if (chunks.length === 0) throw new Error('Excel 中未解析到任何数据行');
+
+    const drafts: PlanDraft[] = [];
+    // T00620 修复：原按 title 去重，会把「同一工作项的多行」（源表常见：同工作项 × 多产出物/多阶段）
+    // 误合并成一条——这是「54 行只解析出 17 条」的根因之一。改为**行级指纹去重**
+    // （标题+开始日期+描述+负责人），仅消除跨块重复的同一条记录，保留同工作项的不同行。
+    const seen = new Set<string>();
+    const parseChunk = async (chunk: string, toolId: string, system: string, dedup: Set<string>): Promise<PlanDraft[]> => {
+      const ai = await AIService.ask(toolId, system, `【Excel 表格文本】\n${chunk}`, undefined, undefined, PLAN_IMPORT_CARD);
+      if (!ai.ok || !ai.content) return []; // 单块失败跳过，不拖垮整体
+      const arr = parseJsonArrayWithRecovery(ai.content, '');
+      const out: PlanDraft[] = [];
+      for (const r of arr) {
+        const d = normalizeDraft(r);
+        if (!d) continue;
+        const fingerprint = `${d.title}|${d.startDate ?? ''}|${(d.description ?? '').slice(0, 40)}|${d.assignee ?? ''}`;
+        if (!dedup.has(fingerprint)) { dedup.add(fingerprint); out.push(d); }
+      }
+      return out;
+    };
+    for (const chunk of chunks) {
+      drafts.push(...await parseChunk(chunk, toolId, system, seen));
+    }
+    if (drafts.length === 0) throw new Error('AI 未能从文件中识别出任何计划条目，请确认文件内容或更换模型');
+    // T00620：行数守恒提示——输入数据行与解析条数差异过大时附诊断信息（前端可据此提示「可能被模型归纳合并」）
+    const coverageWarn = tLines.length > 0 && drafts.length < tLines.length * 0.6
+      ? `本次输入 ${tLines.length} 行，解析出 ${drafts.length} 条；若与源表条目数不符，可能被模型归纳合并——请核对后手动补充`
+      : '';
+    return { drafts, coverageWarn };
+  },
+
+  /** 批量创建（AI 导入确认保存/其他批量来源）：事务插入后统一重排；首条用其 startDate 作锚点。
+   *  T00709（D-1 修复）：返回 ids 按输入顺序对齐（经 title 清洗过滤后的 clean 数组下标），
+   *  供调用方（importPrd）按 id 回写 req_ids 关联——废弃按标题 find 匹配（同名计划会互相覆盖）。 */
+  /**
+   * 批量创建（T00561 后各行日期独立）。
+   * T01688 项 1：items 可带 `depsOn`——按标题引用同批或库内已有条目，创建后解析为 deps 落库：
+   *  - 引用目标为里程碑（kind=milestone）→ type='child'（归属，里程碑按子任务包络收口）；
+   *  - 其余 → type='serial'（串行前置，触发排期联动）。
+   * 无法解析的引用不静默丢弃：以 warnings 返回，供上层提示「依赖待补」。
+   */
+  createBatch(projectId: string, items: PlanBatchItem[], opts: { dupPolicy?: 'warn' | 'block'; onDuplicate?: 'reuse' } = {}): { inserted: number; reused: number; unlinked: number; ids: string[]; warnings?: string[] } {
+    if (!getDb().prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
+    const clean = items.filter((it) => it.title?.trim());
+    if (clean.length === 0) throw new Error('没有可创建的计划条目');
+    if (clean.length > 5000) throw new Error('单次创建上限 5000 条');
+    const db = getDb();
+    const t = now();
+    const cal = loadCalendar();
+    const ids: string[] = [];
+    const warnings: string[] = [];
+    // T03160（UX-07④⑤）：onDuplicate='reuse'——AI 计划导入通道复用 PRD 导入的同一判重函数
+    // resolveImportPlanTargets（kind+标题分键，不另写一套判重）：撞名不新建，命中未归档同名
+    // 原行只补写差异字段，原行 status/progress/起止日期一字不动（T01875 口径）；
+    // 未命中的正常新建，回执按「新增/跳过重复/未关联」分列。
+    const reuseMode = opts.onDuplicate === 'reuse';
+    const kindOf = (it: PlanBatchItem): PlanKind => (it.kind === 'milestone' || it.kind === 'daily' ? it.kind : 'normal');
+    const targets: PrdImportPlanTarget[] | null = reuseMode
+      ? resolveImportPlanTargets(
+        db, projectId,
+        clean.map((it) => ({ title: it.title, description: it.description, durationDays: it.durationDays, startDate: it.startDate, reqNos: it.reqNos, assignee: it.assignee, kind: it.kind, complexity: it.complexity, status: it.status })),
+        true, clean.map(kindOf),
+      ).planTargets
+      : null;
+    // T01868 防重入：口径见 warnDuplicateTitles；reuse 模式判重已接管撞名，不再走占比拦截（否则同一份拆解重导会被误拒）。
+    if (!reuseMode) warnDuplicateTitles(db, projectId, clean, opts, warnings);
+    const counts = db.transaction(() => {
+      const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM plan_tasks WHERE project_id = ? AND archived = 0').get(projectId) as { m: number }).m;
+      const ins = db.prepare(
+        `INSERT INTO plan_tasks (id, project_id, title, description, start_date, end_date, duration_days,
+           progress, status, assignee, sort_order, linked_task_id, kind, complexity, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, ?, ?, ?, ?)`,
+      );
+      const ctx: BatchInsertCtx = {
+        projectId, t, cal, maxOrder, clean, targets, kindOf, ids, warnings,
+        ins,
+        updReqIds: db.prepare('UPDATE plan_tasks SET req_ids = ?, updated_at = ? WHERE id = ?'),
+        updReuse: db.prepare(
+          `UPDATE plan_tasks SET description = ?, complexity = ?, req_ids = COALESCE(?, req_ids), updated_at = ?
+           WHERE id = ? AND archived = 0`,
+        ),
+        // T03160：需求编号 → 矩阵行 id（引用库内既有行；与 importPrd 的既有行回落同口径，按项目内唯一 req_no 定位）
+        reqIdOf: makeExistingReqLookup(db, projectId),
+      };
+      return insertBatchRows(db, ctx);
+    })();
+    // T01688 项 1：依赖解析与落库（在建行之后：需要全部 id 与标题才能互引）
+    if (items.some((it) => it.depsOn?.length)) {
+      linkBatchDeps(db, { projectId, clean, ids, targets, warnings, update: (id, patch) => this.update(id, patch) });
+    }
+    notifyChange('plans');
+    return { inserted: counts.inserted, reused: counts.reused, unlinked: counts.unlinked, ids, warnings };
+  },
+};

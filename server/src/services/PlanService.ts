@@ -28,7 +28,7 @@ import { touchCompletedAt } from './IterationService'; // T03186（PM-201④）�
 import { WebhookService } from './WebhookService'; // T03196（PM-401）：计划事件外发
 import { isRateLimitError, sleepMs, rateLimitBackoffMs } from '../util/rateLimit'; // T03700：限流识别与退避单源
 import { htmlToMarkdown, decodeHtmlBuffer } from './htmlDoc'; // T03730：HTML 版 PRD → 层级文本（零新依赖）
-import { dedupeDraftsByNormalizedTitle, detectWbsGroups, formatWbsNote, isGapFillPlan, applySourceEntryGapFill, SOURCE_ENTRY_GAP_DESC, normalizeWbsGroups } from '../util/prdWbs'; // 2026-11-10：分片 WBS 归一化 / 补齐行判定（质量复核优化）+ T05571 源文档条目补齐 + T05573 WBS 自动收敛
+import { dedupeDraftsByNormalizedTitle, detectWbsGroups, formatWbsNote, isGapFillPlan, normalizeWbsGroups, deriveWbsTree, structuralChildEdges, wbsCodeOf, parentCodeOf } from '../util/prdWbs'; // 2026-11-10：分片 WBS 归一化 / 补齐行判定（质量复核优化）+ 2026-11-17：结构树与 parentCode 口径
 
 /** T01361：需求跟踪矩阵行（prd_requirements 全列 + 联表摘要）——具体化类型替代 Record<string, unknown>（Sonar S6551） */
 export interface RequirementRow {
@@ -95,6 +95,31 @@ export type PlanStatus = 'todo' | 'doing' | 'done' | 'blocked';
 /** T01001：计划条目类型——normal=普通任务、milestone=阶段里程碑、daily=日常任务（对齐 plan_tasks.kind） */
 export type PlanKind = 'normal' | 'milestone' | 'daily';
 
+/** 结构字段：wbsCode/parentCode 是父子关系的新口径；其余字段用于质量门、范围闸门与任务卡。 */
+type PrdPlanExtras = {
+  wbsCode?: string;
+  parentCode?: string;
+  phaseCode?: string;
+  priority?: string;
+  sourceSection?: string;
+  deliverable?: string;
+  acceptanceRefs?: string[];
+  dependsOn?: string[];
+  taskType?: string;
+  estimateDays?: number;
+};
+
+type PrdPlanDraftBase = {
+  title: string;
+  description: string;
+  durationDays: number;
+  startDate: string;
+  reqNos: string[];
+  status: PlanStatus;
+  kind: PlanKind;
+  complexity?: number;
+} & PrdPlanExtras;
+
 const PLAN_STATUSES = new Set<PlanStatus>(['todo', 'doing', 'done', 'blocked']);
 
 /** AI 解析输入的行数上限：超出的内容截断，避免超大文件拖垮模型上下文（T00438） */
@@ -106,7 +131,7 @@ const MAX_PARSE_ROWS = 300;
 // T03296（G-2 覆盖率）：本文件通用通道的显式卡归属（按导入来源区分，避免落 unknown）
 const PRD_IMPORT_CARD = 'ai.prd_import';
 const PLAN_IMPORT_CARD = 'ai.plan_import';
-const PRD_PARSE_MIN_OUTPUT_TOKENS = 8_192;
+const PRD_PARSE_MIN_OUTPUT_TOKENS = 12_288;
 /** T01156-4：PRD 解析超时下限。maxTokens 抬到 16K 后生成更耗时，工具默认 timeoutMs(60000) 必触顶 →
  *  「连接超时（超过 60000ms）」报错（与上一轮抬高预算是同一连锁反应）。显式给 300s 兜底。 */
 const PRD_PARSE_TIMEOUT_MS = 300_000;
@@ -121,7 +146,7 @@ const PRD_CHUNK_MAX = 8;
 /** T02270 复议：长文档直接分片阈值——实测 25k 字文档先跑单轮全模式白耗 147s、精简重试再耗 19s，
  *  留给分片的预算只剩 104s，5 片根本跑不完就被总预算中止。超过该阈值直接走分片，把预算全留给
  *  有效轮次；小文档仍走原单轮路径（行为逐字不变）。 */
-const PRD_DIRECT_CHUNK_CHARS = 12_000;
+const PRD_DIRECT_CHUNK_CHARS = 200_000;
 /** T02983：分片并发度——25k 文档切 5 片，并发 2 要跑 3 波（实测 208.9~218s）；提到 5 后 5 片同一波起跑，
  *  实测总耗时 106~157s（瓶颈是供应商单次尾延迟 28~191s，不是排队）。3 并发实测反被重试拖到 270s 总预算中止，
  *  故取「片数即并发」：再多也没有第 6 片可并行。 */
@@ -153,8 +178,8 @@ export interface PrdFailedChunk {
 
 /** T02401-C：分片解析的中间结果类型（与 aiParsePrd 返回值同构，供合并去重）。 */
 interface PrdParsePart {
-  requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }>;
-  drafts: Array<{ title: string; description: string; durationDays: number; startDate: string; reqNos: string[]; status: PlanStatus; kind: PlanKind; complexity?: number }>;
+  requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string; type?: string; acceptanceRefs?: string[] }>;
+  drafts: PrdPlanDraftBase[];
 }
 
 /** T00500 验证修正：计划表共用美化（模板/导出同源）——冻结首行由 addWorksheet views 配置，
@@ -698,16 +723,7 @@ function buildCoverageWarn(draftCount: number, requirements: Array<{ reqNo: stri
 /** 自动补齐行的标记文案——前端据此识别并播报，用户可在计划表改标题或取消勾选 */
 const AUTO_GAP_FILL_DESC = '自动补齐：该需求在 AI 拆解的 WBS 中没有对应节点（可改标题或取消勾选后再导入）';
 
-type PrdPlanDraft = {
-  title: string;
-  description: string;
-  durationDays: number;
-  startDate: string;
-  reqNos: string[];
-  status: PlanStatus;
-  kind: PlanKind;
-  complexity?: number;
-};
+type PrdPlanDraft = PrdPlanDraftBase;
 
 /**
  * T03700+：缺口需求确定性补齐——提示词虽要求模型为无人认领的需求在 plans 末尾补一条 normal 任务，
@@ -812,6 +828,10 @@ function syncTaskCoveredDone(db: ReturnType<typeof getDb>, projectId: string, ta
 function normalizedReqNoKey(raw: string): string {
   const s = raw.trim().replaceAll(/\s+/g, '').replaceAll(/[０-９]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 0xFEE0)).replaceAll('－', '-');
   if (!s) return '';
+  // 2026-11-17：AC 是独立编号空间（AC-1/AC-01/AC_01 视为同一条验收项）。
+  // 旧实现只归一 REQ，导致计划写的 AC-1 与需求行的 AC-01 匹配不上，质量门误报「AC 未映射」。
+  const ac = /^AC[-_:：]?0*(\d+)$/i.exec(s);
+  if (ac) return `AC-${String(Number(ac[1])).padStart(2, '0')}`;
   const m = /^(?:REQ(?:UIREMENT)?|R|需求(?:编号)?|要求)?[-_:：]?0*(\d+)$/i.exec(s);
   if (!m) return s.toUpperCase();
   return `REQ-${String(Number(m[1])).padStart(3, '0')}`;
@@ -834,7 +854,7 @@ function splitReqNoRefs(raw: string): string[] {
 /** PRD 解析：单条原始需求 → 归一化需求（reqNo 查重去重 + priority 枚举兜底；标题缺失返回 null） */
 function normalizeRequirement(
   r: unknown,
-  requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }>,
+  requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string; type?: string; acceptanceRefs?: string[] }>,
   seenNo: Set<string>,
 ): void {
   if (!r || typeof r !== 'object') return;
@@ -846,19 +866,22 @@ function normalizeRequirement(
   reqNo = normalizedReqNoKey(reqNo) || reqNo;
   if (seenNo.has(reqNo)) reqNo = `${reqNo}-${requirements.length + 1}`;
   seenNo.add(reqNo);
-  const pr = typeof o.priority === 'string' && ['low', 'normal', 'high', 'urgent'].includes(o.priority) ? o.priority : 'normal';
+  const prRaw = typeof o.priority === 'string' ? o.priority.trim().toLowerCase() : '';
+  const pr = ['low', 'normal', 'high', 'urgent', 'p0', 'p1', 'p2', 'p3'].includes(prRaw) ? prRaw : 'normal';
   requirements.push({
     reqNo,
     title,
     content: typeof o.content === 'string' ? o.content : '',
     sourceRef: typeof o.sourceRef === 'string' ? o.sourceRef : '',
     priority: pr,
+    type: typeof o.type === 'string' ? o.type.trim().toUpperCase() : undefined,
+    acceptanceRefs: Array.isArray(o.acceptanceRefs) ? o.acceptanceRefs.filter((x): x is string => typeof x === 'string') : undefined,
   });
 }
 
 /** PRD 解析：原始需求条目 → 归一化需求数组（reqNo 顺序编号 + 查重去重，priority 枚举兜底） */
-function normalizeRequirements(raw: unknown[]): Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }> {
-  const requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }> = [];
+function normalizeRequirements(raw: unknown[]): Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string; type?: string; acceptanceRefs?: string[] }> {
+  const requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string; type?: string; acceptanceRefs?: string[] }> = [];
   const seenNo = new Set<string>();
   for (const r of raw) {
     normalizeRequirement(r, requirements, seenNo);
@@ -869,15 +892,20 @@ function normalizeRequirements(raw: unknown[]): Array<{ reqNo: string; title: st
 /** T01001：解析 AI 是否已明确给出计划类型；未给时按 WBS 编号的层级结构兜底判定里程碑。
  *  多级编号（如 "1.1 需求评审"）必为明细任务；一级编号开头（如 "1 M1 平台搭建"）即顶层=阶段里程碑。
  *  用结构（WBS 层级）而非关键词识别，避免把普通任务误判为里程碑。 */
-function resolvePrdKind(title: string, kindRaw: unknown): PlanKind {
+function resolvePrdKind(title: string, kindRaw: unknown, wbsCode?: string): PlanKind {
   // T01361（S6551）：kindRaw 非 string 时不再做 String() 兜底——来源均为 TEXT 列/JSON 字符串，
   // 非字符串值原本也匹配不到任何 PlanKind，行为等价（同样落按编号兜底分支）
   const k = (typeof kindRaw === 'string' ? kindRaw : '').trim().toLowerCase();
   if (k === 'milestone' || k === 'normal' || k === 'daily') return k as PlanKind;
+  // 结构字段优先：带点层级的一律明细；单段 code（M1/1/P0-1/EX/Q/F/R-1）为阶段顶层
+  if (wbsCode) {
+    if (wbsCode.includes('.')) return 'normal';
+    if (/^(?:M\d+|\d+|P[01]-\d+|EX|Q|F|R-\d+)$/i.test(wbsCode)) return 'milestone';
+  }
   // 多级编号（1.1/2.3）→ 明细任务
   if (/^\s*\d+(\.\d+)+\s*[.\sA-Za-z0-9]/.test(title)) return 'normal';
   // 单级编号开头（1 xxx / M1 xxx）→ 该 PRD 的两级结构中顶层即阶段里程碑
-  if (/^\s*(?:\d+|M\d+)\s+/.test(title)) return 'milestone';
+  if (/^\s*(?:\d+|M\d+|P[01]-\d+|EX|Q|F|R-\d+)\s+/.test(title)) return 'milestone';
   return 'normal';
 }
 
@@ -888,11 +916,39 @@ function resolvePrdKind(title: string, kindRaw: unknown): PlanKind {
  * 这里在落库前统一按明细汇总，保证里程碑工期与其子任务合计恒等（无明细时保留原值）。
  */
 function milestoneDurations(
-  items: Array<{ kind?: PlanKind; durationDays?: number }>,
+  items: Array<{ kind?: PlanKind; durationDays?: number; title?: string; wbsCode?: string; parentCode?: string }>,
   /** 2026-11-10 质量复核：系统补齐占位行不计入里程碑汇总（与 intervalChildEdges 的 child 归属口径一致） */
   skip?: (index: number) => boolean,
 ): number[] {
   const out = items.map((it) => Math.max(1, Math.floor(Number(it?.durationDays) || 1)));
+  // 结构优先：有 wbsCode/parentCode 时按树汇总，行序不再参与父子判定
+  const tree = deriveWbsTree(items.map((it) => ({
+    title: it.title ?? '',
+    kind: it.kind,
+    wbsCode: it.wbsCode,
+    parentCode: it.parentCode,
+  })));
+  if (tree.hasStructure) {
+    const sumDescendants = (root: number): number => {
+      let sum = 0;
+      const walk = (idx: number): void => {
+        for (const child of tree.childrenOf[idx]) {
+          if (skip?.(child)) continue;
+          if (items[child]?.kind !== 'milestone') sum += out[child] ?? 1;
+          walk(child);
+        }
+      };
+      walk(root);
+      return sum;
+    };
+    for (let i = 0; i < items.length; i += 1) {
+      if (items[i]?.kind !== 'milestone') continue;
+      const sum = sumDescendants(i);
+      if (sum > 0) out[i] = sum;
+    }
+    return out;
+  }
+  // legacy：无结构字段的旧数据仍按「本里程碑之后、下一里程碑之前」的区间口径
   for (let i = 0; i < items.length; i++) {
     if (items[i]?.kind !== 'milestone') continue;
     let sum = 0;
@@ -908,8 +964,8 @@ function milestoneDurations(
 
 /** PRD 解析：原始计划条目 → 归一化计划草稿数组（reqNos 字符串过滤，durationDays≥1，status 固定为待办初始态）
  *  T01001：新增 kind 字段——AI 显式输出优先，否则按 WBS 层级推断里程碑。 */
-function normalizePrdPlans(raw: unknown[]): Array<{ title: string; description: string; durationDays: number; startDate: string; reqNos: string[]; status: PlanStatus; kind: PlanKind; complexity?: number }> {
-  const drafts: Array<{ title: string; description: string; durationDays: number; startDate: string; reqNos: string[]; status: PlanStatus; kind: PlanKind; complexity?: number }> = [];
+function normalizePrdPlans(raw: unknown[]): PrdPlanDraft[] {
+  const drafts: PrdPlanDraft[] = [];
   for (const r of raw) {
     if (!r || typeof r !== 'object') continue;
     const o = r as Record<string, unknown>;
@@ -922,18 +978,101 @@ function normalizePrdPlans(raw: unknown[]): Array<{ title: string; description: 
     // T01058-FR2.1 / T02122：AI 复杂度评级（1~5；非法/缺失为 undefined），钳位走单源函数
     const cClamped = clampComplexity(o.complexity);
     const complexity = cClamped ?? undefined;
+    const wbsCode = typeof o.wbsCode === 'string' ? o.wbsCode.trim() : '';
+    const parentCode = typeof o.parentCode === 'string' ? o.parentCode.trim() : '';
+    const phaseCode = typeof o.phaseCode === 'string' ? o.phaseCode.trim() : '';
+    const priority = typeof o.priority === 'string' ? o.priority.trim().toLowerCase() : '';
+    const sourceSection = typeof o.sourceSection === 'string' ? o.sourceSection.trim() : '';
+    const deliverable = typeof o.deliverable === 'string' ? o.deliverable.trim() : '';
+    const acceptanceRefs = Array.isArray(o.acceptanceRefs) ? o.acceptanceRefs.filter((x): x is string => typeof x === 'string') : [];
+    // 2026-11-17：AC 只落在 acceptanceRefs 时不会写进 plan.req_ids，导入后会被当成孤儿需求。
+    // 验收标准本身也是需求，故把 AC 同步进 reqNos（DB 关联字段），acceptanceRefs 仍保留原语义。
+    for (const ref of acceptanceRefs) {
+      const no = normalizedReqNoKey(ref);
+      if (no && !reqNos.includes(no)) reqNos.push(no);
+    }
+    const dependsOn = Array.isArray(o.dependsOn) ? o.dependsOn.filter((x): x is string => typeof x === 'string') : [];
+    const taskType = typeof o.taskType === 'string' ? o.taskType.trim() : '';
+    const estimateRaw = Number(o.estimateDays ?? o.durationDays);
+    const estimateDays = Number.isFinite(estimateRaw) ? Math.max(1, Math.round(estimateRaw)) : undefined;
     drafts.push({
       title,
       description: typeof o.description === 'string' ? o.description : '',
-      durationDays: Math.max(1, Math.floor(Number(o.durationDays) || 1)),
+      durationDays: Math.max(1, Math.floor(Number(o.durationDays ?? o.estimateDays) || 1)),
       startDate: '',
       reqNos,
       status: 'todo',
-      kind: resolvePrdKind(title, o.kind),
+      kind: resolvePrdKind(title, o.kind, wbsCode),
       complexity,
+      wbsCode: wbsCode || undefined,
+      parentCode: parentCode || undefined,
+      phaseCode: phaseCode || undefined,
+      priority: priority || undefined,
+      sourceSection: sourceSection || undefined,
+      deliverable: deliverable || undefined,
+      acceptanceRefs: acceptanceRefs.length > 0 ? acceptanceRefs : undefined,
+      dependsOn: dependsOn.length > 0 ? dependsOn : undefined,
+      taskType: taskType || undefined,
+      estimateDays,
     });
   }
+  ensurePrdPlanDepth(drafts);
   return drafts;
+}
+
+/** 2026-11-17：导入前质量门（服务端二次校验）。
+ *  前端预演负责让用户看见问题；这里负责「即使绕开前端/MCP 直调，也不把坏结构落库」。
+ *  只对带 PRD 结构信号（wbsCode/parentCode/prdDocs/prdMd）的导入生效，普通计划回写不受影响。 */
+function validatePrdImportDraft(
+  plans: PrdImportPlanItem[],
+  reqs: Array<{ reqNo?: string; title: string; sourceRef?: string; type?: string; acceptanceRefs?: string[] }>,
+): { errors: string[]; warnings: string[] } {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const kinds = plans.map((p) => resolvePrdKind(p.title, p.kind, p.wbsCode));
+  const milestones = kinds.filter((k) => k === 'milestone').length;
+  const normals = kinds.filter((k) => k === 'normal').length;
+  const groups = detectWbsGroups(plans.map((p, i) => ({ title: p.title, kind: kinds[i] })));
+  if (groups.groups > 1) errors.push(`检测到 ${groups.groups} 套并行 WBS（${groups.groupStartTitles.slice(0, 6).join(' / ')}…）——必须收敛为一套 5~6 个里程碑后再导入`);
+  if (milestones > 8) errors.push(`里程碑 ${milestones} 个，超过上限 8 个——请合并阶段，保留 5~6 个交付阶段`);
+  if (milestones < 5) warnings.push(`里程碑只有 ${milestones} 个，低于建议的 5~6 个`);
+  if (normals > 45) errors.push(`可执行任务 ${normals} 条，超过上限 45 条——粒度过细，请合并同一交付物`);
+  if (normals < 20) warnings.push(`可执行任务只有 ${normals} 条，低于建议的 30~40 条，可能漏项`);
+  if (normals === 0) errors.push('没有任何可执行任务（normal）——里程碑不能独立交付');
+  const normalRows = plans.filter((_, i) => kinds[i] === 'normal');
+  const missingPriority = normalRows.filter((p) => !/p[01]/i.test(p.priority ?? ''));
+  if (missingPriority.length > 0) errors.push(`有 ${missingPriority.length} 条 normal 未写 P0/P1 优先级（如「${missingPriority[0].title}」）——PRD 导入必须显式标注优先级`);
+  const missingStructure = normalRows.filter((p) => !p.wbsCode || !p.parentCode);
+  if (missingStructure.length > 0) errors.push(`有 ${missingStructure.length} 条 normal 缺少 wbsCode/parentCode（如「${missingStructure[0].title}」）——无法挂到里程碑，会成为孤儿`);
+  const gap = plans.filter((p) => isGapFillPlan({ title: p.title, description: p.description }));
+  if (gap.length > 0) errors.push(`存在 ${gap.length} 条系统补齐占位行（如「${gap[0].title}」）——占位行不是可执行任务，请改写或移除`);
+  const fragmentRe = /§|\||`|\.(?:tsx?|jsx?|json|md|sql|py)$/i;
+  const fragments = plans.filter((p) => fragmentRe.test(p.title.trim()));
+  if (fragments.length > 0) errors.push(`存在 ${fragments.length} 条碎片标题（如「${fragments[0].title}」）——标题应是可交付动作，不是原文条目/文件路径`);
+  const thinP0 = plans.filter((p) => /p[01]/i.test(p.priority ?? '') && (p.description ?? '').replace(/\s/g, '').length < 50);
+  if (thinP0.length > 0) errors.push(`P0/P1 任务 ${thinP0.length} 条描述不足 50 字（如「${thinP0[0].title}」）——执行卡必须写清动作、边界与验收`);
+  const tree = deriveWbsTree(plans.map((p, i) => ({ title: p.title, kind: kinds[i], wbsCode: p.wbsCode, parentCode: p.parentCode })));
+  if (tree.hasStructure) {
+    const orphanIssues = tree.issues.filter((x) => x.includes('缺少 parentCode') || x.includes('找不到父节点'));
+    if (orphanIssues.length > 0) errors.push(`存在 ${orphanIssues.length} 条父节点缺失/孤儿任务（如「${orphanIssues[0]}」）`);
+    const edges = structuralChildEdges(plans.map((p, i) => ({ title: p.title, kind: kinds[i], wbsCode: p.wbsCode, parentCode: p.parentCode })));
+    if (edges.length === 0) errors.push('0 条真实父子依赖——任务没有挂到任何里程碑，无法按阶段推进');
+  }
+  const acReqs = reqs.filter((r) => r.type === 'AC' || /^AC[-_.]?\d/i.test(r.reqNo ?? '') || /验收标准/.test(r.sourceRef ?? ''));
+  if (acReqs.length > 0) {
+    const mapped = new Set<string>();
+    for (const p of plans) {
+      for (const ref of p.acceptanceRefs ?? []) mapped.add(normalizedReqNoKey(ref));
+      for (const r of p.reqNos ?? []) mapped.add(normalizedReqNoKey(r));
+    }
+    const unmapped = acReqs.filter((r) => !!r.reqNo && !mapped.has(normalizedReqNoKey(r.reqNo)));
+    if (unmapped.length > 0) errors.push(`AC 未映射：${unmapped.length} 条验收标准没有任何任务承接（${unmapped.slice(0, 5).map((x) => x.reqNo).join('、')}）`);
+  } else {
+    warnings.push('未识别到 AC 类型需求——验收标准覆盖无法校验，请确认需求矩阵含 type=AC 的条目');
+  }
+  const p2p3 = plans.filter((p) => /p[23]/i.test(p.priority ?? ''));
+  if (p2p3.length > 0) errors.push(`P2/P3 条目 ${p2p3.length} 条进入了本次排期（如「${p2p3[0].title}」）——P2/P3 不进入当前计划，请取消勾选或拆到后续批次`);
+  return { errors, warnings };
 }
 
 /** T02401-D：把长文档切成多片供多轮 AI 解析。策略与安装版 T02401 同口径：
@@ -1104,7 +1243,7 @@ function countLiveReqLinks(db: ReturnType<typeof getDb>, reqIdsJson: string | nu
 // ---------- PRD 导入（importPrd）的分段辅助：自原方法体逐段搬移，行为与落库口径完全不变，抽出仅为降认知复杂度 ----------
 
 /** importPrd 的 plans 入参行（与该方法内联签名同构，供下面的辅助按此传参） */
-type PrdImportPlanItem = { title: string; description?: string; durationDays?: number; startDate?: string; reqNos?: string[]; assignee?: string; kind?: PlanKind; complexity?: number; status?: PlanStatus };
+type PrdImportPlanItem = { title: string; description?: string; durationDays?: number; startDate?: string; reqNos?: string[]; assignee?: string; kind?: PlanKind; complexity?: number; status?: PlanStatus } & PrdPlanExtras;
 
 /** importPrd 的 requirements 入参行（与该方法内联签名同构） */
 type PrdImportReqItem = { reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string; sourceIndex?: number };
@@ -1456,7 +1595,12 @@ function applyImportMilestoneChildEdges(
   // 2026-11-10 质量复核优化⑥：系统补齐占位行不补 child 边（与 milestoneDurations 的跳过口径一致），
   // 否则段尾的补齐行会整批挂到最后一个里程碑下，实测出现「工期 2 / 25 个子项」的失真归属。
   const skipGapFill = (i: number): boolean => isGapFillPlan({ title: planItems[i]?.title, description: planItems[i]?.description });
-  const edges = intervalChildEdges(planItems.map((_, i) => ({ kind: planKinds[i] })), { skip: skipGapFill });
+  // 2026-11-17：结构优先——有 wbsCode/parentCode 时按树补 child 边，行序不再参与父子判定；
+  // 无结构字段的旧数据/旧调用方仍按区间兜底，保持兼容。
+  const tree = deriveWbsTree(planItems.map((p, i) => ({ title: p.title, kind: planKinds[i], wbsCode: p.wbsCode, parentCode: p.parentCode })));
+  const edges = tree.hasStructure
+    ? structuralChildEdges(planItems.map((p, i) => ({ title: p.title, kind: planKinds[i], wbsCode: p.wbsCode, parentCode: p.parentCode }))).filter((e) => !skipGapFill(e.index))
+    : intervalChildEdges(planItems.map((_, i) => ({ kind: planKinds[i] })), { skip: skipGapFill });
   const updDeps = db.prepare('UPDATE plan_tasks SET deps = ?, updated_at = ? WHERE id = ?');
   const newMs = new Set(planTargets.map((x, i) => (x.reuseId ? null : planIds[i])).filter((x): x is string => !!x));
   const touchedParents = new Set<string>();
@@ -1480,6 +1624,29 @@ function applyImportMilestoneChildEdges(
   }
 }
 
+/** 2026-11-17：任务卡内嵌关联需求/验收原文。
+ *  计划描述保持 50~90 字，待办 description 追加需求与 AC 原文，AI 执行时不必再翻 PRD。 */
+type PrdTaskReqLookup = { reqNo?: string; title: string; content?: string; type?: string; priority?: string };
+
+function buildPrdTaskDescription(p: PrdImportPlanItem, reqByNo: Map<string, PrdTaskReqLookup>): string {
+  const base = (p.description ?? '').trim();
+  const refs = [...new Set(p.reqNos ?? [])];
+  if (refs.length === 0) return base;
+  const lines: string[] = [];
+  for (const no of refs) {
+    const r = reqByNo.get(normalizedReqNoKey(no));
+    if (!r) continue;
+    const text = (r.content || r.title || '').replaceAll(/\s+/g, ' ').trim().slice(0, 180);
+    if (!text) continue;
+    // 2026-11-17：P2/P3 需求仍保留在矩阵和 req_ids 里（不制造孤儿），但任务卡必须显式标明
+    // 「仅核对、不纳入本轮」，否则像 AC-29 这样的 P2 验收项会和「不包含 P2/P3」的完成定义自相矛盾。
+    const p2 = /p[23]/i.test(r.priority ?? '');
+    lines.push(`- ${no}（${r.type === 'AC' ? '验收项' : '需求'}${p2 ? '，P2/P3 仅核对不纳入本轮' : ''}）：${text}`);
+  }
+  if (lines.length === 0) return base;
+  return `${base}\n\n关联需求/验收准则：\n${lines.join('\n')}`;
+}
+
 /**
  * WBS → 待办任务（便于 AI 推进执行），待办同样携带 req_ids；返回本次新建的待办条数。
  * T00754：导入的待办必须与计划建立关联（plan_tasks.linked_task_id）——
@@ -1492,12 +1659,14 @@ function createPrdImportTodos(
     projectId: string;
     createTasks: boolean;
     planItems: PrdImportPlanItem[];
+    planKinds: PlanKind[];
     planTargets: PrdImportPlanTarget[];
     planIds: Array<string | null>;
     findReqId: (n: string) => string | null;
+    reqByNo: Map<string, PrdTaskReqLookup>;
   },
 ): number {
-  const { t, projectId, createTasks, planItems, planTargets, planIds, findReqId } = ctx;
+  const { t, projectId, createTasks, planItems, planKinds, planTargets, planIds, findReqId, reqByNo } = ctx;
   if (!createTasks || planItems.length === 0) return 0;
   const insTask = db.prepare(
     `INSERT INTO tasks (id, task_no, project_id, title, description, priority, status, verified, archived, pinned, req_ids, created_at, updated_at)
@@ -1505,10 +1674,18 @@ function createPrdImportTodos(
   );
   const linkPlan = db.prepare('UPDATE plan_tasks SET linked_task_id = ?, updated_at = ? WHERE id = ? AND linked_task_id IS NULL');
   const updTaskReq = db.prepare('UPDATE tasks SET req_ids = ?, updated_at = ? WHERE id = ?');
+  const selPlanDeps = db.prepare('SELECT deps FROM plan_tasks WHERE id = ?');
+  const selLinkedTask = db.prepare('SELECT linked_task_id FROM plan_tasks WHERE id = ?');
+  const selBlocker = db.prepare('SELECT 1 FROM task_blockers WHERE blocked_id = ? AND blocker_id = ? AND released_at IS NULL');
+  const insBlocker = db.prepare('INSERT INTO task_blockers (id, project_id, blocked_id, blocker_id, created_at) VALUES (?, ?, ?, ?, ?)');
   let created = 0;
+  let blockers = 0;
   planTargets.forEach((target, i) => {
     const p = planItems[i];
     if (!p) return;
+    // 2026-11-17：里程碑是汇总节点，不派生执行待办——否则 20 个里程碑各自一条 todo，
+    // 会把「当前排期」污染成「里程碑待办」，且与「先子后父」口径冲突。
+    if (planKinds[i] === 'milestone') return;
     const ids = (p.reqNos ?? []).map((n) => findReqId(n)).filter((x): x is string => !!x);
     if (target.reuseId) {
       // T01875 reuse：原行已有派生待办 → 不再造第二条（同标题待办会在任务列表并排重复，
@@ -1529,10 +1706,33 @@ function createPrdImportTodos(
     if (!planId) return;
     const taskId = uuid();
     // T01875：待办标题跟随实际落库标题（撞名让号后与计划行保持一致，便于反查）
-    insTask.run(taskId, nextTaskNo(), projectId, `[PRD] ${target.title}`, p.description ?? '', 'normal', ids.length ? JSON.stringify(ids) : null, t, t);
+    // 2026-11-17：description 追加关联 FR/AC 原文；priority 由计划 P0/P1 映射到待办。
+    insTask.run(
+      taskId,
+      nextTaskNo(),
+      projectId,
+      `[PRD] ${target.title}`,
+      buildPrdTaskDescription(p, reqByNo),
+      taskPriorityOf(p.priority),
+      ids.length ? JSON.stringify(ids) : null,
+      t,
+      t,
+    );
     linkPlan.run(taskId, t, planId);
+    // 2026-11-17：把计划 serial 边镜像成任务级 blocked_by（child 是父子边，不阻塞执行）。
+    // 任务列表由此直接显示前置任务；多 Agent/人工乱序取单时也不会抢跑。
+    const planDeps = parsePlanDeps((selPlanDeps.get(planId) as { deps: string | null } | undefined)?.deps ?? '');
+    for (const dep of planDeps) {
+      if (dep.type !== 'serial') continue;
+      const blockerTaskId = (selLinkedTask.get(dep.id) as { linked_task_id: string | null } | undefined)?.linked_task_id;
+      if (!blockerTaskId || blockerTaskId === taskId) continue;
+      if (selBlocker.get(taskId, blockerTaskId)) continue;
+      insBlocker.run(uuid(), projectId, taskId, blockerTaskId, t);
+      blockers += 1;
+    }
     created += 1;
   });
+  if (blockers > 0) notifyChange('tasks');
   return created;
 }
 
@@ -1847,10 +2047,291 @@ function linkBatchDeps(
         target = row?.id;
       }
       if (!target) { ctx.warnings.push(`条目「${it.title}」的依赖「${key}」未解析到（依赖待补）`); continue; }
-      parsed.push({ id: target, type: rowOf(target)?.kind === 'milestone' ? 'child' : 'serial' });
+      // 2026-11-17：里程碑→里程碑的依赖是串行（不是父子）；只有普通任务挂到里程碑才是 child。
+      // 旧实现一律按目标 kind 判 child，导致 M2 依赖 M1 被写成 M1 的子项，里程碑工期/排期被放大。
+      const targetKind = rowOf(target)?.kind;
+      const currentKind = ctx.clean[i]?.kind;
+      const depType = targetKind === 'milestone' && currentKind !== 'milestone' ? 'child' : 'serial';
+      parsed.push({ id: target, type: depType });
     }
     if (parsed.length > 0) ctx.update(id, { deps: JSON.stringify(parsed) });
   });
+}
+
+/** 2026-11-17：从 PRD 验收标准表确定性提取 AC 条目。
+ *  模型可能把 AC 只当成任务属性而不建需求行，导致「AC 未映射」无法被质量门发现；
+ *  这里按原文 `| AC-xx | ... |` 表格兜底，保证每条 AC 都有独立需求编号。 */
+function extractPrdAcceptanceCriteria(docText: string): Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string; type: string }> {
+  const out: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string; type: string }> = [];
+  const seen = new Set<string>();
+  for (const line of docText.split('\n')) {
+    const m = /^\s*\|\s*(AC[-_ ]?\d{1,3})\s*\|\s*(.*?)\s*\|/.exec(line.replaceAll('**', ''));
+    if (!m) continue;
+    const reqNo = m[1].replaceAll(' ', '').replaceAll('_', '-').toUpperCase().replace(/^AC-?/, 'AC-');
+    if (seen.has(reqNo)) continue;
+    const content = m[2].trim();
+    if (!content) continue;
+    seen.add(reqNo);
+    out.push({
+      reqNo,
+      title: content.length > 28 ? `${content.slice(0, 28)}…` : content,
+      content,
+      sourceRef: '§11 验收标准',
+      priority: 'p1',
+      type: 'AC',
+    });
+  }
+  return out;
+}
+
+/** 2026-11-17：AC 覆盖兜底——把原文 AC 补成需求行；未被任何 normal 承接的 AC
+ *  挂到最合适的验收/回归任务（没有则新建一条全量验收任务），保证「每条 AC 有计划承接」。 */
+function ensurePrdAcceptanceCoverage(
+  requirements: PrdParsePart['requirements'],
+  drafts: PrdPlanDraft[],
+  docText: string,
+): void {
+  const acs = extractPrdAcceptanceCriteria(docText);
+  if (acs.length === 0) return;
+  const reqSet = new Set(requirements.map((r) => normalizedReqNoKey(r.reqNo)));
+  for (const ac of acs) {
+    // 用归一 key 判重：模型可能写 AC-1，原文表是 AC-01；直接比较 raw 会补出重复需求行。
+    const acKey = normalizedReqNoKey(ac.reqNo);
+    if (!reqSet.has(acKey)) {
+      requirements.push(ac);
+      reqSet.add(acKey);
+    }
+  }
+  const normals = drafts.filter((d) => resolvePrdKind(d.title, d.kind, d.wbsCode) === 'normal');
+  const mapped = new Set<string>();
+  for (const p of normals) {
+    for (const ref of p.acceptanceRefs ?? []) mapped.add(normalizedReqNoKey(ref));
+    for (const ref of p.reqNos ?? []) mapped.add(normalizedReqNoKey(ref));
+  }
+  const unmapped = acs.map((a) => a.reqNo).filter((no) => !mapped.has(normalizedReqNoKey(no)));
+  if (unmapped.length === 0) return;
+  // 优先找一个「验收/回归/全量」任务承接；没有就把最后一条 test/verify 任务升级为全量验收。
+  let target = normals.find((p) => /全量验收|验收与回归|回归验收/.test(p.title))
+    ?? [...normals].reverse().find((p) => p.taskType === 'test' || p.taskType === 'verify');
+  if (!target) {
+    const lastMs = [...drafts].reverse().find((d) => resolvePrdKind(d.title, d.kind, d.wbsCode) === 'milestone');
+    const parent = lastMs?.wbsCode || 'M1';
+    const code = `${parent}.${String(normals.filter((p) => (p.parentCode || '') === parent).length + 1)}`;
+    target = {
+      title: '执行全量验收与回归',
+      description: '按 PRD §11 验收标准逐条执行 AC-01~AC-30 的验收动作，覆盖手动派发、自动调度、异常场景、安全与迁移；完成定义：每条 AC 有实测证据，未通过项登记缺口并给出修复建议。',
+      durationDays: 2,
+      startDate: '',
+      reqNos: [],
+      status: 'todo',
+      kind: 'normal',
+      complexity: 3,
+      wbsCode: code,
+      parentCode: parent,
+      phaseCode: parent,
+      priority: 'p1',
+      sourceSection: '§11 验收标准',
+      deliverable: '全量验收记录与缺口清单',
+      acceptanceRefs: [],
+      taskType: 'test',
+      estimateDays: 2,
+    };
+    drafts.push(target);
+  }
+  target.acceptanceRefs = Array.from(new Set([...(target.acceptanceRefs ?? []), ...unmapped]));
+}
+
+/** 2026-11-17：计划优先级 → 待办优先级。P0 映射 urgent、P1 映射 high，
+ *  避免 PRD 导入生成的 33 条待办全部落成 normal，任务列表无法分辨先后。 */
+function taskPriorityOf(priority?: string): 'urgent' | 'high' | 'normal' {
+  if (/p0/i.test(priority ?? '')) return 'urgent';
+  if (/p1/i.test(priority ?? '')) return 'high';
+  return 'normal';
+}
+
+/** 2026-11-17：隔离导入识别。只有测试数据目录 + 非生产端口才改写执行边界，
+ *  生产/普通项目导入仍保留 PRD 原文里的 39877/39876 生产验收口径。 */
+function isolatedTestPort(): string | null {
+  const dataDir = (process.env.MTask_DATA_DIR ?? process.env.MTASK_DATA_DIR ?? '').replaceAll('\\', '/').toLowerCase();
+  const port = (process.env.MTask_PORT ?? process.env.MTASK_PORT ?? '').trim();
+  if (!dataDir.includes('mtask-test-data')) return null;
+  if (!/^\d{2,5}$/.test(port) || port === '39877') return null;
+  return port;
+}
+
+/** 2026-11-17：任务卡执行边界。隔离项目里 B0/网关/部署类任务最容易误触生产端口，
+ *  统一把「验证 39877/39876」改为当前测试端口，并追加 fake/mock 与禁止写生产的硬边界。 */
+function applyIsolatedExecutionBoundary(p: { title: string; description?: string }): void {
+  const port = isolatedTestPort();
+  if (!port) return;
+  const raw = (p.description ?? '').trim();
+  let next = raw;
+  if (/生产构建|部署验证/.test(p.title)) {
+    next = next
+      .replaceAll('39877/39876', port)
+      .replaceAll(/\b39877\b/g, port)
+      .replaceAll(/\b39876\b/g, port);
+  }
+  if (/B0|网关|端到端|集成测试|生产构建|部署验证/i.test(`${p.title} ${next}`)
+    && !next.includes('执行边界：隔离测试环境')) {
+    next = `${next}\n执行边界：隔离测试环境使用 ${port} 端口与 fake/mock B0/网关；禁止启动、写入或变更生产 39877/39876；真实 B0 验收在发布前人工执行。`.trim();
+  }
+  if (next !== raw) p.description = next;
+}
+
+/** 2026-11-17：按 mtask 计划输出标准（2~5 人日/工作项）钳制普通工作项工期。
+ *  这是排期估算口径，不改变任务范围；里程碑工期仍由子项包络自动汇总。 */
+function normalizeNormalPlanDuration(p: { title: string; kind?: PlanKind; wbsCode?: string; durationDays?: number; estimateDays?: number }): void {
+  const kind = resolvePrdKind(p.title, p.kind, p.wbsCode);
+  if (kind !== 'normal') return;
+  const raw = Number(p.durationDays ?? p.estimateDays ?? 0);
+  const base = Number.isFinite(raw) && raw > 0 ? Math.round(raw) : 2;
+  const days = Math.min(5, Math.max(2, base));
+  p.durationDays = days;
+  p.estimateDays = days;
+}
+
+/** 2026-11-17：描述里的「AC-01 至 AC-26」只是模型写的范围，必须与实际 acceptanceRefs 对齐。
+ *  统一改成「任务关联的全部验收项（共 N 条）」，避免 26 条验收被误读成固定 3 条。 */
+function rewriteAcceptanceRange(p: { description?: string; acceptanceRefs?: string[] }): void {
+  const refs = p.acceptanceRefs ?? [];
+  if (refs.length === 0) return;
+  const range = /\bAC[-_.]?\d+\s*(?:至|~|—|-)\s*AC[-_.]?\d+/i;
+  if (!range.test(p.description ?? '')) return;
+  p.description = (p.description ?? '').replace(range, `任务关联的全部验收项（共 ${refs.length} 条）`);
+}
+
+/** 2026-11-17：全量验收类任务超过 9 条 AC 时自动拆成 2~3 张卡。
+ *  目的：一条 26 AC 的验收卡无法在一轮执行中逐项闭环；拆卡后每张卡仍有独立验收范围。
+ *  只在 prepare/parse 后处理阶段做确定性拆分，不依赖模型重新输出。 */
+function splitOversizedAcceptancePlans(rows: PrdImportPlanItem[]): void {
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const p = rows[i];
+    const refs = p.acceptanceRefs ?? [];
+    const kind = p.kind ?? resolvePrdKind(p.title, p.kind, p.wbsCode);
+    if (kind !== 'normal' || refs.length <= 9 || !/全量|验收|回归/.test(p.title)) continue;
+    const n = Math.min(3, Math.max(2, Math.ceil(refs.length / 9)));
+    const buckets: string[][] = Array.from({ length: n }, () => []);
+    refs.forEach((ref, idx) => {
+      const bucket = Math.min(n - 1, Math.floor((idx * n) / refs.length));
+      buckets[bucket].push(ref);
+    });
+    const nonAc = (p.reqNos ?? []).filter((no) => !refs.includes(no));
+    const baseDuration = Math.max(1, Math.ceil((p.durationDays ?? 1) / n));
+    const baseCode = (p.wbsCode ?? `${p.parentCode ?? 'M1'}.1`).trim();
+    const splitRows = buckets.map((bucket, j) => ({
+      ...p,
+      title: `${p.title}（${j + 1}/${n}）`,
+      description: p.description,
+      durationDays: baseDuration,
+      estimateDays: baseDuration,
+      reqNos: [...new Set([...(j === 0 ? nonAc : []), ...bucket])],
+      acceptanceRefs: bucket,
+      kind: 'normal' as PlanKind,
+      status: 'todo' as PlanStatus,
+      wbsCode: `${baseCode}.${j + 1}`,
+      phaseCode: p.parentCode,
+      deliverable: `${(p.deliverable ?? p.title).trim()}（第${j + 1}组）`,
+    }));
+    rows.splice(i, 1, ...splitRows);
+  }
+}
+
+function fillPlanDescription(
+  p: { title: string; description?: string; wbsCode?: string; kind?: PlanKind; deliverable?: string; acceptanceRefs?: string[] },
+  p2Refs?: Set<string>,
+): void {
+  rewriteAcceptanceRange(p);
+  const raw = (p.description ?? '').trim();
+  const kind = resolvePrdKind(p.title, p.kind, p.wbsCode);
+  const deliverable = (p.deliverable ?? '').trim() || p.title;
+  const acs = p.acceptanceRefs ?? [];
+  const deferredAcs = p2Refs ? acs.filter((no) => p2Refs.has(normalizedReqNoKey(no))) : [];
+  const activeAcs = p2Refs ? acs.filter((no) => !p2Refs.has(normalizedReqNoKey(no))) : acs;
+  if (kind === 'milestone') {
+    if (!/完成定义/.test(raw)) {
+      p.description = `${raw} 完成定义：交付${deliverable}，其下全部子任务完成且相关 AC 验收通过。`.trim();
+    }
+    return;
+  }
+  const acText = activeAcs.length > 0
+    ? (activeAcs.length <= 12 ? activeAcs.join('、') : `${activeAcs.slice(0, 6).join('、')} 等共 ${activeAcs.length} 条`)
+    : '';
+  const deferredText = deferredAcs.length > 0
+    ? `${deferredAcs.join('、')} 属 P2/P3，仅登记核对，不纳入本轮验收`
+    : '';
+  const suffix: string[] = [];
+  if (!/完成定义/.test(raw)) {
+    const scope = [acText && `通过 ${acText} 验收`, deferredText].filter(Boolean).join('；');
+    suffix.push(`完成定义：产出${deliverable}${scope ? `，${scope}` : ''}。`);
+  }
+  if (acText && !/验收(?:项|标准)?/.test(raw)) suffix.push(`验收项：${acText}。`);
+  if (!/不包含|边界/.test(raw)) suffix.push('不包含 P2/P3 范围，边界以源章节为准。');
+  if (suffix.length > 0) p.description = `${raw} ${suffix.join(' ')}`.trim();
+}
+
+/** 2026-11-17：执行卡厚度兜底——不再只对不足 50 字的行补，而是保证每条 normal 都有
+ *  「完成定义 + 验收项 + 边界」。短描述仍补足，长描述已有完成定义则不重复。 */
+function ensurePrdPlanDepth(drafts: PrdPlanDraft[]): void {
+  splitOversizedAcceptancePlans(drafts as PrdImportPlanItem[]);
+  for (const d of drafts) fillPlanDescription(d);
+}
+
+/** 2026-11-17：importPrd / previewPrdImport 共用——先拆超载验收卡，再做需求覆盖兜底，
+ *  最后把 acceptanceRefs 并入 reqNos（DB 关联字段）并补足 description。
+ *  覆盖兜底必须在补描述之前，否则兜底新增的 reqNos 不会进入任务卡内嵌的需求/AC 原文。 */
+function preparePrdImportPlanRows(
+  rows: PrdImportPlanItem[],
+  requirements?: Array<{ reqNo?: string; type?: string; priority?: string; sourceRef?: string; title?: string }>,
+): void {
+  splitOversizedAcceptancePlans(rows);
+  if (requirements && requirements.length > 0) ensurePrdRequirementCoverage(requirements, rows);
+  const p2Refs = new Set<string>();
+  for (const r of requirements ?? []) {
+    if (/p[23]/i.test(r.priority ?? '') && r.reqNo) p2Refs.add(normalizedReqNoKey(r.reqNo));
+  }
+  for (const p of rows) {
+    p.kind = p.kind ?? resolvePrdKind(p.title, p.kind, p.wbsCode);
+    p.reqNos = [...new Set([...(p.reqNos ?? []), ...(p.acceptanceRefs ?? [])])];
+    fillPlanDescription(p, p2Refs);
+    normalizeNormalPlanDuration(p);
+    applyIsolatedExecutionBoundary(p);
+  }
+}
+
+
+/** 2026-11-17：需求覆盖兜底——P0/P1 的 FR/NFR/EX 若未被任何 normal 挂接，
+ *  按 sourceSection 找同章节任务；找不到就挂到最后的验收/全量任务，避免矩阵出现孤儿需求。
+ *  P2/P3 需求不挂计划（按范围闸门只留在需求矩阵）。 */
+function ensurePrdRequirementCoverage(
+  requirements: Array<{ reqNo?: string; type?: string; priority?: string; sourceRef?: string }>,
+  drafts: Array<{ title: string; description?: string; wbsCode?: string; parentCode?: string; kind?: PlanKind; reqNos?: string[]; acceptanceRefs?: string[]; sourceSection?: string; taskType?: string }>,
+): void {
+  const normals = drafts.filter((d) => resolvePrdKind(d.title, d.kind, d.wbsCode) === 'normal');
+  if (normals.length === 0) return;
+  const linked = new Set<string>();
+  for (const p of normals) {
+    for (const ref of p.reqNos ?? []) linked.add(normalizedReqNoKey(ref));
+    for (const ref of p.acceptanceRefs ?? []) linked.add(normalizedReqNoKey(ref));
+  }
+  const uncovered = requirements.filter((r) => r.type !== 'AC'
+    && /p[01]/i.test(r.priority ?? '')
+    && !!r.reqNo
+    && !linked.has(normalizedReqNoKey(r.reqNo)));
+  if (uncovered.length === 0) return;
+  const normSection = (s?: string) => (s ?? '').replace(/\s/g, '').replace(/§/g, '').toLowerCase();
+  let fallback = [...normals].reverse().find((p) => /全量验收|验收与回归|回归验收/.test(p.title))
+    ?? [...normals].reverse().find((p) => p.taskType === 'test' || p.taskType === 'verify')
+    ?? normals[normals.length - 1];
+  for (const r of uncovered) {
+    const rs = normSection(r.sourceRef);
+    const target = (rs && normals.find((p) => {
+      const ps = normSection(p.sourceSection);
+      return !!ps && (ps.includes(rs) || rs.includes(ps));
+    })) || fallback;
+    if (r.reqNo && !(target.reqNos ?? []).includes(r.reqNo)) target.reqNos = [...(target.reqNos ?? []), r.reqNo];
+    fallback = target;
+  }
 }
 
 export const PlanService = {
@@ -2654,8 +3135,8 @@ export const PlanService = {
 
   /** T00662：AI 解析 PRD →（需求清单 + WBS 计划草稿，含需求关联）。 */
   async aiParsePrd(toolId: string, docText: string): Promise<{
-    requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }>;
-    drafts: Array<{ title: string; description: string; durationDays: number; startDate: string; reqNos: string[]; status: PlanStatus; kind: PlanKind }>;
+    requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string; type?: string; acceptanceRefs?: string[] }>;
+    drafts: PrdPlanDraft[];
     coverageWarn?: string;
     /** T01156：反向覆盖——需求清单中存在、但未被任何 WBS 计划 reqNos 关联的需求编号（可追溯性缺口）。 */
     uncoveredReqNos?: string[];
@@ -2674,37 +3155,24 @@ export const PlanService = {
     sourceEntryFilled?: Array<{ id: string; label: string; title: string; description: string; excerpt: string }>;
   }> {
     const system = [
-      '你是 MTask 的 PRD 解析助手：既要拆分 WBS 计划，也要**逐条提取可跟踪需求**（用于生成需求跟踪矩阵）。',
-      '给定一份 PRD / 需求文档（Markdown 或纯文本），输出**一个 JSON 对象**（不是数组），结构：',
-      '{"requirements":[{"reqNo":"REQ-001","title":"需求简述","content":"需求原文要点","sourceRef":"原文定位（章节/小节/段落号）","priority":"low|normal|high|urgent"}],',
-      // T01001：plans 每行必须给出 kind，用于导入时区分「里程碑」与「普通任务」——顶层里程碑 kind="milestone"，明细任务 kind="normal"
-      // T02275：不再要 startDate——normalizePrdPlans 硬编码覆盖为 ''，让模型输出纯属浪费输出预算（约 15 字符/行 × 60 行）
-      ' "plans":[{"title":"WBS编号+任务名","description":"该节点要做的事（保留原文关键信息）","durationDays":工期工作日数,"reqNos":["REQ-001"],"kind":"milestone|normal","complexity":1到5的整数}]}',
-      // T00979：此前只让 AI 按 WBS 编号扁平输出，模型常停在里程碑层（如 M1-M4）不再向下拆明细。
-      // 现强制「里程碑 + 每个里程碑下的明细任务」两级展开，且顶层保留原文里程碑名，杜绝只出里程碑不出任务。
-      '要求：',
-      '1. **需求逐条提取，严禁合并**——PRD 中每条可跟踪的需求（功能/非功能/约束/验收要点）各生成一条 requirements，reqNo 从 REQ-001 顺序编号；',
-      '2. **plans 必须是「里程碑 + 里程碑下的明细任务」两级展开的扁平数组，每行一条**：',
-      '   - 顶层：PRD 中定义的里程碑/阶段（如 M1/M2/M3/M4 或「项目启动」「开发实施」「测试验收」等），标题写带编号的里程碑名（例：「1 M1 平台搭建」），**务必保留原文里程碑名称、不得重命名**；',
-      '   - 每个顶层里程碑之下，必须继续拆出该阶段可直接执行的任务明细（如 1 之下拆出「1.1 需求评审」「1.2 概要设计」，2 之下拆出「2.1 …」），用 WBS 编号表达层级（1 → 1.1、1.2；2 → 2.1 …），全部行放进同一个 plans 数组；',
-      '   - **绝对禁止只输出里程碑而不拆明细任务**；若某里程碑在原文确无可落实的独立任务，才允许仅保留该里程碑一行；',
-      '   - **每行必须填 kind**：顶层里程碑行填 "milestone"，其下的明细任务行填 "normal"（使用述求准确、不遗漏的这两类取值，不要用其它写法）；',
-      '   - 每行 reqNos 只填**该节点直接实现/覆盖的需求编号**；管理类节点（启动/计划/评审/验收等）若不对应具体需求，reqNos 输出 []，**不要把所有需求挂上**（关联过宽会让需求跟踪矩阵失去意义）；',
-      '   - **可追溯性约束（必须遵守）**：功能/非功能/约束类需求（REQ-xxx 各一条）至少应被一个明细任务（kind="normal" 行）的 reqNos 覆盖。若某需求确无现成 WBS 节点承载，必须在 plans 末尾为它补一条 normal 任务（标题含该 REQ 编号，如「REQ-016 相关实现/验证」）以保证**每条需求都可追溯到至少一条计划**；严禁出现「需求清单有、WBS 却无人认领」的缺口。',
-      '   - **每行（normal 明细任务）必须给出 complexity 复杂度评级（1~5 整数）**：1=琐碎（半天内）、2=简单、3=中等、4=复杂（不确定性高/跨模块耦合，建议再拆分）、5=极复杂（应拆分为多个任务）；里程碑行可不填或填其下平均；',
-      '3. **不要输出 startDate**（保存后系统按导入当日并行排布：各行独立取导入日为开始日，不做串行顺延，写了也会被覆盖）；status 一律 "todo"；durationDays 缺失默认 1；',
-      '4. 只输出 JSON 对象本身，不要任何解释或 Markdown 代码围栏；不虚构文档中没有的内容。',
-      // T00707：原「宁多勿漏」会把长文档的输出顶到 token 上限而截断（用户实测导入报错），改为规模约束
-      // T00979：上限从 25 条放宽到 60 条，以满足「里程碑 + 明细」两层组织；仍强制 JSON 完整闭合优先
-      '5. **输出规模控制（必须遵守）**：requirements 最多 40 条；plans 最多 60 条（需容纳里程碑与明细两级，先保证每个里程碑至少带其直接明细任务，再取舍更细的层级）；title ≤30 字、content/description ≤40 字。'
-      + '文档过长时合并同类需求与同级任务，**宁可少几条也不得把里程碑降级为无明细**，同时必须保证 JSON 完整闭合——输出被截断会导致整个导入失败。',
-      // 2026-11-10 质量复核优化②：长文档分片时每片都产一套完整 WBS 会拼出多套并行里程碑编号
-      '6. **多分片 WBS 一致性（长文档自动分片时必须遵守）**：只有包含原文「里程碑/阶段」定义章节的那一片输出里程碑行；'
-      + '其余片只输出 normal 明细任务，禁止另起一套 1/2/3 章号或 M1~Mn 里程碑编号；各片共用同一套全局 WBS，明细标题沿用原文编号、不臆造新阶段。',
-      // T05572：否定口径前移——标题命中"不新增|不变|不改造|不实施|不修正|不实现|不删|不迁移|不做|不得|废止|失效|禁止|仅移除|保持现状|保留不删|不下线|已闭环|已落地|无需开发|不参与|不新增下发"的条目，
-      // 属于"无需开发工作"的约束描述，**不得**生成 WBS 计划行（plans），但仍须提取为 requirements（供矩阵追溯）
-      '7. **否定口径约束（必须遵守）**：标题或需求描述命中以下任一词的条目——「不新增 / 不变 / 不改造 / 不实施 / 不修正 / 不实现 / 不删 / 不迁移 / 不做 / 不得 / 废止 / 失效 / 禁止 / 仅移除 / 保持现状 / 保留不删 / 不下线 / 已闭环 / 已落地 / 无需开发 / 不参与 / 不新增下发」——属于无需新增开发工作的约束描述，**不得为它们生成 plans 计划行**，但仍须逐条提取到 requirements 列表（reqNo 正常编号，title/content/sourceRef/priority 正常填写，用于需求跟踪矩阵追溯）。'
-      + '若某需求确实需要验证/确认其"不变"效果（如回归测试），可补一条 normal 计划行（标题含"验证"或"回归"字样）。',
+      '你是 MTask 的 PRD 结构解析助手。目标不是「把原文每个编号都变成任务」，而是先建立可交付的 WBS 骨架，再给骨架填执行卡。',
+      '给定一份 PRD / 需求文档（Markdown 或纯文本），输出**一个 JSON 对象**（不是数组）：',
+      '{"requirements":[{"reqNo":"REQ-001","title":"需求简述","content":"原文要点","sourceRef":"§章节","priority":"P0|P1|P2|P3","type":"FR|NFR|AC|EX"},{"reqNo":"AC-01","title":"验收标准简述","content":"Given…When…Then…","sourceRef":"§11","priority":"P0","type":"AC"}],',
+      ' "plans":[{"wbsCode":"M1","parentCode":"","phaseCode":"M1","title":"阶段交付名","description":"阶段目标与完成定义","durationDays":10,"reqNos":[],"kind":"milestone","priority":"P0","sourceSection":"§x","deliverable":"阶段可验收产物","acceptanceRefs":[],"dependsOn":[],"estimateDays":10,"taskType":"phase","complexity":3},',
+      '          {"wbsCode":"M1.1","parentCode":"M1","phaseCode":"M1","title":"可交付任务名","description":"做什么/边界/完成定义（≥50字）","durationDays":2,"reqNos":["REQ-001"],"kind":"normal","priority":"P0","sourceSection":"§x.y","deliverable":"代码/接口/页面/文档","acceptanceRefs":["AC-01"],"dependsOn":[],"estimateDays":2,"taskType":"design|backend|frontend|test|verify|ops|enabler","complexity":2}]}',
+      '硬性要求：',
+      '1. **先识别 PRD 的真实骨架**：FR（功能需求）、NFR（非功能要求）、AC（验收标准）、EX（异常场景）四类才是需求；RISK（风险）、OPEN（待确认问题）、REF（引用/代码路径/§条目）、CONTEXT（背景）不得生成 requirements，更不得生成 plans。',
+      '2. **只建一套 WBS，必须正好 5 个里程碑（M1…M5），且全部为 P0/P1**：wbsCode 用 M1…M5，parentCode 为空；每个里程碑下必须挂 6~8 条 normal 明细，P0/P1 的 normal 总数必须达到 30~40 条。M5 固定为「发布验收与回归」阶段（构建、迁移、全量 AC 验收、发布检查），不得把 M5 留给 P2/P3。禁止再出现 1/2/3 章号、P0-1/P1-2/EX/Q/F/R 等第二套编号，禁止把原文的 §x.y 条目直接当任务。',
+      '3. **每个 normal 任务必须是一个可交付动作**：标题以动词开头（设计/实现/改造/联调/验证/补测/上线），写清对象与范围；description ≥50 字，必须包含「做什么 + 边界/不做什么 + 完成定义」；不得只写「实现某功能」「开发某模块」。**每个里程碑至少拆到 6 条**；如果你只写出 3~4 条，说明粒度过粗或漏项，必须继续拆到 30~40 条总量。',
+      '4. **结构字段必须齐全**：wbsCode（M1/M1.1）、parentCode（明细指向所属里程碑 code）、phaseCode（同 parentCode）、priority（P0/P1；本期禁止 P2/P3 进入 plans）、sourceSection（对应 PRD 章节）、deliverable（可验收产物）、acceptanceRefs（该任务承接的 AC-xx 验收编号，**不是 REQ-xxx**）、dependsOn（前置任务 wbsCode，数组）、estimateDays（1~5 的整数）、taskType、complexity（1~5）。',
+      '5. **范围闸门**：只把 P0/P1 放进 plans；P2/P3 只提取 requirements，**不得生成任何 plan，包括里程碑**。PRD §12 明确 P2/P3 的批量、多平台、平台 token 等内容一律不排进当前 WBS；若某个功能只在 P2/P3，只在 requirements 里保留。',
+      '6. **需求关联**：每个 normal 任务只挂它直接实现/验证的 1~3 个 REQ 编号（reqNos）；禁止一个任务挂 4 个以上 REQ，禁止把全部需求挂到里程碑。每条 FR/NFR/EX 至少被一条 normal 任务覆盖；**每条 AC-xx 必须出现在某条 normal 的 acceptanceRefs 中**；最后一条「全量验收与回归」任务可以承接剩余 AC。',
+      '7. **依赖**：同一里程碑下按执行顺序给 dependsOn 填前一条任务的 wbsCode；跨里程碑只填真实前置。不得编造依赖。',
+      '8. **禁止重复**：同一功能/同一交付物只能出现一次；原文在多个章节重复描述时合并为一条任务，在 sourceSection 里列出多个章节。',
+      '9. **不要输出 startDate**；status 一律 "todo"；durationDays 与 estimateDays 保持一致，按工作日计。',
+      '10. **输出规模**：requirements 最多 65 条（FR/NFR/AC/EX 全量，AC 不得省略）；plans 必须实际输出 5 个里程碑 + 30~40 条 normal（不是建议，是硬性验收；系统不会替你补齐缺口行）；title ≤30 字。每条 plan 必须写 priority（P0/P1，不得省略/留空）和 wbsCode/parentCode（normal 必须指到所属里程碑）。只输出 JSON 对象本身，不要解释或 Markdown 围栏；必须完整闭合。',
+      '11. **AC 强制提取**：PRD 的验收标准章节（通常为 §11）里每条 AC-xx 都必须单独输出为一条 requirement：reqNo 严格沿用原文 AC-xx，type="AC"，content 保留 Given/When/Then，sourceRef 指向验收章节，priority 按它约束的功能优先级（无明确优先级用 P1）。禁止把 AC 合并成一条，禁止只引用不建条目。',
+      '12. **输出长度控制（必须遵守，否则会触发截断/分片并破坏 WBS）**：requirements 的 content ≤80 字；每个 plan 的 description 50~90 字；title ≤24 字；每个 normal 的 reqNos ≤2 个、acceptanceRefs ≤3 个（全量验收任务除外）；不要输出解释、不要重复原文长段落。',
     ].join('\n');
     // T00707：首轮若被截断/解析失败，重试改用精简提示词（压缩到更小规模，确保能完整闭合）
     const systemCompact = [
@@ -2761,30 +3229,18 @@ export const PlanService = {
       const requirements = normalizeRequirements(rawReqs);
       const rawPlans = Array.isArray(obj.plans) ? obj.plans : [];
       const drafts0 = normalizePrdPlans(rawPlans);
+      ensurePrdPlanDepth(drafts0);
       if (requirements.length === 0 && drafts0.length === 0) throw new Error('AI 未能从 PRD 中解析出需求或计划，请确认文档内容或更换模型');
-      // T03700+：先由系统为缺口需求确定性补行，再按补齐后的结果算剩余告警（剩余缺口只可能是无标题等无法补齐的极端情况）
-      const { drafts, filledReqNos } = applyAutoGapFill(requirements, drafts0);
-      // T05571：源文档条目按编号确定性补齐——设计文档独有的 D/R/T/N/O/S/§x.y/Q-xx 若未进解析结果，各补一条 normal 行。
-      // coveredText 含已解析 reqs + drafts（标题/描述），sourceText 用本轮 docText（主 PRD 全文，含勾选参与解析的 design）。
-      const coveredText = [
-        ...requirements.map((r) => `${r.reqNo} ${r.title} ${r.content}`),
-        ...drafts.map((p) => `${p.title} ${p.description}`),
-      ].join('\n');
-      const sourceEntryRows = applySourceEntryGapFill(docText, coveredText);
-      if (sourceEntryRows.length > 0) {
-        for (const e of sourceEntryRows) {
-          drafts.push({
-            title: e.title,
-            description: e.description,
-            durationDays: 1,
-            startDate: '',
-            reqNos: [],
-            status: 'todo' as PlanStatus,
-            kind: 'normal' as PlanKind,
-            complexity: 1,
-          });
-        }
-      }
+      // 2026-11-17：AC 确定性兜底——原文 §11 的 AC-xx 必须进入需求矩阵，且必须被任务承接。
+      ensurePrdAcceptanceCoverage(requirements, drafts0, docText);
+      ensurePrdRequirementCoverage(requirements, drafts0);
+      // 2026-11-17 结构优化：不再把未挂接需求自动补成计划行——补出来的「REQ-xxx 实现/验证」
+      // 是无结构、无验收的碎片任务（本次实测 33 条），只会稀释 WBS。未覆盖需求由质量门/覆盖告警暴露。
+      const drafts = drafts0;
+      const filledReqNos: string[] = [];
+      // 2026-11-17 结构优化：不再把 §x.y/Q/D/R/T/N/O/S 等引用编号补成计划行。
+      // 这些条目是上下文/决策/风险，不是工作项；补齐只会制造碎片任务（本次 PRD 实测 33 条无 child 边孤儿）。
+      // 反向覆盖仍按需求编号计算，交付物/引用覆盖率由质量门单独给出。
       // T01156：反向覆盖检查（collectUncoveredReqNos / buildCoverageWarn）——需求清单中存在、
       // 但未被任何 WBS 计划 reqNos 关联的需求编号即可追溯性缺口。
       const uncoveredReqNos = collectUncoveredReqNos(requirements, drafts);
@@ -2792,7 +3248,6 @@ export const PlanService = {
       return {
         requirements, drafts, coverageWarn, uncoveredReqNos, truncatedNote,
         autoFilledReqNos: filledReqNos.length > 0 ? filledReqNos : undefined,
-        sourceEntryFilled: sourceEntryRows.length > 0 ? sourceEntryRows : undefined,
         wbsGroups: detectWbsGroups(drafts).groups,
       };
     } finally {
@@ -2811,8 +3266,8 @@ export const PlanService = {
    * `deadlineAt` 为总预算截止时刻：限流退避等待用它钳制时长，退避不会把 270s 预算烧穿。
    */
   async aiParsePrdChunked(toolId: string, docText: string, system: string, signal?: AbortSignal, deadlineAt?: number): Promise<{
-    requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string }>;
-    drafts: Array<{ title: string; description: string; durationDays: number; startDate: string; reqNos: string[]; status: PlanStatus; kind: PlanKind; complexity?: number }>;
+    requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string; type?: string; acceptanceRefs?: string[] }>;
+    drafts: PrdPlanDraft[];
     coverageWarn?: string;
     uncoveredReqNos?: string[];
     truncatedNote?: string;
@@ -2929,32 +3384,11 @@ export const PlanService = {
     const wbsNote = wbsNormalized.groups > 1
       ? `已自动收敛 ${wbsNormalized.groups} 套并行 WBS（${wbsNormalized.renumberedMilestones} 个里程碑、${wbsNormalized.renumberedNormals} 条明细章号顺延）；${deduped.merged > 0 ? `已按归一化标题合并 ${deduped.merged} 条同题计划` : ''}`
       : formatWbsNote(wbsInfo.groups, wbsInfo.milestones, deduped.merged);
-    // T03700+：合并后系统兜底补齐——模型漏挂的横切/非功能需求在此落行，缺口集合不再随每轮解析漂移
-    const wbsFinalTyped: PrdPlanDraft[] = wbsFinal as PrdPlanDraft[];
-    const { drafts: autoFilled, filledReqNos } = applyAutoGapFill(merged.requirements, wbsFinalTyped);
-    // T05571：源文档条目补齐——设计/测试文档独有编号（Q-xx/Sx/Dx/Rx/Tx/N-x/Ox/§x.y）在合并草稿中缺失时生成 normal 行
-    let finalDrafts = autoFilled;
-    let sourceEntryRows: Array<{ id: string; label: string; title: string; description: string; excerpt: string }> = [];
-    if (autoFilled.length > 0) {
-      const coveredText = [
-        ...merged.requirements.map((r) => `${r.reqNo} ${r.title} ${r.content}`),
-        ...autoFilled.map((p) => `${p.title} ${p.description}`),
-      ].join('\n');
-      sourceEntryRows = applySourceEntryGapFill(docText, coveredText);
-      for (const e of sourceEntryRows) {
-        finalDrafts.push({
-          title: e.title,
-          description: e.description,
-          durationDays: 1,
-          startDate: '',
-          reqNos: [],
-          status: 'todo',
-          kind: 'normal',
-          complexity: 1,
-        });
-      }
-    }
-    const drafts = finalDrafts;
+    // 2026-11-17 结构优化：不再把未挂接需求补成「REQ-xxx 实现/验证」计划行——
+    // 这些行没有 wbsCode/parentCode/priority/验收，既造碎片又破坏 30~40 条粒度目标。
+    const drafts = wbsFinal as PrdPlanDraft[];
+    ensurePrdPlanDepth(drafts);
+    const filledReqNos: string[] = [];
     const uncoveredReqNos = collectUncoveredReqNos(merged.requirements, drafts);
     const coverageWarn = buildCoverageWarn(drafts.length, merged.requirements, uncoveredReqNos);
     // T03700+：缺失片统一收集（失败 + 因预算中止而未跑的），并带上原文——前端据此展示/复制/单独补解析。
@@ -2974,6 +3408,9 @@ export const PlanService = {
       });
     }
     const complete = !aborted && !signal?.aborted && failedChunks.length === 0;
+    // 2026-11-17：分片路径同样执行 AC 确定性兜底——否则长文档回退分片后仍会丢 AC 覆盖。
+    ensurePrdAcceptanceCoverage(merged.requirements, drafts, docText);
+    ensurePrdRequirementCoverage(merged.requirements, drafts);
     // T02270 复议：分片跑完是**无损**结果（明细比精简模式完整），走 parseNote 普通日志；
     // 只有真的没跑完（预算中止 / 存在失败片）才用 truncatedNote 触发 ⚠——否则用户无法区分「完整分片」与「有损降级」。
     // T03700：失败片显式列出片号与原因类别，缺失内容不静默。
@@ -2997,7 +3434,6 @@ export const PlanService = {
       parseNote,
       failedChunks: failedChunks.length > 0 ? failedChunks : undefined,
       autoFilledReqNos: filledReqNos.length > 0 ? filledReqNos : undefined,
-      sourceEntryFilled: sourceEntryRows.length > 0 ? sourceEntryRows : undefined,
       wbsGroups: wbsInfo.groups,
     };
   },
@@ -3012,26 +3448,44 @@ export const PlanService = {
    * 显式 `'reuse'`：幂等重跑，按标题命中未归档同名原行补差异与需求关联，**绝不改原行 status/progress**。
    */
   importPrd(projectId: string, input: {
-    requirements?: Array<{ reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string; sourceIndex?: number }>;
+    requirements?: Array<{ reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string; sourceIndex?: number; type?: string; acceptanceRefs?: string[] }>;
     // T01001：plans 行支持 kind（milestone=里程碑 / normal=普通任务），导入时据此区分，不再全部转成普通任务
-    plans?: Array<{ title: string; description?: string; durationDays?: number; startDate?: string; reqNos?: string[]; assignee?: string; kind?: PlanKind; complexity?: number; status?: PlanStatus }>;
+    plans?: Array<{ title: string; description?: string; durationDays?: number; startDate?: string; reqNos?: string[]; assignee?: string; kind?: PlanKind; complexity?: number; status?: PlanStatus } & PrdPlanExtras>;
     createTasks?: boolean;
     prdMd?: string;
     prdFilename?: string;
     /** T04064：多文件导入时逐份保留原文与原名，每份一条 prd_docs；T04897：docKind 标注文档类型 */
     prdDocs?: Array<{ filename?: string; contentMd?: string; docKind?: 'prd' | 'design' | 'test' }>;
     onDuplicatePlan?: 'new' | 'reuse';
+    /** 2026-11-17：仅供测试/迁移的显式质量门豁免；缺省严格拦截 */
+    allowQualityOverride?: boolean;
   }): { requirements: number; requirementsCreated: number; reusedRequirements: number; plans: number; tasks: number; unlinkedReqNos: string[]; prdId?: string; prdIds: string[]; reqNoMap: Array<{ from: string; to: string }>; dupPlanTitles: Array<{ title: string; existing: number; renamedTo?: string; reusedPlanId?: string }>; reusedPlans: number; ambiguousReqNos: string[]; orphanRequirements: Array<{ reqNo: string; title: string }>; planRowIds: Array<string | null> } {
     const db = getDb();
     if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
     const reqs = (input.requirements ?? []).filter((r) => r?.title?.trim());
     const planItems = (input.plans ?? []).filter((p) => p?.title?.trim());
+    const reqByNo = new Map<string, PrdTaskReqLookup>();
+    for (const r of reqs) {
+      const key = normalizedReqNoKey(r.reqNo ?? '');
+      if (key && !reqByNo.has(key)) reqByNo.set(key, r);
+    }
+    preparePrdImportPlanRows(planItems, reqs);
     if (reqs.length === 0 && planItems.length === 0) throw new Error('没有可导入的需求或计划条目');
+    // 2026-11-17：质量门在落库前二次校验。带 PRD 结构信号（prdDocs/prdMd/wbsCode/parentCode）才启用，
+    // 避免把「无需求的普通计划回写」也按 PRD 标准拦掉。
+    const qualitySignal = !!input.prdMd || (input.prdDocs?.length ?? 0) > 0
+      || planItems.some((p) => !!p.wbsCode || !!p.parentCode || !!p.sourceSection || !!p.acceptanceRefs?.length);
+    if (qualitySignal) {
+      const gate = validatePrdImportDraft(planItems, reqs);
+      if (gate.errors.length > 0 && !input.allowQualityOverride) {
+        throw new Error(`PRD 导入质量门未通过（${gate.errors.length} 项）：\n- ${gate.errors.join('\n- ')}`);
+      }
+    }
     // T01001 二轮：落库前统一汇总里程碑工期（= 其下明细之和），覆盖直接调 import-prd / MCP 未做汇总的路径
-    const planKinds = planItems.map((p) => (p.kind ?? resolvePrdKind(p.title, p.kind)));
+    const planKinds = planItems.map((p) => (p.kind ?? resolvePrdKind(p.title, p.kind, p.wbsCode)));
     // 2026-11-10 质量复核优化⑥：工期汇总与 child 归属共用同一「跳过补齐行」判定，杜绝两边口径漂移
     const planDurations = milestoneDurations(
-      planItems.map((p, i) => ({ kind: planKinds[i], durationDays: p.durationDays })),
+      planItems.map((p, i) => ({ kind: planKinds[i], durationDays: p.durationDays, title: p.title, wbsCode: p.wbsCode, parentCode: p.parentCode })),
       (i) => isGapFillPlan({ title: planItems[i]?.title, description: planItems[i]?.description }),
     );
     // T05440（P0-3）：导入默认排期。AI 只给 durationDays 不给 startDate，旧行为是全部落「今天」
@@ -3044,10 +3498,40 @@ export const PlanService = {
     if (!hasAnyStart) {
       const calSchedule = loadCalendar();
       let cursor = fmt(new Date());
-      for (let i = 0; i < planItems.length; i += 1) {
-        const d = Math.max(1, Math.round(Number(planDurations[i]) || 1));
-        planStarts[i] = cursor;
-        cursor = nextWorkday(calcEndDate(cursor, d, calSchedule), calSchedule);
+      const tree = deriveWbsTree(planItems.map((p, i) => ({ title: p.title, kind: planKinds[i], wbsCode: p.wbsCode, parentCode: p.parentCode })));
+      const scheduled = new Set<number>();
+      const durationOf = (i: number): number => Math.max(1, Math.round(Number(planDurations[i]) || 1));
+      const scheduleNode = (idx: number): void => {
+        if (scheduled.has(idx)) return;
+        scheduled.add(idx);
+        planStarts[idx] = cursor;
+        if (planKinds[idx] === 'milestone') {
+          // 里程碑：自身起点 = 第一个子项起点；子项按顺序串行；无子项时给 1 天占位
+          const children = tree.childrenOf[idx] ?? [];
+          if (children.length === 0) {
+            cursor = nextWorkday(calcEndDate(cursor, durationOf(idx), calSchedule), calSchedule);
+            return;
+          }
+          for (const child of children) scheduleNode(child);
+          // 守卫：子项工期和与里程碑 duration 不等时，按子项实际包络继续推进（工期已在前面按树汇总）
+          const lastEnd = children.reduce((max, child) => {
+            const st = planStarts[child] ?? cursor;
+            const d = durationOf(child);
+            const end = calcEndDate(st, d, calSchedule);
+            return end > max ? end : max;
+          }, cursor);
+          cursor = nextWorkday(lastEnd, calSchedule);
+          return;
+        }
+        cursor = nextWorkday(calcEndDate(cursor, durationOf(idx), calSchedule), calSchedule);
+      };
+      // 结构优先：从根（里程碑/孤儿任务）按树排期；无结构时退回数组顺序串行
+      if (tree.hasStructure) {
+        for (const root of tree.roots) scheduleNode(root);
+        // 兜底：树构建失败/遗漏的行仍按原顺序补齐，避免出现 undefined startDate
+        for (let i = 0; i < planItems.length; i += 1) if (!scheduled.has(i)) scheduleNode(i);
+      } else {
+        for (let i = 0; i < planItems.length; i += 1) scheduleNode(i);
       }
     }
     const t = now();
@@ -3073,6 +3557,42 @@ export const PlanService = {
     const reuseMode = input.onDuplicatePlan === 'reuse';
     const { planTargets, dupPlanTitles } = resolveImportPlanTargets(db, projectId, planItems, reuseMode, planKinds);
     const reusedPlans = planTargets.filter((x) => x.reuseId).length;
+    // 2026-11-17：结构化依赖——parentCode → 标题，供 createBatch 写 child/serial 边。
+    // 里程碑→child、普通→serial 的语义由 createBatch/linkBatchDeps 统一裁决，导入通道不再另写一套。
+    const codeToTitle = new Map<string, string>();
+    planItems.forEach((p, i) => {
+      const code = wbsCodeOf({ title: p.title, wbsCode: p.wbsCode });
+      if (code) codeToTitle.set(code, p.title);
+      // 兼容「依赖直接写标题」的调用方：标题本身也可作为依赖键
+      codeToTitle.set(p.title, planTargets[i]?.title ?? p.title);
+    });
+    const depsOnOf = (i: number): string[] => {
+      const p = planItems[i];
+      if (!p) return [];
+      const out: string[] = [];
+      const parentCode = parentCodeOf({ title: p.title, kind: planKinds[i], wbsCode: p.wbsCode, parentCode: p.parentCode });
+      const parentTitle = parentCode ? codeToTitle.get(parentCode) : undefined;
+      if (parentTitle && parentTitle !== p.title) out.push(parentTitle);
+      // 同一父节点下按 WBS 顺序串行：前一条普通任务是 current 前置（避免 34 条同起点并行执行）
+      if (parentCode) {
+        for (let j = i - 1; j >= 0; j -= 1) {
+          if (planKinds[j] !== 'normal') continue;
+          const prev = planItems[j];
+          if (!prev) continue;
+          if (parentCodeOf({ title: prev.title, kind: planKinds[j], wbsCode: prev.wbsCode, parentCode: prev.parentCode }) !== parentCode) continue;
+          const prevTitle = planTargets[j]?.title ?? prev.title;
+          if (prevTitle !== p.title) out.push(prevTitle);
+          break;
+        }
+      }
+      for (const dep of p.dependsOn ?? []) {
+        const key = dep.trim();
+        if (!key) continue;
+        const title = codeToTitle.get(key) ?? key;
+        if (title !== p.title) out.push(title);
+      }
+      return [...new Set(out)];
+    };
     let insertedPlans = 0; // 实际新建的计划行数（reuse 命中的行不计数，返回给调用方区分「新建/复用」）
     // T02131：与 planItems 下标对齐的计划行 id，事务内外都要用（返回值 planRowIds 给调用方回填依赖）
     const planIds: Array<string | null> = new Array(planItems.length).fill(null);
@@ -3118,6 +3638,9 @@ export const PlanService = {
           // T01001：里程碑/普通任务在导入时确定类型，避免全部落入默认 normal；
           // AI 解析路径已由 normalizePrdPlans 推好 kind，此处的兜底覆盖直接调 import-prd/MCP 未显式传 kind 的场景
           kind: planKinds[i],
+          // 2026-11-17：把 parentCode/wbsCode 的真实依赖接进 createBatch（此前 PRD 通道没有 depsOn，
+          // 121 条 deps 全是 child、0 条 serial，真实执行顺序完全丢失）
+          depsOn: depsOnOf(i),
         })));
         insertedPlans = created.inserted;
         created.ids.forEach((id, k) => { const i = newIdx[k]; if (i !== undefined) planIds[i] = id; });
@@ -3131,7 +3654,7 @@ export const PlanService = {
       applyImportMilestoneChildEdges(db, { t, planItems, planKinds, planTargets, planIds });
       // 3) 可选：WBS → 待办任务（便于 AI 推进执行），待办同样携带 req_ids（口径见 createPrdImportTodos）
       taskCount = createPrdImportTodos(db, {
-        t, projectId, createTasks: !!input.createTasks, planItems, planTargets, planIds, findReqId,
+        t, projectId, createTasks: !!input.createTasks, planItems, planKinds, planTargets, planIds, findReqId, reqByNo,
       });
       if (insertedPlans === 0 && reqs.length > 0) {
         // 仅导入需求（无计划）时属合法场景，不抛错
@@ -3174,8 +3697,8 @@ export const PlanService = {
    * 全是 `importPrd` 自己在用的那几个函数；本方法不重复实现任何一条判定（另写一套判重即分叉，本单明令禁止）。
    */
   previewPrdImport(projectId: string, input: {
-    requirements?: Array<{ reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string; sourceIndex?: number }>;
-    plans?: Array<{ title: string; description?: string; durationDays?: number; startDate?: string; reqNos?: string[]; assignee?: string; kind?: PlanKind; complexity?: number; status?: PlanStatus }>;
+    requirements?: Array<{ reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string; sourceIndex?: number; type?: string; acceptanceRefs?: string[] }>;
+    plans?: Array<{ title: string; description?: string; durationDays?: number; startDate?: string; reqNos?: string[]; assignee?: string; kind?: PlanKind; complexity?: number; status?: PlanStatus } & PrdPlanExtras>;
     createTasks?: boolean;
     prdMd?: string;
     prdFilename?: string;
@@ -3201,10 +3724,11 @@ export const PlanService = {
     if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw new Error('项目不存在');
     const reqs = (input.requirements ?? []).filter((r) => r?.title?.trim());
     const planItems = (input.plans ?? []).filter((p) => p?.title?.trim());
+    preparePrdImportPlanRows(planItems, reqs);
     if (reqs.length === 0 && planItems.length === 0) throw new Error('没有可导入的需求或计划条目');
     const reuseMode = input.onDuplicatePlan === 'reuse';
     const reqNoMap: Array<{ from: string; to: string }> = [];
-    const planKinds = planItems.map((p) => (p.kind ?? resolvePrdKind(p.title, p.kind)));
+    const planKinds = planItems.map((p) => (p.kind ?? resolvePrdKind(p.title, p.kind, p.wbsCode)));
     const { planTargets, dupPlanTitles } = resolveImportPlanTargets(db, projectId, planItems, reuseMode, planKinds);
     const reqPlan = resolveImportReqPlan(db, projectId, reqs, reuseMode, reqNoMap);
     const prdDocsPreview = previewPrdDocs(db, projectId, input);
@@ -3239,7 +3763,7 @@ export const PlanService = {
     // 说明该文档虽落库却没有产出任何需求（多来源合并时容易被误认为「两份文档都生成了计划」）。
     const docReferences = (input.prdDocs ?? []).map((d, i) => ({
       filename: d.filename ?? `文档${i + 1}`,
-      docKind: (d.docKind ?? 'prd') as 'prd' | 'design' | 'test',
+      docKind: d.docKind ?? 'prd',
       reqCount: reqs.filter((r) => (r.sourceIndex ?? 0) === i).length,
     }));
     return {

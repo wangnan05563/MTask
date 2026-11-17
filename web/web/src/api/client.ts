@@ -1,0 +1,570 @@
+/** 轻量 API 客户端：统一前缀 /api，错误统一抛出 */
+
+/** Electron 壳（file:// 页面）走 api:// 自定义协议，由主进程转发到本地服务；浏览器访问用同源相对路径 */
+/**
+ * API 基础路径：从 document.baseURI 推导（页面地址 = index.html 落点）。
+ * 为什么不能写死 '/api'：根绝对路径会绕过前缀型隧道路由——内网穿透 pathPrefix 模式
+ * （如 Tailscale /mtask/）下页面在 /mtask/，'/api' 却打到 https://host/api，
+ * 完全落在隧道挂载之外，数据面全断（内网穿透×移动端实测发现）。
+ * baseURI 目录推导：根部署 '/?m=1' → '/api'（与旧行为一致）；前缀部署 '/mtask/?m=1' → '/mtask/api'。
+ */
+export const apiBase =
+  typeof location !== 'undefined' && !/^https?:$/.test(location.protocol)
+    ? 'api://mtask'
+    : new URL('api', document.baseURI).toString();
+
+// 访问令牌：启用内网穿透后，所有数据接口需携带 X-Access-Token。模块加载时从本地恢复，重启后仍生效
+const TOKEN_KEY = 'mtask.accessToken';
+let accessToken = (() => {
+  try { return localStorage.getItem(TOKEN_KEY) ?? ''; } catch { return ''; }
+})();
+
+export function setAccessToken(token: string): void {
+  accessToken = token;
+  try { token ? localStorage.setItem(TOKEN_KEY, token) : localStorage.removeItem(TOKEN_KEY); } catch { /* 忽略 */ }
+}
+
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const res = await fetch(`${apiBase}${path}`, {
+    headers: { 'Content-Type': 'application/json', ...(accessToken ? { 'X-Access-Token': accessToken } : {}) },
+    ...options,
+  });
+  if (res.status === 204) return undefined as T;
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+  return body as T;
+}
+
+/** 从 Content-Disposition 提取 RFC 5987 的 UTF-8 文件名（filename*=UTF-8''… 格式） */
+function filenameFromDisposition(cd: string): string {
+  const m = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+  return m ? decodeURIComponent(m[1]) : '';
+}
+
+/** 代理未透传 Content-Disposition 时按内容类型兜底扩展名，避免下载成 report.bin */
+function extFromContentType(ct: string): string {
+  if (ct.includes('spreadsheet')) return 'xlsx';
+  if (ct.includes('wordprocessing')) return 'docx';
+  if (ct.includes('presentation')) return 'pptx';
+  if (ct.includes('pdf')) return 'pdf';
+  return 'bin';
+}
+
+export const api = {
+  /** T02201：可选 AbortSignal——取数容错层用它实现「短超时」，后端阻塞时不至于无限占着加载态 */
+  get: <T>(path: string, signal?: AbortSignal) => request<T>(path, signal ? { signal } : {}),
+  post: <T>(path: string, data?: unknown, signal?: AbortSignal) =>
+    request<T>(path, { method: 'POST', body: data === undefined ? undefined : JSON.stringify(data), ...(signal ? { signal } : {}) }),
+  patch: <T>(path: string, data?: unknown) =>
+    request<T>(path, { method: 'PATCH', body: JSON.stringify(data ?? {}) }),
+  put: <T>(path: string, data?: unknown) =>
+    request<T>(path, { method: 'PUT', body: JSON.stringify(data ?? {}) }), // T00770：PRD 反向更新走全量覆盖 PUT
+  del: <T>(path: string, data?: unknown) =>
+    request<T>(path, { method: 'DELETE', body: data === undefined ? undefined : JSON.stringify(data) }),
+  /** GET 二进制下载（xlsx 导出/模板等）：返回原始 ArrayBuffer，由调用方触发保存 */
+  async getBinary(path: string): Promise<ArrayBuffer> {
+    const res = await fetch(`${apiBase}${path}`, { headers: accessToken ? { 'X-Access-Token': accessToken } : {} });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+    }
+    return res.arrayBuffer();
+  },
+  /**
+   * T02043：GET 下载并带回响应头——给「文件名来自服务端、还要读自定义头做对账」的导出用
+   * （`getBinary` 只给字节，Content-Disposition 与 `X-Estimate-Snapshot` 就丢了，
+   * 前端只能再拼一套命名规则，形成 §6.1 反对的第二套口径）。
+   */
+  async getDownload(path: string): Promise<{ blob: Blob; filename: string; headers: Headers }> {
+    const res = await fetch(`${apiBase}${path}`, { headers: accessToken ? { 'X-Access-Token': accessToken } : {} });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+    }
+    const filename = filenameFromDisposition(res.headers.get('Content-Disposition') ?? '')
+      || `export.${extFromContentType(res.headers.get('Content-Type') ?? '')}`;
+    return { blob: await res.blob(), filename, headers: res.headers };
+  },
+  /** T01480：POST 下载——JSON 请求体换二进制文件（Content-Disposition 取文件名） */
+  async postDownload(path: string, data: unknown): Promise<{ blob: Blob; filename: string }> {
+    const res = await fetch(`${apiBase}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(accessToken ? { 'X-Access-Token': accessToken } : {}) },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+    }
+    const cd = res.headers.get('Content-Disposition') ?? '';
+    let filename = filenameFromDisposition(cd);
+    if (!filename) filename = `export.${extFromContentType(res.headers.get('Content-Type') ?? '')}`;
+    return { blob: await res.blob(), filename };
+  },
+  /**
+   * POST 二进制上传（xlsx 导入等），Content-Type 固定 octet-stream 以跳过全局 JSON 解析。
+   * `signal`（T03185 / UX-07②）：PRD 解析这类长耗时逐文件调用需要真正可中断——不接 signal 时
+   * 「停止」只能清前端状态，请求仍会跑完并落结果，等于取消无效。
+   */
+  async postBinary<T>(path: string, data: ArrayBuffer, opts?: { signal?: AbortSignal }): Promise<T> {
+    const res = await fetch(`${apiBase}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', ...(accessToken ? { 'X-Access-Token': accessToken } : {}) },
+      body: data,
+      signal: opts?.signal,
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+    return body as T;
+  },
+  /**
+   * T00444：订阅后端数据变更 SSE 通知（/api/events）。token 经 query 传递
+   * （EventSource 无法自定义请求头）；EventSource 原生断线重连。返回取消订阅函数。
+   */
+  openChangeStream(onChange: (kind: string) => void): () => void {
+    const tokenQuery = accessToken ? `?token=${encodeURIComponent(accessToken)}` : '';
+    const url = `${apiBase}/events${tokenQuery}`;
+    const es = new EventSource(url);
+    es.onmessage = (ev) => {
+      try { onChange(String(JSON.parse(ev.data).kind ?? '')); } catch { onChange(''); }
+    };
+    return () => es.close();
+  },
+  /** 生成类接口的二进制下载：POST 返回文件流，附带 Content-Disposition 文件名 */
+  async download(path: string, data: unknown): Promise<{ blob: Blob; filename: string }> {
+    const res = await fetch(`${apiBase}${path}`, {
+      method: 'POST',
+      // 与 request() 一致地附带访问令牌：启用内网穿透后 accessTokenGuard 校验 X-Access-Token，缺失会返回 401 报 unauthorized
+      headers: { 'Content-Type': 'application/json', ...(accessToken ? { 'X-Access-Token': accessToken } : {}) },
+      body: JSON.stringify(data ?? {}),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+    }
+    const blob = await res.blob();
+    let filename = filenameFromDisposition(res.headers.get('Content-Disposition') ?? '');
+    if (!filename) filename = `report.${extFromContentType(res.headers.get('Content-Type') ?? '')}`;
+    return { blob, filename };
+  },
+};
+
+export interface Project {
+  id: string;
+  name: string;
+  description: string;
+  sort_weight: number;
+  /** T00655：创建时间（项目排序「创建时间」维度用） */
+  created_at?: string;
+  /** T00496：每项目待办/未验证计数（徽标展示） */
+  todo_count?: number;
+  /** T00922：每项目已完成计数（看板/列表统计首屏即显示全量，无需加载更多后才能看到准确值） */
+  done_count?: number;
+  unverified_count?: number;
+  /** T00505：计划任务统计（计划菜单下拉徽标） */
+  plan_done?: number;
+  plan_doing?: number;
+  plan_open?: number;
+  /** T00771：项目工作空间根路径（空=未绑定；任务菜单工作空间下拉条 / AI 上下文消费） */
+  workspace_path?: string;
+  /** T03209（PM-101）：项目级 WIP 软上限（默认 10，1~50），仅提示不阻断 */
+  wip_limit?: number;
+  /** T03268（PRD 4.2 时区）：项目时区（IANA 名，空串＝跟随系统时区） */
+  timezone?: string;
+  /** T04133（PRD MEM-101③）：产品标签（后端归一化，''＝未绑定产品）——产品维度记忆的唯一隔离边界 */
+  product_key?: string;
+}
+
+export interface TaskImage {
+  id: string;
+  task_id: string;
+  mime_type: string;
+  size: number;
+  created_at: string;
+}
+
+/** 图片直链（<img src> 直接用；Electron 壳内由 api:// 协议转发到本地服务） */
+// T00580：<img src> 无法自定义请求头，携带 ?token= 通过服务端图片路径的 query 授权
+// （accessToken 为空即纯本地模式，服务端 guard 整体放行，拼空串不影响）
+const tokenQuery = (token: string) => (token ? `?token=${encodeURIComponent(token)}` : '');
+export const imageUrl = (id: string) => `${apiBase}/images/${id}${tokenQuery(accessToken)}`;
+
+/** 取图片 blob（复制到剪贴板用）。经 api:// 代理返回，代理已加 CORS 头，渲染进程可跨源读取 */
+export async function fetchImage(id: string): Promise<Blob> {
+  const res = await fetch(imageUrl(id));
+  if (!res.ok) throw new Error(`图片加载失败 HTTP ${res.status}`);
+  return res.blob();
+}
+
+/** 取图片 dataURL（富文本复制时内嵌到 HTML 用） */
+export async function imageDataURL(id: string): Promise<string> {
+  const blob = await fetchImage(id);
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(typeof r.result === "string" ? r.result : "");
+    r.onerror = () => reject(new Error("图片转 dataURL 失败"));
+    r.readAsDataURL(blob);
+  });
+}
+
+export interface Task {
+  id: string;
+  /** 任务编号：全局唯一（T+5位数字），供 AI Agent 通过 MCP 按编号定位 */
+  task_no: string | null;
+  project_id: string;
+  title: string;
+  description: string;
+  priority: string;
+  status: 'todo' | 'done';
+  /** 已完成任务的验证状态：true=已验证，false=未验证 */
+  verified: boolean;
+  archived: boolean;
+  archived_at: string | null;
+  ai_summary: string | null;
+  /** T02164：AI 摘要生成时刻（ISO）——摘要视图强制标注「更新时间」并据此判断时效性 */
+  ai_summary_at?: string | null;
+  /** 处理结果：AI 分析结论（根因/解决方案）等，可查看/编辑 */
+  handle_result: string | null;
+  /** T00566：AI 处理状态动画（'' 已读/无 | running 运行中 | failed 运行失败 | unread 未读） */
+  ai_state: string;
+  /** T01057-FR1.2：失败重试次数（手动重试 +1；历史在 handle_result 追加段） */
+  retry_count?: number;
+  /** T00577：派生单溯源——原任务编号（如 T00422） */
+  derived_from: string | null;
+  /** T02949：派生单裁决状态（'' 无 | '待裁决' | '已裁决'）——独立列，不占用 status 的待办/完成语义 */
+  ruling_state?: string;
+  /** T02949：裁决内容（预设选项值或自定义文本） */
+  ruling_result?: string;
+  /** T02949：裁决/标记时刻（ISO） */
+  ruling_at?: string | null;
+  /** T00589：历史资产时间（非空即已沉淀至历史资产，与归档独立） */
+  history_at?: string | null;
+  /** T00719：搁置标记——true 时任务从待办/已完成列表与 MCP 查询隔离，仅出现在搁置列表 */
+  shelved?: boolean;
+  /** T00462/T00451：项目计划联动任务——值为来源计划标题（区分徽标+反向引用） */
+  fromPlanTitle?: string;
+  /** T01037：来源计划类型——milestone=里程碑联动任务（徽标显示「里程碑」），其余显示「计划」 */
+  fromPlanKind?: string;
+  /** T02196：来源计划行 id——点击「计划/里程碑」徽标时据此在计划 WBS 视图定位该节点 */
+  fromPlanId?: string;
+  /** T03229（PM-202②）：在途阻塞方摘要——列表/看板「阻塞 N」徽标据此显示，tooltip 点名是谁挡的。
+   *  仅列表类读法带出（单条详情改读 `/tasks/:id/blocked-by`），故为可选。 */
+  blocked_by?: Array<{ id: string; task_no: string | null; title: string }>;
+  /** T03231（PM-203②）：项目自定义字段的值——仅非空项；`display` 已是给人看的文本（单选项回 label） */
+  field_values?: TaskFieldValue[];
+  /** T00446：手动排序权重（拖拽排序结果；manual 排序模式生效） */
+  user_sort: number | null;
+  /** 置顶：true=固定到列表顶部 */
+  pinned: boolean;
+  /** 所属任务分类 id；null 表示未分类 */
+  category_id: string | null;
+  /** T00450：父任务 id（epic→task 两级层级） */
+  parent_id: string | null;
+  /** T00490：记录字体颜色（Excel 风格颜色按钮），空串=默认色 */
+  color?: string;
+  /** 八期 §3.1.6：`GET /tasks` 内联的本任务**最新一条**关联提交（无关联为空数组；裸数组契约不变） */
+  gitLinks?: GitInlineLink[];
+  /** 八期 §3.1.1：关联总数——列表「+N」角标据此显示（N = gitLinkCount − 1） */
+  gitLinkCount?: number;
+  created_at: string;
+  updated_at: string;
+  images: TaskImage[];
+}
+
+/* ---------- 八期（§3.1/§3.2）任务 ↔ Git 提交：客户端类型，字段名与服务端下发一致 ---------- */
+
+/** 关联来源（开放枚举，`ci` 预留给未来 CI 回写） */
+export type GitLinkSource = 'agent' | 'manual' | 'ci';
+
+export interface GitInlineLink {
+  sha: string;
+  shortSha: string;
+  source: GitLinkSource;
+  createdAt: string;
+  /** T04576：关联来自工作空间目录内的哪个仓库（空/缺省 = 项目根仓库） */
+  repoSub?: string;
+}
+
+/** 外链信息：`commitBase` 由服务端算好（凭据已剥离），前端只拼 SHA */
+export interface GitRemoteInfo {
+  url: string;
+  display: string;
+  platform: string | null;
+  commitBase: string | null;
+  noRemote: boolean;
+}
+
+export interface GitDegraded {
+  kind: string;
+  message: string;
+}
+
+/** 提交摘要（列表批量解析 + 抽屉首屏共用） */
+export interface GitCommitSummary {
+  sha: string;
+  shortSha: string;
+  author: string;
+  date: string;
+  subject: string;
+  refs: string[];
+  parents: string[];
+}
+
+/** 抽屉提交卡（§3.2.1 五层结构的原料） */
+export interface GitCommitCard extends GitCommitSummary {
+  source: GitLinkSource;
+  linkedAt: string;
+  /** T04576：该关联来自工作空间目录内的哪个仓库（空 = 项目根仓库） */
+  repoSub?: string;
+  stats: { files: number; additions: number | null; deletions: number | null };
+  isInitial: boolean;
+  /** 提交时刻晚于任务 updated_at（§3.2.2，仅提示不改状态） */
+  laterThanTask: boolean;
+  workspaceDrift: boolean;
+  commitUrl?: string;
+}
+
+export interface GitTaskView {
+  commits: GitCommitCard[];
+  missing: string[];
+  degraded?: GitDegraded;
+  remote?: GitRemoteInfo;
+}
+
+/** 变更文件清单行：`status` 为 `A|M|D|R` 等 git name-status 字母 */
+export interface GitCommitFile {
+  path: string;
+  oldPath?: string;
+  status: string;
+  additions: number | null;
+  deletions: number | null;
+  binary: boolean;
+}
+
+export interface GitFilesResult {
+  files: GitCommitFile[];
+  truncated?: boolean;
+  missing?: string[];
+  degraded?: GitDegraded;
+  diffs?: Record<string, { hunks: GitDiffHunk[]; truncated: boolean }>;
+}
+
+/** unified diff 的一个 hunk（行首保留 diff 前缀）；与 `utils/lectureDiff.LectureDiffHunk` 同形，
+ *  在此重述是为了让 api/client 保持零依赖的叶子模块（结构化类型可直接传给 hunkToRows） */
+export interface GitDiffHunk {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  lines: string[];
+}
+
+/** `POST /git/commit-summaries` 的分组回执（同「workspace + 仓库」一组，页内零逐行请求） */
+export interface GitSummaryGroup {
+  workspacePath: string;
+  /** T04576：该组来自工作空间目录内的哪个仓库（空串 = 项目根仓库） */
+  repoSub?: string;
+  available: boolean;
+  kind?: string;
+  message?: string;
+  commits: GitCommitSummary[];
+  missing: string[];
+  truncated: boolean;
+  remote?: GitRemoteInfo;
+}
+
+export interface TaskCategory {
+  id: string;
+  name: string;
+  sort_weight: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** T03231（PM-203）：项目级自定义字段——与服务端 `ProjectFieldView` 同形（snake_case 直通） */
+export type CustomFieldType = 'text' | 'number' | 'date' | 'select';
+
+export interface CustomFieldOption {
+  id: string;
+  label: string;
+  /** 已被引用的选项只能停用（仍按 label 展示历史值），不进填写候选 */
+  archived: boolean;
+}
+
+export interface CustomField {
+  id: string;
+  project_id: string;
+  name: string;
+  type: CustomFieldType;
+  options: CustomFieldOption[];
+  sort_weight: number;
+  archived: boolean;
+  archived_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskFieldValue {
+  field_id: string;
+  name: string;
+  type: CustomFieldType;
+  value: string;
+  display: string;
+}
+
+/** 抽屉「自定义字段」页的取数形状：可编辑字段 + 当前值（值只含未归档字段） */
+export interface TaskFieldValuesPayload {
+  fields: CustomField[];
+  values: Record<string, string>;
+}
+
+/**
+ * T02208：服务端本地配置体检回传的问题项（与 server/src/adapters/configCheck.ts 同形状）。
+ * `fixed` 存在即表示可一键规范化（非 ASCII / 形近字符已换成 ASCII 等价物）。
+ */
+export interface ConfigIssue {
+  field: 'apiKey' | 'endpoint' | 'model';
+  message: string;
+  fixed?: string;
+}
+
+export interface AITool {
+  id: string;
+  name: string;
+  type: string;
+  purpose: string;
+  endpoint: string;
+  model: string | null;
+  /** 模型配置说明 */
+  model_notes: string;
+  temperature: number;
+  max_tokens: number;
+  timeout_ms: number;
+  enabled: boolean;
+  isDefaultOrganize: boolean;
+  isDefaultDevelop: boolean;
+  /** 置顶：true=固定到列表顶部 */
+  pinned: boolean;
+  /** 备注 */
+  remark: string;
+  /** 厂商官方控制台页面 URL */
+  console_url: string | null;
+  hasApiKey: boolean;
+  apiKeyMasked: string | null;
+}
+
+export interface QueueJob {
+  id: string;
+  queue_id: string;
+  task_id: string;
+  tool_id: string;
+  order_index: number;
+  status: string;
+  request_payload: string | null;
+  response_payload: string | null;
+  error: string | null;
+  /** 队列详情接口 JOIN 附带（可能为 null） */
+  task_title?: string | null;
+  tool_name?: string | null;
+}
+
+export interface Queue {
+  id: string;
+  name: string;
+  date: string;
+  status: string;
+  created_at: string;
+  /** T01434：队列级暂停——true 时发送/提交被拒绝 */
+  paused?: number;
+  jobs?: QueueJob[];
+}
+
+/** T01271-FR1.4：执行会话关联任务摘要 */
+export interface ExecSessionTaskBrief {
+  id: string;
+  task_no: string | null;
+  title: string;
+  /** T04065：所属项目（多项目并行时用于识别归属） */
+  project_id: string;
+  project_name: string | null;
+}
+
+/** T01271-FR1.4：外部平台执行会话（「执行会话」面板数据源） */
+export interface ExecSession {
+  id: string;
+  platform: string;
+  session_id: string | null;
+  task_ids: string;
+  /** active 存活 | stalled 停滞 | done 完成 | failed | aborted */
+  status: string;
+  progress: number;
+  phase: string;
+  last_heartbeat: string;
+  started_at: string;
+  finished_at: string | null;
+  tasks: ExecSessionTaskBrief[];
+}
+
+export interface PromptCategory {
+  id: string;
+  name: string;
+  description: string;
+  sort_weight: number;
+  builtin: boolean;
+  /** 分类列表接口附带的提示词数量 */
+  promptCount?: number;
+}
+
+export interface Prompt {
+  id: string;
+  category_id: string;
+  title: string;
+  content: string;
+  /** 置顶：true=固定到列表顶部（后端返回 0/1，前端按布尔使用） */
+  pinned: boolean;
+  /** T03683：收藏标记——与置顶正交（置顶管排序、收藏管筛选；后端返回 0/1，前端按布尔使用） */
+  is_favorited?: boolean;
+  /** T00494：手动排序权重（拖拽保存；0=默认序） */
+  sort_weight: number;
+  /** T00490：记录字体颜色，空串=默认色 */
+  color?: string;
+  /** T00837：可选的「通用需求分类」归属（指向 req_categories；空=未归属） */
+  req_category_id?: string;
+  created_at: string;
+  updated_at: string;
+  /** T00872：归档标记与归档时间——归档页按 archived=true + archived_at 展示可还原 */
+  archived?: boolean;
+  archived_at?: string | null;
+  /** T03248（AI-104③）：模板累计成功发起次数（老库补列前为 0；失败预检不计数，可归零） */
+  usage_count?: number;
+}
+
+export interface ReqCategory {
+  id: string;
+  name: string;
+  sort_weight: number;
+  created_at: string;
+  updated_at: string;
+  /** 分类列表接口附带的条目数量 */
+  reqCount?: number;
+}
+
+export interface ReqEntry {
+  id: string;
+  category_id: string;
+  title: string;
+  content: string;
+  /** 置顶：true=固定到列表顶部（后端返回 0/1，前端按布尔使用） */
+  pinned: boolean;
+  /** T03683：收藏标记——与 Prompt.is_favorited 同语义同口径（后端返回 0/1） */
+  is_favorited?: boolean;
+  /** T03685：归档标记与归档时间——与 prompts 同构（删除改归档，归档视图可还原） */
+  archived?: boolean;
+  archived_at?: string | null;
+  /** T00494：手动排序权重（拖拽保存；0=默认序） */
+  sort_weight: number;
+  /** T00490：记录字体颜色，空串=默认色 */
+  color?: string;
+  created_at: string;
+  updated_at: string;
+}

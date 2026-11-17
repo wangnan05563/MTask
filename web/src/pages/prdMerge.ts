@@ -48,8 +48,8 @@ export function mergeRestoredFailures(
 /** T00662：单文件解析响应（/plans/ai-parse-prd） */
 export interface PrdParseResult {
   /** T04064：sourceIndex = 该需求来自第几个来源文件（与 import payload 的 prdDocs 下标对齐） */
-  requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string; sourceIndex?: number }>;
-  drafts: Array<{ title: string; description: string; durationDays: number; reqNos: string[]; kind?: 'milestone' | 'normal' | 'daily' }>;
+  requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string; sourceIndex?: number; type?: string; acceptanceRefs?: string[] }>;
+  drafts: Array<{ title: string; description: string; durationDays: number; reqNos: string[]; kind?: 'milestone' | 'normal' | 'daily'; wbsCode?: string; parentCode?: string; phaseCode?: string; priority?: string; sourceSection?: string; deliverable?: string; acceptanceRefs?: string[]; dependsOn?: string[]; taskType?: string; estimateDays?: number }>;
   coverageWarn?: string;
   /** T00908：后端随解析返回的 PRD 提取全文，供确认导入时落库到 PRD 管理视图 */
   textMd?: string;
@@ -72,15 +72,30 @@ export interface PrdParseResult {
 }
 
 /**
+ * AC 验收项识别：类型标记、AC 编号或来源章节三者任一命中。
+ * 计划里的 `acceptanceRefs` 只写 AC 编号时，也必须算作「已被计划关联」，
+ * 否则会把「验收项挂载」误报成「需求没有实现计划」。
+ */
+export function isAcceptanceReq(
+  r: Pick<PrdParseResult['requirements'][number], 'type' | 'reqNo' | 'sourceRef'>,
+): boolean {
+  return r.type === 'AC'
+    || /^AC[-_.]?\d/i.test(r.reqNo ?? '')
+    || /验收标准/.test(r.sourceRef ?? '');
+}
+
+/**
  * T03700+：按界面最终结果算「未被任何计划关联的需求」——多文件合并会把编号全局重排，
  * 直接引用后端按单文件编号算出的告警会和表格里的行号对不上；这里以合并后的编号为准。
  * 调用方传入的 requirements/drafts 应已按勾选过滤（未勾选的计划不参与导入，其覆盖不算数）。
+ * 2026-11-17：`acceptanceRefs` 是 AC 的第一关联字段，必须与 `reqNos` 一起计入覆盖，
+ * 否则 AC 明明已挂到验收任务，仍会被报成「30 条需求未关联」。
  */
 export function findUncoveredReqs(
   requirements: ReadonlyArray<PrdParseResult['requirements'][number]>,
   drafts: ReadonlyArray<PrdParseResult['drafts'][number]>,
 ): PrdParseResult['requirements'] {
-  const referenced = new Set(drafts.flatMap((d) => d.reqNos));
+  const referenced = new Set(drafts.flatMap((d) => [...d.reqNos, ...(d.acceptanceRefs ?? [])]));
   return requirements.filter((r) => r.title.trim() && !referenced.has(r.reqNo));
 }
 
@@ -90,9 +105,12 @@ export function findUncoveredReqs(
  * 缺口集合因此随每次解析漂移；这里由界面一键生成，每需求一行 normal、工期 1 天，可再编辑/取消勾选。
  */
 export function buildGapFillDrafts(
-  requirements: ReadonlyArray<{ reqNo: string; title: string }>,
+  requirements: ReadonlyArray<PrdParseResult['requirements'][number]>,
 ): PrdParseResult['drafts'] {
-  return requirements.map((r) => ({
+  // AC 是验收标准，不是待开发需求：不能给它补「实现/验证」任务。
+  // AC 未承接时应挂到验收任务（服务端 ensurePrdAcceptanceCoverage 负责），
+  // 这里只给 FR/NFR/EX 等实现类需求补计划，避免一次点击生成 30 条垃圾任务。
+  return requirements.filter((r) => !isAcceptanceReq(r)).map((r) => ({
     title: `${r.reqNo} ${r.title.slice(0, 24)} 实现/验证`,
     description: '自动补齐：该需求在 AI 拆解的 WBS 中没有对应节点（导入前可改标题或取消勾选）',
     durationDays: 1,
@@ -102,10 +120,15 @@ export function buildGapFillDrafts(
 }
 
 /**
- * T00824：多文件解析结果合并——统一重编号 REQ-001…，并把每份 WBS 草稿的 reqNos 转换后再拼接。
+ * T00824：多文件解析结果合并——需求编号全局重排，并把每份 WBS 草稿的
+ * `reqNos` 与 `acceptanceRefs` 同步重映射后再拼接。
  * T01995：old→new 表**按来源文件分表**（旧实现跨文件共用一张表，后份文档的同名旧号会覆盖前份，
  * 导致前份计划/待办关联整体后移「前序文档需求条数」位）；草稿重映射只用产出它的那份文件的表，
  * 两趟循环按同一 `list` 下标对齐。本份表查不到的旧号原样保留（交给服务端 unlinkedReqNos 告警）。
+ *
+ * 2026-11-17 修复：AC 验收项必须保留 AC 编号空间，不能再被统一重排成 REQ-xxx。
+ * 旧实现只改 `reqNos`、不改 `acceptanceRefs`：当计划把 AC 只放在 acceptanceRefs 时，
+ * 需求行已变成 REQ-044，计划仍写 AC-14，质量门就会把 30 条 AC 全部判成「没有任何任务承接」。
  */
 export function mergePrdResults(list: PrdParseResult[]): {
   requirements: PrdParseResult['requirements'];
@@ -113,12 +136,16 @@ export function mergePrdResults(list: PrdParseResult[]): {
 } {
   const maps = list.map(() => new Map<string, string>());
   const requirements: PrdParseResult['requirements'] = [];
-  let n = 1;
+  let reqSeq = 1;
+  let acSeq = 1;
   list.forEach((r, fileIdx) => {
     for (const x of r.requirements) {
-      const nn = `REQ-${String(n++).padStart(3, '0')}`;
+      const ac = isAcceptanceReq(x);
+      const nn = ac
+        ? `AC-${String(acSeq++).padStart(2, '0')}`
+        : `REQ-${String(reqSeq++).padStart(3, '0')}`;
       maps[fileIdx].set(x.reqNo, nn);
-      requirements.push({ ...x, reqNo: nn, sourceIndex: fileIdx });
+      requirements.push({ ...x, reqNo: nn, type: ac ? 'AC' : x.type, sourceIndex: fileIdx });
     }
   });
   const drafts: PrdParseResult['drafts'] = [];
@@ -126,11 +153,13 @@ export function mergePrdResults(list: PrdParseResult[]): {
     const map = maps[fileIdx];
     for (const d of r.drafts) {
       // 服务端自动补齐行把原编号写进标题前缀；跨文件全局重排后同步改写前缀，
-      // 否则标题里的 REQ-xxx 会与 reqNos 指向的最终编号对不上
-      const m = /^(REQ-\d{3})\s/.exec(d.title);
+      // 否则标题里的 REQ-xxx/AC-xx 会与 reqNos 指向的最终编号对不上
+      const m = /^(REQ-\d{3}|AC-\d{2,3})\s/.exec(d.title);
       const mapped = m ? map.get(m[1]) : undefined;
       const title = m && mapped ? `${mapped}${d.title.slice(m[1].length)}` : d.title;
-      drafts.push({ ...d, title, reqNos: d.reqNos.map((x) => map.get(x) ?? x) });
+      const reqNos = d.reqNos.map((x) => map.get(x) ?? x);
+      const acceptanceRefs = (d.acceptanceRefs ?? []).map((x) => map.get(x) ?? x);
+      drafts.push({ ...d, title, reqNos, acceptanceRefs: acceptanceRefs.length > 0 ? acceptanceRefs : undefined });
     }
   });
   return { requirements, drafts };

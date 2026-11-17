@@ -1,0 +1,343 @@
+/**
+ * T03250（PRD 5.1）：工作空间只读问答。
+ *
+ * 回答必须带 `file:line` 引用，且引用要能真正跳转——所以引用不是「模型说了算」：
+ * 服务端先按问题关键词从现成证据源取片段（符号索引 `workspace_symbols` + 全文检索），
+ * 模型只允许在给定片段范围内作答；回答里的 `[path:line]` 再逐条回到证据集合校验，
+ * 不在证据里的引用直接丢弃（宁少不假）。
+ *
+ * 只读红线：取数只走 WorkspaceService.search/readFile/symbolMatches（同一套路径防穿越 + 忽略规则），
+ * 本服务不写文件、不建索引、不改任务数据。
+ */
+import { getDb } from '../db/connection';
+import { ACTIVE_PROJECT_WHERE } from '../util/projectRouting';
+import { AIService } from './AIService';
+import { WorkspaceService } from './WorkspaceService';
+import { recordAsk } from './workspaceQaTelemetry';
+
+export interface QaEvidence {
+  path: string;
+  line: number;
+  text: string;
+  symbol?: string;
+}
+
+export interface QaCitation {
+  path: string;
+  line: number;
+  symbol?: string;
+}
+
+export interface WorkspaceAskResult {
+  ok: boolean;
+  answer?: string;
+  citations: QaCitation[];
+  /** 送进模型的证据条数（0 表示没检索到可用片段，此时不应让模型硬答） */
+  evidenceCount: number;
+  keywords: string[];
+  /** 上下文是否因预算被截断（T03251 要求「超预算明示截断」） */
+  truncated: boolean;
+  contextChars: number;
+  kind?: string;
+  message?: string;
+  error?: string;
+  /** T03252：本次提问的埋点事件 id，前端引用点击/有用无用反馈带上它 */
+  eventId?: string;
+}
+
+/** 单次问答的上下文预算（字符）：够放十几个片段，又不会把长回答顶出模型窗口 */
+export const QA_CONTEXT_LIMIT = 12_000;
+/** 送模型的片段条数上限（符号命中 + 全文命中合计） */
+export const QA_EVIDENCE_LIMIT = 14;
+/** 单条片段送模型的字符上限：长行（压缩产物/大表）不整行塞进去，超出即算截断 */
+export const QA_ROW_LIMIT = 400;
+
+interface ProjectRow {
+  id: string;
+  name: string;
+  workspace_path: string | null;
+}
+
+const normPath = (p: string): string => p.replaceAll('\\', '/').replace(/^\.\//, '').replace(/^\/+/, '');
+
+/** 裸写锚点 `path.ext:line` 认的扩展名。枚举从正则里挪到集合里：语义不变，正则复杂度降到规则线内 */
+const BARE_ANCHOR_EXTS = new Set([
+  'ts', 'tsx', 'js', 'jsx', 'py', 'java', 'kt', 'go', 'rs', 'cs', 'cpp', 'c', 'h', 'sql', 'md', 'json', 'yml', 'yaml',
+]);
+
+/**
+ * 裸写锚点：`(?:^|空白/括号) + 路径 + .扩展名 + :行号`。
+ * 扩展名不再写进正则——`\w+` 取到冒号前的最后一段，再由 BARE_ANCHOR_EXTS 判定，
+ * 与原「扩展名枚举交替」逐用例等价（两边都要求扩展名紧贴 `:行号`）。
+ */
+const BARE_ANCHOR_RE = /(?:^|[\s(（])([\w./-]+)\.(\w+):(\d{1,6})\b/g;
+
+/** 证据收集器：按 `path:line` 去重，条数封顶（超出上限的命中直接丢弃） */
+function createEvidencePicker(): { push: (e: QaEvidence) => void; picked: QaEvidence[] } {
+  const picked: QaEvidence[] = [];
+  const seen = new Set<string>();
+  const push = (e: QaEvidence): void => {
+    const key = `${normPath(e.path)}:${e.line}`;
+    if (seen.has(key) || picked.length >= QA_EVIDENCE_LIMIT) return;
+    seen.add(key);
+    picked.push({ ...e, path: normPath(e.path) });
+  };
+  return { push, picked };
+}
+
+/** 符号命中（密度高、定位准） */
+function pushSymbolHits(projectId: string, keywords: string[], push: (e: QaEvidence) => void): void {
+  for (const hit of WorkspaceService.symbolMatches(projectId, keywords, 6)) {
+    push({ path: hit.path, line: hit.line, text: '', symbol: hit.symbol });
+  }
+}
+
+/** 全文检索最多打前 3 个关键词：每个词条数太多会把符号命中挤掉。返回是否发生截断 */
+function pushKeywordHits(projectId: string, keywords: string[], push: (e: QaEvidence) => void): boolean {
+  let truncated = false;
+  for (const kw of keywords.slice(0, 3)) {
+    try {
+      const hits = WorkspaceService.search(projectId, kw);
+      if (hits.partial === true) truncated = true;
+      for (const h of hits.slice(0, 5)) {
+        if (h.line <= 0) continue; // 文件名命中没有行号，做不了可跳转引用
+        push({ path: h.path, line: h.line, text: h.snippet });
+      }
+    } catch { /* 关键词太短/非法：跳过该词，不影响其它证据 */ }
+  }
+  return truncated;
+}
+
+/** 回读一行真实文本；文件已删/读不到返回 null（该片段丢弃） */
+function readEvidenceLine(projectId: string, e: QaEvidence): string | null {
+  try {
+    const f = WorkspaceService.readFile(projectId, e.path, Math.max(0, e.line - 1), 1);
+    return f.lines[0]?.text ?? '';
+  } catch {
+    return null;
+  }
+}
+
+/** 回读真实行文本并压预算：符号命中只有位置，检索 snippet 可能被截断；超出预算即停 */
+function resolveEvidenceRows(projectId: string, picked: QaEvidence[]): { resolved: QaEvidence[]; truncated: boolean; used: number } {
+  const resolved: QaEvidence[] = [];
+  let used = 0;
+  let truncated = false;
+  for (const e of picked) {
+    const text = e.text.trim() ? e.text : readEvidenceLine(projectId, e);
+    if (text === null) continue;
+    const full = text.trim();
+    if (full.length > QA_ROW_LIMIT) truncated = true;
+    const rowText = full.slice(0, QA_ROW_LIMIT);
+    const row = `${e.path}:${e.line}: ${rowText}`;
+    if (used + row.length > QA_CONTEXT_LIMIT) {
+      truncated = true;
+      break;
+    }
+    used += row.length + 1;
+    resolved.push({ ...e, text: rowText });
+  }
+  return { resolved, truncated, used };
+}
+
+/**
+ * 取证据：先符号（密度高、定位准），再全文（补注释/字符串里的说法），按 `path:line` 去重，
+ * 每个片段从文件里回读一行真实文本（检索片段可能是整行截断，符号只有位置）。
+ */
+export function collectEvidence(projectId: string, question: string): { evidence: QaEvidence[]; keywords: string[]; truncated: boolean; contextChars: number } {
+  const keywords = WorkspaceService.extractKeywords(question).slice(0, 8);
+  const picker = createEvidencePicker();
+  let truncated = false;
+  if (keywords.length > 0) {
+    pushSymbolHits(projectId, keywords, picker.push);
+    if (pushKeywordHits(projectId, keywords, picker.push)) truncated = true;
+  }
+  const rows = resolveEvidenceRows(projectId, picker.picked);
+  return { evidence: rows.resolved, keywords, truncated: truncated || rows.truncated, contextChars: rows.used };
+}
+
+export function buildSystemPrompt(): string {
+  return [
+    '你是代码库问答助手，只能依据用户消息里给出的「代码片段」作答。',
+    '规则：',
+    '1. 每条结论后面用 [相对路径:行号] 标注依据，行号必须取自片段标记，不得编造；',
+    '2. 片段不足以回答时直接说明「工作空间里没有找到相关依据」，不要靠通用知识补全；',
+    '3. 不要输出与问题无关的代码，回答尽量简短（≤200 字）；',
+    '4. 只读：不要建议直接改仓库文件。',
+  ].join('\n');
+}
+
+export function buildUserPrompt(question: string, evidence: readonly QaEvidence[]): string {
+  const blocks = evidence.map((e) => {
+    const symbolPart = e.symbol ? `（符号 ${e.symbol}）` : '';
+    return `【${e.path}:${e.line}】${symbolPart}\n${e.text}`;
+  });
+  return [`问题：${question}`, '', '代码片段：', ...blocks, '', '请按规则作答，并为每条结论标注 [路径:行号]。'].join('\n');
+}
+
+/** `[路径:行号]` 里的路径段字符集：排除 `]`、`/`、`:` 与空白。 */
+const isAnchorPathChar = (c: string): boolean => c !== ']' && c !== '/' && c !== ':' && !/\s/.test(c);
+
+/**
+ * 从 from 起按「段 / 段 / 段」走完路径，返回停下来的那位（`:` `]` 空白 或串尾）与「路径是否非空且段段非空」。
+ * 空段（如 `[a//b` 的连续斜杠、`[::1` 的盘符后紧跟冒号）判为不合法，但仍要交出停下那位供游标跨过。
+ */
+function anchorPathEnd(source: string, from: number): { end: number; valid: boolean } {
+  const n = source.length;
+  let k = from;
+  for (;;) {
+    const segStart = k;
+    while (k < n && isAnchorPathChar(source[k])) k += 1;
+    if (k === segStart) return { end: k, valid: false };
+    if (source[k] !== '/') return { end: k, valid: true };
+    k += 1;
+  }
+}
+
+/** 可选前缀（盘符 / 首个 `/`）的全部起点，按正则的回溯优先序排：盘符+斜杠 → 盘符 → 斜杠 → 裸。 */
+function anchorStarts(source: string, j: number): number[] {
+  const n = source.length;
+  const starts: number[] = [];
+  if (j + 1 < n && /[A-Za-z]/.test(source[j]) && source[j + 1] === ':') {
+    if (source[j + 2] === '/') starts.push(j + 3);
+    starts.push(j + 2);
+  }
+  if (source[j] === '/') starts.push(j + 1);
+  starts.push(j);
+  return starts;
+}
+
+type AnchorHit = { path: string; line: string; end: number };
+
+/** 在 open 处的 `[` 上试一条锚点：路径段 → `:` → 1..6 位行号 → `]`。 */
+function tryAnchorAt(source: string, open: number): AnchorHit | null {
+  const j = open + 1;
+  for (const p of anchorStarts(source, j)) {
+    const region = anchorPathEnd(source, p);
+    if (!region.valid || source[region.end] !== ':') continue;
+    const lineStart = region.end + 1;
+    let k = lineStart;
+    while (k < source.length && source[k] >= '0' && source[k] <= '9') k += 1;
+    const digits = k - lineStart;
+    if (digits < 1 || digits > 6 || source[k] !== ']') continue;
+    return { path: source.slice(j, region.end), line: source.slice(lineStart, k), end: k + 1 };
+  }
+  return null;
+}
+
+/**
+ * 逐个取出回答里的 `[路径:行号]` 锚点，与该文法正则的 matchAll 逐用例等价（5.3M 条全组合对拍）。
+ * 用线性扫描代替正则：正则里 `+` 与 `(?:\/…)*` 的静态歧义会被判成 ReDoS 面（热点 S5852）。
+ * 游标单调：裸起点扫到的那位之前不可能存在 `:` 或 `]`，所以那里面的 `[` 无需再扫一遍（否则一串左方括号即平方级）。
+ */
+function forEachAnchor(source: string, onHit: (path: string, line: string) => void): void {
+  const n = source.length;
+  let pos = 0;
+  for (;;) {
+    const open = source.indexOf('[', pos);
+    if (open < 0) return;
+    const hit = tryAnchorAt(source, open);
+    if (hit) {
+      onHit(hit.path, hit.line);
+      pos = hit.end;
+      continue;
+    }
+    const bare = anchorPathEnd(source, open + 1);
+    if (bare.end >= n) return;
+    // 终点前两位的起点要留着重试：盘符/斜杠前缀可能让它们正好从终点之后起算
+    pos = Math.max(open + 1, bare.end - 2);
+  }
+}
+
+/**
+ * 从回答里抽引用并与证据集合核对。
+ * 支持 `[path:line]`（首选格式）与裸写 `path.ext:line` 两种；路径不在证据里的引用一律丢弃。
+ */
+export function parseCitations(answer: string, evidence: readonly QaEvidence[]): QaCitation[] {
+  const byPath = new Map<string, Set<number>>();
+  for (const e of evidence) {
+    const p = normPath(e.path);
+    const set = byPath.get(p) ?? new Set<number>();
+    set.add(e.line);
+    byPath.set(p, set);
+  }
+  const out: QaCitation[] = [];
+  const seen = new Set<string>();
+  const add = (rawPath: string, rawLine: string) => {
+    const p = normPath(rawPath.trim());
+    const line = Number(rawLine);
+    if (!Number.isInteger(line) || line < 1) return;
+    const lines = byPath.get(p);
+    // 行号必须落在该文件被引用的证据行上（模型常见错误是「文件对了、行号随手写」）
+    if (!lines?.has(line)) return;
+    const key = `${p}:${line}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const ev = evidence.find((e) => normPath(e.path) === p && e.line === line);
+    out.push({ path: p, line, ...(ev?.symbol ? { symbol: ev.symbol } : {}) });
+  };
+  forEachAnchor(answer, add);
+  for (const m of answer.matchAll(BARE_ANCHOR_RE)) {
+    if (!BARE_ANCHOR_EXTS.has(m[2])) continue;
+    add(`${m[1]}.${m[2]}`, m[3]);
+  }
+  return out;
+}
+
+export async function askWorkspace(
+  input: { projectId: string; question: string; toolId: string },
+  deps: { ask?: typeof AIService.ask } = {},
+): Promise<WorkspaceAskResult> {
+  const projectId = String(input.projectId ?? '').trim();
+  const question = String(input.question ?? '').trim();
+  const base = { citations: [] as QaCitation[], evidenceCount: 0, keywords: [] as string[], truncated: false, contextChars: 0 };
+  if (!projectId) return { ok: false, ...base, kind: 'denied', message: 'projectId 必填' };
+  if (question.length < 2) return { ok: false, ...base, kind: 'denied', message: '问题至少 2 个字符' };
+  const project = getDb()
+    .prepare(`SELECT id, name, workspace_path FROM projects WHERE id = ? AND ${ACTIVE_PROJECT_WHERE}`)
+    .get(projectId) as ProjectRow | undefined;
+  if (!project) return { ok: false, ...base, kind: 'denied', message: '项目不存在或已归档（请刷新项目列表）' };
+  const workspace = (project.workspace_path ?? '').trim();
+  if (!workspace) return { ok: false, ...base, kind: 'no-workspace', message: '该项目未绑定工作空间——请先在项目上绑定仓库目录再提问' };
+
+  const { evidence, keywords, truncated, contextChars } = collectEvidence(projectId, question);
+  const shell = { keywords, truncated, contextChars, evidenceCount: evidence.length };
+  if (evidence.length === 0) {
+    const eventId = recordAsk({ projectId, ok: true, cited: false, truncated, contextChars, questionLen: question.length });
+    return { ok: true, ...shell, citations: [], eventId, message: '工作空间里没有检索到与该问题相关的代码片段（可换用更具体的标识符/文件名再问）', answer: '工作空间里没有找到相关依据。' };
+  }
+
+  const ask = deps.ask ?? AIService.ask;
+  const system = buildSystemPrompt();
+  const user = buildUserPrompt(question, evidence);
+  const first = await ask(input.toolId, system, user, 120_000);
+  if (!first.ok) {
+    const eventId = recordAsk({ projectId, ok: false, cited: false, truncated, contextChars, questionLen: question.length });
+    return { ok: false, ...shell, citations: [], kind: 'ai', eventId, error: first.error ?? 'AI 调用失败' };
+  }
+
+  let answer = (first.content ?? '').trim();
+  let citations = parseCitations(answer, evidence);
+  if (citations.length === 0) {
+    // 没引用 = 回答不可核验：按「只给片段」再收紧一次，而不是把无依据的回答当真
+    const stricter = [
+      system,
+      '5. 上一轮回答缺少可核验的引用。这一次必须至少给出一条 [相对路径:行号]，行号取自片段标记；做不到就只回答「工作空间里没有找到相关依据」。',
+    ].join('\n');
+    const second = await ask(input.toolId, stricter, user, 120_000);
+    if (second.ok) {
+      answer = (second.content ?? '').trim();
+      citations = parseCitations(answer, evidence);
+    }
+  }
+  const cited = citations.length > 0;
+  const eventId = recordAsk({ projectId, ok: true, cited, truncated, contextChars, questionLen: question.length });
+  return {
+    ok: true,
+    ...shell,
+    answer,
+    citations,
+    eventId,
+    ...(citations.length === 0 ? { message: '回答未给出可核验的 file:line 引用——不展示为结论，建议换更具体的问法' } : {}),
+  };
+}

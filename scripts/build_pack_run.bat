@@ -150,7 +150,7 @@ REM through a shared %TEMP% file read with "set /p". Any PowerShell hiccup, or a
 REM touching the same temp file, left the variable empty and the empty value was judged LOCKED.
 REM The check now lives in scripts\lib\abi-cli.mjs: real write open, bounded retries, holder PIDs.
 REM T05738: auto-seed a missing ABI cache before the hard probe. This repo may run
-REM through junctions (web/node_modules/scripts -> E:\mtask-build-cache), so the cache
+REM through junctions (node_modules -> %NODE_MODULES_HOME%), so the cache
 REM path resolved from import.meta.url can differ from the project entry root.
 echo [7/7] Preflight native module...
 node "scripts\lib\abi-cli.mjs" ensure

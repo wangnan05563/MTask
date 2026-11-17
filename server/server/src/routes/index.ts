@@ -1,0 +1,3468 @@
+import { Router, raw } from 'express';
+import * as PrdGenService from '../services/PrdGenService'; // T00769：原始需求生成 PRD
+import { generateTestCasesStream, type GenPrefs } from '../services/TestCaseGenService'; // T01491：从 PRD 生成测试用例（SSE）
+import { PlanService } from '../services/PlanService'; // T01491：读取内部 PRD 文档原文（prdDocId 来源）
+import { WorkspaceService } from '../services/WorkspaceService'; // T00776：工作空间搜索/读文件
+import { askWorkspace } from '../services/workspaceQa';
+import { qaStats, recordCitationClick, recordFeedback } from '../services/workspaceQaTelemetry'; // T03250（PRD 5.1）：工作空间只读问答（带 file:line 引用）
+import { isValidTimeZone } from '../services/ProjectTimeZone'; // T03268：项目级时区校验（IANA，运行时 ICU）
+import { parseProductKeyInput } from '../util/productKey'; // T04132：产品标签归一化单源（PRD MEM-101②）
+import { detachMemoriesFromProject } from '../util/memoryProjectRef'; // T04136：删项目前记忆降级为产品级共享（PRD MEM-105）
+import { getDb } from '../db/connection';
+import { TaskService, nextTaskNo, TASK_STATUSES, type TaskInput, type TaskListOptions } from '../services/TaskService';
+import { compileTaskQuery, parseTaskQuery } from '../util/taskQuery'; // T03184（PM-102）：命令面板结构化搜索语法
+import { resolveCreateOrigin } from '../services/derivedOrigin'; // T02320：建单溯源判据与 MCP 通道同一实现
+import { ACTIVE_PROJECT_WHERE, findProjectNameOwners, projectNameConflictError, censusDuplicateProjectNames } from '../util/projectRouting'; // T02938：「现行项目」判据单源（REST 列表与 MCP 按名解析共用）；T02943：重名产生侧（新建/改名）查重与存量清点同源
+import { RecurringService, TokenService } from '../services/RecurringService'; // T01073：循环任务 + API Token
+import { readEventRetentionDays, setEventRetentionDays, pruneTaskEvents, countEvents } from '../services/EventRetention'; // T01064 后续：事件表保留期清理
+import { readPoolStatus, setPoolLimit } from '../services/ConcurrencyPool'; // T01066 后续：并行任务池单源
+import { ExecSessionService } from '../services/ExecSessionService'; // T01271：执行会话面板数据源
+import { PushService } from '../services/PushService'; // T01440：Web Push
+import { TaskExportService, type ExportFormat } from '../services/TaskExportService'; // T01480：任务导出
+import { listBackups, runBackup, restoreBackup, backupStatus } from '../services/BackupService'; // T01061-FR5.1
+import { ConfigService } from '../services/ConfigService';
+import { ConsoleJobService } from '../services/ConsoleJobService';
+import { renderPromptTemplate } from '../services/PromptTemplate'; // T03247（AI-104①）：模板变量渲染（服务端单源）
+import { QueueService } from '../services/QueueService';
+import { AIService } from '../services/AIService';
+import { cardCoverage, currentMonthStr } from '../services/AiCardStats'; // T03172：G-2 卡片覆盖率出数（/ai/coverage）
+import { usageJobBreakdown } from '../services/AiUsageStats'; // T04085：ai_usage 的 job/段维度回看
+import { reportAiJob } from '../services/aiJobReport'; // T03316（G-3）：job 终态上报统一入口
+import { latestJob } from '../services/AiGenJournal'; // T03316：测试用例分块台账（累计块数取真实值）
+import { checkAiReadiness } from '../services/AiReadinessService'; // T03176（D-14）：AI 可用性单源诊断
+import { ArchiveService } from '../services/ArchiveService';
+import { TaskImageService } from '../services/TaskImageService';
+import { TaskCategoryService } from '../services/TaskCategoryService';
+import { FieldService } from '../services/FieldService'; // T03231（PM-203）：项目级自定义字段
+import { ReqCategoryService, ReqEntryService } from '../services/ReqService';
+import { Readable } from 'node:stream'; // M2-a：导出逐行流式写出
+import { pipeline } from 'node:stream/promises';
+import { createGzip } from 'node:zlib';
+import { exportBundleChunks, importBundle, isExportTable } from '../services/SettingsService';
+import { createMigrationSnapshot } from '../services/MigrationSnapshot'; // T03274（UX-14③④）：覆盖导入前的可恢复快照
+import { getDefaultNoteProjectId, getSetting, INBOX_PROJECT_ID, setSetting } from '../services/AppSettings';
+import { getConfig as getUpdateConfig, saveConfig as saveUpdateConfig, testConfig as testUpdateConfig, checkUpdate, currentVersion as currentAppVersion } from '../services/UpdateService';
+import { logService } from '../services/LogService';
+import { dbAdminApi } from './dbadmin';
+import { memoriesApi } from './memories'; // T04151（PRD MEM-402）：长期记忆 REST 出口
+import { planApi } from './plans';
+import { iterationApi } from './iterations'; // T03186（PM-201）：迭代与燃尽，路径自带 /projects|/iterations 前缀故整体挂载
+import { materialTimingApi } from './materialTiming'; // T03189（G-1）：汇报材料耗时采样，路径自带 /report 前缀
+import { metricsApi } from './metrics'; // T03190（G-4）：指标基线出数，路径自带 /overdue-rate
+import { MetricSnapshotService } from '../services/MetricSnapshotService'; // T03261（PM-205）：项目洞察聚合摘要
+import { ProjectExportService } from '../services/ProjectExportService'; // T03267（PM-402）：项目任务/计划导出 md/json
+import { estimateApi } from './estimates'; // T02037（估算视图 E3）：/api/estimates*，PRD §8
+import { historyApi } from './history'; // T00589：历史资产（转移/统计）
+import { supervisorApi } from './supervisor'; // T01286：监督状态/审计/配置（FR-5.2~5.4）
+import { dispatchApi } from './dispatch'; // T05747：B0/A/D 派发手动入口与状态（PushDispatcher）
+import { webhooksApi } from './webhooks'; // T03196（PM-401）：项目级 outbound Webhook（配置/测试/投递日志）
+import { gitLinksApi } from './gitLinks'; // 八期 §4.2：任务↔提交关联端点（摘要批量/抽屉首屏/清单懒加载/绑定解绑/git-log 上提）
+import { gitExtractApi } from './gitExtract'; // 八期 §3.3：Git 增量资产提取（范围摘要/SSE 执行/一次性令牌下载）
+import { sonarSettingsApi } from './sonarSettings'; // 八期 §3.4.1：设置页 SonarQube 子页（配置/Token 审计/连接测试）
+import { sonarScanApi } from './sonarScan'; // 八期 §3.4.2：Sonar 质量扫描七阶段引擎（SSE/中止/环境预检）
+import { attachGitLinks } from '../services/taskGitLinks'; // T03361：GET /tasks 行内加性字段 gitLinks/gitLinkCount
+import { listArtifacts } from '../services/aiArtifactService';
+import { generateReport, listTemplates, saveTemplate, deleteTemplate, aiGenerateReport, aiGenerateReportStream, isReportToken, readAndDeleteReport, readReportBuffer, discardReport, gatherReportData, validateProjectIds, aiReportPreflight, normalizeConfirmedEstimate, type ReportPeriod, type ReportFormat } from '../services/ReportService';
+import { DOWNLOAD_NAME_RE } from '../util/export-name'; // T02104：下载文件名白名单单源（与生成侧清洗同源）
+import { Buffer } from 'node:buffer';
+import { createHash } from 'node:crypto';
+import { scalarText } from '../util/scalarText';
+import { existsSync, mkdirSync, statSync } from 'node:fs';
+import { notifyChange } from '../services/ChangeBus';
+import { v4 as uuid } from 'uuid';
+import { cacheGet, cacheSet, cacheClear } from '../util/ttl-cache';
+import { exportGate, REPORT_GATE, EXPORT_QUEUE_WAIT_SLOW_EXPORT } from '../util/export-gate'; // T00789：导出类并发闸；T02105：周报与启动会稿共用同一闸名；M2-b：settings/export 开有界排队（慢导出档预算）
+import { parseLimit, parseOffset, wantsTotal } from '../util/list-page'; // T02284：列表分页参数统一口径（limit/offset/total=1）
+import { listDirectories } from '../services/FsBrowseService'; // T00771 二轮：服务端目录枚举（工作空间降级选择）
+import { startSseKeepalive } from './sseKeepalive'; // T03959：SSE 静默期保活帧（防长耗时模型调用期间链路被掐）
+
+/** 低频集合列表 TTL（5s）：读多写少，写端点会主动 cacheClear 保持一致性 */
+const LIST_TTL_MS = 5000;
+
+function now(): string {
+  return new Date().toISOString();
+}
+
+/**
+ * 解析模型返回的「通用需求分组草案」JSON。
+ * 兼容 ```json 代码围栏与裸 JSON 数组：先剥围栏，再取首个 '[' 到末尾 ']' 之间的片段解析，
+ * 逐条兜底校验 title 必填，其余字段缺失以空串回填（AI 输出不可靠，宁缺毋滥）。
+ */
+function parseReqDraft(text: string): { title: string; content: string; category: string }[] {
+  const bare = text.replaceAll(/```json/gi, '').replaceAll(/```/gi, '').trim();
+  const start = bare.indexOf('[');
+  const end = bare.lastIndexOf(']');
+  if (start === -1 || end <= start) return [];
+  let arr: unknown;
+  try { arr = JSON.parse(bare.slice(start, end + 1)); } catch { return []; }
+  if (!Array.isArray(arr)) return [];
+  const out: { title: string; content: string; category: string }[] = [];
+  for (const r of arr) {
+    if (!r || typeof r !== 'object') continue;
+    const o = r as Record<string, unknown>;
+    if (typeof o.title !== 'string' || !o.title.trim()) continue;
+    out.push({
+      title: o.title.trim(),
+      content: typeof o.content === 'string' ? o.content : '',
+      category: typeof o.category === 'string' ? o.category.trim() : '',
+    });
+  }
+  return out;
+}
+
+export const api = Router();
+
+// ---------- 健康检查 ----------
+api.get('/health', (_req, res) => {
+  res.json({ ok: true, service: 'mtask-server', time: now() });
+});
+
+// ---------- 后台日志（实时查看） ----------
+// since：增量游标（pos 的 seq），首次不传/为 0 返回当前缓冲全量；latestSeq 供下一轮增量
+api.get('/logs', (req, res) => {
+  const since = Number(req.query.since) || 0;
+  res.json(logService.list(since));
+});
+
+// ---------- 项目 ----------
+api.get('/projects', (req, res) => {
+  // T00589 二轮：默认**排除**已沉淀为历史资产快照的项目与已归档项目（任务/计划菜单的项目列表不再出现）；
+  // 历史资产页以 ?includeHistory=1 取全量（含历史/归档、并带 history_at 供分区展示）
+  const includeHistory = req.query.includeHistory === '1';
+  if (includeHistory) {
+    const all = getDb().prepare('SELECT * FROM projects ORDER BY sort_weight, created_at').all() as Array<Record<string, unknown>>;
+    res.json(all);
+    return;
+  }
+  // T01584：只缓存「项目行」，徽标计数每次实时聚合——
+  // 旧实现把计数一并塞进 5s 缓存，而任务写端点（PATCH/回传/归档）从不失效 `projects` 这一份，
+  // 于是计数最长滞后 5 秒且前端不重拉；计数只是两条 GROUP BY，实时算的代价远低于旧值残留的误导。
+  const cached = cacheGet<Array<Record<string, unknown>>>('projects');
+  const rows = cached ?? getDb().prepare(`SELECT * FROM projects WHERE ${ACTIVE_PROJECT_WHERE} ORDER BY sort_weight, created_at`).all() as Array<Record<string, unknown>>;
+  if (!cached) cacheSet('projects', rows, LIST_TTL_MS);
+  // T00496：附每项目待办/未验证计数（供项目下拉徽标展示）
+  // T01584：`unverified_count` 口径修正为「已完成且未验证」——旧写法 `verified = 0` 把待办任务一并计入
+  // （待办天然 verified=0），与任务列表「已完成（…，未验证 n）」的既有口径冲突，徽标因此虚高。
+  const counts = getDb().prepare(
+    `SELECT project_id,
+            SUM(CASE WHEN status = 'todo' THEN 1 ELSE 0 END) AS todo_count,
+            SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done_count,
+            SUM(CASE WHEN status = 'done' AND verified = 0 THEN 1 ELSE 0 END) AS unverified_count
+     FROM tasks WHERE archived = 0 AND COALESCE(shelved, 0) = 0 GROUP BY project_id`,
+  ).all() as Array<{ project_id: string; todo_count: number; done_count: number; unverified_count: number }>;
+  // T00505：计划菜单项目下拉统计（按 plan_tasks.status：待办=待开始、doing=进行中、done=已完成）
+  const planCounts = getDb().prepare(
+    `SELECT project_id,
+            SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS plan_done,
+            SUM(CASE WHEN status = 'doing' THEN 1 ELSE 0 END) AS plan_doing,
+            SUM(CASE WHEN status NOT IN ('done') THEN 1 ELSE 0 END) AS plan_open
+     FROM plan_tasks WHERE archived = 0 GROUP BY project_id`,
+  ).all() as Array<{ project_id: string; plan_done: number; plan_doing: number; plan_open: number }>;
+  const planByPid = new Map(planCounts.map((c) => [c.project_id, c]));
+  const byPid = new Map(counts.map((c) => [c.project_id, c]));
+  const rowsWithCounts = rows.map((r) => {
+    const c = byPid.get(r.id as string);
+    const pc = planByPid.get(r.id as string);
+    return { ...r, todo_count: c?.todo_count ?? 0, done_count: c?.done_count ?? 0, unverified_count: c?.unverified_count ?? 0, plan_done: pc?.plan_done ?? 0, plan_doing: pc?.plan_doing ?? 0, plan_open: pc?.plan_open ?? 0 };
+  });
+  res.json(rowsWithCounts);
+});
+
+api.post('/projects', (req, res) => {
+  const body = req.body ?? {};
+  const { name, description = '', timezone = '' } = body;
+  if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name 必填' });
+  // T04132（PRD MEM-101②）：产品标签写入闭环——接受 product_key（PRD 字面）与 productKey（前端 camelCase 别名），
+  // 归一化后落库；非字符串类型直接 400，避免静默转换把隔离边界写成 '[object Object]'。
+  const pk = parseProductKeyInput('product_key' in body ? body.product_key : body.productKey);
+  if (!pk.ok) return res.status(400).json({ error: pk.error });
+  // T03268（PRD 4.2）：项目级时区可配——空串＝跟随系统
+  const tz = typeof timezone === 'string' ? timezone.trim() : '';
+  if (tz && !isValidTimeZone(tz)) return res.status(400).json({ error: `时区非法：${tz}（需 IANA 时区名，如 Asia/Shanghai）` });
+  // T00589 二轮：项目名全局唯一——**含历史资产快照中的项目名**与已归档项目（避免与沉淀快照重名混淆）
+  // T02943：查重判据收口到 findProjectNameOwners——本通道原来只查精确同名，于是 `wiki三期` 与
+  // `Wiki三期` 可以并存，而按名解析（精确→CI 回落）只会撞上其中一行；CI 口径与解析侧必须一致，
+  // 否则「解析侧认现行项目」的兜底会被产生侧继续造出的重名行反复触发告警。
+  const owners = findProjectNameOwners(name);
+  if (owners.length > 0) return res.status(400).json({ error: projectNameConflictError(name, owners) });
+  const id = uuid();
+  getDb().prepare('INSERT INTO projects (id, name, description, timezone, product_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(id, name, description, tz, pk.value, now(), now());
+  cacheClear('projects'); // 新建项目后列表缓存失效，立即可见
+  res.status(201).json(getDb().prepare('SELECT * FROM projects WHERE id = ?').get(id));
+});
+
+/**
+ * T02943 存量清点（只读，不动数据）：列出库里**大小写不敏感同名**的项目组，
+ * 每组给出各行状态（现行/归档/历史快照）与现行行数，供人工裁决「哪一行留现行、其余改名还是并入」。
+ * 解析侧（T02938）已能在同名多行时认现行项目，但那是兜底；本端点回答「重名行还有多少、分别在哪个区」。
+ */
+api.get('/projects/name-duplicates', (_req, res) => {
+  const groups = censusDuplicateProjectNames();
+  res.json({
+    groupCount: groups.length,
+    rowCount: groups.reduce((n, g) => n + g.rows.length, 0),
+    multiActiveGroupCount: groups.filter((g) => g.activeCount > 1).length,
+    groups,
+  });
+});
+
+/**
+ * T03183（PM-103）：零资料项目判定——任务/计划/需求（需求矩阵行）/用例四项全为 0 才展示首访三步引导。
+ * 口径只放在服务端一处：前端不再逐表取数再拼「算不算有数据」，避免同一判据出现第二套。
+ * 任务与计划按未归档计（归档行不再出现在任何列表里，按「有资料」展示引导反而误导）；需求/用例表无归档列。
+ */
+api.get('/projects/:id/emptiness', (req, res) => {
+  const db = getDb();
+  const id = req.params.id;
+  if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(id)) return res.status(404).json({ error: '项目不存在' });
+  const count = (sql: string) => Number((db.prepare(sql).get(id) as { c: number }).c ?? 0);
+  const counts = {
+    tasks: count('SELECT COUNT(*) AS c FROM tasks WHERE project_id = ? AND archived = 0'),
+    plans: count('SELECT COUNT(*) AS c FROM plan_tasks WHERE project_id = ? AND archived = 0'),
+    requirements: count('SELECT COUNT(*) AS c FROM prd_requirements WHERE project_id = ?'),
+    testCases: count('SELECT COUNT(*) AS c FROM test_cases WHERE project_id = ?'),
+  };
+  res.json({ ...counts, empty: counts.tasks + counts.plans + counts.requirements + counts.testCases === 0 });
+});
+
+/**
+ * T03261（PRD PM-205 / 设计 §3.5）：项目洞察聚合摘要。
+ * 与四图共用日快照与 G-4 逾期口径（不另算一套）；`?period=30d` 或 `?from=&to=`（后者优先）。
+ * 错误分级：项目不存在 → 404，参数非法 → 400；缺失样本不读成 0（样本量/率/周吞吐均为 null）。
+ */
+api.get('/projects/:id/insights', (req, res) => {
+  try {
+    res.json(MetricSnapshotService.insights({
+      projectId: req.params.id,
+      period: typeof req.query.period === 'string' ? req.query.period : undefined,
+      from: typeof req.query.from === 'string' && req.query.from ? req.query.from : undefined,
+      to: typeof req.query.to === 'string' && req.query.to ? req.query.to : undefined,
+    }));
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(msg === '项目不存在' ? 404 : 400).json({ error: msg });
+  }
+});
+
+/**
+ * T03267（PRD PM-402）：项目级导出——任务/计划 × Markdown/JSON。
+ * 任务树按 parent_id、计划树按 deps(child)；归档行不导出。格式与范围非法一律 400，项目不存在 404。
+ */
+api.get('/projects/:id/export', (req, res) => {
+  const scope = scalarText(req.query.scope ?? 'tasks');
+  const format = scalarText(req.query.format ?? 'md');
+  if (scope !== 'tasks' && scope !== 'plans') return res.status(400).json({ error: 'scope 仅支持 tasks/plans' });
+  if (format !== 'md' && format !== 'json') return res.status(400).json({ error: 'format 仅支持 md/json' });
+  try {
+    const file = ProjectExportService.export(req.params.id, scope, format);
+    res.setHeader('Content-Type', file.mime);
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(file.filename)}`);
+    res.send(file.buffer);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(msg === '项目不存在' ? 404 : 400).json({ error: msg });
+  }
+});
+
+/** T00663：用户置顶权重（与前端 web/src/ui/projectOrder.ts 的 PROJ_PIN_WEIGHT 对齐） */
+const PROJ_PIN_WEIGHT = -9999;// T00663：项目自定义排序（拖拽后按序保存）——仅重排传入 id 的顺序号，置顶项（负权重）保持不动
+api.post('/projects/reorder', (req, res) => {
+  const { ids } = (req.body ?? {}) as { ids?: unknown };
+  if (!Array.isArray(ids) || ids.some((x) => typeof x !== 'string')) return res.status(400).json({ error: 'ids 必须为项目 id 字符串数组' });
+  const db = getDb();
+  const valid = (ids as string[]).filter((id) => db.prepare('SELECT 1 FROM projects WHERE id = ?').get(id));
+  if (valid.length === 0) return res.status(400).json({ error: '没有有效的项目 id' });
+  const t = now();
+  const upd = db.prepare('UPDATE projects SET sort_weight = ?, updated_at = ? WHERE id = ?');
+  db.transaction(() => {
+    valid.forEach((id, i) => {
+      const cur = db.prepare('SELECT sort_weight FROM projects WHERE id = ?').get(id) as { sort_weight: number } | undefined;
+      // 仅**用户置顶项**（精确 -9999）不参与自定义排序，避免拖拽把置顶顺序打散；
+      // 收件箱等系统权重（-1000）仍可被用户拖拽调整（与前端 PROJ_PIN_WEIGHT 保持一致）
+      if ((cur?.sort_weight ?? 0) === PROJ_PIN_WEIGHT) return;
+      upd.run(i + 1, t, id);
+    });
+  })();
+  cacheClear('projects');
+  notifyChange('projects');
+  res.json({ ok: true, reordered: valid.length });
+});
+
+/** T00771：工作空间路径绑定校验——返回错误信息（null 表示通过）；通过时写入 sets/values 并记录历史 */
+function applyWorkspacePath(workspacePath: unknown, sets: string[], values: unknown[]): string | null {
+  if (workspacePath === undefined) return null;
+  const wp = typeof workspacePath === 'string' ? workspacePath.trim() : '';
+  if (wp) {
+    if (!/^[a-zA-Z]:[\\/]/.test(wp) && !wp.startsWith('/')) {
+      return `工作空间路径须为绝对路径（收到：${wp}）`;
+    }
+    if (!existsSync(wp) || !statSync(wp).isDirectory()) {
+      return `工作空间路径不存在或不是文件夹：${wp}`;
+    }
+    sets.push('workspace_path = ?'); values.push(wp);
+    recordWorkspaceHistory(wp);
+    return null;
+  }
+  sets.push("workspace_path = ''"); // 空串 = 解绑（字面量无占位符，不入 values）
+  return null;
+}
+
+/** T02943：改名是重名行的主要产生通道之一——判据与新建走同一个单源；改成自己的名字不算撞名（excludeId） */
+function projectNamePatch(name: unknown, id: string, sets: string[], values: unknown[]): string | null {
+  if (typeof name !== 'string' || !name.trim()) return 'name 不能为空';
+  const owners = findProjectNameOwners(name, { excludeId: id });
+  if (owners.length > 0) return projectNameConflictError(name, owners);
+  sets.push('name = ?'); values.push(name);
+  return null;
+}
+
+/** T03209（PM-101）：项目级 WIP 软上限——只接受 1~50 的整数，默认 10；超限仅提示、不阻断拖拽 */
+function projectWipPatch(wipLimit: unknown, sets: string[], values: unknown[]): string | null {
+  const n = typeof wipLimit === 'number' ? wipLimit : Number(wipLimit);
+  if (!Number.isInteger(n) || n < 1 || n > 50) return 'WIP 上限须为 1~50 的整数';
+  sets.push('wip_limit = ?'); values.push(n);
+  return null;
+}
+
+/** T03268（PRD 4.2）：项目级时区——空串＝跟随系统；非空必须是运行时 ICU 能识别的 IANA 名 */
+function projectTimezonePatch(timezone: unknown, sets: string[], values: unknown[]): string | null {
+  const tz = typeof timezone === 'string' ? timezone.trim() : '';
+  if (tz && !isValidTimeZone(tz)) return `时区非法：${tz}（需 IANA 时区名，如 Asia/Shanghai）`;
+  sets.push('timezone = ?'); values.push(tz);
+  return null;
+}
+
+/** T00780：工作空间换绑/解绑 → 该项目符号索引立即失效（旧路径符号不再属于本项目）；
+ *  仅在路径实际发生变化（含绑定/解绑）时清理，同值重存跳过。 */
+function clearSymbolsIfWorkspaceChanged(id: string, workspacePath: unknown, prevWorkspace: string): void {
+  if (workspacePath === undefined) return;
+  const nextWs = typeof workspacePath === 'string' ? workspacePath.trim() : '';
+  if (nextWs === prevWorkspace.trim()) return;
+  try { WorkspaceService.clearSymbols(id); } catch { /* 索引清理失败不阻塞绑定 */ }
+}
+
+api.patch('/projects/:id', (req, res) => {
+  const body = req.body ?? {};
+  const { name, description, sortWeight, workspacePath, wipLimit, timezone } = body;
+  const db = getDb();
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  if (name !== undefined) {
+    // T02943：改名可与别的项目（含归档行/历史快照行）同名，把 T02938「按名解析认现行项目」
+    // 的兜底反复触发成告警；判据与新建同源，撞名直接 400。
+    const err = projectNamePatch(name, req.params.id, sets, values);
+    if (err) return res.status(400).json({ error: err });
+  }
+  if (description !== undefined) { sets.push('description = ?'); values.push(description); }
+  if (sortWeight !== undefined) { sets.push('sort_weight = ?'); values.push(sortWeight); }
+  if (wipLimit !== undefined) {
+    const err = projectWipPatch(wipLimit, sets, values);
+    if (err) return res.status(400).json({ error: err });
+  }
+  if (timezone !== undefined) {
+    const err = projectTimezonePatch(timezone, sets, values);
+    if (err) return res.status(400).json({ error: err });
+  }
+  // T04132（PRD MEM-101②）：补绑/清空产品标签；null 归一化为 ''（未绑定产品，走 MEM-302 空集语义）
+  if ('product_key' in body || 'productKey' in body) {
+    const pk = parseProductKeyInput('product_key' in body ? body.product_key : body.productKey);
+    if (!pk.ok) return res.status(400).json({ error: pk.error });
+    sets.push('product_key = ?'); values.push(pk.value);
+  }
+  // T00771：工作空间绑定——路径必须存在且为文件夹（服务端本机校验），多项目可指向同一路径（仅存引用）
+  // 走查修复（H-1）：换绑判定需与旧值比较，旧值必须在 UPDATE 之前读取——
+  // 同值重存（如在下拉条重选同一路径）不再清空符号索引，避免查询空窗且无自动重建
+  const prevWorkspace = (db.prepare('SELECT workspace_path FROM projects WHERE id = ?').get(req.params.id) as { workspace_path?: string | null } | undefined)?.workspace_path ?? '';
+  const wsErr = applyWorkspacePath(workspacePath, sets, values);
+  if (wsErr) return res.status(400).json({ error: wsErr });
+  if (sets.length === 0) return res.status(400).json({ error: '无更新字段' });
+  sets.push('updated_at = ?'); values.push(now());
+  db.prepare(`UPDATE projects SET ${sets.join(', ')} WHERE id = ?`).run(...values, req.params.id);
+  clearSymbolsIfWorkspaceChanged(req.params.id, workspacePath, prevWorkspace);
+  cacheClear('projects'); // 改名/排序影响列表展示
+  res.json(db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id));
+});
+
+// ---------- T00771：工作空间（项目上下文根路径） ----------
+
+/** 工作空间历史（全局最近使用，app_settings JSON 数组，最新在前，去重封顶 12 条） */
+const WS_HISTORY_KEY = 'workspaceHistory';
+function recordWorkspaceHistory(path: string): void {
+  try {
+    const prev = JSON.parse(getSetting(WS_HISTORY_KEY) ?? '[]') as unknown;
+    const list = Array.isArray(prev) ? prev.filter((x): x is string => typeof x === 'string' && x !== path) : [];
+    list.unshift(path);
+    setSetting(WS_HISTORY_KEY, JSON.stringify(list.slice(0, 12)));
+  } catch { /* 历史损坏时重建 */ setSetting(WS_HISTORY_KEY, JSON.stringify([path])); }
+}
+
+api.get('/projects/workspace-history', (_req, res) => {
+  let history: string[] = [];
+  try {
+    const prev = JSON.parse(getSetting(WS_HISTORY_KEY) ?? '[]') as unknown;
+    if (Array.isArray(prev)) history = prev.filter((x): x is string => typeof x === 'string');
+  } catch { /* 忽略 */ }
+  res.json({ history });
+});
+
+// ---------- T00776：工作空间文件搜索 / 按需读文件（本地检索边界，忽略配置共用） ----------
+/** 同步服务包装：成功 json / 业务错 400（与 plans.ts wrap 同语义） */
+function wsWrap(res: import('express').Response, fn: () => unknown): void {
+  try { res.json(fn()); } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
+}
+
+/** T02200：wsWrap 的 await 版——符号索引刷新已改为分片让路，服务端点不能再跑在同步阻塞路径上 */
+async function wsWrapAsync(res: import('express').Response, fn: () => Promise<unknown>): Promise<void> {
+  try { res.json(await fn()); } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
+}
+
+api.get('/workspace/search', (req, res) => {
+  const { projectId, q, glob } = req.query as Record<string, string | undefined>;
+  if (!projectId) { res.status(400).json({ error: 'projectId 必填' }); return; }
+  // T00786：search 返回的数组上挂有 partial / scannedFiles 元信息，JSON 序列化会丢弃
+  // 非索引属性，故这里显式以 { items, partial, scannedFiles } 形式回传；
+  // 同时保留 items 为原数组结构，前端兼容无改动。
+  wsWrapAsync(res, async () => {
+    const hits = await WorkspaceService.searchAsync(projectId, q ?? '', glob);
+    return {
+      items: hits,
+      count: hits.length,
+      partial: hits.partial === true,
+      scannedFiles: hits.scannedFiles ?? 0,
+    };
+  });
+});
+
+api.get('/workspace/file', (req, res) => {
+  const { projectId, path, offset, limit } = req.query as Record<string, string | undefined>;
+  if (!projectId) { res.status(400).json({ error: 'projectId 必填' }); return; }
+  if (!path) { res.status(400).json({ error: 'path 必填（工作空间内相对路径）' }); return; }
+  wsWrap(res, () => WorkspaceService.readFile(projectId, path, Number(offset ?? 0), Number(limit ?? 200)));
+});
+
+// ---------- T00777：轻量符号索引 ----------
+api.post('/workspace/symbols/refresh', (req, res) => {
+  const { projectId } = (req.body ?? {}) as Record<string, string | undefined>;
+  if (!projectId) { res.status(400).json({ error: 'projectId 必填' }); return; }
+  // T02200：分片让路后返回值多一个 deferred——true 表示内联预算（300ms）用尽、余量交后台续跑，
+  // 小工作空间仍在本次请求内建完（既有符号 API 测试的即时断言语义不变）
+  void wsWrapAsync(res, () => WorkspaceService.refreshSymbols(projectId));
+});
+
+api.get('/workspace/symbols', (req, res) => {
+  const { projectId, q, limit } = req.query as Record<string, string | undefined>;
+  if (!projectId) { res.status(400).json({ error: 'projectId 必填' }); return; }
+  wsWrap(res, () => WorkspaceService.querySymbols(projectId, q ?? '', Number(limit ?? 30)));
+});
+
+/** T03250（PRD 5.1）：工作空间只读问答。body `{ projectId, question, toolId }`；回答带可核验的 file:line 引用。 */
+api.post('/workspace/ask', (req, res) => {
+  const { projectId, question, toolId } = (req.body ?? {}) as Record<string, string | undefined>;
+  if (!projectId) { res.status(400).json({ error: 'projectId 必填' }); return; }
+  if (!String(question ?? '').trim()) { res.status(400).json({ error: 'question 必填' }); return; }
+  if (!toolId) { res.status(400).json({ error: 'toolId 必填（请先在「模型」页添加并选择一个 AI 模型）' }); return; }
+  void wsWrapAsync(res, () => askWorkspace({ projectId, question: String(question), toolId }));
+});
+
+/** T03252（PRD 5.3）：引用点击埋点。body `{ projectId, eventId, path, line }`（eventId 来自 /workspace/ask 响应） */
+api.post('/workspace/ask/citation-click', (req, res) => {
+  const { projectId, eventId, path, line } = (req.body ?? {}) as Record<string, unknown>;
+  if (!projectId || !eventId || !path) { res.status(400).json({ error: 'projectId / eventId / path 必填' }); return; }
+  recordCitationClick({ projectId: scalarText(projectId), eventId: scalarText(eventId), path: scalarText(path), line: Number(line) || 0 });
+  res.json({ ok: true });
+});
+
+/** T03252：有用/无用反馈。body `{ projectId, eventId, useful }`；eventId 不存在回 404（不写孤儿反馈） */
+api.post('/workspace/ask/feedback', (req, res) => {
+  const { projectId, eventId, useful } = (req.body ?? {}) as Record<string, unknown>;
+  if (!projectId || !eventId || typeof useful !== 'boolean') { res.status(400).json({ error: 'projectId / eventId / useful(boolean) 必填' }); return; }
+  const ok = recordFeedback({ projectId: scalarText(projectId), eventId: scalarText(eventId), useful });
+  if (!ok) { res.status(404).json({ error: '提问事件不存在（可能已被清理或跨项目）' }); return; }
+  res.json({ ok: true });
+});
+
+/** T03252：问答统计（提问数 / 回答成功率 / 引用点击率 / 有用无用） */
+api.get('/workspace/ask/stats', (req, res) => {
+  const { projectId } = req.query as Record<string, string | undefined>;
+  if (!projectId) { res.status(400).json({ error: 'projectId 必填' }); return; }
+  res.json(qaStats(projectId));
+});
+
+/** 新建工作空间：递归创建目录（已存在视为成功——幂等，便于「新建」与「选择已有」合一） */
+api.post('/projects/workspace-create', (req, res) => {
+  const { path } = (req.body ?? {}) as { path?: unknown };
+  const p = typeof path === 'string' ? path.trim() : '';
+  if (!p) return res.status(400).json({ error: 'path 必填（新工作空间的完整文件夹路径）' });
+  if (!/^[a-zA-Z]:[\\/]/.test(p) && !p.startsWith('/')) {
+    return res.status(400).json({ error: `路径须为绝对路径（收到：${p}）` });
+  }
+  try {
+    if (existsSync(p) && !statSync(p).isDirectory()) {
+      return res.status(400).json({ error: `同路径已存在文件（非文件夹）：${p}` });
+    }
+    mkdirSync(p, { recursive: true });
+    res.status(201).json({ ok: true, path: p });
+  } catch (e) {
+    res.status(400).json({ error: `创建目录失败：${e instanceof Error ? e.message : String(e)}` });
+  }
+});
+
+/**
+ * T00771 二轮：服务端目录浏览（工作空间「打开本地文件夹」的降级通道）。
+ * 纯浏览器环境调不到原生目录对话框、也拿不到 File.path，此前该入口形同虚设；
+ * 这里只枚举目录（不读文件内容），供前端目录浏览器逐层选择。
+ * path 省略/为空 → 返回磁盘根 + 主目录的快捷列表。
+ */
+api.get('/fs/dirs', (req, res) => {
+  const { path } = req.query as { path?: string };
+  try {
+    res.json(listDirectories(typeof path === 'string' ? path : ''));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+api.delete('/projects/:id', (req, res) => {
+  // 系统收件箱是移动端随手记的默认归属（schema 启动时种子，非用户创建）：
+  // 运行中删除会让 getDefaultNoteProjectId 回退到已不存在的 id，随手记落库直接失败，故禁止删除
+  if (req.params.id === INBOX_PROJECT_ID) {
+    return res.status(400).json({ error: '系统收件箱项目不可删除' });
+  }
+  // T04136（PRD MEM-105）：删项目前把其特有记忆降级为产品级共享（project_id=NULL），
+  // 应用层补回无 FK 时的 SET NULL 语义；记忆绝不物理删除，同产品其它期仍可召回。
+  detachMemoriesFromProject(req.params.id);
+  getDb().prepare('DELETE FROM projects WHERE id = ?').run(req.params.id); // 级联删任务
+  // T02210：符号索引的监视器/结构快照是按 projectId 存活的内存态——项目删除后
+  //   既不会再被引用，也仍握着目录句柄（递归 fs.watch），必须随项目一起收掉
+  try { WorkspaceService.clearSymbols(req.params.id); } catch { /* 索引清理失败不阻塞删除 */ }
+  cacheClear('projects');
+  res.status(204).end();
+});
+
+// ---------- 任务 ----------
+// 可选参数：projectId / archived / limit / offset / keyword / categoryId / sort（全部向后兼容，缺省=全量）
+// T01059-FR2.2：统计仪表盘数据——吞吐（每日完成数）/AI 成功率/AI 平均耗时/验证通过率 + 任务概览
+api.get('/stats/dashboard', (req, res) => {
+  const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+  const days = Math.min(365, Math.max(7, Number(req.query.days) || 30));
+  const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 19).replace('T', ' ');
+  const today = new Date().toISOString().slice(0, 10);
+  // T04119：吞吐按「日历天」窗口，含今天共 days 个自然日（原实现把 today 当窗口起点传进查询，
+  // 于是 7/30/90 三档恒只返回当天完成数，周期切换失去意义）。
+  const sinceDate = new Date(Date.now() - (days - 1) * 86400000).toISOString().slice(0, 10);
+  const projWhere = projectId ? 'AND project_id = ?' : '';
+  const projArgs: string[] = projectId ? [projectId] : [];
+  const db = getDb();
+  // 吞吐：近 N 天每日完成（done）任务数——updated_at 变更即统计口径（完成时刻）
+  const doneByDate = db.prepare(
+    `SELECT substr(updated_at, 1, 10) AS date, COUNT(*) AS count FROM tasks
+      WHERE status = 'done' AND archived = 0 AND substr(updated_at, 1, 10) BETWEEN ? AND ? ${projWhere}
+      GROUP BY substr(updated_at, 1, 10) ORDER BY date`,
+  ).all(sinceDate, today, ...projArgs) as Array<{ date: string; count: number }>;
+  // 零填充：窗口内每个自然日一条，无完成也补 0，柱数与所选周期一致
+  const countByDate = new Map(doneByDate.map((r) => [r.date, r.count]));
+  const throughput = Array.from({ length: days }, (_, i) => {
+    const date = new Date(Date.now() - (days - 1 - i) * 86400000).toISOString().slice(0, 10);
+    return { date, count: countByDate.get(date) ?? 0 };
+  });
+  // AI 成功率/平均耗时（近 N 天 ai_usage）
+  const ai = db.prepare(
+    `SELECT COUNT(*) AS total, SUM(ok) AS okCount, AVG(duration_ms) AS avgMs FROM ai_usage WHERE created_at >= ?`,
+  ).get(since) as { total: number; okCount: number | null; avgMs: number | null };
+  // 验证通过率：done 任务中 verified=1 占比
+  const verify = db.prepare(
+    `SELECT COUNT(*) AS total, SUM(verified) AS verified FROM tasks WHERE status = 'done' AND archived = 0 ${projWhere}`,
+  ).get(...projArgs) as { total: number; verified: number | null };
+  // 概览
+  const totals = db.prepare(
+    `SELECT
+       SUM(CASE WHEN status = 'todo' THEN 1 ELSE 0 END) AS todo,
+       SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done,
+       SUM(CASE WHEN status NOT IN ('todo','done') THEN 1 ELSE 0 END) AS other
+     FROM tasks WHERE archived = 0 ${projWhere}`,
+  ).get(...projArgs) as { todo: number | null; done: number | null; other: number | null };
+  res.json({
+    days,
+    throughput,
+    ai: { total: ai.total ?? 0, ok: ai.okCount ?? 0, rate: ai.total ? Math.round(((ai.okCount ?? 0) / ai.total) * 1000) / 10 : 0, avgMs: Math.round(ai.avgMs ?? 0) },
+    verify: { total: verify.total ?? 0, verified: verify.verified ?? 0, rate: verify.total ? Math.round(((verify.verified ?? 0) / verify.total) * 1000) / 10 : 0 },
+    totals: { todo: totals.todo ?? 0, done: totals.done ?? 0, other: totals.other ?? 0 },
+  });
+});
+
+// M7-7.1：周报摘要（移动端 ReportView 专用轻量端点）——
+// 原实现拉 /tasks?archived=0 全量后在客户端数数（全表扫描 + 全字段序列化），改为 3 条索引聚合。
+// done/created = 近 7 天（与原客户端 `Date.now()-7d` 口径一致）；failed = 当前积压（ai_state='failed'，无时间窗）。
+api.get('/stats/weekly', (req, res) => {
+  const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+  const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 19).replace('T', ' ');
+  const projWhere = projectId ? 'AND project_id = ?' : '';
+  const projArgs: string[] = projectId ? [projectId] : [];
+  const db = getDb();
+  const done = db.prepare(
+    `SELECT COUNT(*) AS c FROM tasks WHERE status = 'done' AND archived = 0 AND updated_at >= ? ${projWhere}`,
+  ).get(weekAgo, ...projArgs) as { c: number };
+  const created = db.prepare(
+    `SELECT COUNT(*) AS c FROM tasks WHERE archived = 0 AND created_at >= ? ${projWhere}`,
+  ).get(weekAgo, ...projArgs) as { c: number };
+  const failed = db.prepare(
+    `SELECT COUNT(*) AS c FROM tasks WHERE archived = 0 AND ai_state = 'failed' ${projWhere}`,
+  ).get(...projArgs) as { c: number };
+  res.json({ done: done.c, created: created.c, failed: failed.c });
+});
+
+// T01061-FR5.1：数据库备份/恢复——自动每日备份（BackupService），手动备份/恢复/列表供设置页
+api.get('/backups', (_req, res) => {
+  res.json({ backups: listBackups(), status: backupStatus() });
+});
+api.post('/backups/now', (_req, res) => {
+  void runBackup('manual')
+    .then((r) => res.json({ ok: true, ...r, backups: listBackups(), status: backupStatus() }))
+    .catch((e: unknown) => res.status(500).json({ error: e instanceof Error ? e.message : String(e) }));
+});
+api.post('/backups/restore', (req, res) => {
+  const name = typeof req.body?.name === 'string' ? String((req.body as { name: string }).name) : '';
+  if (!name) return res.status(400).json({ error: 'name 必填（备份文件名）' });
+  void restoreBackup(name)
+    .then(() => res.json({ ok: true, message: '已从快照恢复当前数据库（online 恢复，无需重启）；界面数据如未刷新请手动刷新页面。' }))
+    .catch((e: unknown) => res.status(500).json({ error: e instanceof Error ? e.message : String(e) }));
+});
+
+// T01064-FR1.4：通知中心数据源——最近任务事件（projectId 可选、since 未读增量、limit 上限 200）
+// 路径必须避开 /events：/api/events 是 T00444 的 SSE 变更流（index.ts app.get，B11 文档约定）。
+// 本路由器挂在 /api 之前，若沿用 /events 会先一步匹配并返回 JSON，使 SSE 端点永远不可达——
+// 前端 EventSource 收到 JSON 数组、实时刷新静默失效（T01340）。
+api.get('/events/recent', (req, res) => {
+  const projectId = typeof req.query.projectId === 'string' && req.query.projectId ? req.query.projectId : undefined;
+  const since = typeof req.query.since === 'string' && req.query.since ? req.query.since : undefined;
+  const limit = Number(req.query.limit);
+  res.json(TaskService.listEvents({ projectId, since, limit: Number.isFinite(limit) ? limit : undefined }));
+});
+
+/**
+ * L3 丁档（2026-11-06 裁定「丁」）：通知铃铛未读数——铃铛每 30s 拉 30 行整行事件（12,643B）
+ * 只为算一个数，本端点回 `{count}`（~11B）。口径与前端原实现一致：最近 `limit` 条中
+ * created_at > since 的条数（先截断再计数），不是全库未读。
+ * 面板展开时仍走 /events/recent 取整行列表——摘要端点只替代轮询，不改打开态的取数。
+ */
+api.get('/events/unread', (req, res) => {
+  const since = typeof req.query.since === 'string' ? req.query.since : '';
+  const limit = Number(req.query.limit);
+  res.json({ count: TaskService.countUnreadEvents({ since, limit: Number.isFinite(limit) ? limit : undefined }) });
+});
+
+// T01064-FR1.5：单任务事件时间线（状态流转/回传/验证历史）
+api.get('/events/by-task/:taskId', (req, res) => {
+  res.json(TaskService.listTaskEvents(req.params.taskId));
+});
+
+// T01064 后续：事件表保留期（默认 90 天，0 = 不清理）。自动清理由常驻定时器执行，
+// 此处暴露读写 + 手动立即清理，便于设置页展示与「先清一次看效果」。
+api.get('/events/retention', (_req, res) => {
+  res.json({ days: readEventRetentionDays(), total: countEvents() });
+});
+api.put('/events/retention', (req, res) => {
+  const days = Number((req.body as { days?: unknown } | undefined)?.days);
+  if (!Number.isFinite(days)) {
+    res.status(400).json({ error: 'days 必须为数字（0 = 不清理）' });
+    return;
+  }
+  try {
+    res.json({ days: setEventRetentionDays(days), total: countEvents() });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+api.post('/events/purge', (_req, res) => {
+  // force=true：跳过 24h 节流，让「立即清理」点击后确实有动作（否则用户会以为功能坏了）
+  res.json({ deleted: pruneTaskEvents(Date.now(), true), total: countEvents() });
+});
+
+// T01066-FR1.8（并行任务池）：运行中槽位/并发上限/排队计数。
+// MTask 为 pull 模式（外部 Agent 经 MCP 领任务）——池状态为观测与软引导；上限存 app_settings（默认 3，1~10）。
+// T01066 后续：口径抽到 ConcurrencyPool（MCP 领取路径复用同一份，避免两处 SQL 漂移）。
+api.get('/pool/status', (_req, res) => {
+  res.json(readPoolStatus());
+});
+api.put('/pool/limit', (req, res) => {
+  const n = Number(req.body?.limit);
+  if (!Number.isFinite(n) || n < 1 || n > 10) return res.status(400).json({ error: 'limit 取值 1~10' });
+  res.json({ ok: true, limit: setPoolLimit(n) });
+});
+
+// T01072-FR1.9：处理结果历史与回滚（diff 视图数据源）
+api.get('/tasks/by-no/:taskNo/result-history', (req, res) => {
+  const task = TaskService.findByNo(req.params.taskNo);
+  if (!task) return res.status(404).json({ error: `任务「${req.params.taskNo}」不存在` });
+  res.json(TaskService.listResultHistory(task.id));
+});
+api.post('/tasks/by-no/:taskNo/result-rollback', (req, res) => {
+  const historyId = String(req.body?.historyId ?? '');
+  if (!historyId) return res.status(400).json({ error: 'historyId 必填' });
+  try {
+    const task = TaskService.rollbackResult(req.params.taskNo, historyId);
+    if (!task) return res.status(404).json({ error: `任务「${req.params.taskNo}」不存在` });
+    res.json(task);
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// T01073-FR5.5：循环任务规则管理（到期由 server tick 自动生成副本）
+api.get('/recurring', (_req, res) => res.json(RecurringService.list()));
+api.post('/recurring', (req, res) => {
+  const { projectId, title, description, priority, categoryId, freq, cron } = req.body ?? {};
+  try {
+    res.status(201).json(RecurringService.create({ projectId, title, description, priority, categoryId: categoryId ?? null, freq: freq ?? 'weekly', cron: cron ?? '' }));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+api.put('/recurring/:id', (req, res) => {
+  // T01073 后续：cron 与 enabled 可分别更新（cron 需校验；非法表达式会被拒，不会写库）
+  const cron = req.body?.cron;
+  if (typeof cron === 'string') {
+    try {
+      const r = RecurringService.setCron(req.params.id, cron);
+      if (!r) return res.status(404).json({ error: '规则不存在' });
+      return res.json(r);
+    } catch (e) {
+      return res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  const enabled = req.body?.enabled;
+  if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled 布尔值或 cron 字符串必填' });
+  const r = RecurringService.setEnabled(req.params.id, enabled);
+  if (!r) return res.status(404).json({ error: '规则不存在' });
+  res.json(r);
+});
+api.delete('/recurring/:id', (req, res) => {
+  RecurringService.remove(req.params.id);
+  res.status(204).end();
+});
+
+// T01271-FR1.4：执行会话面板数据源——外部平台执行会话列表（存活/进度/阶段/停滞）。
+// 读取路径内部惰性判定停滞，面板打开即见正确状态（不依赖 60s 定时器恰好跑到）。
+api.get('/exec-sessions', (_req, res) => res.json(ExecSessionService.listSessions()));
+
+/**
+ * L3 丁档（2026-11-06 裁定「丁」）：执行会话轮询摘要——面板原每 2s 拉整行列表
+ * （实测 51,346B，含内嵌 tasks）只为判断要不要重绘；本端点回 `{sig, rows}`（~100B）。
+ * 前端比对 sig：变了才整行重取，实时性与原 2s 全量轮询等价。
+ */
+api.get('/exec-sessions/digest', (_req, res) => res.json(ExecSessionService.digest()));
+
+// T03175（AI-402②③）：停滞/失败会话一键重派——派发经既有 RelayDispatch，校验与归位在 service 单源。
+api.post('/exec-sessions/:id/redispatch', async (req, res) => {
+  try { res.json(await ExecSessionService.redispatchSession(req.params.id)); }
+  catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
+});
+
+// T01480：任务导出（单条/批量，md/xlsx/docx 三格式共用同一数据装配）
+api.post('/tasks/export', async (req, res) => {
+  try {
+    const { taskIds, format } = req.body ?? {};
+    if (!Array.isArray(taskIds) || taskIds.length === 0) return res.status(400).json({ error: 'taskIds 必填' });
+    if (!['md', 'xlsx', 'docx'].includes(format)) return res.status(400).json({ error: 'format 仅支持 md/xlsx/docx' });
+    const { buffer, filename, mime } = await TaskExportService.export(taskIds as string[], format as ExportFormat);
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    res.send(buffer);
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// T01440：Web Push——VAPID 公钥 / 订阅管理 / 测试推送
+api.get('/push/public-key', (_req, res) => {
+  res.json({ publicKey: PushService.publicKey() });
+});
+api.post('/push/subscribe', (req, res) => {
+  try {
+    const sub = req.body as { endpoint?: string; keys?: { p256dh: string; auth: string } };
+    if (!sub?.endpoint || !sub.keys?.p256dh || !sub.keys?.auth) {
+      res.status(400).json({ error: '订阅结构不完整（需 endpoint 与 keys）' });
+      return;
+    }
+    PushService.subscribe(sub as { endpoint: string; keys: { p256dh: string; auth: string } });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+api.post('/push/unsubscribe', (req, res) => {
+  const endpoint = (req.body as { endpoint?: string })?.endpoint;
+  if (endpoint) PushService.unsubscribe(endpoint);
+  res.json({ ok: true });
+});
+api.post('/push/test', async (_req, res) => {
+  try {
+    const n = await PushService.sendTest();
+    res.json({ ok: true, delivered: n });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// T01073-FR5.6：API Token 管理（创建时明文仅展示一次）
+api.get('/tokens', (_req, res) => res.json(TokenService.list()));
+api.post('/tokens', (req, res) => {
+  const name = String(req.body?.name ?? '');
+  // T01073 后续：scope 默认 write（读写）；read=只读凭据，仅放行 GET（非 GET 返回 403）
+  const scope = String(req.body?.scope ?? 'write');
+  try { res.status(201).json(TokenService.create(name, scope)); } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
+});
+api.put('/tokens/:id', (req, res) => {
+  const scope = req.body?.scope;
+  if (typeof scope === 'string') {
+    TokenService.setScope(req.params.id, scope);
+    return res.json({ ok: true });
+  }
+  const enabled = req.body?.enabled;
+  if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled 布尔值或 scope 字符串必填' });
+  TokenService.setEnabled(req.params.id, enabled);
+  res.json({ ok: true });
+});
+api.delete('/tokens/:id', (req, res) => {
+  TokenService.remove(req.params.id);
+  res.status(204).end();
+});
+
+/**
+ * T03232：`fieldFilters`/`fieldSort` 是结构化参数，用 JSON 编码进 query（平铺表达不了对象数组）。
+ * 解析失败或形状不对按「未传」处理——列表仍有结果，只是没筛/没按字段排，与非法 priority 的宽容口径一致。
+ */
+function parseJsonQuery<T>(raw: unknown, ok: (v: unknown) => boolean): T | undefined {
+  if (typeof raw !== 'string' || !raw) return undefined;
+  try {
+    const v: unknown = JSON.parse(raw);
+    return ok(v) ? (v as T) : undefined;
+  } catch { return undefined; }
+}
+
+/**
+ * M4-b：`GET /tasks` 的 query → `TaskListOptions` 映射单源在此。抽出来不是因为 /tasks 需要重构，
+ * 而是 `/tasks/change-sig` 必须与它**逐参数同语义**——签名轮的集合若和列表页取到的集合差一行，
+ * 就会「外部明明改了但签名不变」或反之。两处各写一份映射迟早漂移，所以两个端点共用这一份。
+ */
+function taskListOptionsFromQuery(q: Record<string, unknown>): { opts: TaskListOptions; total: unknown } {
+  const { projectId, archived, limit, offset, keyword, categoryId, priority, sort, shelved, status, attention, total, fieldFilters, fieldSort } = q;
+  // M7-7.2：默认分页上限——未带 limit 或非法 limit 一律按 DEFAULT 截断（原「非法忽略=全量」语义废止）。
+  // 全量语义保留给 MCP（mtask_list_tasks 走 TaskService.list，不经本路由）；已盘点 HTTP 消费方：
+  // 桌面 TasksPage 200/页、移动端 100/页（7.1 改造）、CommandPalette/QueuePage/ArchivePage 显式 500。
+  // 可用 MTASK_TASKS_DEFAULT_LIMIT 覆盖（1~500，默认 200）。
+  const DEFAULT = Math.min(500, Math.max(1, Math.floor(Number(process.env.MTASK_TASKS_DEFAULT_LIMIT) || 200)));
+  let limitN: number | undefined;
+  const limitRaw = Number(limit);
+  if (limit === undefined || limit === '') {
+    limitN = DEFAULT;
+  } else if (Number.isFinite(limitRaw) && limitRaw >= 1) {
+    // 显式合法值：钳制进 [1,500]（999→500 全量诉求由显式 500 表达）；0/负数视为无效走默认
+    limitN = Math.min(500, Math.floor(limitRaw));
+  } else {
+    limitN = DEFAULT;
+  }
+  const opts: TaskListOptions = {
+    projectId: projectId as string | undefined,
+    archived: archived === '1' || archived === 'true',
+    priority: priority as string | undefined,
+    // T00719：shelved=1 时只返回搁置任务（前端搁置列表）；缺省排除搁置任务（默认隔离）
+    shelved: shelved === '1' || shelved === 'true',
+    limit: limitN,
+    // 肯定形式分支：先处理缺省（undefined），避免否定条件与 else 并存造成误读
+    offset: offset === undefined ? undefined : Math.max(0, Math.floor(Number(offset) || 0)),
+    keyword: keyword as string | undefined,
+    categoryId: categoryId as string | undefined,
+    sort: sort as TaskListOptions['sort'],
+    // T01074：修复 status 过滤被路由层丢弃的问题（query status 待办/已完成 现在真正生效）
+    status: status as TaskListOptions['status'],
+    // M7-7.1：移动端「需关注」服务端过滤（failed/unread），省去全量下发后本地筛
+    attention: attention === 'failed' || attention === 'unread' ? attention : undefined,
+    // T03232（PM-203③）：自定义字段筛选/排序（字段挂项目，服务端按字段定义校验后展开）
+    fieldFilters: parseJsonQuery<TaskListOptions['fieldFilters']>(
+      fieldFilters, (v) => Array.isArray(v) && v.every((x) => !!x && typeof x === 'object' && !Array.isArray(x)),
+    ),
+    fieldSort: parseJsonQuery<TaskListOptions['fieldSort']>(
+      fieldSort, (v) => !!v && typeof v === 'object' && !Array.isArray(v),
+    ),
+  };
+  return { opts, total };
+}
+
+/**
+ * M4 乙档（2026-11-06 裁定「乙」）：列表载荷裁掉 web 零读的 4 个内部调度列。
+ * 取证见 05 §「M4 剩余」：这 4 列在 web/src 零读，MCP 侧仅 monitor_* 作为就绪池过滤条件被读（不是载荷），
+ * 裁掉后轻数据窗口省 3.7%～11.1%。刻意保留 req_ids：任务侧 req_ids 经 mtask_list_tasks 整行透传给
+ * 外部 Agent，裁它等于改对外契约。
+ * 只在 HTTP 列表响应上裁；findByNo / MCP / 监督器仍拿全量，详情与派发依赖这些列。
+ */
+const LIST_OMIT_COLUMNS = ['exec_session_id', 'monitor_preferred_platform', 'monitor_ready', 'monitor_retry'] as const;
+function omitListColumns<T extends object>(row: T): T {
+  const copy = { ...row };
+  for (const k of LIST_OMIT_COLUMNS) delete (copy as Record<string, unknown>)[k];
+  return copy;
+}
+
+api.get('/tasks', (req, res) => {
+  const { opts, total } = taskListOptionsFromQuery(req.query);
+  const items = TaskService.list(opts);
+  // T03361（八期 §3.1.6）：行内加性字段 gitLinks（各任务最新一条）+ gitLinkCount（「+N」角标的数据源）。
+  // 一次查询覆盖本页，零逐行 SQL；裸数组契约与分页信封不变。
+  const withLinks = attachGitLinks(items).map(omitListColumns);
+  // T02284：`total=1` 加性通道——带该参数时响应体换成 `{items,total}` 信封（归档页服务端分页要「共 N 条」）。
+  // 不带时逐字返回裸数组：/tasks 的既有契约（桌面任务页、移动端、CommandPalette、QueuePage、
+  // scripts/verify-*.mjs 与 perf jmx 直取数组）不受任何影响，故本端点不改参数、不把裸数组变成对象。
+  if (wantsTotal(total)) return res.json({ items: withLinks, total: TaskService.count(opts) });
+  res.json(withLinks);
+});
+
+/**
+ * M4-b：外部变更签名——与 `GET /tasks` 同一套过滤与分页，只回 `{sig, rows}`。
+ * `sig` 是那批任务的「id:status:verified:updated_at:category_id:priority」六列单元格（按单元格排序后）
+ * 拼串的 SHA256；与前端原先自己拉整行列表再拼串相比是**集合等价**（并列行的返回次序不参与判定，理由见
+ * `TaskService.listChangeSig` 的注释）。
+ * 立项目的：TasksPage 每 10s 轮询一次整行列表（limit=500 命中 500 行 = 402,501B，服务端单次 9–21ms），
+ * 只为读出六个标量列判断「有没有人改过任务」；本端点把这次请求的成本降到 0.4–2.0ms / ~100B，
+ * 列表内容变化时的整行重取（loadTasks）保持原样。
+ * 未签名变化的判定盲区与旧实现完全一致：decorateRows 带出的图片/阻塞项/字段值本就不进签名，
+ * 它们变了而六列没变时旧实现同样不刷新——所以这不是新缺口，是原有语义。
+ */
+api.get('/tasks/change-sig', (req, res) => {
+  const { opts } = taskListOptionsFromQuery(req.query);
+  res.json(TaskService.listChangeSig(opts));
+});
+
+/**
+ * T03184（PM-102）：命令面板搜索——结构化语法在**后端全表**过滤后再分页（不得先截 500 条再内存筛）。
+ * 返回信封带 total/truncated/degraded/hint：面板据此显示「仅显示前 500 条」或语法降级原因。
+ * 独立端点而不动 /tasks 的裸数组契约：目前只有面板需要计数与截断提示。
+ * 非法语法不报错——降级为对原文的全文搜索，并把原因回传（PRD ②）。
+ * T03983：带非空关键词时额外回 `outOfSight`（归档/历史资产/搁置的分桶计数）。默认列表把这三态
+ * 整片排除（T00589/T00719），故「搜不到」多为「不在当前可见区」而非「不存在」——把差集计数
+ * 如实回传，面板才有实数据可提示；空查询不统计（默认列表本就没有"空态"，白扫全表无意义）。
+ */
+api.get('/tasks/search', (req, res) => {
+  const q = scalarText(req.query.q ?? '').trim();
+  const limit = Math.min(500, Math.max(1, Math.floor(Number(req.query.limit) || 100)));
+  const offset = Math.max(0, Math.floor(Number(req.query.offset) || 0));
+  const listOpts: TaskListOptions = { limit, offset };
+  let mode: 'fuzzy' | 'structured' = 'fuzzy';
+  let degraded = false;
+  let degradeReason = '';
+  try {
+    const parsed = parseTaskQuery(q);
+    if (parsed.mode === 'structured' && parsed.node) {
+      listOpts.queryFilter = compileTaskQuery(parsed.node);
+      mode = 'structured';
+    }
+  } catch (e) {
+    degraded = true;
+    degradeReason = e instanceof Error ? e.message : String(e);
+  }
+  if (mode === 'fuzzy' && q) listOpts.keyword = q;
+  const total = TaskService.count(listOpts);
+  const items = TaskService.list(listOpts);
+  const truncated = total > offset + items.length;
+  let hint = '';
+  if (degraded) hint = `查询语法有误（${degradeReason}），已按全文搜索「${q}」处理`;
+  else if (truncated) hint = `仅显示前 ${limit} 条，请细化关键词`;
+  const outOfSight = q
+    ? TaskService.countOutOfSight(listOpts)
+    : { total: 0, archived: 0, history: 0, shelved: 0 };
+  res.json({ items, total, limit, offset, mode, degraded, truncated, hint, outOfSight });
+});
+
+// 按任务编号查询单个任务：AI Agent / 前端凭 task_no 定位（编号全局唯一）
+api.get('/tasks/by-no/:taskNo', (req, res) => {
+  const task = TaskService.findByNo(req.params.taskNo);
+  if (!task) return res.status(404).json({ error: `任务「${req.params.taskNo}」不存在` });
+  res.json(task);
+});
+
+// T01057-FR1.1：系统通知轮询数据源——AI 处理完成（unread）/失败（failed）的任务轻量清单；
+// Electron 主进程 30s 轮询 diff 快照后发 OS 通知（点击通知聚焦窗口并定位任务）。
+api.get('/notify/pending', (_req, res) => {
+  res.json(TaskService.listAiPending());
+});
+
+// T01057-FR1.2：失败一键重试——ai_state=failed 的任务回待办，retry_count+1，历史结果追加保留
+api.post('/tasks/by-no/:taskNo/retry', (req, res) => {
+  try {
+    const task = TaskService.retryTask(req.params.taskNo);
+    if (!task) return res.status(404).json({ error: `任务「${req.params.taskNo}」不存在` });
+    res.json(task);
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+/** T00450：父子层级——父任务必须存在且同项目（防跨项目挂接）；未传 parentId 时返回空对象 */
+function resolveParentOrError(parentId: unknown, pid: string): { parent?: { id: string; project_id: string }; error?: string } {
+  if (!parentId || typeof parentId !== 'string') return {};
+  const parent = getDb().prepare('SELECT id, project_id FROM tasks WHERE id = ?').get(parentId) as { id: string; project_id: string } | undefined;
+  if (!parent) return { error: '父任务不存在' };
+  if (parent.project_id !== pid) return { error: '子任务与父任务必须同项目' };
+  return { parent };
+}
+
+api.post('/tasks', (req, res) => {
+  const { projectId, title, description, priority, status, categoryId, parentId, derivedFrom } = req.body ?? {};
+  if (!title || typeof title !== 'string' || !title.trim()) return res.status(400).json({ error: 'title 必填' });
+  // T02070 裁决：同 PATCH——第三态落库即成「两个页签都看不见」的幽灵行，写入口拒收
+  if (status !== undefined && !TASK_STATUSES.has(status)) { res.status(400).json({ error: `状态非法：${status}（待办状态仅 todo|done，中间态由进度承载）` }); return; }
+  // 移动端随手记：projectId 可选（§3.1/§3.3）。缺省落"默认记事项目"（用户设置优先，否则收件箱系统项目）
+  const pid = projectId && typeof projectId === 'string' && projectId.trim()
+    ? projectId.trim()
+    : getDefaultNoteProjectId();
+  if (!getDb().prepare('SELECT 1 FROM projects WHERE id = ?').get(pid)) {
+    return res.status(400).json({ error: '归属项目不存在' });
+  }
+  const parentResult = resolveParentOrError(parentId, pid);
+  if (parentResult.error) return res.status(400).json({ error: parentResult.error });
+  const parent = parentResult.parent;
+  // T02320：REST 建单与 MCP 走同一条溯源判据（单源在 derivedOrigin）——
+  // derivedFrom 缺省时按正文首行「来源：Txxxx」回填，认不到母单不猜；
+  // 标题带【AI回写待审核】却无溯源时随响应回显 create_warning，不再静默失联。
+  const origin = resolveCreateOrigin({
+    derivedFrom: typeof derivedFrom === 'string' ? derivedFrom : null,
+    description: typeof description === 'string' ? description : null,
+    title: title.trim(),
+  });
+  if (origin.warning) console.warn(`[mtask] POST /tasks 溯源告警（${title.trim()}）：${origin.warning}`);
+  const created = TaskService.create({ projectId: pid, title: title.trim(), description, priority, status, categoryId, parentId: parent?.id, derived_from: origin.derived_from });
+  res.status(201).json(origin.warning ? { ...created, create_warning: origin.warning } : created);
+});
+
+/** T00566 二轮：状态自动驱动推导（REST 侧）——返回待写入的 ai_state；优先采用显式 aiState，否则按语义推导 */
+function computeAutoAiState(opts: { aiState?: string; verified?: unknown; status?: unknown; handleResult?: unknown }): string | undefined {
+  if (opts.aiState === undefined) {
+    if (opts.verified === false) return 'failed';
+    if (opts.status === 'done') return 'unread';
+    if (opts.handleResult === undefined) return undefined;
+    return 'unread';
+  }
+  return opts.aiState;
+}
+
+/** PATCH 入参值域校验：返回错误文案（null=通过）——状态与归档两项都在边界拒收，避免脏数据进库 */
+function checkTaskPatchFields(status: string | undefined, archived: boolean | undefined): string | null {
+  if (status !== undefined && !TASK_STATUSES.has(status)) return `状态非法：${status}（待办状态仅 todo|done，中间态由进度承载）`;
+  if (archived !== undefined && typeof archived !== 'boolean') return 'archived 必须为布尔值';
+  return null;
+}
+
+/** parentId 变更校验：返回错误文案（null=通过）——不可自挂；两级层级下父任务不可已是子任务 */
+function checkParentChange(taskId: string, parentId: unknown): string | null {
+  if (parentId === taskId) return '父任务不能是任务自身';
+  if (!parentId) return null;
+  const parent = getDb().prepare('SELECT id, project_id, parent_id FROM tasks WHERE id = ?').get(parentId as string) as { id: string; project_id: string; parent_id: string | null } | undefined;
+  if (!parent) return '父任务不存在';
+  // T00450 评审修复：两级层级约束——父任务本身不可是子任务（防 A→B→C 三级链破坏 arrange 分组渲染）
+  if (parent.parent_id) return '父任务已是子任务，层级限制两级';
+  return null;
+}
+
+/** parentId 落库口径：未传=不改该列，传空=解除挂接（null），其余原样写入 */
+function toParentIdColumn(parentId: unknown): string | null | undefined {
+  if (parentId === undefined) return undefined;
+  return parentId ? (parentId as string) : null;
+}
+
+api.patch('/tasks/:id', (req, res) => {
+  const { title, description, priority, status, verified, aiSummary, handleResult, pinned, categoryId, parentId, color, aiState, derivedFrom, archived } = req.body ?? {}; // T00566：aiState AI 处理状态 // T00490：color 记录字体颜色 // T00779：archived 归档（派生单闭环）
+  // T02070 裁决（待办状态二元口径）：tasks 表无 CHECK 约束，本端点与 POST /tasks 是仅有的两个
+  // 非类型化写入口。第三值（doing/blocked）不会报错却会让任务从「待办/已完成」两页签同时消失并
+  // 脱离 AI 待处理/监控队列，故在边界拒收，而不是让脏数据进库。
+  const invalid = checkTaskPatchFields(status, archived);
+  if (invalid) { res.status(400).json({ error: invalid }); return; }
+  // T00450：parentId 挂接/换父/解除（null）——同项目校验；父任务不可挂到自己或其后代（两级层级下后代不存在，仅防自挂）
+  if (parentId !== undefined) {
+    const parentError = checkParentChange(req.params.id, parentId);
+    if (parentError) return res.status(400).json({ error: parentError });
+  }
+  // T00566 二轮：状态**自动驱动**（REST 侧同样不依赖技能）——显式 aiState 优先；
+  // 否则按语义推导：验证失败→failed；标记完成→unread；回传处理结果→unread
+  const autoAiState = computeAutoAiState({ aiState, verified, status, handleResult });
+  res.json(TaskService.update(req.params.id, { title, description, priority, status, verified, ai_summary: aiSummary, handle_result: handleResult, pinned, category_id: categoryId, parent_id: toParentIdColumn(parentId), color, ai_state: autoAiState, derived_from: derivedFrom, archived })); // T00779：archived 归档
+});
+
+api.post('/tasks/move', (req, res) => {
+  const { taskIds, projectId } = req.body ?? {};
+  if (!Array.isArray(taskIds) || !projectId) return res.status(400).json({ error: 'taskIds 数组与 projectId 必填' });
+  TaskService.moveProject(taskIds, projectId);
+  res.status(204).end();
+});
+
+// T00719：搁置 / 恢复任务——shelved=true 从待办/已完成列表隔离进搁置列表，false 恢复
+api.post('/tasks/:id/shelve', (req, res) => {
+  const { shelved } = req.body ?? {};
+  if (typeof shelved !== 'boolean') return res.status(400).json({ error: 'shelved 布尔值必填' });
+  res.json(TaskService.setShelved(req.params.id, shelved));
+});
+
+// ---------- T03229（PRD PM-202①②）：任务级阻塞关系 ----------
+// 路径挂在「被阻塞方」之下：一对关系 = (被阻塞任务, 阻塞方任务)，增删都以此为主语。
+// 业务校验（自阻塞 / 跨项目 / 阻塞方已完成或已归档 / 重复）全在 TaskService 写入口抛中文错，
+// 这里按 wsWrap 的既有语义统一映射 400 + { error }，不另造状态码分支。
+api.get('/tasks/:id/blocked-by', (req, res) => {
+  const includeReleased = req.query.includeReleased === '1' || req.query.includeReleased === 'true';
+  wsWrap(res, () => TaskService.listBlockers(req.params.id, { includeReleased }));
+});
+
+api.post('/tasks/:id/blocked-by', (req, res) => {
+  const blockerId = String(req.body?.blockerId ?? '').trim();
+  if (!blockerId) return res.status(400).json({ error: 'blockerId 必填' });
+  wsWrap(res, () => TaskService.addBlocker(req.params.id, blockerId));
+});
+
+api.delete('/tasks/:id/blocked-by/:blockerId', (req, res) => {
+  wsWrap(res, () => TaskService.removeBlocker(req.params.id, req.params.blockerId));
+});
+
+// ---------- T03231（PRD PM-203）：项目级自定义字段 ----------
+// 定义挂项目、值挂任务：字段的增改归档走 /projects/:id/fields 与 /fields/:id，
+// 任务上的填写/读取走 /tasks/:id/field-values。口径与分类/阻塞关系一致——服务层抛中文错，这里统一 400。
+api.get('/projects/:id/fields', (req, res) => {
+  const includeArchived = req.query.includeArchived === '1' || req.query.includeArchived === 'true';
+  wsWrap(res, () => FieldService.list(req.params.id, { includeArchived }));
+});
+
+api.post('/projects/:id/fields', (req, res) => {
+  wsWrap(res, () => FieldService.create(req.params.id, req.body ?? {}));
+});
+
+api.patch('/fields/:id', (req, res) => {
+  wsWrap(res, () => FieldService.update(req.params.id, req.body ?? {}));
+});
+
+api.post('/fields/:id/archive', (req, res) => {
+  wsWrap(res, () => FieldService.archive(req.params.id));
+});
+
+api.get('/tasks/:id/field-values', (req, res) => {
+  wsWrap(res, () => FieldService.valuesFor(req.params.id));
+});
+
+api.put('/tasks/:id/field-values', (req, res) => {
+  wsWrap(res, () => FieldService.setValues(req.params.id, req.body?.values));
+});
+
+// 任务手动排序（T00446）：拖拽后的完整 id 顺序 → user_sort 1..n；列表 sort=manual 时生效
+// 通用需求条目拖拽排序（T00463）：同 /tasks/reorder 模式，写 sort_weight
+api.post('/req-entries/reorder', (req, res) => {
+  const { categoryId, orderedIds } = req.body ?? {};
+  if (typeof categoryId !== 'string' || !categoryId || !Array.isArray(orderedIds) || orderedIds.some((x) => typeof x !== 'string')) {
+    return res.status(400).json({ error: 'categoryId 与 orderedIds 必填' });
+  }
+  try {
+    const db = getDb();
+    const known = new Set(
+      (db.prepare('SELECT id FROM req_entries WHERE category_id = ?').all(categoryId) as Array<{ id: string }>).map((r) => r.id),
+    );
+    const ids = (orderedIds as string[]).filter((id) => known.has(id));
+    db.transaction(() => {
+      ids.forEach((id, i) => {
+        db.prepare('UPDATE req_entries SET sort_weight = ?, updated_at = ? WHERE id = ?').run(i + 1, now(), id);
+      });
+    })(); // T00516 修正：transaction 必须立即调用（此前漏 ()，包装函数创建后从未执行，整个 UPDATE 静默跳过）
+    res.json({ ok: true, reordered: ids.length });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// 重置提示词为默认排序（T00465）：清空 sort_weight，回落到 updated_at DESC
+api.post('/prompts/reorder/reset', (req, res) => {
+  const { categoryId } = req.body ?? {};
+  if (typeof categoryId !== 'string' || !categoryId) return res.status(400).json({ error: 'categoryId 必填' });
+  try {
+    const r = getDb().prepare('UPDATE prompts SET sort_weight = 0, updated_at = ? WHERE category_id = ? AND sort_weight != 0').run(now(), categoryId);
+    cacheClear('prompt-categories');
+    res.json({ ok: true, reset: r.changes });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// 提示词拖拽排序（T00463）：同模式
+api.post('/prompts/reorder', (req, res) => {
+  const { categoryId, orderedIds } = req.body ?? {};
+  if (typeof categoryId !== 'string' || !categoryId || !Array.isArray(orderedIds) || orderedIds.some((x) => typeof x !== 'string')) {
+    return res.status(400).json({ error: 'categoryId 与 orderedIds 必填' });
+  }
+  try {
+    const db = getDb();
+    const known = new Set(
+      (db.prepare('SELECT id FROM prompts WHERE category_id = ?').all(categoryId) as Array<{ id: string }>).map((r) => r.id),
+    );
+    const ids = (orderedIds as string[]).filter((id) => known.has(id));
+    db.transaction(() => {
+      ids.forEach((id, i) => {
+        db.prepare('UPDATE prompts SET sort_weight = ?, updated_at = ? WHERE id = ?').run(i + 1, now(), id); // T00494 修正：参数错位
+      });
+    })(); // T00516 修正：transaction 必须立即调用（此前漏 ()，UPDATE 体从未执行）
+    cacheClear('prompt-categories');
+    res.json({ ok: true, reordered: ids.length });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+api.post('/tasks/reorder', (req, res) => {
+  const { orderedIds } = req.body ?? {};
+  if (!Array.isArray(orderedIds) || orderedIds.some((x) => typeof x !== 'string')) {
+    return res.status(400).json({ error: 'orderedIds 必填（id 字符串数组，按新顺序）' });
+  }
+  res.json(TaskService.reorder(orderedIds as string[]));
+});
+
+// ---------- CSV 任务导入（INT-6 最小可用版）：preview 解析校验 / confirm 确认导入 ----------
+/** 收尾当前行：拼接末尾字段并按「非空则入行」规则推送；供 parseCsv 复用 */
+function flushCsvRow(rows: string[][], cur: string[], field: string): void {
+  const cells = cur.concat(field);
+  if (cells.some((c) => c.trim())) rows.push(cells);
+}
+
+/** CSV 状态机单步：消费 text[i] 并推进状态，返回下一个索引（供 parseCsv 复用） */
+function consumeCsvChar(text: string, i: number, st: { cur: string[]; field: string; inQuotes: boolean }, rows: string[][]): number {
+  const ch = text[i];
+  const next = text[i + 1];
+  if (st.inQuotes) {
+    if (ch === '"' && next === '"') { // 连续双引号：转义为一个引号
+      st.field += '"';
+      return i + 2;
+    }
+    if (ch === '"') { // 引号结束
+      st.inQuotes = false;
+      return i + 1;
+    }
+    st.field += ch; // 引号内普通字符
+    return i + 1;
+  }
+  if (ch === '"') st.inQuotes = true;
+  else if (ch === ',') { st.cur.push(st.field); st.field = ''; }
+  else if (ch === '\n' || ch === '\r') {
+    if (ch === '\r' && next === '\n') i++;
+    flushCsvRow(rows, st.cur, st.field);
+    st.cur = [];
+    st.field = '';
+  } else st.field += ch;
+  return i + 1;
+}
+
+/** CSV 简易解析：RFC4180 引号感知，返回二维单元格数组 */
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  const st = { cur: [] as string[], field: '', inQuotes: false };
+  let i = 0;
+  while (i < text.length) {
+    i = consumeCsvChar(text, i, st, rows);
+  }
+  if (st.field || st.cur.length) flushCsvRow(rows, st.cur, st.field);
+  return rows;
+}
+
+/** T03267（PM-402①）：各字段可接受的列名——中文通用 + GitHub Issues / Jira CSV 的约定列 */
+const CSV_FIELD_ALIAS: Record<string, string[]> = {
+  title: ['标题', '名称', '任务', '任务名称', '任务标题', 'title', 'summary', 'name'],
+  description: ['描述', '内容', '说明', '详情', '备注', 'description', 'body'],
+  priority: ['优先级', 'priority', 'severity'],
+  status: ['状态', 'status', 'state'],
+  category: ['分类', '类别', 'category', 'component'],
+};
+/** 不映射 Labels：标签是自由文本，当分类用会把整类外部 CSV 判成「分类不存在」 */
+const CSV_FIELDS = ['title', 'description', 'priority', 'status', 'category'] as const;
+
+/** 表头映射：先精确匹配（含大小写不敏感），再按字段顺序各取首个命中列 */
+function mapCsvColumns(headers: string[]): Record<string, number> {
+  const map: Record<string, number> = {};
+  const norm = headers.map((h) => h.trim().toLowerCase());
+  for (const field of CSV_FIELDS) {
+    const alias = CSV_FIELD_ALIAS[field];
+    const idx = norm.findIndex((h) => alias.includes(h));
+    if (idx >= 0) map[field] = idx;
+  }
+  return map;
+}
+
+/** T03267①：约定字段自动识别来源——只影响提示文案，不改变解析口径 */
+function detectCsvSource(headers: string[]): 'github' | 'jira' | 'generic' {
+  const norm = new Set(headers.map((h) => h.trim().toLowerCase()));
+  const has = (n: string) => norm.has(n);
+  if (has('body') && (has('state') || has('labels') || has('milestone'))) return 'github';
+  if (has('summary') && (has('issue key') || has('issue type') || (has('priority') && has('status')))) return 'jira';
+  return 'generic';
+}
+
+/**
+ * T03267②：人工调整映射。override 是 `{该字段: 表头名|''}`，只覆盖给出的字段
+ * （`''` 表示显式取消该列的映射，回到「不导入」）；
+ * 表头名必须真实存在（防止前端旧缓存把映射指到不存在的列而静默少导入）。
+ */
+function applyMappingOverride(headers: string[], raw: unknown): { map?: Record<string, number>; error?: string } {
+  if (raw === undefined || raw === '') return {};
+  if (typeof raw !== 'string') return { error: 'mapping 必须是 JSON 字符串' };
+  let obj: unknown;
+  try {
+    obj = JSON.parse(raw);
+  } catch {
+    return { error: 'mapping 不是合法 JSON' };
+  }
+  if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) return { error: 'mapping 必须是对象' };
+  const norm = headers.map((h) => h.trim().toLowerCase());
+  const map: Record<string, number> = { ...mapCsvColumns(headers) };
+  for (const field of CSV_FIELDS) {
+    const val = (obj as Record<string, unknown>)[field];
+    if (val === undefined || val === null) continue;
+    if (typeof val !== 'string') return { error: `mapping.${field} 必须是表头名` };
+    if (!val.trim()) { delete map[field]; continue; }
+    const idx = norm.indexOf(val.trim().toLowerCase());
+    if (idx < 0) return { error: `mapping.${field} 指向不存在的表头：${val}` };
+    map[field] = idx;
+  }
+  if (map.title === undefined) return { error: 'mapping 必须指定标题列' };
+  return { map };
+}
+
+const PRIORITY_ALIAS: Record<string, string> = {
+  高: 'high', 中: 'normal', 普通: 'normal', 低: 'low', high: 'high', normal: 'normal', low: 'low', urgent: 'urgent',
+  // T03267①：Jira/GitHub 常见优先级词
+  highest: 'urgent', critical: 'urgent', blocker: 'urgent', major: 'high', medium: 'normal', minor: 'low', lowest: 'low', trivial: 'low',
+};
+const STATUS_ALIAS: Record<string, string> = {
+  完成: 'done', 已完成: 'done', 待办: 'todo', 未开始: 'todo', done: 'done', todo: 'todo',
+  // GitHub（open/closed）与 Jira（To Do/In Progress/Done…）：任务只有待办/已完成二元（T02070 裁决），进行中归待办
+  open: 'todo', closed: 'done', reopened: 'todo', resolved: 'done', 'to do': 'todo', 'in progress': 'todo', 'in review': 'todo', backlog: 'todo',
+};
+
+/** CSV 单行导入结果：skip=整行空跳过 */
+type CsvImportResult =
+  | { kind: 'skip' }
+  | { kind: 'error'; message: string }
+  | { kind: 'item'; item: { title: string; description: string; priority: string; status: string; categoryId: string | null } };
+
+/** 分类名 → 分类 id；名称缺失返回 null，不存在则给出错误 */
+function resolveCsvCategory(name: string, catByName: Map<string, string>): { id: string | null; error?: string } {
+  if (!name) return { id: null };
+  const hit = catByName.get(name);
+  return hit ? { id: hit } : { id: null, error: '分类不存在：' + name };
+}
+
+/** 校验并归一化一行 CSV（标题/去重/状态/分类），供 /tasks/import-csv/preview 复用 */
+function buildCsvImportRow(
+  r: string[],
+  map: Record<string, number>,
+  catByName: Map<string, string>,
+  existTitles: Set<string>,
+  seen: Set<string>,
+): CsvImportResult {
+  const get = (key: string) => (map[key] === undefined ? '' : (r[map[key]] ?? '').trim());
+  const title = get('title');
+  if (!title && !r.some((c) => c.trim())) return { kind: 'skip' };
+  if (!title) return { kind: 'error', message: '标题必填' };
+  if (existTitles.has(title) || seen.has(title)) return { kind: 'error', message: '标题重复：' + title };
+  const priority = PRIORITY_ALIAS[get('priority').toLowerCase()] ?? 'normal';
+  const statusRaw = get('status').toLowerCase();
+  const status = STATUS_ALIAS[statusRaw] ?? (statusRaw === 'completed' ? 'done' : 'todo');
+  if (statusRaw && !STATUS_ALIAS[statusRaw]) return { kind: 'error', message: '状态非法：' + get('status') };
+  const cat = resolveCsvCategory(get('category'), catByName);
+  if (cat.error) return { kind: 'error', message: cat.error };
+  seen.add(title);
+  return { kind: 'item', item: { title, description: get('description'), priority, status, categoryId: cat.id } };
+}
+
+// 预览：解析 CSV → 校验 → 返回映射结果与行级错误（不入库）
+api.post('/tasks/import-csv/preview', raw({ type: () => true, limit: '20mb' }), (req, res) => {
+  const projectId = req.query.projectId;
+  if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
+  if (!Buffer.isBuffer(req.body) || req.body.length === 0) return res.status(400).json({ error: '请求体应为 CSV 文本' });
+  try {
+    const text = req.body.toString('utf-8').replace(/^\ufeff/, '');
+    const rows = parseCsv(text);
+    if (rows.length < 2) return res.json({ source: 'generic', headers: [], mapping: {}, items: [], errors: [{ row: 1, message: 'CSV 至少需要表头与一行数据' }] });
+    const headers = rows[0].map((h) => h.trim());
+    const source = detectCsvSource(headers);
+    // 人工映射优先；未给映射则按约定字段自动识别
+    const override = applyMappingOverride(headers, req.query.mapping);
+    if (override.error) return res.status(400).json({ error: override.error });
+    const map = override.map ?? mapCsvColumns(headers);
+    if (map.title === undefined) return res.status(400).json({ error: '未找到标题列（可在字段映射里手动指定；支持列名：标题/名称/任务/Title/Summary 等）' });
+    const catRows = getDb().prepare('SELECT id, name FROM task_categories').all() as Array<{ id: string; name: string }>;
+    const catByName = new Map(catRows.map((c) => [c.name.trim(), c.id]));
+    const items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null }> = [];
+    const errors: Array<{ row: number; message: string }> = [];
+    const seen = new Set<string>();
+    const existTitles = new Set(
+      (getDb().prepare('SELECT title FROM tasks WHERE project_id = ? AND archived = 0').all(projectId) as Array<{ title: string }>).map((r) => r.title),
+    );
+    for (let i = 1; i < rows.length; i++) {
+      const res = buildCsvImportRow(rows[i], map, catByName, existTitles, seen);
+      if (res.kind === 'error') { errors.push({ row: i + 1, message: res.message }); continue; }
+      if (res.kind === 'item') items.push(res.item);
+    }
+    // mapping 以「字段 → 表头名」返回给前端做映射控件；index 映射只在本请求内使用。
+    // 未映射的字段回空串——前端据此把「取消映射」带到下一次重解析，否则会被自动识别悄悄加回来。
+    const mapping = Object.fromEntries(CSV_FIELDS.map((f) => [f, map[f] === undefined ? '' : headers[map[f]] ?? '']));
+    res.json({ source, headers, mapping, items, errors });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// 确认导入：复用 TaskService.create（task_no 分配/计划联动一致），跳过已存在标题
+api.post('/tasks/import-csv/confirm', (req, res) => {
+  const { projectId, items } = req.body ?? {};
+  if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
+  if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'items 必填' });
+  try {
+    const created: string[] = [];
+    for (const it of items as Array<{ title: string; description?: string; priority?: string; status?: string; categoryId?: string | null }>) {
+      if (!it.title?.trim()) continue;
+      if (getDb().prepare('SELECT id FROM tasks WHERE project_id = ? AND title = ? AND archived = 0').get(projectId, it.title)) continue;
+      TaskService.create({ projectId, title: it.title, description: it.description, priority: (it.priority as TaskInput['priority']) ?? 'normal', status: (it.status as TaskInput['status']) ?? undefined, categoryId: it.categoryId ?? null });
+      created.push(it.title);
+    }
+    notifyChange('tasks');
+    res.status(201).json({ ok: true, count: created.length });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ---------- T00556 / PRD INT-6：JSON 任务导入（Trello 导出 / 通用 JSON 数组，preview + confirm） ----------
+/** 取首个非 null/undefined 字段并显式字符串化（S6551：避免 unknown 走默认 [object Object] 字符串化） */
+function firstStr(...vals: unknown[]): string {
+  for (const v of vals) {
+    if (v == null) continue;
+    if (typeof v === 'object') return JSON.stringify(v);
+    if (typeof v === 'string') return v;
+    if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint') return String(v);
+    return String(v as symbol); // symbol/function 等非 JSON 值兜底（显式窄化，不走 [object Object]）
+  }
+  return '';
+}
+
+/** 把多种 JSON 形态归一为任务条目：数组 / {cards|tasks|items|issues:[]} / Trello board {lists:[{cards:[]}]} */
+function extractJsonImportItems(data: unknown): Array<{ title: string; description: string; priority?: string }> {
+  const toItem = (o: Record<string, unknown>): { title: string; description: string; priority?: string } | null => {
+    const title = firstStr(o.title, o.name, o.summary).trim();
+    if (!title) return null;
+    const description = firstStr(o.description, o.desc, o.details, o.content).trim();
+    const pr = firstStr(o.priority).toLowerCase();
+    const priority = PRIORITY_ALIAS[pr] ? pr : undefined;
+    return priority ? { title, description, priority } : { title, description };
+  };
+  const fromArray = (arr: unknown[]) => arr
+    .filter((x) => x !== null && typeof x === 'object')
+    .map((x) => toItem(x as Record<string, unknown>))
+    .filter((x): x is { title: string; description: string; priority?: string } => x !== null);
+  if (Array.isArray(data)) return fromArray(data);
+  if (data !== null && typeof data === 'object') {
+    const o = data as Record<string, unknown>;
+    for (const k of ['cards', 'tasks', 'items', 'issues']) {
+      if (Array.isArray(o[k])) return fromArray(o[k] as unknown[]);
+    }
+    if (Array.isArray(o.lists)) {
+      return (o.lists as unknown[]).flatMap((l) => {
+        const lo = (l ?? {}) as Record<string, unknown>;
+        return Array.isArray(lo.cards) ? fromArray(lo.cards as unknown[]) : [];
+      });
+    }
+  }
+  return [];
+}
+
+api.post('/tasks/import-json/preview', raw({ type: () => true, limit: '20mb' }), (req, res) => {
+  const projectId = req.query.projectId;
+  if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
+  if (!Buffer.isBuffer(req.body) || req.body.length === 0) return res.status(400).json({ error: '请求体应为 JSON 文件二进制' });
+  let data: unknown;
+  try {
+    data = JSON.parse(req.body.toString('utf8'));
+  } catch {
+    return res.status(400).json({ error: 'JSON 解析失败：请上传有效的 Trello 导出或 JSON 数组文件' });
+  }
+  const items = extractJsonImportItems(data);
+  if (items.length === 0) return res.status(400).json({ error: '未从 JSON 中识别到任务：支持数组、cards[]、tasks[]、Trello board lists[].cards[]' });
+  const existing = new Set((getDb().prepare('SELECT title FROM tasks WHERE project_id = ? AND archived = 0').all(projectId) as Array<{ title: string }>).map((r) => r.title));
+  const errors: Array<{ row: number; message: string }> = [];
+  const seen = new Set<string>();
+  const valid: typeof items = [];
+  items.forEach((it, i) => {
+    if (existing.has(it.title)) { errors.push({ row: i + 1, message: `标题已存在：${it.title}` }); return; }
+    if (seen.has(it.title)) { errors.push({ row: i + 1, message: `标题重复：${it.title}` }); return; }
+    seen.add(it.title);
+    valid.push(it);
+  });
+  res.json({ items: valid.map((it) => ({ ...it, priority: it.priority ?? 'normal', status: 'todo', categoryId: null, categoryName: '' })), errors });
+});
+
+api.post('/tasks/import-json/confirm', (req, res) => {
+  const { projectId, items } = req.body ?? {};
+  if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
+  if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'items 必填' });
+  try {
+    let count = 0;
+    for (const it of items as Array<{ title: string; description?: string; priority?: string }>) {
+      if (!it.title?.trim()) continue;
+      if (getDb().prepare('SELECT id FROM tasks WHERE project_id = ? AND title = ? AND archived = 0').get(projectId, it.title)) continue;
+      TaskService.create({ projectId, title: it.title, description: it.description, priority: (it.priority as TaskInput['priority']) ?? 'normal' });
+      count += 1;
+    }
+    notifyChange('tasks');
+    res.status(201).json({ ok: true, count });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+
+/** 批量动作实现：单条任务的执行体（未知 action 由 applyBatchAction 统一抛错） */
+type BatchActionHandler = (db: ReturnType<typeof getDb>, id: string, value: string | undefined) => { ok: boolean; reason?: string };
+
+const BATCH_ACTIONS: Record<string, BatchActionHandler> = {
+  status: (_db, id, value) => {
+    if (value !== 'todo' && value !== 'done') throw new Error('status 值非法');
+    TaskService.setStatus(id, value);
+    return { ok: true };
+  },
+  category: (db, id, value) => {
+    if (value && !db.prepare('SELECT id FROM task_categories WHERE id = ?').get(value)) throw new Error('分类不存在');
+    db.prepare('UPDATE tasks SET category_id = ?, updated_at = ? WHERE id = ?').run(value || null, now(), id);
+    return { ok: true };
+  },
+  // T00588：批量优先级 / 字体颜色（与计划页批量能力对齐）
+  priority: (db, id, value) => {
+    if (!value || !['low', 'normal', 'high', 'urgent'].includes(value)) throw new Error('priority 值非法');
+    db.prepare('UPDATE tasks SET priority = ?, updated_at = ? WHERE id = ?').run(value, now(), id);
+    return { ok: true };
+  },
+  color: (db, id, value) => {
+    db.prepare('UPDATE tasks SET color = ?, updated_at = ? WHERE id = ?').run(value ?? '', now(), id);
+    return { ok: true };
+  },
+  // T02980：批量验收结果（与单条「验证结果」同口径，走 TaskService.update 保留 task_events 埋点）。
+  // 验收只针对已完成任务——待办任务即使被勾选也不改，原因随回执如实返回。
+  // ai_state 同步沿用单条 PATCH 的推导（verified=false→failed），避免批量与单条口径分叉。
+  verified: (db, id, value) => {
+    if (value !== 'true' && value !== 'false') throw new Error('verified 值非法');
+    const row = db.prepare('SELECT status FROM tasks WHERE id = ?').get(id) as { status: string } | undefined;
+    if (row?.status !== 'done') return { ok: false, reason: '仅已完成任务可设置验收结果' };
+    const verified = value === 'true';
+    TaskService.update(id, { verified: verified ? 1 : 0, ai_state: computeAutoAiState({ verified }) });
+    return { ok: true };
+  },
+  archive: (_db, id) => {
+    ArchiveService.archive([id]);
+    return { ok: true };
+  },
+};
+
+/** 单个任务的批量操作分派（T00457）；未知 action 抛错，由路由统一映射 400。
+ *  T03211（PM-105）：返回逐条结论而非布尔值——不适用的条目要带上原因进回执，不得静默丢弃。
+ *  返回 ok:false 表示该任务不适用本次动作（T02980：验收结果只对已完成任务有意义）。 */
+function applyBatchAction(db: ReturnType<typeof getDb>, id: string, action: string | undefined, value: string | undefined): { ok: boolean; reason?: string } {
+  const handler = action ? BATCH_ACTIONS[action] : undefined;
+  if (!handler) throw new Error(`不支持的批量操作：${action}`);
+  return handler(db, id, value);
+}
+
+// 批量操作（T00457 / PRD UX-5）：多选后批量改状态/分类/归档——单事务，任一异常整体回滚
+// T03211（PM-105）：响应补 results 逐条结论（成功/失败 + 原因），供前端回执逐条展示、失败项不静默丢弃
+api.post('/tasks/batch', (req, res) => {
+  const { ids, action, value } = req.body ?? {};
+  if (!Array.isArray(ids) || ids.length === 0 || ids.some((x) => typeof x !== 'string')) {
+    return res.status(400).json({ error: 'ids 必填（任务 id 字符串数组）' });
+  }
+  try {
+    const db = getDb();
+    const results: Array<{ id: string; title: string; ok: boolean; reason?: string }> = [];
+    db.transaction(() => {
+      for (const id of ids as string[]) {
+        const row = db.prepare('SELECT title FROM tasks WHERE id = ?').get(id) as { title: string } | undefined;
+        if (!row) { results.push({ id, title: '', ok: false, reason: '任务不存在或已删除' }); continue; }
+        const outcome = applyBatchAction(db, id, action, value);
+        results.push({ id, title: row.title, ...outcome });
+      }
+    })();
+    notifyChange('tasks');
+    const affected = results.filter((r) => r.ok).length;
+    res.json({ ok: true, affected, failed: results.length - affected, skipped: results.length - affected, results });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// 复用（复制）任务到目标项目；同名冲突 / 目标不存在映射为 409
+api.post('/tasks/:id/reuse', (req, res) => {
+  const { projectId } = req.body ?? {};
+  if (!projectId) return res.status(400).json({ error: 'projectId 必填' });
+  try {
+    res.status(201).json(TaskService.reuse(req.params.id, projectId));
+  } catch (e) {
+    res.status(409).json({ error: (e as Error).message });
+  }
+});
+
+// 将任务复制为提示词页可复用资产（打包成单份 JSON 写入目标提示词分类）；分类不存在映射为 409
+api.post('/tasks/:id/to-prompt', (req, res) => {
+  const { categoryId } = req.body ?? {};
+  if (!categoryId) return res.status(400).json({ error: 'categoryId 必填' });
+  try {
+    res.status(201).json(TaskService.toPromptAsset(req.params.id, categoryId));
+  } catch (e) {
+    res.status(409).json({ error: (e as Error).message });
+  }
+});
+
+api.post('/tasks/:id/to-req', (req, res) => {
+  const { categoryId } = req.body ?? {};
+  if (!categoryId) return res.status(400).json({ error: 'categoryId 必填' });
+  try {
+    res.status(201).json(TaskService.toReqAsset(req.params.id, categoryId));
+    cacheClear('req-categories'); // 新增条目使分类计数变化
+  } catch (e) {
+    res.status(409).json({ error: (e as Error).message });
+  }
+});
+
+// ---------- 任务分类 ----------
+api.get('/task-categories', (_req, res) => {
+  res.json(TaskCategoryService.list());
+});
+
+api.post('/task-categories', (req, res) => {
+  const { name } = req.body ?? {};
+  if (!name || typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'name 必填' });
+  res.status(201).json(TaskCategoryService.create(name));
+});
+
+api.patch('/task-categories/:id', (req, res) => {
+  const { name } = req.body ?? {};
+  if (!name || typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'name 必填' });
+  const cat = TaskCategoryService.rename(req.params.id, name);
+  if (!cat) return res.status(404).json({ error: '分类不存在' });
+  res.json(cat);
+});
+
+api.delete('/task-categories/:id', (req, res) => {
+  // 删除分类会把其下任务 category_id 置空（任务保留、回到未分类）
+  if (!TaskCategoryService.remove(req.params.id)) return res.status(404).json({ error: '分类不存在' });
+  res.status(204).end();
+});
+
+// FR5.1 采纳：审阅后的 AI 文本保存到任务并置为 done（仅保存文本，待人工合并）
+api.post('/tasks/:id/adopt', (req, res) => {
+  const { content } = req.body ?? {};
+  if (!content || typeof content !== 'string') return res.status(400).json({ error: 'content 必填' });
+  try {
+    res.json(TaskService.adoptContent(req.params.id, content));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// T02164：AI 摘要视图的「生成总结摘要」——按任务全量信息出全面总结，落库 ai_summary + 生成时刻。
+// toolId 可选：不传即走「默认整理工具」，抽屉因此无需向父页取工具选择态（自包含原则）。
+api.post('/tasks/:id/ai-summary', async (req, res) => {
+  const { toolId } = req.body ?? {};
+  if (toolId !== undefined && typeof toolId !== 'string') return res.status(400).json({ error: 'toolId 需为字符串' });
+  try {
+    res.json(await AIService.summarizeTask(req.params.id, toolId || undefined));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ---------- T02949：派生单裁决（标记待裁决 / 提交裁决 / 预设选项） ----------
+// 裁决只针对派生单（derived_from 非空）——对象就是 AI 派生待办的结论采纳与否；
+// 状态走 ruling_* 独立列，不占用 status 的待办/已完成语义（筛选/计数依赖它）。
+// 标记「待裁决」（幂等：已标记原样返回；已裁决拒绝）
+api.post('/tasks/:id/ruling-mark', (req, res) => {
+  try {
+    res.json(TaskService.markRuling(req.params.id));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// 提交裁决：{ result }（预设选项值或自定义文本，非空）——待裁决→已裁决，结果**追加**到详情末尾（不覆盖）
+api.post('/tasks/:id/ruling', (req, res) => {
+  const { result } = req.body ?? {};
+  if (!result || typeof result !== 'string' || !result.trim()) return res.status(400).json({ error: 'result（裁决结果）必填' });
+  try {
+    res.json(TaskService.submitRuling(req.params.id, result));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// 裁决预设选项（服务端单源——前端面板与 MCP 同读）。T02949 方案 A：带任务 id 时按该单结论动态抽取，
+// 抽不到才回落通用四枚——面板因此能显示「方案 A / 方案 B」而不是固定四枚。
+api.get('/tasks/:id/ruling-options', (req, res) => {
+  try {
+    res.json({ options: TaskService.rulingOptions(req.params.id) });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ---------- 任务截图/图片附件（FR1.3 图文混合描述） ----------
+// 上传：body { data: base64（不含 data: 前缀）, mimeType? }，支持 dataURL 自动去前缀
+api.post('/tasks/:id/images', (req, res) => {
+  let { data, mimeType } = req.body ?? {};
+  if (!data || typeof data !== 'string') return res.status(400).json({ error: 'data(base64) 必填' });
+  // 兼容前端直接传 dataURL 的情况
+  const m = /^data:(image\/[a-z+]+);base64,(.+)$/s.exec(data);
+  if (m) { mimeType = mimeType ?? m[1]; data = m[2]; }
+  try {
+    res.status(201).json(TaskImageService.add(req.params.id, data, mimeType));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// 任务的图片列表（元信息，不含 BLOB）
+api.get('/tasks/:id/images', (req, res) => {
+  res.json(TaskImageService.listByTask(req.params.id));
+});
+
+// 读取图片二进制（<img src> 直接使用）
+api.get('/images/:id', (req, res) => {
+  const img = TaskImageService.getData(req.params.id);
+  if (!img) return res.status(404).json({ error: '图片不存在' });
+  res.setHeader('Content-Type', img.mime_type);
+  res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+  res.send(img.data);
+});
+
+// 删除单张图片（替换/移除操作）
+api.delete('/images/:id', (req, res) => {
+  if (!TaskImageService.remove(req.params.id)) return res.status(404).json({ error: '图片不存在' });
+  res.status(204).end();
+});
+
+// ---------- AI 工具配置 ----------
+api.get('/aitools', (_req, res) => {
+  res.json(ConfigService.list());
+});
+
+api.get('/aitools/types', (_req, res) => {
+  res.json(ConfigService.listAdapterTypes());
+});
+
+// T03176（PRD D-14）：AI 可用性单源诊断——主入口据此「可见但禁用 + 原因/修复动作」
+api.get('/ai/readiness', (_req, res) => {
+  res.json(checkAiReadiness());
+});
+
+// 草稿连接测试：用表单未保存的 type/endpoint/apiKey/model 提前验证连通性（不落库）
+// 模型拖拽排序（T00446）：orderedIds 全量校验后事务重写 sort_weight
+api.post('/aitools/reorder', (req, res) => {
+  const { orderedIds } = (req.body ?? {}) as { orderedIds?: unknown };
+  if (!Array.isArray(orderedIds) || orderedIds.some((x) => typeof x !== 'string')) {
+    return res.status(400).json({ error: 'orderedIds 必填（id 字符串数组，按新顺序）' });
+  }
+  try {
+    const db = getDb();
+    const known = new Set(
+      (db.prepare('SELECT id FROM ai_tools').all() as Array<{ id: string }>).map((r) => r.id),
+    );
+    const ids = (orderedIds as string[]).filter((id) => known.has(id));
+    db.transaction(() => {
+      ids.forEach((id, i) => {
+        db.prepare('UPDATE ai_tools SET sort_weight = ? WHERE id = ?').run(i, id);
+      });
+    })();
+    cacheClear('aitools');
+    res.json({ ok: true, reordered: ids.length });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+api.post('/aitools/test', async (req, res) => {
+  try {
+    res.json(await ConfigService.testDraft(req.body ?? {}));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// 草稿模型列表：用表单未保存的 type/endpoint/apiKey 拉取服务商可用模型（不落库）
+api.post('/aitools/models', async (req, res) => {
+  try {
+    res.json(await ConfigService.listModelsDraft(req.body ?? {}));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+api.post('/aitools', (req, res) => {
+  try {
+    res.status(201).json(ConfigService.create(req.body ?? {}));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+api.patch('/aitools/:id', (req, res) => {
+  try {
+    res.json(ConfigService.update(req.params.id, req.body ?? {}));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// T00587：模型配置归档 / 恢复（删除按钮改归档后的服务端支持）
+api.post('/aitools/:id/archive', (req, res) => {
+  ConfigService.archive(req.params.id);
+  res.json({ ok: true });
+});
+api.post('/aitools/:id/restore', (req, res) => {
+  ConfigService.restore(req.params.id);
+  res.json({ ok: true });
+});
+api.get('/aitools/archived', (_req, res) => {
+  res.json(ConfigService.listArchived());
+});
+
+api.delete('/aitools/:id', (req, res) => {
+  ConfigService.remove(req.params.id);
+  res.status(204).end();
+});
+
+api.post('/aitools/:id/test', async (req, res) => {
+  try {
+    res.json(await ConfigService.testConnection(req.params.id));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// T02208：最小实调探测——真实调用通道（chat）的一次极小请求，是提前发现 402/401 的唯一途径。
+// 它会消耗少量额度，因此不接进连接测试，只在用户于配置行显式点击时发起。
+api.post('/aitools/:id/probe', async (req, res) => {
+  try {
+    res.json(await ConfigService.probe(req.params.id));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// 已保存工具的可用模型列表（服务端解密密钥后拉取，带 5 分钟缓存）
+api.post('/aitools/:id/models', async (req, res) => {
+  try {
+    res.json(await ConfigService.listModels(req.params.id));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// 查看原文：按需返回解密后的 API Key（仅用户显式点击时拉取，不随列表返回）
+api.get('/aitools/:id/api-key', (req, res) => {
+  try {
+    res.json(ConfigService.getApiKey(req.params.id));
+  } catch (e) {
+    res.status(404).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// FR3.4 默认工具绑定
+api.get('/aitools/defaults', (_req, res) => {
+  res.json(ConfigService.getDefaults());
+});
+
+api.post('/aitools/:id/set-default', (req, res) => {
+  const { kind } = req.body ?? {};
+  if (kind !== 'organize' && kind !== 'develop') return res.status(400).json({ error: "kind 必填（organize|develop）" });
+  try {
+    ConfigService.setDefault(req.params.id, kind);
+    res.json(ConfigService.getDefaults());
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ---------- 队列 ----------
+api.get('/queues', (_req, res) => {
+  res.json(QueueService.list());
+});
+
+api.get('/queues/:id', (req, res) => {
+  const queue = QueueService.getById(req.params.id);
+  if (!queue) return res.status(404).json({ error: '队列不存在' });
+  res.json({ ...queue, jobs: QueueService.listJobsDetailed(req.params.id) });
+});
+
+api.post('/queues', (req, res) => {
+  const { name, date } = req.body ?? {};
+  if (!name || !date) return res.status(400).json({ error: 'name 与 date 必填' });
+  res.status(201).json(QueueService.create(name, date));
+});
+
+api.post('/queues/:id/jobs', (req, res) => {
+  const { items } = req.body ?? {};
+  if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'items 必填' });
+  try {
+    res.status(201).json(QueueService.addJobs(req.params.id, items));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+api.delete('/queues/:id', (req, res) => {
+  try {
+    QueueService.remove(req.params.id);
+    res.status(204).end();
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+api.delete('/queues/:id/jobs/:jobId', (req, res) => {
+  try {
+    QueueService.removeJob(req.params.id, req.params.jobId);
+    res.status(204).end();
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+api.post('/queues/:id/send', async (req, res) => {
+  try {
+    const jobs = await QueueService.sendAll(req.params.id, AIService.buildSender());
+    res.json(jobs);
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// 异步提交：不阻塞等待完整结果，受理后由后台 poller 轮询收口（同步工具自动回退、行为不变）
+api.post('/queues/:id/submit', async (req, res) => {
+  try {
+    const jobs = await QueueService.submitAll(req.params.id, AIService.buildSubmitter());
+    res.json(jobs);
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// T01434：队列级暂停/继续（移动端半操作）
+api.post('/queues/:id/pause', (req, res) => {
+  try {
+    QueueService.setPaused(req.params.id, Boolean(req.body?.paused));
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// T01434：失败 Job 单条重试
+api.post('/queues/:id/jobs/:jobId/retry', (req, res) => {
+  try {
+    QueueService.retryJob(req.params.id, req.params.jobId);
+    res.status(204).end();
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+api.post('/queues/:id/reset', (req, res) => {
+  QueueService.resetFailed(req.params.id);
+  res.status(204).end();
+});
+
+// ---------- 梳理（FR2） ----------
+api.post('/ai/organize', async (req, res) => {
+  const { taskIds, toolId } = req.body ?? {};
+  if (!Array.isArray(taskIds) || !toolId) return res.status(400).json({ error: 'taskIds 数组与 toolId 必填' });
+  try {
+    res.json(await AIService.organize(taskIds, toolId));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ---------- 标题美化 ----------
+// T00597：AI 简化标题——依据任务详情高度总结（限 40 字），需有详情内容方可触发
+api.post('/ai/simplify', async (req, res) => {
+  const { toolId, title, description } = req.body ?? {};
+  if (!toolId || typeof toolId !== 'string') return res.status(400).json({ error: 'toolId 必填' });
+  if (!title || typeof title !== 'string' || !title.trim()) return res.status(400).json({ error: '标题为空，无可简化内容' });
+  if (!description || typeof description !== 'string' || !description.trim()) {
+    return res.status(400).json({ error: '任务详情为空——AI 简化需依据详情内容总结标题，请先补充任务详情' });
+  }
+  try {
+    res.json(await AIService.simplifyTitle(title.trim(), description.trim(), toolId));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+api.post('/ai/beautify', async (req, res) => {
+  const { toolId, title } = req.body ?? {};
+  if (!toolId) return res.status(400).json({ error: 'toolId 必填' });
+  if (!title) return res.status(400).json({ error: 'title 必填' });
+  try {
+    res.json(await AIService.beautifyTitle(title, toolId));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// T00796：通用正文美化——验证失败反馈录入框等场景的 AI 美化（保留全部事实要素，仅做表达规范化）
+api.post('/ai/polish', async (req, res) => {
+  const { toolId, text } = req.body ?? {};
+  if (!toolId) return res.status(400).json({ error: 'toolId 必填' });
+  if (!text || !String(text).trim()) return res.status(400).json({ error: '待美化文本为空' });
+  try {
+    res.json(await AIService.polishText(String(text), toolId));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ---------- 报表生成与模板管理 ----------
+/**
+ * T02165：解析请求体的报表项目范围。projectIds（多选数组）优先于 projectId（单串，兼容旧客户端），
+ * 二者皆空 = 全部项目。校验交给 validateProjectIds（上限、类型、不存在的 id），返回可读 400 文案。
+ */
+function reportScope(body: unknown): { ids: string[]; error?: string } {
+  const b = (body ?? {}) as Record<string, unknown>;
+  const singleId = typeof b.projectId === 'string' && b.projectId ? b.projectId : undefined;
+  const raw = Array.isArray(b.projectIds) ? (b.projectIds as unknown[]) : singleId;
+  return validateProjectIds(raw as string | string[] | undefined);
+}
+
+// T00789：report/generate 虽已走 worker 隔离，但仍 165~2162ms/次且无并发闸；此处仅加闸不改执行方式
+api.post('/report/generate', exportGate(REPORT_GATE), async (req, res) => {
+  const { period, format, templateId } = req.body ?? {};
+  if (!['day', 'week', 'month'].includes(period)) return res.status(400).json({ error: 'period 非法' });
+  if (!['xlsx', 'docx', 'pdf', 'pptx'].includes(format)) return res.status(400).json({ error: 'format 非法' });
+  const scope = reportScope(req.body);
+  if (scope.error) return res.status(400).json({ error: scope.error });
+  try {
+    const { buffer, filename } = await generateReport(period, format, {
+      projectIds: scope.ids,
+      templateId: templateId || undefined,
+    });
+    // 各格式对应 MIME：xlsx/docx 为 OOXML，pdf 为 application/pdf，pptx 为演示文稿 OOXML
+    const MIME: Record<string, string> = {
+      xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      pdf: 'application/pdf',
+    };
+    res.setHeader('Content-Type', MIME[format] ?? 'application/octet-stream');
+    // RFC5987：文件名含中文需编码，避免下载名乱码
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    res.send(buffer);
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// T03240（AI-101 ④）：成功产物的找回入口——刷新/重进后按卡片键取最近 N 份持久副本，
+// `exists=false` 表示文件已被清理/手工删除，由界面照实提示「文件已不在」，不给死链。
+api.get('/report/artifacts', (req, res) => {
+  const cardKey = typeof req.query.cardKey === 'string' ? req.query.cardKey : '';
+  if (!cardKey) return res.status(400).json({ error: 'cardKey 必填' });
+  const limit = Number(req.query.limit ?? 5);
+  if (!Number.isFinite(limit) || limit < 1 || limit > 50) return res.status(400).json({ error: 'limit 须在 1~50 之间' });
+  res.json({ ok: true, artifacts: listArtifacts(cardKey, Math.floor(limit)) });
+});
+
+api.get('/report/templates', (_req, res) => {
+  res.json(listTemplates());
+});
+
+/**
+ * T03242（AI-102①⑤⑥）：周报生成前预检——三项预估 + 代理指标注记 + 模型版本。
+ * 只读聚合 + prompt 计长，零 AI 调用，故不挂 REPORT_GATE（与离线 generate 不同，不占并发位）。
+ */
+api.get('/report/ai-preflight', (req, res) => {
+  const period = scalarText(req.query.period ?? '');
+  const format = scalarText(req.query.format ?? '');
+  if (!['day', 'week', 'month'].includes(period)) return res.status(400).json({ error: 'period 非法' });
+  if (!['xlsx', 'docx', 'pdf', 'pptx'].includes(format)) return res.status(400).json({ error: 'format 非法' });
+  const rawIds = typeof req.query.projectIds === 'string'
+    ? req.query.projectIds.split(',').map((s) => s.trim()).filter(Boolean)
+    : undefined;
+  const scope = reportScope({ projectIds: rawIds, projectId: typeof req.query.projectId === 'string' ? req.query.projectId : undefined });
+  if (scope.error) return res.status(400).json({ error: scope.error });
+  try {
+    res.json(aiReportPreflight(period as ReportPeriod, format as ReportFormat, { projectIds: scope.ids }));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// T02142：AI 周报两条生成端点补挂同一只 REPORT_GATE——FR-5 立论是「AI 大稿共用一个闸」，
+// 此前只有离线四格式导出与启动会稿挂了这个闸，两条 AI 周报链路（最重的合成）反而在闸外，
+// 并发点生成时 worker 池与事件循环的保护从缺口漏掉。处理器均在首个 await 处让出事件循环
+// （不像 settings/export 那样同步堵死），故无需 defer，与 /report/generate 保持同形态。
+api.post('/report/ai-generate', exportGate(REPORT_GATE), async (req, res) => {
+  const { period, format, toolId } = req.body ?? {};
+  if (!['day', 'week', 'month'].includes(period)) return res.status(400).json({ error: 'period 非法' });
+  if (!['xlsx', 'docx', 'pdf', 'pptx'].includes(format)) return res.status(400).json({ error: 'format 非法' });
+  if (typeof toolId !== 'string' || !toolId) return res.status(400).json({ error: '请选择 AI 模型' });
+  const scope = reportScope(req.body);
+  if (scope.error) return res.status(400).json({ error: scope.error });
+  try {
+    // AI 周报：先落临时文件，返回下载令牌与洞察正文（前端再经 ai-download 下载即删）
+    const r = await aiGenerateReport(period, format, {
+      projectIds: scope.ids,
+      toolId,
+      // T03243（AI-102②③）：按用户确认过的那份预估复算偏差（回传值经量级校验）
+      estimate: normalizeConfirmedEstimate(req.body?.estimate),
+    });
+    // T03240（AI-101 ①④）：溯源段随结果返回；artifact 为持久副本，供刷新/重进后找回
+    // T03243（AI-102②③④）：usage=实际值（调用次数单列），deviation=与确认预估的偏差（不阻断）
+    res.json({ ok: true, token: r.token, filename: r.filename, insight: r.insight, provenance: r.provenance, artifact: r.artifact, usage: r.usage, deviation: r.deviation });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ---------- AI 周报（SSE 流式）：联动 AI 控制台实时展示生成过程 ----------
+// ---------- T00769：原始需求生成 PRD（AI 控制台卡片，内置技能 prd-generate 驱动，SSE 流式输出） ----------
+/** PRD 生成流的上传体归一 + 前置校验（SSE 建立前快速失败，前端能拿到结构化 400 而非流中 error）：
+ *  对象形态取 contentBase64、Buffer 原样；再校验非空、扩展名白名单与项目存在性。 */
+function resolvePrdUpload(
+  body: Buffer | Record<string, unknown>,
+  filename: string | undefined,
+  projectId: string,
+): { fileBuf: Buffer; fname: string } | { error: string } {
+  // 协议兼容：application/json 时全局 express.json() 已把 body 解析为对象 {contentBase64}（streamEvents 通道）；
+  // 其余 Content-Type 走 raw() Buffer（文件二进制）
+  let fileBuf: Buffer;
+  if (body && !Buffer.isBuffer(body) && typeof (body as { contentBase64?: unknown }).contentBase64 === 'string') {
+    fileBuf = Buffer.from((body as { contentBase64: string }).contentBase64, 'base64');
+  } else {
+    fileBuf = body as Buffer;
+  }
+  if (!fileBuf?.length) return { error: '请求体应为原始需求文件二进制' };
+  const fname = filename || '原始需求.md';
+  // T00769：扩展名与项目存在性前置校验
+  const extMatch = /\.[a-z0-9]+$/.exec(fname.toLowerCase());
+  const ext = extMatch ? extMatch[0] : '';
+  if (!['.doc', '.docx', '.xls', '.xlsx', '.csv', '.md', '.markdown', '.txt'].includes(ext)) {
+    return { error: `不支持的文件格式「${ext || fname}」——支持 .doc/.docx/.xls/.xlsx/.md/.txt` };
+  }
+  if (ext === '.doc') return { error: '老式 .doc 暂不支持，请用 Word 另存为 .docx 后重新上传' };
+  if (ext === '.xls') return { error: '老式 .xls 暂不支持，请用 Excel 另存为 .xlsx 后重新上传' };
+  if (!getDb().prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) return { error: '项目不存在' };
+  return { fileBuf, fname };
+}
+
+api.post('/plans/prd-generate-stream', raw({ type: () => true, limit: '30mb' }), async (req, res) => {
+  const { projectId, toolId, filename } = req.query as Record<string, string | undefined>;
+  if (!projectId) { res.status(400).json({ error: 'projectId 必填' }); return; }
+  if (!toolId) { res.status(400).json({ error: '请选择 AI 模型' }); return; }
+  const upload = resolvePrdUpload(req.body as Buffer | Record<string, unknown>, filename, projectId);
+  if ('error' in upload) { res.status(400).json({ error: upload.error }); return; }
+  const { fileBuf, fname } = upload;
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+  startSseKeepalive(res);
+  let closed = false;
+  const send = (event: string, payload: unknown) => {
+    if (closed || res.writableEnded) return;
+    res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+  };
+  // T00838：客户端断开（含前端「停止」主动 abort）即中止底层 AI 请求，资源随即释放
+  const ac = new AbortController();
+  res.on('close', () => { closed = true; ac.abort(); });
+
+  // T03316（G-3）：PRD 生成是完整一轮 → 记终态；jobId 可取 query/前端会话稳定值
+  const jobStartedAt = new Date().toISOString();
+  const jobId = req.query.jobId;
+  try {
+    const text = await PrdGenService.extractSourceText(fname, fileBuf);
+    const r = await PrdGenService.generatePrdStream({
+      projectId,
+      toolId,
+      filename: fname,
+      content: text,
+      onStage: (msg) => send('stage', { msg }),
+      onDelta: (t) => send('chunk', { text: t }),
+      signal: ac.signal, // T00838：客户端断开 → 中止底层生成
+    });
+    reportAiJob({ jobId, cardKey: 'ai.prd_gen', status: 'done', mode: 'ai', sectionsTotal: 1, sectionsOk: 1, startedAt: jobStartedAt });
+    send('done', { prdMd: r.prdMd, issues: r.issues });
+  } catch (e) {
+    reportAiJob({ jobId, cardKey: 'ai.prd_gen', status: ac.signal.aborted ? 'aborted' : 'error', mode: 'ai', startedAt: jobStartedAt });
+    send('error', { error: e instanceof Error ? e.message : String(e) });
+  }
+  res.end();
+});
+
+// ---------- T01491：从 PRD 生成测试用例（AI 控制台卡片，内置技能 testcase-generate 驱动，SSE 流式输出） ----------
+/** 上传文档的扩展名白名单校验：返回错误文案（null=通过）——在 SSE 建立前快速失败，前端才拿得到结构化 400 */
+function checkPrdUploadExt(fname: string): string | null {
+  const extMatch = /\.[a-z0-9]+$/.exec(fname.toLowerCase());
+  const ext = extMatch ? extMatch[0] : '';
+  if (!['.doc', '.docx', '.xls', '.xlsx', '.csv', '.md', '.markdown', '.txt'].includes(ext)) {
+    return `不支持的文件格式「${ext || fname}」——支持 .docx/.xlsx/.csv/.md/.txt`;
+  }
+  if (ext === '.doc') return '老式 .doc 暂不支持，请用 Word 另存为 .docx 后重新上传';
+  if (ext === '.xls') return '老式 .xls 暂不支持，请用 Excel 另存为 .xlsx 后重新上传';
+  return null;
+}
+
+/** 请求体归一：application/json 时全局 express.json() 已解析为对象（streamEvents 走这条），否则 raw() 给 Buffer */
+function toObjectPayload(body: unknown): Record<string, unknown> {
+  return body && !Buffer.isBuffer(body) && typeof body === 'object' ? (body as Record<string, unknown>) : {};
+}
+
+/** 字段取值：请求体里的非空字符串优先，其次 query 同名字段，都没有则空串 */
+function pickField(payload: Record<string, unknown>, key: string, fromQuery?: string): string {
+  const raw = payload[key];
+  const inBody = typeof raw === 'string' ? raw : '';
+  return inBody || fromQuery || '';
+}
+
+/** prefs 只认对象形态：脏值（字符串/数字）一律当未传，交服务端默认 */
+function pickPrefs(payload: Record<string, unknown>): GenPrefs | undefined {
+  const prefs = payload.prefs;
+  return prefs && typeof prefs === 'object' ? (prefs as GenPrefs) : undefined;
+}
+
+/** PRD 来源解析两型（S4323：内联联合提别名，判别式 ok 不变） */
+type UploadedPrdResult = { ok: true; fname: string; text: string } | { ok: false; error: string };
+type PrdSourceResult = { ok: true; text: string; source: string } | { ok: false; error: string };
+/** raw Body 形态：express.json 解析出的对象，或 raw 中间件产出的 Buffer，或两者皆无 */
+type PrdUploadBody = Buffer | Record<string, unknown> | undefined;
+
+/** 上传形态的 PRD 取文本：raw Buffer 或 contentBase64 → 纯文本；校验不过则回 400 文案（抽取失败照旧抛出） */
+async function extractUploadedPrdText(
+  body: PrdUploadBody,
+  payload: Record<string, unknown>,
+  filename: string,
+): Promise<UploadedPrdResult> {
+  let fileBuf: Buffer | undefined;
+  if (Buffer.isBuffer(body) && body.length) fileBuf = body;
+  else if (typeof payload.contentBase64 === 'string') fileBuf = Buffer.from(payload.contentBase64, 'base64');
+  if (!fileBuf?.length) return { ok: false, error: '请提供 PRD 来源（内部文档 prdDocId 或上传文件）' };
+  const fname = filename || '需求文档.md';
+  const extError = checkPrdUploadExt(fname);
+  if (extError) return { ok: false, error: extError };
+  return { ok: true, fname, text: await PrdGenService.extractSourceText(fname, fileBuf) };
+}
+
+/** 解析 PRD 原文：内部文档优先（content_md 已是 Markdown），否则把上传文件二进制抽取为文本。
+ *  成功返回文本与来源标签；任一校验不过则返回 error 文案（调用方据此回 400），与原内联逻辑逐路径一致。
+ *  入参收进单对象，避免抽参后函数形参 >3 触发 S107。 */
+async function resolvePrdSource(opts: {
+  body: PrdUploadBody;
+  payload: Record<string, unknown>;
+  filename: string;
+  prdDocId: string;
+  sourceLabel: string;
+}): Promise<PrdSourceResult> {
+  const { body, payload, filename, prdDocId, sourceLabel } = opts;
+  let text = '';
+  let resolvedSource = sourceLabel;
+  try {
+    if (prdDocId) {
+      const doc = PlanService.getPrdDoc(prdDocId) as { filename?: string; content_md?: string } | undefined;
+      if (!doc) return { ok: false, error: 'PRD 文档不存在' };
+      text = doc.content_md ?? '';
+      resolvedSource = resolvedSource || doc.filename || '内部 PRD 文档';
+    } else {
+      const r = await extractUploadedPrdText(body, payload, filename);
+      if (!r.ok) return { ok: false, error: r.error };
+      text = r.text;
+      resolvedSource = resolvedSource || r.fname;
+    }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+  if (!text.trim()) return { ok: false, error: 'PRD 内容为空，无法生成用例' };
+  return { ok: true, text, source: resolvedSource };
+}
+
+// 与 prd-generate-stream 同处同构：raw(30mb) 兼容「application/json（streamEvents 通道，body 为对象）」与
+// 「文件二进制（raw Buffer）」两种上送形态；来源支持内部 PRD 文档（prdDocId）或上传外部文档（contentBase64）。
+api.post('/plans/testcase-generate-stream', raw({ type: () => true, limit: '30mb' }), async (req, res) => {
+  const { projectId, toolId } = req.query as Record<string, string | undefined>;
+  if (!projectId) { res.status(400).json({ error: 'projectId 必填' }); return; }
+  if (!toolId) { res.status(400).json({ error: '请选择 AI 模型' }); return; }
+  const body = req.body as PrdUploadBody;
+  const payload = toObjectPayload(body);
+  const filename = pickField(payload, 'filename', req.query.filename as string | undefined);
+  const prdDocId = pickField(payload, 'prdDocId', req.query.prdDocId as string | undefined);
+  const sourceLabel = pickField(payload, 'source', req.query.source as string | undefined);
+  const resplit = payload.resplit === true || req.query.resplit === '1';
+  const prefs = pickPrefs(payload);
+
+  if (!getDb().prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) { res.status(400).json({ error: '项目不存在' }); return; }
+
+  // 解析 PRD 原文（内部文档优先，否则抽取上传文件）——抽到 resolvePrdSource 以降认知复杂度（S3776），逐路径文案/顺序不变
+  const resolved = await resolvePrdSource({ body, payload, filename, prdDocId, sourceLabel });
+  if (!resolved.ok) { res.status(400).json({ error: resolved.error }); return; }
+  const text = resolved.text;
+  const resolvedSource = resolved.source;
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+  startSseKeepalive(res);
+  let closed = false;
+  const send = (event: string, evPayload: unknown) => {
+    if (closed || res.writableEnded) return;
+    res.write(`event: ${event}\ndata: ${JSON.stringify(evPayload)}\n\n`);
+  };
+  // 客户端断开（含前端「停止」主动 abort）即中止底层 AI 请求，资源随即释放（沿用 prd-generate-stream 的 res.close 语义）
+  const ac = new AbortController();
+  res.on('close', () => { closed = true; ac.abort(); });
+
+  // T03316（G-3）：用例生成是完整一轮 → 记终态；块数取台账真实累计值（失败块进分母不进分子）
+  const jobStartedAt = new Date().toISOString();
+  const jobId = pickField(payload, 'jobId', req.query.jobId as string | undefined);
+  try {
+    const draft = await generateTestCasesStream({
+      projectId,
+      toolId,
+      content: text,
+      source: resolvedSource,
+      resplitRequirements: resplit,
+      prefs,
+      onStage: (msg) => send('stage', { msg }),
+      onDelta: (t) => send('chunk', { text: t }),
+      signal: ac.signal,
+    });
+    const view = latestJob('ai.test_case_gen');
+    reportAiJob({
+      jobId: view?.id ?? jobId,
+      cardKey: 'ai.test_case_gen', status: 'done', mode: 'ai',
+      sectionsTotal: view?.progress.segmentsTotal ?? 1,
+      sectionsOk: view?.progress.segmentsDone ?? 1,
+      startedAt: jobStartedAt,
+    });
+    // done 负载即 TcGenDraft：草稿视图（T01492）据此渲染并勾选后调 import-draft
+    send('done', { requirements: draft.requirements, cases: draft.cases, coverage: draft.coverage, notes: draft.notes, truncated: draft.truncated });
+  } catch (e) {
+    reportAiJob({ jobId, cardKey: 'ai.test_case_gen', status: ac.signal.aborted ? 'aborted' : 'error', mode: 'ai', startedAt: jobStartedAt });
+    send('error', { error: e instanceof Error ? e.message : String(e) });
+  }
+  res.end();
+});
+
+api.post('/report/ai-generate-stream', exportGate(REPORT_GATE), async (req, res) => {  const { period, format, toolId } = req.body ?? {};
+  if (!['day', 'week', 'month'].includes(period)) return res.status(400).json({ error: 'period 非法' });
+  if (!['xlsx', 'docx', 'pdf', 'pptx'].includes(format)) return res.status(400).json({ error: 'format 非法' });
+  if (typeof toolId !== 'string' || !toolId) return res.status(400).json({ error: '请选择 AI 模型' });
+  // 范围校验必须早于 SSE 头：一旦 flushHeaders，响应就是 200+事件流，非法 projectIds 只能以
+  // error 事件的形式出现，前端进度条会先「开始」再「失败」，看起来像模型出错而非请求写错
+  const scope = reportScope(req.body);
+  if (scope.error) return res.status(400).json({ error: scope.error });
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+  startSseKeepalive(res);
+
+  // 客户端断开后停止继续写流，避免向已关闭的 socket 写入抛错。
+  // 必须监听 res 的 close（响应真正关闭才代表客户端断开/响应结束），不能监听 req.on('close')：
+  // SSE 请求体已被 express.json() 消费完，IncomingMessage 无数据可读时 req 会提前触发 close，
+  // 导致后续 chunk/done/error 事件被误丢弃（实测只发出前几条 stage 就"卡住"）。
+  let closed = false;
+  const send = (event: string, payload: unknown) => {
+    if (closed || res.writableEnded) return;
+    res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+  };
+  // T00838：客户端断开（含前端「停止」主动 abort）即中止底层 AI 请求
+  // T02144：断开时若令牌已落盘但 done 没送出去，前端就拿不到令牌、文件成孤儿——当场回收；
+  // done 已送达后的断开不能删（前端「停止」后仍可重试下载，T02105 口径），过期孤儿交给启动/每小时清扫
+  const ac = new AbortController();
+  let issuedToken: string | undefined;
+  let doneSent = false;
+  res.on('close', () => {
+    closed = true;
+    ac.abort();
+    if (issuedToken && !doneSent) discardReport(issuedToken);
+  });
+
+  try {
+    const r = await aiGenerateReportStream(
+      period,
+      format,
+      { projectIds: scope.ids, toolId, estimate: normalizeConfirmedEstimate(req.body?.estimate) },
+      (msg) => send('stage', { msg }),
+      (text) => send('chunk', { text }),
+      ac.signal,
+    );
+    issuedToken = r.token;
+    // close 也可能早于 promise 落地（abort 时 done 还没发）：不补删就漏成孤儿，那次 close 已经跑完了
+    if (closed || res.writableEnded) {
+      discardReport(r.token);
+      issuedToken = undefined;
+      return;
+    }
+    // T03243（AI-102②③④）：done 带实际用量与偏差（超 50% 由前端明示，本身不阻断）
+    send('done', { token: r.token, filename: r.filename, provenance: r.provenance, artifact: r.artifact, usage: r.usage, deviation: r.deviation });
+    doneSent = true;
+    res.end();
+  } catch (e) {
+    send('error', { error: e instanceof Error ? e.message : String(e) });
+    res.end();
+  }
+});
+
+api.post('/report/ai-download', (req, res) => {
+  const { token, filename } = req.body ?? {};
+  if (typeof token !== 'string' || !isReportToken(token)) return res.status(400).json({ error: 'token 非法' });
+  // 下载文件名做白名单清洗，避免注入非法字符（正则单源见 util/export-name，T02104：生成侧必须洗到能过这里）
+  const safe = typeof filename === 'string' && DOWNLOAD_NAME_RE.test(filename) ? filename : 'MTask-ai-report.xlsx';
+  const buf = readAndDeleteReport(token);
+  if (!buf) return res.status(404).json({ error: '文件已过期，请重新生成' });
+  const MIME: Record<string, string> = {
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    pdf: 'application/pdf',
+    // T02856（六期 S5 / PRD 裁决 A-2）：分别独立版多项目 zip 交付；与 DOWNLOAD_NAME_RE 同步扩展
+    zip: 'application/zip',
+    // T02874（六期 3.3）：代码评审讲稿纯文本导出
+    md: 'text/markdown;charset=utf-8',
+    // 2026-11-06：启动会/阶段总结的 HTML 版（单文件演示）
+    html: 'text/html;charset=utf-8',
+  };
+  const ext = (safe.split('.').pop() ?? '').toLowerCase();
+  res.setHeader('Content-Type', MIME[ext] ?? 'application/octet-stream');
+  // RFC5987：文件名含中文需编码，避免下载名乱码
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(safe)}`);
+  res.send(buf);
+});
+
+/**
+ * 2026-11-06：HTML 版演示稿的面板内预览；T05670 起同时承担「下载 .html」的只读交付。
+ * - **只读令牌**（`readReportBuffer` 不删文件）：预览之后用户还要能下载同一份；
+ * - 用 `sandbox allow-scripts` 而非 `allow-same-origin`：演示稿里的脚本只做翻页，
+ *   不需要访问本站存储/接口，隔离住就等于把「生成内容」的风险面压到最小；
+ * - 不允许被 iframe 嵌入到第三方站点（`frame-ancestors 'self'`），避免令牌被别人挂到外站。
+ *
+ * T05670：此前「下载 .html」走 `/report/ai-download`（`readAndDeleteReport`，下载即删）。
+ *   同一个 htmlToken 被消费一次后，再次预览或再次下载都只能拿到 404「文件已过期，请重新生成」。
+ *   现在 HTML 版的预览与下载统一走本端点的只读通道：`download=1` 只多一个
+ *   Content-Disposition: attachment，字节与令牌生命周期不变（仍由 6h TTL 统一回收）。
+ *   `/report/ai-download` 的一次性语义保持不动——AI 周报 / PPTX / zip / md / 讲座导出等
+ *   全部既有调用方零回归，T02144 的资源清理口径也不被打开缺口。
+ */
+api.get('/report/ai-preview', (req, res) => {
+  const token = typeof req.query.token === 'string' ? req.query.token : '';
+  if (!isReportToken(token)) return res.status(400).json({ error: 'token 非法' });
+  const buf = readReportBuffer(token);
+  if (!buf) return res.status(404).json({ error: '文件已过期，请重新生成' });
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Content-Security-Policy', "sandbox allow-scripts; frame-ancestors 'self'");
+  // T05670：附件交付只改响应头，不吃掉令牌；文件名沿用令牌链路同一把白名单（html 已入列）
+  if (req.query.download === '1') {
+    const raw = typeof req.query.filename === 'string' ? req.query.filename : '';
+    const safe = DOWNLOAD_NAME_RE.test(raw) ? raw : '演示稿.html';
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(safe)}`);
+  }
+  res.send(buf);
+});
+
+api.post('/report/templates', async (req, res) => {
+  const { filename, data } = req.body ?? {};
+  if (typeof filename !== 'string' || typeof data !== 'string') {
+    return res.status(400).json({ error: 'filename 与 data 必填' });
+  }
+  // 前端上传以 base64 承载，校验并落盘；非法格式/路径/体积返回明确提示
+  if (!saveTemplate(filename, Buffer.from(data, 'base64'))) {
+    return res.status(400).json({ error: '模板文件校验失败，仅支持 .xlsx / .docx（≤10MB）' });
+  }
+  res.json({ ok: true });
+});
+
+api.delete('/report/templates/:id', (req, res) => {
+  if (!deleteTemplate(req.params.id)) return res.status(400).json({ error: '模板不存在或名称非法' });
+  res.status(204).end();
+});
+
+// ---------- AI 控制台通用问答 ----------
+// 可选注入周期数据：控制台「周期分析」类预设（汇总/风险/建议）携带 period 时，
+// 后端用与 AI 周报相同的 gatherReportData 聚合真实任务数据注入，使 AI 作答有据可依；
+// 不带 period（自定义问答）则保持纯对话，不注入数据。
+const REPORT_PERIODS = new Set<ReportPeriod>(['day', 'week', 'month']);
+api.post('/ai/chat', async (req, res) => {
+  const { toolId, system, user, period } = req.body ?? {};
+  if (!toolId) return res.status(400).json({ error: 'toolId 必填' });
+  if (typeof user !== 'string' || !user.trim()) return res.status(400).json({ error: 'user 必填' });
+  // T02165：控制台问答与持久化任务共用同一范围口径（projectIds 优先，projectId 兼容）
+  const scope = reportScope(req.body);
+  if (scope.error) return res.status(400).json({ error: scope.error });
+
+  let sys = typeof system === 'string' ? system : '';
+  let usr = user.trim();
+  if (typeof period === 'string' && REPORT_PERIODS.has(period as ReportPeriod)) {
+    const data = gatherReportData(period as ReportPeriod, scope.ids);
+    const scopeLine = data.projectScope && data.projectScope.length > 1
+      ? `\n【项目范围=${data.projectScope.join('、')}（${data.projectScope.length} 个项目聚合；结论按项目分块逐一覆盖，不得遗漏）】`
+      : '';
+    // 限定模型必须依据随附真实数据作答，提示所依据周期，避免常识性发挥与用户预期不符
+    sys = `${sys}\n本次必须严格依据随附的当前周期真实任务数据进行作答，不得虚构任务或数据；请点明所依据周期（${data.periodLabel} ${data.startDate}~${data.endDate}）。`.trim();
+    usr = [
+      `【周期=${data.periodLabel} ${data.startDate} ~ ${data.endDate}】${scopeLine}`,
+      `【项目汇总】${JSON.stringify(data.projects)}`,
+      `【任务明细】${JSON.stringify(data.tasks)}`,
+      `\n问题：${usr}`,
+    ].join('\n\n');
+  }
+
+  try {
+    res.json(await AIService.ask(toolId, sys, usr));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ---------- AI 控制台持久化并行任务（T00417） ----------
+// 与上面同步问答不同：这里 POST 受理后即返回 {id}，真正执行由后台不 await 的 promise 完成并回写库，
+// 任务运行不依赖前端会话（页面切换/刷新仍继续），前端靠 GET 轮询收敛为完成态。
+const CONSOLE_PERIODS = new Set(['day', 'week', 'month']);
+
+/** T03247（AI-104①②）：模板模式——正文由服务端按 promptId 取模板 + 变量渲染，客户端传的 prompt 不采信；
+ *  必填变量未填在此返回 error（400，点名缺哪几个），既不建任务也不计数。 */
+function resolveConsolePrompt(
+  prompt: unknown,
+  promptId: unknown,
+  variablesRaw: unknown,
+): { error: string; missing?: string[] } | { finalPrompt: string; templateId: string } {
+  if (typeof promptId === 'string' && promptId) {
+    const row = getDb().prepare('SELECT id, content FROM prompts WHERE id = ?').get(promptId) as { id: string; content: string } | undefined;
+    if (!row) return { error: '提示词不存在或已删除' };
+    const vars = (variablesRaw && typeof variablesRaw === 'object' && !Array.isArray(variablesRaw))
+      ? variablesRaw as Record<string, unknown>
+      : {};
+    const rendered = renderPromptTemplate(row.content, vars);
+    if (rendered.missing.length) return { error: `请填写模板变量：${rendered.missing.join('、')}`, missing: rendered.missing };
+    if (!rendered.text.trim()) return { error: '提示词内容为空，无法发起' };
+    return { finalPrompt: rendered.text.trim(), templateId: row.id };
+  }
+  if (!prompt || typeof prompt !== 'string' || !prompt.trim()) return { error: 'prompt 必填' };
+  return { finalPrompt: prompt.trim(), templateId: '' };
+}
+
+function consolePeriod(period: unknown): 'day' | 'week' | 'month' | null {
+  return typeof period === 'string' && CONSOLE_PERIODS.has(period) ? (period as 'day' | 'week' | 'month') : null;
+}
+
+/** T03248（AI-104③）：回带累计次数，前端无需再读一次列表即可刷新「使用 N 次」 */
+function consoleUsageCount(templateId: string): { usageCount?: number } {
+  if (!templateId) return {};
+  const usageCount = (getDb().prepare('SELECT usage_count FROM prompts WHERE id = ?').get(templateId) as { usage_count: number } | undefined)?.usage_count;
+  return usageCount === undefined ? {} : { usageCount };
+}
+
+api.post('/console-jobs', (req, res) => {
+  const { title, prompt, category, period, toolId, promptId } = req.body ?? {};
+  if (!title || typeof title !== 'string' || !title.trim()) return res.status(400).json({ error: 'title 必填' });
+  if (!toolId || typeof toolId !== 'string') return res.status(400).json({ error: 'toolId 必填' });
+  // T02165：受理即校验并固化范围——任务在后台异步运行，等到 buildConsoleChat 取数时才发现
+  // 非法 id 只会得到一条 error 任务，用户已看不到失败原因
+  const scope = reportScope(req.body);
+  if (scope.error) return res.status(400).json({ error: scope.error });
+
+  const resolved = resolveConsolePrompt(prompt, promptId, req.body?.variables);
+  if ('error' in resolved) {
+    return res.status(400).json(resolved.missing ? { error: resolved.error, missing: resolved.missing } : { error: resolved.error });
+  }
+  const { finalPrompt, templateId } = resolved;
+  let job: ReturnType<typeof ConsoleJobService.create>;
+  try {
+    job = ConsoleJobService.create({
+      title: title.trim(),
+      prompt: finalPrompt,
+      category: typeof category === 'string' && category ? category : 'custom',
+      period: consolePeriod(period),
+      projectIds: scope.ids,
+      ...(templateId ? { promptId: templateId } : {}),
+    });
+  } catch (e) {
+    // 模板在渲染与落库之间被删除：同事务回滚，按 400 回（不产生半截任务）
+    if (templateId) return res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+    throw e;
+  }
+  // 不 await：受理即返回，后台 promise 完成后 markDone/markError 回写库
+  void ConsoleJobService.runJob(job.id, toolId);
+  res.status(201).json({ id: job.id, ...consoleUsageCount(templateId) });
+});
+
+api.get('/console-jobs', (_req, res) => {
+  res.json(ConsoleJobService.list());
+});
+
+api.post('/console-jobs/:id/restart', (req, res) => {
+  const { toolId } = req.body ?? {};
+  if (!toolId || typeof toolId !== 'string') return res.status(400).json({ error: 'toolId 必填' });
+  const job = ConsoleJobService.get(req.params.id);
+  if (!job) return res.status(404).json({ error: '任务不存在' });
+  ConsoleJobService.reset(req.params.id); // 复用固化 prompt/周期重跑
+  void ConsoleJobService.runJob(req.params.id, toolId);
+  res.json({ id: job.id });
+});
+
+// T00838：停止单个任务——abort 底层 AI 请求并清理记录；已结束/不存在返回可读提示（幂等）
+api.post('/console-jobs/:id/stop', (req, res) => {
+  const r = ConsoleJobService.stop(req.params.id);
+  if (!r.ok) return res.status(404).json({ error: r.message });
+  res.json({ message: r.message });
+});
+
+api.delete('/console-jobs/:id', (req, res) => {
+  if (!ConsoleJobService.remove(req.params.id)) return res.status(404).json({ error: '任务不存在' });
+  res.status(204).end();
+});
+
+// 清空全部（「重置控制台」语义）：与 /console-jobs/:id 路径不同，无 id 时不冲突
+api.delete('/console-jobs', (_req, res) => {
+  ConsoleJobService.clear();
+  res.status(204).end();
+});
+
+// ---------- T00840：应用关闭前检测运行中任务 ----------
+/** 运行中任务汇总：AI 控制台手动分析（console_jobs busy）+ 后台队列在途（queue_jobs queued/sending）。
+ *  供桌面壳在用户关闭应用时列出「正在运行的任务」并确认是否强制关闭。 */
+api.get('/runtime/running-tasks', (_req, res) => {
+  const db = getDb();
+  const consoles = db.prepare("SELECT id, title FROM console_jobs WHERE status = 'busy'").all() as { id: string; title: string }[];
+  const queues = db.prepare(
+    `SELECT qj.id AS id, t.title AS name FROM queue_jobs qj
+       JOIN tasks t ON t.id = qj.task_id
+      WHERE qj.status IN ('queued', 'sending')`,
+  ).all() as { id: string; name: string }[];
+  const tasks = [
+    ...consoles.map((r) => ({ id: r.id, name: r.title, kind: 'console' as const })),
+    ...queues.map((r) => ({ id: r.id, name: r.name, kind: 'queue' as const })),
+  ];
+  res.json({ tasks });
+});
+
+/** 强制关闭前的运行态清理：删除 AI 控制台 busy 记录、把在途队列任务复位为 queued（便于下次重发），避免遗留“挂起”任务。 */
+api.post('/runtime/running-tasks/cleanup', (_req, res) => {
+  const db = getDb();
+  const clearedConsole = db.prepare("DELETE FROM console_jobs WHERE status = 'busy'").run().changes;
+  const requeuedQueue = db.prepare(
+    "UPDATE queue_jobs SET status = 'queued', ticket = NULL, submitted_at = NULL, sent_at = NULL, finished_at = NULL, error = NULL WHERE status IN ('queued', 'sending')",
+  ).run().changes;
+  cacheClear('console-jobs');
+  res.json({ clearedConsole, requeuedQueue });
+});
+
+// ---------- 任务智能分类 ----------
+api.post('/tasks/classify', async (req, res) => {
+  const { title, toolId, categories } = req.body ?? {};
+  if (typeof title !== 'string' || !title.trim()) return res.status(400).json({ error: 'title 必填' });
+  if (!toolId) return res.status(400).json({ error: 'toolId 必填' });
+  if (!Array.isArray(categories)) return res.status(400).json({ error: 'categories 必填' });
+  try {
+    res.json(await AIService.classifyCategory(title, categories, toolId));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+/**
+ * T03297：批量分类——一次请求处理大批量任务，服务端按批多次调用模型后按输入顺序合并。
+ * 入参 items ≤500（防误传全表）；分类口径与单条接口一致，结果数组与 items 等长同序。
+ */
+api.post('/tasks/classify-batch', async (req, res) => {
+  const { toolId, items, categories, batchSize, concurrency } = req.body ?? {};
+  if (!toolId) return res.status(400).json({ error: 'toolId 必填' });
+  if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'items 必填（非空数组）' });
+  if (items.length > 500) return res.status(400).json({ error: 'items 单次最多 500 条，请分批提交' });
+  if (!Array.isArray(categories)) return res.status(400).json({ error: 'categories 必填' });
+  const parsedItems = (items as Array<{ id?: unknown; title?: unknown }>)
+    .filter((it) => it && typeof it.id === 'string' && typeof it.title === 'string' && it.title.trim())
+    .map((it) => ({ id: it.id as string, title: (it.title as string).trim() }));
+  if (parsedItems.length !== items.length) return res.status(400).json({ error: 'items 每项需含 id 与非空 title' });
+  const cats = (categories as Array<{ id?: unknown; name?: unknown }>)
+    .filter((c) => c && typeof c.id === 'string' && typeof c.name === 'string')
+    .map((c) => ({ id: c.id as string, name: c.name as string }));
+  try {
+    res.json(await AIService.classifyCategoryBatch({ items: parsedItems, categories: cats, batchSize, concurrency }, toolId));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ---------- 提示词优化 ----------
+api.post('/ai/optimize', async (req, res) => {
+  const { toolId, title, description, projectName, categoryName } = req.body ?? {};
+  if (!toolId) return res.status(400).json({ error: 'toolId 必填' });
+  try {
+    // T04121：可选归属上下文由调用方按需给（任务菜单给项目名+分类；提示词/需求页两处不传）
+    res.json(await AIService.optimizeText(title ?? '', description ?? '', toolId, { projectName, categoryName }));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+/** 内容指纹（T00435）：规范化标题+正文后哈希，用于转存查重 */
+function contentFingerprint(title: string, content: string): string {
+  return createHash('sha256').update(`${title.trim()}\n${content.replaceAll(/\s+/g, ' ').trim()}`).digest('hex').slice(0, 24);
+}
+
+/** 分类名 → id（带缓存；空名返回空串；不存在则新建），供 AI 分组复用 */
+function ensureReqCategory(cats: Map<string, string>, name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) return '';
+  const hit = cats.get(trimmed);
+  if (hit) return hit;
+  const exist = getDb().prepare('SELECT id FROM req_categories WHERE name = ?').get(trimmed) as { id: string } | undefined;
+  const id = exist?.id ?? ReqCategoryService.create(trimmed).id;
+  cats.set(trimmed, id);
+  return id;
+}
+
+type CreatedReq = { title: string; content: string; categoryId: string; categoryName: string };
+
+/** 手动分组：整批写入指定分类（参数/分类非法抛错，由路由统一映射 400） */
+function generalizeManualReq(categoryId: unknown, items: unknown, skipped: string[], created: CreatedReq[]): void {
+  if (typeof categoryId !== 'string' || !categoryId) throw new Error('categoryId 必填');
+  const catRow = getDb().prepare('SELECT id, name FROM req_categories WHERE id = ?').get(categoryId) as { id: string; name: string } | undefined;
+  if (!catRow) throw new Error('归属分类不存在');
+  if (!Array.isArray(items)) throw new Error('items 必填');
+  for (const it of items) {
+    if (!it || typeof it.title !== 'string' || !it.title.trim()) continue;
+    const fp = contentFingerprint(it.title, typeof it.content === 'string' ? it.content : '');
+    if (ReqEntryService.existsByFingerprint(fp)) { skipped.push(it.title.trim()); continue; }
+    const e = ReqEntryService.create({ categoryId, title: it.title.trim(), content: typeof it.content === 'string' ? it.content : '', fingerprint: fp });
+    created.push({ title: e.title, content: e.content, categoryId: e.category_id, categoryName: catRow.name });
+  }
+}
+
+/** AI 智能分组：抽取通用需求并归入最贴切分类（AI/参数异常抛错，由路由统一映射 400） */
+async function generalizeAiReq(toolId: unknown, answer: unknown, cats: Map<string, string>, skipped: string[], created: CreatedReq[]): Promise<void> {
+  if (typeof answer !== 'string' || !answer.trim()) throw new Error('answer 必填');
+  if (typeof toolId !== 'string' || !toolId) throw new Error('toolId 必填（AI 智能分组需要模型工具）');
+  const candidate = ReqCategoryService.list().map((c) => c.name);
+  if (!candidate.includes('通用')) candidate.push('通用');
+  const system = [
+    '你是 MTask 的通用需求提炼助手。给定一份“通用需求清单”Markdown，抽取其中具备跨项目复用价值的若干条通用需求（结合“需求标题/适用场景/实现要点/复用价值”四要素），为每一条输出 JSON。',
+    '要求：',
+    '1. 输出一个 JSON 数组，每元素为 {"title":"需求标题","content":"完整需求描述(Markdown，含适用场景/实现要点/复用价值)","category":"归类分类名"}',
+    '2. category 必须从候选分类名中选择最贴切的一个；若无合适分类，选“通用”',
+    '3. 只输出 JSON 数组本身，不要任何解释、前后缀、Markdown 代码围栏',
+    `候选分类：${candidate.join('、')}`,
+  ].join('\n');
+  const ai = await AIService.ask(toolId, system, `【通用需求清单】\n${answer.trim()}`);
+  if (!ai.ok || !ai.content) throw new Error(`AI 分组失败：${ai.error ?? '模型未返回结果'}`);
+  const drafts = parseReqDraft(ai.content);
+  if (!drafts.length) throw new Error('AI 未能从清单中解析出通用需求条目，请检查清单格式或改用手动分组');
+  for (const d of drafts) {
+    const cid = ensureReqCategory(cats, d.category || '通用');
+    if (!cid) continue;
+    const fp = contentFingerprint(d.title, d.content);
+    if (ReqEntryService.existsByFingerprint(fp)) { skipped.push(d.title); continue; }
+    const e = ReqEntryService.create({ categoryId: cid, title: d.title, content: d.content, fingerprint: fp });
+    const nm = getDb().prepare('SELECT name FROM req_categories WHERE id = ?').get(cid) as { name: string };
+    created.push({ title: e.title, content: e.content, categoryId: e.category_id, categoryName: nm.name });
+  }
+}
+
+// ---------- 通用需求：AI 智能分组 / 批量转存 ----------
+// mode='ai'：AI 从 answer（通用需求清单 Markdown）抽取若干条通用需求，自动归入/新建最贴切分类后批量写入 req_entries；
+// mode='manual'：按 items [{title,content}] 批量写入指定分类 categoryId。
+// 复用 AIService.ask（已有的单轮对话封装），不再引入新的 AI 编排。
+api.post('/ai/generalize-to-req', async (req, res) => {
+  const { toolId, answer, mode = 'ai', categoryId, items } = req.body ?? {};
+  try {
+    const skipped: string[] = [];
+    // 分类名 -> id 缓存：AI 输出同名分类会重复出现，一次解析后复用，避免重复建分类
+    const cats = new Map<string, string>();
+    const created: CreatedReq[] = [];
+
+    if (mode === 'manual') {
+      // 手动分组：目标分类 + 前端解析好的 items，整批落入同一分类
+      generalizeManualReq(categoryId, items, skipped, created);
+    } else {
+      // AI 智能分组：让模型把清单拆成多条并归入最贴切分类，缺失匹配时兜底到「通用」分类
+      await generalizeAiReq(toolId, answer, cats, skipped, created);
+    }
+
+    cacheClear('req-categories'); // 新增/新建分类影响分类计数与列表
+    res.status(201).json({ ok: true, count: created.length, skipped, entries: created });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ---------- T00652 数据清洗：AI 控制台「数据清洗」选项的合并执行端 ----------
+/** 清洗分组：keep=保留的代表任务号；merge=判定为重复、将被合并并归档的任务号 */
+interface CleanGroup {
+  keep: string;
+  merge: string[];
+  reason: string;
+}
+
+/** 任务号 -> {id,title}：仅活跃（未归档/非历史）任务参与清洗，避免误伤归档区数据 */
+function resolveCleanRefs(taskNos: string[]): Map<string, { id: string; title: string }> {
+  const out = new Map<string, { id: string; title: string }>();
+  const uniq = Array.from(new Set(taskNos));
+  if (uniq.length === 0) return out;
+  const placeholders = uniq.map(() => '?').join(',');
+  const rows = getDb()
+    .prepare(`SELECT id, task_no, title FROM tasks WHERE task_no IN (${placeholders}) AND archived = 0 AND COALESCE(history_at, '') = ''`)
+    .all(...uniq) as { id: string; task_no: string; title: string }[];
+  for (const r of rows) out.set(r.task_no, { id: r.id, title: r.title });
+  return out;
+}
+
+/** 逐组兜底校验并归一化为可执行合并分组（AI 输出不可靠，缺代表任务号或无合并项时整组跳过） */
+function parseCleanGroups(groups: unknown[]): CleanGroup[] {
+  const parsed: CleanGroup[] = [];
+  for (const g of groups) {
+    if (!g || typeof g !== 'object') continue;
+    const o = g as Record<string, unknown>;
+    const keep = typeof o.keep === 'string' ? o.keep.trim() : '';
+    const merge = (Array.isArray(o.merge) ? o.merge : [])
+      .filter((x): x is string => typeof x === 'string' && !!x.trim())
+      .map((x) => x.trim())
+      .filter((x) => x !== keep);
+    if (!keep || merge.length === 0) continue;
+    parsed.push({ keep, merge: Array.from(new Set(merge)), reason: typeof o.reason === 'string' ? o.reason.trim() : '' });
+  }
+  return parsed;
+}
+
+/** 处理单个合并分组：追加合并记录到代表任务、归档被合并任务；返回执行结果（null 表示跳过） */
+function processCleanGroup(
+  g: CleanGroup,
+  refs: Map<string, { id: string; title: string }>,
+  missing: string[],
+): { detail: { keep: string; keepTitle: string; archived: string[]; reason: string }; archived: number } | null {
+  const keepRef = refs.get(g.keep);
+  if (!keepRef) { missing.push(g.keep); return null; }
+  const ids: string[] = [];
+  const archivedNos: string[] = [];
+  for (const no of g.merge) {
+    const ref = refs.get(no);
+    if (!ref) { missing.push(no); continue; }
+    ids.push(ref.id);
+    archivedNos.push(no);
+  }
+  if (ids.length === 0) return null;
+  const keepTask = TaskService.getById(keepRef.id);
+  if (keepTask) {
+    const stamp = new Date().toISOString().slice(0, 10);
+    const note = [
+      '## 数据清洗合并记录',
+      `- 合并时间：${stamp}（AI 控制台「数据清洗」）`,
+      `- 代表任务：${g.keep} ${keepRef.title}`,
+      '- 被合并并归档的任务：',
+      ...archivedNos.map((no) => `  - ${no}（${refs.get(no)?.title ?? ''}）`),
+      ...(g.reason ? [`- 合并理由：${g.reason}`] : []),
+      '- 说明：被合并任务已归档（可在归档菜单还原），关键信息已并入本条。',
+    ].join('\n');
+    const prev = keepTask.handle_result?.trim() ?? '';
+    TaskService.update(keepRef.id, { handle_result: prev ? `${prev}\n\n${note}` : note });
+  }
+  // 归档被合并任务：走 ArchiveService（可逆，误合并可 restore）
+  ArchiveService.archive(ids);
+  return { detail: { keep: g.keep, keepTitle: keepRef.title, archived: archivedNos, reason: g.reason }, archived: ids.length };
+}
+
+/**
+ * 执行数据清洗：把同一项目内判定为重复的任务，按其分组并入代表任务后归档被合并任务。
+ * 写入严格走 TaskService.update（合并内容）与 ArchiveService.archive（归档，可 restore 还原），
+ * 不直写 sqlite——绕过 Service 会丢关联同步（技能红线）。归档本身即可逆，误合并可还原。
+ */
+api.post('/ai/clean-tasks', (req, res) => {
+  const { groups } = req.body ?? {};
+  if (!Array.isArray(groups) || groups.length === 0) {
+    return res.status(400).json({ error: 'groups 必填且为非空数组' });
+  }
+  const parsed = parseCleanGroups(groups);
+  if (parsed.length === 0) return res.status(400).json({ error: '没有可执行的合并分组（每组需提供 keep 与非空 merge）' });
+
+  const refs = resolveCleanRefs(parsed.flatMap((g) => [g.keep, ...g.merge]));
+  const details: { keep: string; keepTitle: string; archived: string[]; reason: string }[] = [];
+  const missing: string[] = [];
+  let archivedCount = 0;
+
+  try {
+    for (const g of parsed) {
+      const r = processCleanGroup(g, refs, missing);
+      if (r) { details.push(r.detail); archivedCount += r.archived; }
+    }
+    notifyChange('tasks'); // 归档由 ArchiveService 直接写库，补发变更通知让前端列表即时刷新
+    res.status(201).json({ ok: true, merged: details.length, archived: archivedCount, missing, details });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ---------- 复制到待办（T00436）：提示词 / 通用需求 一键转待办，落到默认记事项目（收件箱） ----------
+/** 通用实现：按来源表取标题/内容，创建 tasks 行；目标项目=移动端随手记默认项目（收件箱兜底） */
+function createTaskFromSource(table: 'prompts' | 'req_entries', sourceId: string, targetProjectId?: string): { taskId: string; projectId: string; reused: boolean } {
+  const src = getDb().prepare(`SELECT id, title, content FROM ${table} WHERE id = ?`).get(sourceId) as { title: string; content: string } | undefined;
+  if (!src) throw new Error('来源内容不存在');
+  // T00629：支持指定目标项目（提示词/通用需求「复制到待办任务」可选择落到哪个项目）；缺省仍为默认记事项目（收件箱）
+  const projectId = targetProjectId ?? getDefaultNoteProjectId();
+  if (!getDb().prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw new Error('目标项目不存在');
+  const prefix = table === 'prompts' ? '[提示词]' : '[通用需求]';
+  // T00445 教训：多渠道创建易重复——同项目同标题已存在则直接返回既有任务，不重复插入
+  const exist = getDb().prepare('SELECT id FROM tasks WHERE project_id = ? AND title = ? LIMIT 1').get(projectId, `${prefix} ${src.title}`) as { id: string } | undefined;
+  if (exist) return { taskId: exist.id, projectId, reused: true };
+  const id = uuid();
+  // T00910：复制到待办的任务一并分配全局唯一任务编号 task_no（与 TaskService.create 一致），否则复制出的待办在列表无编号
+  getDb().prepare(
+    `INSERT INTO tasks (id, task_no, project_id, title, description, priority, status, verified, archived, pinned, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'normal', 'todo', 0, 0, 0, ?, ?)`,
+  ).run(id, nextTaskNo(), projectId, `${prefix} ${src.title}`, src.content || '', now(), now());
+  return { taskId: id, projectId, reused: false };
+}
+
+/** AI 用量聚合（T00448 / PRD AI-1）：近 N 天概览（按天/按工具）+ 最近明细
+ *  T03243（AI-102④）：`?cardKey=` 按卡过滤——生成后的实际值（调用次数/字符量/耗时）可从 ai_usage 回看。 */
+api.get('/ai/usage', (req, res) => {
+  const days = Math.min(90, Math.max(1, Number(req.query.days) || 7));
+  const since = new Date(Date.now() - days * 86400000).toISOString();
+  const cardKey = typeof req.query.cardKey === 'string' ? req.query.cardKey.trim() : '';
+  // 只做等值过滤、参数化占位，不拼用户串
+  const cardWhere = cardKey ? ' AND card_key = ?' : '';
+  const cardArgs = cardKey ? [cardKey] : [];
+  const db = getDb();
+  const summary = db.prepare(
+    `SELECT substr(created_at, 1, 10) AS day,
+            COUNT(*) AS calls,
+            SUM(ok) AS okCalls,
+            SUM(1 - ok) AS failCalls,
+            CAST(AVG(duration_ms) AS INTEGER) AS avgMs,
+            SUM(content_chars) AS contentChars
+     FROM ai_usage WHERE created_at >= ?${cardWhere} GROUP BY day ORDER BY day`,
+  ).all(since, ...cardArgs);
+  const byTool = db.prepare(
+    `SELECT tool_name, model, kind, COUNT(*) AS calls,
+            SUM(ok) AS okCalls, SUM(1 - ok) AS failCalls,
+            CAST(AVG(duration_ms) AS INTEGER) AS avgMs,
+            SUM(content_chars) AS contentChars
+     FROM ai_usage WHERE created_at >= ?${cardWhere} GROUP BY tool_name, model, kind ORDER BY calls DESC`,
+  ).all(since, ...cardArgs);
+  // T02308：`recent` 原为无窗口 `LIMIT 30`——厂商快速失败风暴（~340ms/次）会独占 30 行，
+  // 其它厂商错误原文一行都取不到。现与 summary/byTool 同窗，并按厂商采样：
+  // 每厂商最多取 perTool 条，且每厂商最近一条**优先入选**（rn=1 组排在前），保证逐厂商复核通道。
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 60));
+  const perTool = Math.min(20, Math.max(1, Number(req.query.perTool) || 5));
+  const recent = db.prepare(
+    `WITH ranked AS (
+       SELECT tool_name, model, kind, card_key, ok, duration_ms, content_chars, error, created_at, stage, job_id,
+              ROW_NUMBER() OVER (PARTITION BY tool_name ORDER BY created_at DESC) AS rn
+       FROM ai_usage WHERE created_at >= ?${cardWhere}
+     )
+     SELECT tool_name, model, kind, card_key, ok, duration_ms, content_chars, error, created_at, stage, job_id
+     FROM ranked WHERE rn <= ?
+     ORDER BY CASE WHEN rn = 1 THEN 0 ELSE 1 END, created_at DESC
+     LIMIT ?`,
+  ).all(since, ...cardArgs, perTool, limit);
+  // T04085：job/段维度与上方聚合是同一窗口同一卡过滤；历史空归属行单独汇总，不进段统计
+  const { jobs, unassigned, jobLimit } = usageJobBreakdown({ since, cardKey, jobLimit: req.query.jobs });
+  res.json({ days, limit, perTool, jobLimit, cardKey: cardKey || null, summary, byTool, recent, jobs, unassigned });
+});
+
+/** T03172（G-2 / AI-301 验收⑤）：AI 可用卡片月采用覆盖率——card_key 精确统计直接出数（?month=YYYY-MM，默认当月） */
+api.get('/ai/coverage', (req, res) => {
+  try {
+    const month = scalarText(req.query.month ?? '') || currentMonthStr();
+    res.json(cardCoverage(month));
+  } catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
+});
+
+api.post('/prompts/:id/to-task', (req, res) => {
+  // T00629：可选 projectId——指定待办落到哪个项目（不传则默认记事项目/收件箱）
+  const { projectId } = (req.body ?? {}) as { projectId?: unknown };
+  try { res.status(201).json({ ok: true, ...createTaskFromSource('prompts', req.params.id, typeof projectId === 'string' && projectId ? projectId : undefined) }); }
+  catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
+});
+
+api.post('/req-entries/:id/to-task', (req, res) => {
+  // T00629：可选 projectId（与提示词页一致，支持指定目标项目）
+  const { projectId } = (req.body ?? {}) as { projectId?: unknown };
+  try { res.status(201).json({ ok: true, ...createTaskFromSource('req_entries', req.params.id, typeof projectId === 'string' && projectId ? projectId : undefined) }); }
+  catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : String(e) }); }
+});
+
+// ---------- 归档（FR6） ----------
+api.post('/archive', (req, res) => {
+  const { taskIds } = req.body ?? {};
+  if (!Array.isArray(taskIds)) return res.status(400).json({ error: 'taskIds 必填' });
+  res.json(ArchiveService.archive(taskIds));
+});
+
+api.post('/archive/restore', (req, res) => {
+  const { taskIds } = req.body ?? {};
+  if (!Array.isArray(taskIds)) return res.status(400).json({ error: 'taskIds 必填' });
+  res.json(ArchiveService.restore(taskIds));
+});
+
+api.delete('/archive', (req, res) => {
+  const { taskIds } = req.body ?? {};
+  if (!Array.isArray(taskIds)) return res.status(400).json({ error: 'taskIds 必填' });
+  const removed = ArchiveService.remove(taskIds);
+  res.json({ removed });
+});
+
+// ---------- 提示词仓库 ----------
+api.get('/prompt-categories', (_req, res) => {
+  const cached = cacheGet<unknown[]>('prompt-categories');
+  if (cached) return res.json(cached);
+  const cats = getDb().prepare('SELECT * FROM prompt_categories ORDER BY sort_weight, created_at').all() as { id: string }[];
+  const counts = getDb().prepare('SELECT category_id, COUNT(*) AS c FROM prompts WHERE archived = 0 GROUP BY category_id').all() as { category_id: string; c: number }[];
+  const countMap = new Map(counts.map((r) => [r.category_id, r.c]));
+  const out = cats.map((c) => ({ ...c, promptCount: countMap.get(c.id) ?? 0 }));
+  cacheSet('prompt-categories', out, LIST_TTL_MS);
+  res.json(out);
+});
+
+api.post('/prompt-categories', (req, res) => {
+  const { name, description = '' } = req.body ?? {};
+  if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name 必填' });
+  const id = uuid();
+  getDb().prepare('INSERT INTO prompt_categories (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+    .run(id, name.trim(), description, now(), now());
+  cacheClear('prompt-categories');
+  res.status(201).json(getDb().prepare('SELECT * FROM prompt_categories WHERE id = ?').get(id));
+});
+
+api.patch('/prompt-categories/:id', (req, res) => {
+  const { name, description } = req.body ?? {};
+  const db = getDb();
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  if (name !== undefined) { sets.push('name = ?'); values.push(name); }
+  if (description !== undefined) { sets.push('description = ?'); values.push(description); }
+  if (sets.length === 0) return res.status(400).json({ error: '无更新字段' });
+  sets.push('updated_at = ?'); values.push(now());
+  db.prepare(`UPDATE prompt_categories SET ${sets.join(', ')} WHERE id = ?`).run(...values, req.params.id);
+  cacheClear('prompt-categories');
+  res.json(db.prepare('SELECT * FROM prompt_categories WHERE id = ?').get(req.params.id));
+});
+
+api.delete('/prompt-categories/:id', (req, res) => {
+  getDb().prepare('DELETE FROM prompt_categories WHERE id = ?').run(req.params.id); // 级联删分类下提示词
+  cacheClear('prompt-categories');
+  res.status(204).end();
+});
+
+api.get('/prompts', (req, res) => {
+  const { categoryId, keyword, archived, favorited, limit, offset, total } = req.query;
+  const where: string[] = [];
+  const values: unknown[] = [];
+  // T00525 默认只列未归档；T00872：归档页传 archived=1 应**只返回归档提示词**（软删查询）。
+  // 注意：不能用「archived=1 即不加过滤」——那会连未归档的一起返回，导致归档页混入全部数据。
+  const inArchive = archived === '1' || archived === 'true';
+  where.push(inArchive ? 'archived = 1' : 'archived = 0');
+  if (categoryId) { where.push('category_id = ?'); values.push(categoryId); }
+  // T03683：收藏筛选是「显式才收窄」的可选轴——传 favorited=1 只看已收藏，不传保持全量，
+  // 使 CommandPalette / 移动端等既有无分页消费方行为逐字不变。
+  if (favorited === '1' || favorited === 'true') where.push('is_favorited = 1');
+  // keyword 显式收窄为 string：query 值可能是数组/对象，隐式字符串化会得到 "[object Object]" 污染 LIKE 条件
+  if (typeof keyword === 'string' && keyword) {
+    const kw = keyword;
+    where.push('(title LIKE ? OR content LIKE ?)');
+    values.push(`%${kw}%`, `%${kw}%`);
+  }
+  // WHERE 子句先独立拼接，避免模板字面量嵌套
+  const whereSql = where.length ? ` WHERE ${where.join(' AND ')}` : '';
+  const orderSql = ' ORDER BY pinned DESC, CASE WHEN sort_weight = 0 THEN 1 ELSE 0 END, sort_weight, updated_at DESC';
+  // T02284：limit/offset 服务端分页（归档提示词区切服务端分页）。缺省 limit=全量以兼容既有无分页消费方
+  // （CommandPalette `/prompts`、移动端 MobilePrompts/QuickNote）；显式值钳 [1,500]，口径同 /tasks。
+  const limitN = parseLimit(limit);
+  const sql = `SELECT * FROM prompts${whereSql}${orderSql}${limitN === undefined ? '' : ' LIMIT ? OFFSET ?'}`;
+  const items = limitN === undefined
+    ? getDb().prepare(sql).all(...values)
+    : getDb().prepare(sql).all(...values, limitN, parseOffset(offset));
+  // T02284：total=1 加性通道（不带时响应体逐字不变，仍是裸数组）
+  if (wantsTotal(total)) {
+    const row = getDb().prepare(`SELECT COUNT(*) AS n FROM prompts${whereSql}`).get(...values) as { n: number };
+    return res.json({ items, total: row.n });
+  }
+  res.json(items);
+});
+
+api.post('/prompts', (req, res) => {
+  const { categoryId, title, content = '' } = req.body ?? {};
+  if (!categoryId || !title || typeof title !== 'string') return res.status(400).json({ error: 'categoryId 与 title 必填' });
+  const id = uuid();
+  getDb().prepare('INSERT INTO prompts (id, category_id, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(id, categoryId, title.trim(), content, now(), now());
+  cacheClear('prompt-categories'); // 分类计数变化
+  res.status(201).json(getDb().prepare('SELECT * FROM prompts WHERE id = ?').get(id));
+});
+
+/** PATCH /prompts/:id 的请求体（全部可选：未提供即不更新） */
+interface PromptPatchBody {
+  title?: unknown;
+  content?: unknown;
+  categoryId?: unknown;
+  pinned?: unknown;
+  /** T03683：收藏位（与 pinned 正交——置顶管排序，收藏管筛选） */
+  isFavorited?: unknown;
+  color?: unknown;
+  archived?: unknown;
+  reqCategoryId?: unknown;
+}
+
+/** 分组调整前的原归属快照（T00837：用于审计与前端可感知的「原→目标」日志） */
+interface PromptGroupBefore {
+  category_id: string | null;
+  req_category_id: string | null;
+  title: string;
+}
+
+/** M6-6.4：安全的原始类型→字符串转换。
+ *  提示词分组字段来自不可信 req.body（unknown），直接 String(obj) 会落库 "[object Object]"（S6551）。
+ *  仅接受 string/number/boolean，其余（对象/数组/null/undefined）一律视为未提供。 */
+function primitiveToStr(v: unknown): string | undefined {
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+  if (typeof v === 'boolean') return v ? '1' : '0';
+  return undefined;
+}
+
+/** M6-6.1：仅当请求涉及分组字段时才读原归属——避免每次改名都多一次查询 */
+function snapshotPromptGroup(db: ReturnType<typeof getDb>, body: PromptPatchBody, id: string): PromptGroupBefore | undefined {
+  if (body.categoryId === undefined && body.reqCategoryId === undefined) return undefined;
+  return db.prepare('SELECT category_id, req_category_id, title FROM prompts WHERE id = ?').get(id) as PromptGroupBefore | undefined;
+}
+
+/** 布尔位统一落库口径（?1:0）：置顶与收藏同为布尔位（T03683），切换走同一个 PATCH 通道 */
+const PROMPT_BOOL_FIELDS: ReadonlyArray<readonly [keyof PromptPatchBody, string]> = [
+  ['pinned', 'pinned'],
+  ['isFavorited', 'is_favorited'],
+];
+
+/** 文本字段 → 列名（T00490 color/req_category_id 要归一，单独走 pushOptionalText） */
+const PROMPT_TEXT_FIELDS: ReadonlyArray<readonly [keyof PromptPatchBody, string]> = [
+  ['title', 'title'],
+  ['content', 'content'],
+  ['categoryId', 'category_id'],
+];
+
+/** 可选文本列：归一后仍为 undefined 视为未提供，不进 SET */
+function pushOptionalText(sets: string[], values: unknown[], column: string, v: unknown): void {
+  const s = primitiveToStr(v);
+  if (s === undefined) return;
+  sets.push(`${column} = ?`);
+  values.push(s);
+}
+
+/** T00525 归档位：同时写 archived_at（还原置空） */
+function pushArchived(sets: string[], values: unknown[], archived: unknown, ts: string): void {
+  if (archived === undefined) return;
+  sets.push('archived = ?', 'archived_at = ?');
+  values.push(archived ? 1 : 0, archived ? ts : null);
+}
+
+/** M6-6.1：拼接 SET 子句；T00525 归档同时写 archived_at（T00872），T00490 color 统一字符串化 */
+function buildPromptPatch(body: PromptPatchBody, ts: string): { sets: string[]; values: unknown[] } {
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  for (const [field, column] of PROMPT_TEXT_FIELDS) {
+    if (body[field] !== undefined) { sets.push(`${column} = ?`); values.push(body[field]); }
+  }
+  for (const [field, column] of PROMPT_BOOL_FIELDS) {
+    if (body[field] !== undefined) { sets.push(`${column} = ?`); values.push(body[field] ? 1 : 0); }
+  }
+  pushOptionalText(sets, values, 'color', body.color);
+  pushArchived(sets, values, body.archived, ts);
+  pushOptionalText(sets, values, 'req_category_id', body.reqCategoryId);
+  sets.push('updated_at = ?'); values.push(ts);
+  return { sets, values };
+}
+
+/** M6-6.1：分组调整留痕——目标缺失时回落到原值，日志始终可读（操作人单机环境留空） */
+function logPromptGroupChange(before: PromptGroupBefore | undefined, body: PromptPatchBody): void {
+  if (!before || (body.categoryId === undefined && body.reqCategoryId === undefined)) return;
+  const oldCate = before.category_id ?? '无';
+  const oldReq = before.req_category_id ?? '无';
+  // M6-6.4：分组字段为 unknown，日志用 primitiveToStr 归一（避免 "[object Object]" 进日志）
+  const newCate = primitiveToStr(body.categoryId) ?? oldCate;
+  const newReq = primitiveToStr(body.reqCategoryId) ?? oldReq;
+  logService.log('INFO', 'prompt',
+    `[提示词分组调整] "${before.title}" 原(提示词分类=${oldCate}，通用需求分类=${oldReq}) → 目标(提示词分类=${newCate}，通用需求分类=${newReq})（操作人留空）`);
+}
+
+api.patch('/prompts/:id', (req, res) => {
+  const body = (req.body ?? {}) as PromptPatchBody;
+  const db = getDb();
+  const before = snapshotPromptGroup(db, body, req.params.id);
+  const { sets, values } = buildPromptPatch(body, now());
+  if (values.length === 1) return res.status(400).json({ error: '无更新字段' }); // 仅剩 updated_at
+  db.prepare(`UPDATE prompts SET ${sets.join(', ')} WHERE id = ?`).run(...values, req.params.id);
+  cacheClear('prompt-categories'); // 改分类/置顶影响分类计数与顺序
+  logPromptGroupChange(before, body);
+  res.json(db.prepare('SELECT * FROM prompts WHERE id = ?').get(req.params.id));
+});
+
+api.delete('/prompts/:id', (req, res) => {
+  getDb().prepare('DELETE FROM prompts WHERE id = ?').run(req.params.id);
+  cacheClear('prompt-categories'); // 分类计数变化
+  res.status(204).end();
+});
+
+// T03248（AI-104⑤）：模板使用次数归零（管理动作）。单独成路由而不是复用 PATCH，
+// 避免「编辑正文」误把计数清零，也让归零动作在日志/门里可独立点名。
+api.post('/prompts/:id/usage/reset', (req, res) => {
+  if (!ConsoleJobService.resetUsage(req.params.id)) return res.status(404).json({ error: '提示词不存在' });
+  res.json(getDb().prepare('SELECT * FROM prompts WHERE id = ?').get(req.params.id));
+});
+
+// ---------- 通用需求仓库 ----------
+// 分类列表带条目计数（与提示词分类一致，缓存 5s；写端点主动 cacheClear）
+api.get('/req-categories', (_req, res) => {
+  const cached = cacheGet<unknown[]>('req-categories');
+  if (cached) return res.json(cached);
+  const out = ReqCategoryService.list();
+  cacheSet('req-categories', out, LIST_TTL_MS);
+  res.json(out);
+});
+
+api.post('/req-categories', (req, res) => {
+  const { name } = req.body ?? {};
+  if (!name || typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'name 必填' });
+  cacheClear('req-categories');
+  res.status(201).json(ReqCategoryService.create(name));
+});
+
+api.patch('/req-categories/:id', (req, res) => {
+  const { name } = req.body ?? {};
+  if (!name || typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'name 必填' });
+  const cat = ReqCategoryService.rename(req.params.id, name);
+  if (!cat) return res.status(404).json({ error: '分类不存在' });
+  cacheClear('req-categories');
+  res.json(cat);
+});
+
+api.delete('/req-categories/:id', (req, res) => {
+  // 删除分类会级联删除其下条目（req_entries 外键 ON DELETE CASCADE）
+  if (!ReqCategoryService.remove(req.params.id)) return res.status(404).json({ error: '分类不存在' });
+  cacheClear('req-categories');
+  res.status(204).end();
+});
+
+api.get('/req-entries', (req, res) => {
+  const { categoryId, keyword, favorited, archived } = req.query;
+  // T03683 / T03685：查询条件收成对象——布尔轴用与 GET /prompts 相同的显式字符串判定
+  // （query 值可能是数组/对象，=== '1' 天然把它们当作未提供）
+  res.json(ReqEntryService.listByCategory({
+    categoryId: categoryId as string | undefined,
+    keyword,
+    favorited: favorited === '1' || favorited === 'true',
+    archived: archived === '1' || archived === 'true',
+  }));
+});
+
+api.post('/req-entries', (req, res) => {
+  const { categoryId, title, content = '' } = req.body ?? {};
+  if (!categoryId || !title || typeof title !== 'string') return res.status(400).json({ error: 'categoryId 与 title 必填' });
+  // 分类不存在直接映射 400，避免写入悬空外键
+  const catExists = getDb().prepare('SELECT 1 FROM req_categories WHERE id = ?').get(categoryId);
+  if (!catExists) return res.status(400).json({ error: '归属分类不存在' });
+  const entry = ReqEntryService.create({ categoryId, title, content });
+  cacheClear('req-categories'); // 分类计数变化
+  res.status(201).json(entry);
+});
+
+api.patch('/req-entries/:id', (req, res) => {
+  // T03683：isFavorited 收藏位；T03685：archived 归档（删除改归档，服务层同步写 archived_at）
+  const { title, content, categoryId, pinned, color, isFavorited, archived } = req.body ?? {}; // T00490：color
+  // 移动分组时校验目标分类存在，避免写入悬空外键
+  if (categoryId !== undefined && !getDb().prepare('SELECT 1 FROM req_categories WHERE id = ?').get(categoryId)) {
+    return res.status(400).json({ error: '归属分类不存在' });
+  }
+  const entry = ReqEntryService.update(req.params.id, { title, content, categoryId, pinned, color, isFavorited, archived });
+  if (!entry) return res.status(404).json({ error: '条目不存在' });
+  cacheClear('req-categories'); // 改分类/置顶/归档影响分类计数与顺序
+  res.json(entry);
+});
+
+api.delete('/req-entries/:id', (req, res) => {
+  if (!ReqEntryService.remove(req.params.id)) return res.status(404).json({ error: '条目不存在' });
+  cacheClear('req-categories'); // 分类计数变化
+  res.status(204).end();
+});
+
+// ---------- 移动端：默认记事项目设置 ----------
+// 读取当前默认记事项目（用户设置优先，否则收件箱系统项目）
+api.get('/settings/note-project', (_req, res) => {
+  res.json({ projectId: getDefaultNoteProjectId(), inboxId: INBOX_PROJECT_ID });
+});
+
+// 设置默认记事项目（移动端随手记缺省归属）；仅校验目标项目存在
+api.post('/settings/note-project', (req, res) => {
+  const { projectId } = req.body ?? {};
+  if (!projectId || typeof projectId !== 'string' || !projectId.trim()) {
+    return res.status(400).json({ error: 'projectId 必填' });
+  }
+  if (!getDb().prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId.trim())) {
+    return res.status(400).json({ error: '项目不存在' });
+  }
+  setSetting('defaultNoteProjectId', projectId.trim());
+  res.json({ projectId: projectId.trim() });
+});
+
+// ---------- T00558 / PRD AI-5：周报摘要写入收件箱开关 ----------
+api.get('/settings/ai-summary-inbox', (_req, res) => {
+  res.json({ enabled: getSetting('report.aiSummaryToInbox') === '1' });
+});
+api.post('/settings/ai-summary-inbox', (req, res) => {
+  setSetting('report.aiSummaryToInbox', req.body?.enabled ? '1' : '0');
+  res.json({ ok: true, enabled: Boolean(req.body?.enabled) });
+});
+
+// ---------- 设置中心：数据迁移（换机重装用） ----------
+// T00789：exportBundle() 曾为纯同步重活（4.4MB 全量序列化，实测 122ms/次），同步期间无法接受后续请求、
+// 闸门计数到不了上限（实测 10 路并发 0×429、线性叠加至 946ms）。现在 exportBundle 已建议②分表让出
+// （每导一表 await setImmediate），但 defer 仍保留兜底，保证闸门在最坏情况（首表即大表）下依然可见。
+// M2-a：本端点改走 exportBundleChunks 逐行流式（每 200 行一片 + 写背压），响应体逐字节不变，
+// 但不再一次性物化整包——实测库（200MB / 24,507 行 / 52.7MB bundle）冷堆峰值 +175MB → +1MB 级。
+// 表名校验必须先于第一片：流一旦开写就回不去 400 了。
+// M2-b：排队预算用慢导出档（8s）而非普通导出档（3s）——实测单发 3.0~4.3s，3s 预算比单次耗时还短，
+// 排队者只是白等一趟再被拒，交付数不变；阶梯证据见 EXPORT_QUEUE_WAIT_SLOW_EXPORT 注释。
+api.get('/settings/export', exportGate('settings-export', undefined, { defer: true, queueMs: EXPORT_QUEUE_WAIT_SLOW_EXPORT }), async (req, res) => {
+  // 可选 ?tables=a,b,c 子集导出（默认全量）。未知表名直接 400，避免静默产出空包。
+  const raw = typeof req.query.tables === 'string' ? req.query.tables.trim() : '';
+  let names: string[] | undefined;
+  if (raw) {
+    const list = raw.split(',').map((s) => s.trim()).filter(Boolean);
+    const bad = list.filter((n) => !isExportTable(n));
+    if (bad.length) {
+      res.status(400).json({ error: `未知导出表：${bad.join(', ')}` });
+      return;
+    }
+    names = list;
+  }
+  // H5 的 gzip 中间件刻意不介入「已分块写出」的响应（否则会在原始字节后追加压缩字节），
+  // 所以流式路径必须自己做压缩——用 createGzip 串进 pipeline：既保住 H5 的体积收益，
+  // 又不再像中间件那样对整包做 gzipSync（实测 64MB 明文一次压，同步阻塞 3s 级，正是本轮要消掉的东西）。
+  const wantGzip = /\bgzip\b/i.test(String(req.headers['accept-encoding'] ?? ''));
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  if (wantGzip) {
+    res.setHeader('Content-Encoding', 'gzip');
+    // 同一 URL 因 Accept-Encoding 有两种表示，显式声明，与 H5 中间件同口径
+    res.setHeader('Vary', 'Accept-Encoding');
+  }
+  const src = Readable.from(exportBundleChunks(names));
+  try {
+    // pipeline 负责背压与出错时的统一销毁；手写 res.write + 等 drain 容易漏掉中途失败的清理
+    await (wantGzip ? pipeline(src, createGzip(), res) : pipeline(src, res));
+  } catch (e) {
+    // 首片已出则无法再改成 4xx/5xx，只能断连——让调用方拿到截断响应而不是一个能骗过 JSON 解析的半包
+    if (res.headersSent) {
+      res.destroy(e instanceof Error ? e : new Error(String(e)));
+      return;
+    }
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+api.post('/settings/import', async (req, res) => {
+  const { data, mode } = req.body ?? {};
+  if (mode !== 'overwrite' && mode !== 'keep' && mode !== 'merge') {
+    return res.status(400).json({ error: 'mode 必填（overwrite|keep|merge）' });
+  }
+  // T03274（UX-14③④）：覆盖会清空全部业务表——先把现场做成可恢复快照；快照失败则中止，不改任何数据
+  let snapshot: { name: string; size: number } | null = null;
+  if (mode === 'overwrite') {
+    try {
+      snapshot = await createMigrationSnapshot();
+    } catch (e) {
+      return res.status(409).json({ error: e instanceof Error ? e.message : String(e), code: 'MIGRATION_SNAPSHOT_FAILED' });
+    }
+  }
+  try {
+    res.json({ ...importBundle(data, mode), snapshot });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ---------- 版本更新（关于页）：GitHub Releases 检测最新版本 ----------
+// 当前运行版本：回显关于页真实版本（与 package.json 一致），不依赖仓库配置，仅供展示
+api.get('/update/version', (_req, res) => {
+  res.json({ version: currentAppVersion() });
+});
+
+// 配置读取：token 绝不回传明文，只回「是否已配置 + 掩码」
+api.get('/update/config', (_req, res) => {
+  res.json(getUpdateConfig());
+});
+
+// 配置保存：repo 非空须为合法 owner/repo 或 GitHub URL，空串=清除手动地址（回退内置地址）；
+// token 可选（undefined=不改动，空串=清除）
+api.post('/update/config', (req, res) => {
+  const { repo, token } = req.body ?? {};
+  if (repo !== undefined && typeof repo !== 'string') {
+    return res.status(400).json({ error: '仓库地址非法：请填「owner/repo」或 GitHub 仓库完整 URL，留空使用内置地址' });
+  }
+  if (token !== undefined && typeof token !== 'string') return res.status(400).json({ error: 'token 非法' });
+  try {
+    res.json(saveUpdateConfig({ repo, token }));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// 连通性测试：用表单未保存的草稿配置拉一次 releases/latest（不落库），返回最新版本号或错误
+api.post('/update/test', async (req, res) => {
+  const { repo, token } = req.body ?? {};
+  if (typeof repo !== 'string') return res.status(400).json({ error: 'repo 必填' });
+  res.json(await testUpdateConfig({ repo, token }));
+});
+
+// 检查更新：与当前版本比较，返回是否可更新 + 最新版本 + 更新日志 + 下载地址；带 5 分钟缓存。
+// T02977：失败时一并回传本次实际使用的地址来源，菜单据此在报错里点明是内置地址还是手动地址。
+api.post('/update/check', async (req, res) => {
+  const force = Boolean(req.body?.force);
+  // T03273（UX-13）：auto=true 是应用冷启动的静默检查——失败回 200 skipped，不制造 4xx 红色噪声
+  const auto = Boolean(req.body?.auto);
+  try {
+    res.json(await checkUpdate(force, { silent: auto }));
+  } catch (e) {
+    const cfg = getUpdateConfig();
+    res.status(400).json({
+      error: e instanceof Error ? e.message : String(e),
+      source: cfg.source,
+      repo: cfg.source === 'builtin' ? cfg.builtinRepo : cfg.repo,
+    });
+  }
+});
+
+// ---------- 数据库维护（设置 > 数据维护 Tab） ----------
+api.use('/dbadmin', dbAdminApi);
+
+// ---------- 项目计划（T00431，菜单位于周报前） ----------
+api.use('/plans', planApi);
+api.use(iterationApi); // T03186（PM-201 迭代与燃尽）：完整路径声明，不挂前缀（详见 routes/iterations.ts 头注）
+api.use(materialTimingApi); // T03189（G-1 汇报材料耗时）：同上，/report/material-timing/* 完整路径
+api.use('/metrics', metricsApi); // T03190（G-4 逾期率基线）：/metrics/overdue-rate
+api.use('/estimates', estimateApi); // T02037（估算视图 E3）：PRD-估算视图与工作量评估导出 §8
+api.use('/history', historyApi); // T00589：历史资产页面后端（转移 + 统计）
+api.use('/webhooks', webhooksApi); // T03196（PM-401）：/webhooks?projectId=… /webhooks/:id/deliveries /test
+api.use(gitLinksApi); // 八期：/git/*、/tasks/:id/git*（完整路径声明，不挂前缀）
+api.use(gitExtractApi); // 八期：/git-extract*（完整路径声明，不挂前缀）
+api.use(sonarSettingsApi); // 八期 §3.4.1：/settings/sonar*（配置读写/查看审计/连接测试）
+api.use(sonarScanApi); // 八期 §3.4.2：/sonar/scan*（完整路径声明，不挂前缀）
+
+// ---------- 监督器（T01286）：状态看板 / 审计视图 / 熔断与中继配置 ----------
+api.use('/supervisor', supervisorApi);
+
+// ---------- T05747：B0（CodeBuddy 网关）/ A（MCP 就绪池）/ D（人工确认）派发 ----------
+api.use('/dispatch', dispatchApi);
+
+// ---------- T04151（PRD MEM-402）：长期记忆 REST（CRUD + 待确认队列 + 产品标签） ----------
+api.use('/memories', memoriesApi);

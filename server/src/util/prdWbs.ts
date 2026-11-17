@@ -22,38 +22,151 @@ export function normalizePlanTitle(title: string): string {
     .replace(/^REQ-\d+\s*/i, '')
     // 只去空白/标点/符号，**不能**用 [\s\W_]：\W 会把中文一并删掉，
     // 纯中文标题会全部归一化为 ''，跨片同题去重直接失效（质量门 A-02 实测捕获）。
-    .replace(/[\s\p{P}\p{S}]+/gu, '')
+    .replaceAll(/[\s\p{P}\p{S}]+/gu, '')
     .toLowerCase();
 }
 
-/** 系统补齐的占位计划行：AI 自己补的「REQ-xxx 相关实现」、服务端 applyAutoGapFill 的「自动补齐：」、
- *  T05571 源文档条目补齐的「自动补齐：源文档条目」（前缀是 AUTO_GAP_FILL_DESC 的子串，一并命中） */
-export function isGapFillPlan(p: { title?: string; description?: string }): boolean {
-  return /^REQ-\d{3}\b/.test((p.title ?? '').trim())
-    || (p.description ?? '').startsWith('自动补齐：');
+/** 系统补齐的占位计划行：只认系统写的 description 前缀，或显式 gapFill 标记。
+ *  旧实现用 `^REQ-\d{3}` 判标题，会把「REQ-020 工具卡片展示」这类真实任务一并误判成占位——
+ *  REQ 编号只是来源标识，不是「无业务语义」的同义词。 */
+export function isGapFillPlan(p: { title?: string; description?: string; gapFill?: boolean }): boolean {
+  if (p.gapFill === true) return true;
+  return (p.description ?? '').startsWith('自动补齐：');
 }
 
-/** 多套 WBS 检测：里程碑章号出现回退（…3、4、1、2…）即新的一套 */
+/** 阶段族：数字章号（1/2/5.3/M1）或标签族（P0/P1/EX/Q/F/R） */
+type PhaseKey = { kind: 'num'; n: number } | { kind: 'label'; label: string };
+
+function phaseKeyOf(title: string): PhaseKey | null {
+  const t = (title ?? '').trim();
+  // M1 / 1 / 1.1 / 5.3：取首段数字作为「同一族内的递增序」；M 前缀与裸数字视为同族
+  const num = /^(?:M)?(\d+)(?:\s|\.|$)/i.exec(t);
+  if (num) return { kind: 'num', n: Number(num[1]) };
+  const label = /^(P0|P1|EX|Q|F|R)(?:[-\s.]|$)/i.exec(t);
+  if (label) return { kind: 'label', label: label[1].toUpperCase() };
+  return null;
+}
+
+/** 多套 WBS 检测：数字章号回退，或阶段族切换（数字 ↔ P0/P1/EX/Q/F/R，标签族彼此切换）即新的一套。
+ *  当前 PRD 的 1..8.2 / 5.3 / P0-1 / P1-2 / EX / Q / F / R-* 会被识别为多套，而不是只报 2 套。 */
 export function detectWbsGroups(items: ReadonlyArray<{ title: string; kind?: string }>): {
   groups: number;
   milestones: number;
   groupStartTitles: string[];
+  families: string[];
 } {
   const ms = items.filter((x) => x.kind === 'milestone');
-  let groups = ms.length > 0 ? 1 : 0;
-  let prev = -1;
-  const groupStartTitles: string[] = [];
-  ms.forEach((m, i) => {
-    const matched = /^\s*(\d+)/.exec(m.title ?? '');
-    const n = matched ? Number(matched[1]) : -1;
-    if (i === 0) groupStartTitles.push(m.title);
-    else if (n >= 0 && prev >= 0 && n <= prev) {
-      groups += 1;
-      groupStartTitles.push(m.title);
+  if (ms.length === 0) return { groups: 0, milestones: 0, groupStartTitles: [], families: [] };
+  let groups = 1;
+  const groupStartTitles: string[] = [ms[0].title];
+  const families: string[] = [];
+  let prev: PhaseKey | null = phaseKeyOf(ms[0].title ?? '');
+  families.push(prev ? (prev.kind === 'num' ? `num:${prev.n}` : `label:${prev.label}`) : 'unknown');
+  for (let i = 1; i < ms.length; i += 1) {
+    const cur = phaseKeyOf(ms[i].title ?? '');
+    let nextGroup = false;
+    if (prev && cur) {
+      if (prev.kind !== cur.kind) nextGroup = true;
+      else if (cur.kind === 'num' && prev.kind === 'num' && cur.n <= prev.n) nextGroup = true;
+      else if (cur.kind === 'label' && prev.kind === 'label' && cur.label !== prev.label) nextGroup = true;
     }
-    if (n >= 0) prev = n;
+    if (nextGroup) {
+      groups += 1;
+      groupStartTitles.push(ms[i].title);
+    }
+    if (cur) {
+      families.push(cur.kind === 'num' ? `num:${cur.n}` : `label:${cur.label}`);
+      prev = cur;
+    }
+  }
+  return { groups, milestones: ms.length, groupStartTitles, families };
+}
+
+/** 从标题/显式字段推出 WBS 编号。显式 wbsCode 优先；标题前缀只做兼容兜底。 */
+export function wbsCodeOf(p: { title: string; wbsCode?: string }): string {
+  const explicit = (p.wbsCode ?? '').trim();
+  if (explicit) return explicit;
+  const m = /^(M\d+(?:\.\d+)*|\d+(?:\.\d+)*|P[01]-\d+(?:\.\d+)*|EX|Q|F|R-\d+(?:\.\d+)*)\s+/i.exec((p.title ?? '').trim());
+  if (!m) return '';
+  return m[1].replace(/^m/i, 'M').replace(/^p/i, 'P').replace(/^ex/i, 'EX').replace(/^q/i, 'Q').replace(/^f/i, 'F').replace(/^r/i, 'R');
+}
+
+/** 父编号：显式 parentCode 优先；否则按 wbsCode 的点分层级推导（M1.1 → M1，8.2.1 → 8.2）。 */
+export function parentCodeOf(p: { title: string; kind?: string; parentCode?: string; wbsCode?: string }): string {
+  if (p.kind === 'milestone') return '';
+  const explicit = (p.parentCode ?? '').trim();
+  if (explicit) return explicit;
+  const code = wbsCodeOf(p);
+  if (!code || !code.includes('.')) return '';
+  return code.slice(0, code.lastIndexOf('.'));
+}
+
+/** 结构树：按 wbsCode/parentCode 建父子；无 code 的旧数据不强行建树（交给区间兜底）。 */
+export interface WbsTreeResult {
+  hasStructure: boolean;
+  roots: number[];
+  parentOf: number[];
+  childrenOf: number[][];
+  issues: string[];
+}
+
+export function deriveWbsTree(items: ReadonlyArray<{ title: string; kind?: string; wbsCode?: string; parentCode?: string }>): WbsTreeResult {
+  const n = items.length;
+  const parentOf = new Array<number>(n).fill(-1);
+  const childrenOf = Array.from({ length: n }, () => [] as number[]);
+  const issues: string[] = [];
+  const codeToIndex = new Map<string, number>();
+  const codes = items.map((p) => wbsCodeOf(p));
+  const hasStructure = codes.some((c) => !!c);
+  if (!hasStructure) return { hasStructure: false, roots: items.map((_, i) => i), parentOf, childrenOf, issues };
+  codes.forEach((code, i) => {
+    if (!code) return;
+    if (codeToIndex.has(code)) {
+      issues.push(`WBS 编号重复：${code}（第 ${codeToIndex.get(code)! + 1} 行与第 ${i + 1} 行）`);
+      return;
+    }
+    codeToIndex.set(code, i);
   });
-  return { groups, milestones: ms.length, groupStartTitles };
+  const nearestMilestone = (i: number): number => {
+    for (let j = i - 1; j >= 0; j -= 1) if (items[j]?.kind === 'milestone') return j;
+    return -1;
+  };
+  for (let i = 0; i < n; i += 1) {
+    const p = items[i];
+    if (p.kind === 'milestone') continue;
+    const parentCode = parentCodeOf(p);
+    if (parentCode && codeToIndex.has(parentCode)) {
+      parentOf[i] = codeToIndex.get(parentCode)!;
+      continue;
+    }
+    if (parentCode) issues.push(`找不到父节点 ${parentCode}：${p.title}`);
+    const fallback = nearestMilestone(i);
+    if (fallback >= 0) {
+      parentOf[i] = fallback;
+      if (!parentCode) issues.push(`任务缺少 parentCode，已按最近前置里程碑兜底：${p.title}`);
+    } else {
+      issues.push(`任务没有任何前置里程碑可归属：${p.title}`);
+    }
+  }
+  const roots: number[] = [];
+  for (let i = 0; i < n; i += 1) {
+    if (parentOf[i] >= 0) childrenOf[parentOf[i]].push(i);
+    else roots.push(i);
+  }
+  return { hasStructure, roots, parentOf, childrenOf, issues };
+}
+
+/** 结构化 child 边：父边来自 parentCode/树；没有结构信息时返回空数组，调用方回退区间规则。 */
+export function structuralChildEdges(
+  items: ReadonlyArray<{ title: string; kind?: string; wbsCode?: string; parentCode?: string }>,
+): Array<{ index: number; parentIndex: number }> {
+  const tree = deriveWbsTree(items);
+  if (!tree.hasStructure) return [];
+  const out: Array<{ index: number; parentIndex: number }> = [];
+  for (let i = 0; i < items.length; i += 1) {
+    if (tree.parentOf[i] >= 0) out.push({ index: i, parentIndex: tree.parentOf[i] });
+  }
+  return out;
 }
 
 /**
@@ -235,7 +348,7 @@ export function extractSourceEntries(sourceText: string): SourceEntryRow[] {
       seen.add(id);
       const start = Math.max(0, m.index - 50);
       const end = Math.min(text.length, m.index + m[0].length + 50);
-      const excerpt = text.slice(start, end).replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
+      const excerpt = text.slice(start, end).replaceAll(/\r?\n/g, ' ').replaceAll(/\s+/g, ' ').trim();
       out.push({ id, label, excerpt });
       if (m[0].length === 0) source.lastIndex += 1;
     }
@@ -256,7 +369,7 @@ export function applySourceEntryGapFill(
   const rows: Array<{ id: string; label: string; title: string; description: string; excerpt: string }> = [];
   for (const e of entries) {
     const needle = e.id.startsWith('§') ? e.id.slice(1) : e.id;
-    const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const escaped = needle.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&');
     // 短编号（D1/R1/T1/S1）必须按非字母数字边界匹配，避免被 REQ-001 / 正文数字误命中
     const hit = needle.length <= 3
       ? new RegExp(`(?:^|[^A-Za-z0-9])${escaped}(?:$|[^A-Za-z0-9])`).test(resultText)

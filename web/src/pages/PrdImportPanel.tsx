@@ -9,14 +9,24 @@ import { EXPORT_MIME, saveBlob } from '../utils/download';
 import { aiImportStore } from '../stores/aiImportStore';
 // 2026-11-10 质量复核优化：导入前质量自检（纯函数，只读分析 + 用户确认后才归一化）
 import {
-  analyzeImportQuality, appendCoverageGapPlans, disableConstraintReqs, formatQualitySummary, isConstraintReq, isGapFillPlan,
+  analyzeImportQuality, appendCoverageGapPlans, disableConstraintReqs, evaluateImportReadiness, formatQualitySummary, isConstraintReq, isGapFillPlan,
   normalizeWbs, type QualitySource, type QualitySummary,
 } from '../utils/prdQuality';
 
 /** T00662：PRD 解析结果（需求项 + WBS 计划草稿） */
-interface PrdReq { reqNo: string; title: string; content: string; sourceRef: string; priority: string; include: boolean; key: string; /** T04064：来源文件下标（= prdDocs 下标），导入时据此回填 prd_id */ sourceIndex?: number; }
+interface PrdReq {
+  reqNo: string; title: string; content: string; sourceRef: string; priority: string; include: boolean; key: string;
+  /** T04064：来源文件下标（= prdDocs 下标），导入时据此回填 prd_id */ sourceIndex?: number;
+  /** 2026-11-17：需求类型与验收引用（质量门 AC 覆盖校验用） */
+  type?: string; acceptanceRefs?: string[];
+}
 /** T01001：kind 可选——AI 解析出的里程碑/普通任务类型（后端可能未返回时缺省），编辑也是普通任务 */
-interface PrdPlan { title: string; description: string; durationDays: number; reqNos: string[]; kind?: 'milestone' | 'normal' | 'daily'; include: boolean; key: string; }
+interface PrdPlan {
+  title: string; description: string; durationDays: number; reqNos: string[]; kind?: 'milestone' | 'normal' | 'daily'; include: boolean; key: string;
+  /** 2026-11-17：WBS 结构字段（与 server prdWbs / PlanService 同口径） */
+  wbsCode?: string; parentCode?: string; phaseCode?: string; priority?: string; sourceSection?: string;
+  deliverable?: string; acceptanceRefs?: string[]; dependsOn?: string[]; taskType?: string; estimateDays?: number;
+}
 
 /**
  * T01001 二轮：里程碑工期 = 其下明细任务工期之和。
@@ -28,9 +38,42 @@ function isMilestoneRow(p: Pick<PrdPlan, 'kind'>): boolean {
   return p.kind === 'milestone';
 }
 
-/** 重算全部里程碑工期（返回新数组；无明细的里程碑保留原值） */
+/** 2026-11-17：从显式字段/标题前缀推出 WBS 编号（与 server prdWbs.wbsCodeOf 同口径） */
+function planWbsCode(p: Pick<PrdPlan, 'title' | 'wbsCode'>): string {
+  const explicit = (p.wbsCode ?? '').trim();
+  if (explicit) return explicit;
+  const m = /^(M\d+(?:\.\d+)*|\d+(?:\.\d+)*|P[01]-\d+(?:\.\d+)*|EX|Q|F|R-\d+(?:\.\d+)*)\s+/i.exec((p.title ?? '').trim());
+  return m ? m[1].replace(/^m/i, 'M').replace(/^p/i, 'P') : '';
+}
+
+function planParentCode(p: Pick<PrdPlan, 'title' | 'kind' | 'wbsCode' | 'parentCode'>): string {
+  if (p.kind === 'milestone') return '';
+  const explicit = (p.parentCode ?? '').trim();
+  if (explicit) return explicit;
+  const code = planWbsCode(p);
+  return code.includes('.') ? code.slice(0, code.lastIndexOf('.')) : '';
+}
+
+/** 重算全部里程碑工期（返回新数组；无明细的里程碑保留原值）。
+ *  2026-11-17：有 wbsCode/parentCode 时按树汇总，行序不再参与父子判定；无结构字段的旧数据仍按区间兜底。 */
 function recalcMilestoneDurations(list: PrdPlan[]): PrdPlan[] {
   const out = list.map((p) => ({ ...p }));
+  const structured = out.some((p) => !!planWbsCode(p) || !!p.parentCode);
+  if (structured) {
+    for (let i = 0; i < out.length; i += 1) {
+      if (!isMilestoneRow(out[i])) continue;
+      const code = planWbsCode(out[i]);
+      if (!code) continue;
+      let sum = 0;
+      for (let j = 0; j < out.length; j += 1) {
+        if (j === i || !out[j].include || isMilestoneRow(out[j]) || isGapFillPlan(out[j])) continue;
+        const parent = planParentCode(out[j]);
+        if (parent && parent === code) sum += Math.max(1, Math.round(Number(out[j].durationDays) || 1));
+      }
+      if (sum > 0) out[i] = { ...out[i], durationDays: sum };
+    }
+    return out;
+  }
   for (let i = 0; i < out.length; i++) {
     if (!isMilestoneRow(out[i])) continue;
     let sum = 0;
@@ -217,8 +260,16 @@ function logAutoFilled(rows: ReadonlyArray<{ title: string; description?: string
  * 只播报、不改数据——所有处置都由用户显式点按钮或编辑表格完成。
  */
 function logQualityWarnings(s: QualitySummary): void {
-  const severe = s.wbsGroups > 1 || s.constraintReqs > 0 || s.versionConflicts > 0 || s.durationIssues > 0;
+  const severe = s.readiness === 'blocked' || s.wbsGroups > 1 || s.constraintReqs > 0 || s.versionConflicts > 0 || s.durationIssues > 0;
   aiImportStore.log(formatQualitySummary(s), severe ? 'error' : 'info');
+  // 2026-11-17：质量门结论优先播报——阻断项逐条列出，提醒项单行汇总
+  if (s.readiness === 'blocked') {
+    aiImportStore.log(`⛔ 质量门阻断（${s.qualityErrors.length} 项）：\n- ${s.qualityErrors.join('\n- ')}`, 'error');
+  } else if (s.readiness === 'needs_review') {
+    aiImportStore.log(`⚠ 质量门需复核（${s.qualityWarnings.length} 项）：${s.qualityWarnings.join('；')}`, 'error');
+  } else {
+    aiImportStore.log('✓ 质量门通过：结构、粒度、依赖与 AC 映射均满足导入条件', 'ok');
+  }
   if (s.wbsGroups > 1) {
     aiImportStore.log(`⚠ 检测到 ${s.wbsGroups} 套并行 WBS（分片各自产出完整里程碑后直接拼接）——建议导入前点「合并重复 WBS」统一编号；否则同一业务模块会重复排期`, 'error');
   }
@@ -233,8 +284,11 @@ function logQualityWarnings(s: QualitySummary): void {
     aiImportStore.log(`⚠ ${s.durationIssues} 个里程碑工期 ≠ 其下明细之和（例：${s.durationDetails.slice(0, 2).map((d) => `${d.title} ${d.declared}天/${d.computed}天`).join('、')}）——导入前可点「合并重复 WBS」重算`, 'error');
   }
   if (s.coverageGaps > 0) {
-    const gaps = s.coverage.filter((g) => g.missing.length > 0).map((g) => `${g.label} ${g.covered}/${g.total}`).join('、');
-    aiImportStore.log(`源文档条目覆盖自检：${gaps}；共 ${s.coverageGaps} 个编号未出现在解析结果中，可能是「需求级」内容，请人工确认是否需补计划`, 'info');
+    const gaps = s.coverage.filter((g) => !g.soft && g.missing.length > 0).map((g) => `${g.label} ${g.covered}/${g.total}`).join('、');
+    aiImportStore.log(`源文档条目覆盖自检：${gaps}；共 ${s.coverageGaps} 个硬缺口未出现在解析结果中（Q/S/D/R/T/N/O 等条目级编号），请人工确认是否需补计划`, 'info');
+  }
+  if (s.coverageSectionGaps > 0) {
+    aiImportStore.log(`章节定位自检：${s.coverageSectionGaps} 个 §x.y 章节号未回写 sourceRef——章节号只用于定位，不是需求条目，本次不阻断导入、也不生成占位计划`, 'info');
   }
   if (s.docCounts.design === 0 && s.docCounts.test === 0 && s.docCounts.prd > 0) {
     aiImportStore.log('提示：本次没有关联设计/测试文档。如需归档配套方案设计，请在「关联设计/测试文档」添加；该类文档按设计只归档、不参与 AI 解析，若期望其实现细节进入 WBS，需作为 PRD 文件参与解析', 'info');
@@ -257,7 +311,7 @@ function formatQualityReport(s: QualitySummary, baseline: string, sources: Quali
     '## 一、总体结论',
     '',
     (s.wbsGroups > 1 || s.versionConflicts > 0 || s.durationIssues > 0 || s.constraintReqs > 0 || s.coverageGaps > 0)
-      ? '**需复核后导入**：存在并行 WBS / 版本冲突 / 工期不符 / 否定口径 / 覆盖缺口，详见下表。'
+      ? '**需复核后导入**：存在并行 WBS / 版本冲突 / 工期不符 / 否定口径 / 硬覆盖缺口，详见下表。'
       : '**通过**：未检测到结构性偏差；推定字段与业务判定仍需人工复核。',
     '',
     formatQualitySummary(s),
@@ -273,7 +327,8 @@ function formatQualityReport(s: QualitySummary, baseline: string, sources: Quali
     `| 否定/已闭环口径 | ${s.constraintReqs} | 约束项，不应作待开发需求 |`,
     `| 溯源未标注 | ${s.unattributedReqs} | sourceRef 非章节/Q 编号格式 |`,
     `| 跨文档版本冲突 | ${s.versionConflicts} | 同编号状态相反 |`,
-    `| 源文档覆盖缺口 | ${s.coverageGaps} | 章节/Q/S/D/R/T/N/O 编号未出现在解析结果 |`,
+    `| 源文档硬覆盖缺口 | ${s.coverageGaps} | Q/S/D/R/T/N/O 等条目级编号未出现在解析结果 |`,
+    `| § 章节定位缺口 | ${s.coverageSectionGaps} | 章节号未回写 sourceRef；仅提示，不阻断、不补占位 |`,
     `| 推定字段行 | ${s.inferredFieldRows} | 工期/复杂度/优先级/排期源文档均无依据 |`,
     '',
     '## 三、跨文档版本冲突',
@@ -284,7 +339,7 @@ function formatQualityReport(s: QualitySummary, baseline: string, sources: Quali
     lines.push('| 编号 | 来源文档 | 状态 | 原文片段 |', '|---|---|---|---|');
     for (const c of s.conflicts) {
       for (const st of c.states) {
-        lines.push(`| ${c.id} | ${st.doc} | ${st.state === 'pending' ? '待确认' : '已确认'} | ${st.excerpt.replace(/\|/g, '\\|').slice(0, 100)} |`);
+        lines.push(`| ${c.id} | ${st.doc} | ${st.state === 'pending' ? '待确认' : '已确认'} | ${st.excerpt.replaceAll('|', '\\|').slice(0, 100)} |`);
       }
     }
     lines.push('');
@@ -401,7 +456,8 @@ function QualityCard({ s, sources, baselineDoc, onBaseline, previewDocRefs, busy
         <QualityMetric label="否定口径" value={s.constraintReqs} bad={s.constraintReqs > 0} hint="约束/验收项，不应作为待开发需求" />
         <QualityMetric label="溯源未标注" value={s.unattributedReqs} bad={s.unattributedReqs > 0} hint="sourceRef 不是章节/Q 编号格式，无法唯一定位原文" />
         <QualityMetric label="版本冲突" value={s.versionConflicts} bad={s.versionConflicts > 0} hint="同一编号在不同来源里「待确认」与「已确认」并存" />
-        <QualityMetric label="覆盖缺口" value={s.coverageGaps} bad={s.coverageGaps > 0} hint="源文档章节/Q/S/D/R/T/N/O 编号未出现在解析结果中" />
+        <QualityMetric label="硬覆盖缺口" value={s.coverageGaps} bad={s.coverageGaps > 0} hint="Q/S/D/R/T/N/O 等条目级编号未出现在解析结果中" />
+        <QualityMetric label="§ 章节缺口" value={s.coverageSectionGaps} bad={false} hint="章节号只用于定位，不阻断导入、不生成占位计划" />
         <QualityMetric label="推定字段" value={`${s.inferredFieldRows} 行`} bad hint="工期/复杂度/优先级/排期在源文档中均无依据" />
       </div>
       {/* 优化意见①④：版本基线显式裁定 + 预演逐文档引用数回显 */}
@@ -438,7 +494,7 @@ function QualityCard({ s, sources, baselineDoc, onBaseline, previewDocRefs, busy
       )}
       <details>
         <summary style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', cursor: 'pointer' }}>
-          查看冲突 / 覆盖缺口 / 工期明细（{s.conflicts.length} 项冲突、{s.coverageGaps} 项缺口、{s.durationIssues} 个工期不符）
+          查看冲突 / 覆盖缺口 / 工期明细（{s.conflicts.length} 项冲突、{s.coverageGaps} 项硬缺口、{s.coverageSectionGaps} 项章节定位提示、{s.durationIssues} 个工期不符）
         </summary>
         <div style={{ maxHeight: 240, overflow: 'auto', fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', marginTop: 6 }}>
           <div style={{ marginBottom: 6 }}>
@@ -624,7 +680,7 @@ function persistParseResult(
  * 缺陷本身在旧版 mergePrdResults：old→new 重编号表跨文件共用一张，后份文档的 REQ-001 覆盖前份的同名旧号，
  * 前份的 WBS 草稿因此整体偏移到后份的需求行上（实测 mtask四期 一次导 2 份 PRD，前 20 行零关联）。
  */
-import { buildGapFillDrafts, findUncoveredReqs, mergePrdResults, mergeRestoredFailures, type FailedShardRow, type PrdFailedChunk, type PrdParseResult, type RestoredFailedChunk } from './prdMerge';
+import { buildGapFillDrafts, findUncoveredReqs, isAcceptanceReq, mergePrdResults, mergeRestoredFailures, type FailedShardRow, type PrdFailedChunk, type PrdParseResult, type RestoredFailedChunk } from './prdMerge';
 
 /** 缺失原因 → 人话（决定用户该「稍后重试」还是「换模型/拆文档」） */
 const FAIL_REASON_LABEL: Record<PrdFailedChunk['reason'], string> = {
@@ -772,9 +828,14 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
   function fillCoverageGapsNow() {
     if (busy) return;
     const s = refreshQuality();
-    const gapGroups = s.coverage.filter((g) => g.missing.length > 0);
+    const gapGroups = s.coverage.filter((g) => !g.soft && g.missing.length > 0);
     if (gapGroups.length === 0) {
-      aiImportStore.log('当前没有覆盖缺口，无需补齐', 'info');
+      aiImportStore.log(
+        s.coverageSectionGaps > 0
+          ? `没有条目级硬缺口；${s.coverageSectionGaps} 项 § 章节定位缺口仅提示，不生成占位计划`
+          : '当前没有覆盖缺口，无需补齐',
+        'info',
+      );
       return;
     }
     const filled = appendCoverageGapPlans(plans, gapGroups);
@@ -947,7 +1008,12 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
     const stamp = Date.now();
     const reqRows = requirements.map((x, i) => ({ ...x, include: true, key: `pr-${stamp}-${i}` }));
     // T01001 二轮：解析出来就先汇总一次里程碑工期（AI 给的里程碑工期与其明细合计常不相等）
-    const planRows = recalcMilestoneDurations(drafts.map((x, i) => ({ ...x, include: true, key: `pp-${stamp}-${i}` })));
+    const planRows = recalcMilestoneDurations(drafts.map((x, i) => ({
+      ...x,
+      // 2026-11-17：P2/P3 默认不进当前排期（取消勾选，行保留可勾回）；P0/P1 与未标优先级照常勾选
+      include: !(/p[23]/i.test(x.priority ?? '') || /backlog|future/i.test(x.taskType ?? '')),
+      key: `pp-${stamp}-${i}`,
+    })));
     setReqs(reqRows);
     setPlans(planRows);
     setPreviewDocRefs([]); // 上一轮的预演引用数作废，避免新解析结果还挂着旧文档统计
@@ -980,9 +1046,12 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
     // T03185（UX-07③）：提交门槛由「需求或计划任一非空」收紧为「至少一条需求」——
     // 计划的需求关联以矩阵里的需求行为锚点，只勾计划会让关联悬空（事后无从回溯来源），故不放行。
     if (rq.length === 0) return null;
-    // 勾选过滤：仅提交勾选项；reqNos 需与提交的需求编号保持一致（未勾选需求的引用自动丢弃）
+    // 勾选过滤：仅提交勾选项；reqNos / acceptanceRefs 都需与提交的需求编号保持一致
+    // （未勾选需求的引用自动丢弃）。2026-11-17：只过滤 reqNos 会留下悬空 AC 引用，
+    // 服务端仍把它当成有效关联，质量门则因需求行未提交而报「AC 未映射」。
     const keptNos = new Set(rq.map((x) => x.reqNo));
-    const droppedReqNos = [...new Set(pl.flatMap((p) => p.reqNos.filter((n) => !keptNos.has(n))))];
+    const planRefs = (p: PrdPlan): string[] => [...p.reqNos, ...(p.acceptanceRefs ?? [])];
+    const droppedReqNos = [...new Set(pl.flatMap(planRefs).filter((n) => !keptNos.has(n)))];
     // T00908：暂存的源文件 PRD 全文随导入落库（PRD 管理视图），需求行回填 prd_id 建立关联
     // T04064：多文件不再拼接成一条「N 个来源文件」——逐份传 prdDocs，后端每份落一条文档，
     // 需求按 sourceIndex 归属各自文档；单文件仍保留 prdMd/prdFilename 旧字段，兼容未升级的服务端。
@@ -994,7 +1063,11 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
         projectId,
         createTasks,
         requirements: rq.map(({ include: _inc, key: _key, ...rest }) => rest),
-        plans: pl.map(({ include: _inc, key: _key, ...rest }) => ({ ...rest, reqNos: rest.reqNos.filter((n) => keptNos.has(n)) })),
+        plans: pl.map(({ include: _inc, key: _key, ...rest }) => ({
+          ...rest,
+          reqNos: rest.reqNos.filter((n) => keptNos.has(n)),
+          acceptanceRefs: rest.acceptanceRefs?.filter((n) => keptNos.has(n)),
+        })),
         // T04897：主 PRD（prdSources）docKind 默认 prd；关联设计/测试文档（designDocs）带各自 docKind 一并落 prd_docs
         prdDocs: [
           ...prdSources.map((s) => ({ filename: s.name, contentMd: s.text, docKind: 'prd' as const })),
@@ -1066,6 +1139,19 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
       );
       return;
     }
+    // 2026-11-17：结构质量门——前端阻断「多套 WBS / 孤儿 / 占位 / 碎片 / P2P3 进排期 / AC 未映射」。
+    // 后端 importPrd 会再校验一次；这里先挡是为了让用户在点导入前就看到全部阻断项，而不是等接口报错。
+    const gate = evaluateImportReadiness(
+      reqs.filter((x) => x.include && x.title.trim()),
+      plans.filter((x) => x.include && x.title.trim()),
+    );
+    if (gate.errors.length > 0) {
+      aiImportStore.patch({ error: `质量门阻断（${gate.errors.length} 项）：${gate.errors[0]}` });
+      aiImportStore.log(`导入已中止：质量门 ${gate.errors.length} 项阻断——\n- ${gate.errors.join('\n- ')}`, 'error');
+      if (gate.warnings.length > 0) aiImportStore.log(`同时有 ${gate.warnings.length} 条提醒：${gate.warnings.join('；')}`, 'info');
+      return;
+    }
+    if (gate.warnings.length > 0) aiImportStore.log(`质量门提醒（不阻断）：${gate.warnings.join('；')}`, 'info');
     const payload = composed.payload;
     const rqCount = ((payload.requirements as unknown[]) ?? []).length;
     const plCount = ((payload.plans as unknown[]) ?? []).length;
@@ -1101,6 +1187,11 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
   const uncoveredReqs = useMemo(
     () => findUncoveredReqs(reqs.filter((x) => x.include), plans.filter((x) => x.include)),
     [reqs, plans],
+  );
+  // AC 验收项不能补「实现/验证」计划；只有 FR/NFR/EX 等实现类需求才适合一键补计划。
+  const fillableUncovered = useMemo(
+    () => uncoveredReqs.filter((r) => !isAcceptanceReq(r)),
+    [uncoveredReqs],
   );
 
   /**
@@ -1166,12 +1257,21 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
   }
 
   function fillUncoveredPlans() {
-    if (uncoveredReqs.length === 0) return;
+    const acCount = uncoveredReqs.length - fillableUncovered.length;
+    if (fillableUncovered.length === 0) {
+      aiImportStore.log(
+        `当前 ${uncoveredReqs.length} 条未关联需求均为 AC 验收项，不能生成「实现/验证」任务；`
+        + '请把验收项挂到对应验收任务（或取消勾选该验收项），不要用补齐计划制造占位任务',
+        'error',
+      );
+      return;
+    }
     const stamp = Date.now();
-    const rows: PrdPlan[] = buildGapFillDrafts(uncoveredReqs).map((d, i) => ({ ...d, include: true, key: `pp-${stamp}-gap-${i}` }));
+    const rows: PrdPlan[] = buildGapFillDrafts(fillableUncovered).map((d, i) => ({ ...d, include: true, key: `pp-${stamp}-gap-${i}` }));
     setPlans((prev) => recalcMilestoneDurations([...prev, ...rows]));
     aiImportStore.log(
-      `已补齐 ${rows.length} 行计划（每条未关联需求一行「REQ-xxx … 实现/验证」，工期 1 天）——请核对标题，或取消勾选不需要追溯的需求`,
+      `已补齐 ${rows.length} 行计划（每条未关联实现类需求一行「REQ-xxx … 实现/验证」，工期 1 天）——请核对标题，或取消勾选不需要追溯的需求`
+      + (acCount > 0 ? `；另有 ${acCount} 条 AC 验收项未承接，不能补实现计划，请挂到验收任务` : ''),
       'ok',
     );
   }
@@ -1299,14 +1399,17 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
             <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
               {uncoveredReqs.slice(0, 6).map((r) => `${r.reqNo}《${r.title.slice(0, 16)}》`).join('、')}
               {uncoveredReqs.length > 6 ? ` 等 ${uncoveredReqs.length} 条` : ''}
-              （编号每次解析会重排，跨次比对请以标题为准）
+              (编号每次解析会重排，跨次比对请以标题为准)
+              {uncoveredReqs.length > fillableUncovered.length
+                ? `；其中 ${uncoveredReqs.length - fillableUncovered.length} 条为 AC 验收项，应挂到验收任务，不能补实现计划`
+                : ''}
             </span>
             <span style={{ flex: 1 }} />
-            <button onClick={fillUncoveredPlans} disabled={busy} className="tbtn-anim"
-              title="为每条未关联需求追加一行「REQ-xxx … 实现/验证」任务（工期 1 天）——确定性补齐，不依赖模型是否记得补计划；生成后可编辑或取消勾选"
+            <button onClick={fillUncoveredPlans} disabled={busy || fillableUncovered.length === 0} className="tbtn-anim"
+              title="为每条未关联的实现类需求追加一行「REQ-xxx … 实现/验证」任务（工期 1 天）；AC 验收项不会生成实现任务"
               aria-label="为未关联需求补齐计划"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--danger)', background: 'transparent', color: 'var(--danger)', fontSize: 'var(--fs-xs)', cursor: busy ? 'default' : 'pointer' }}>
-              补齐计划（{uncoveredReqs.length}）
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--danger)', background: 'transparent', color: 'var(--danger)', fontSize: 'var(--fs-xs)', cursor: busy || fillableUncovered.length === 0 ? 'default' : 'pointer' }}>
+              补齐计划（{fillableUncovered.length}）
             </button>
           </div>
         </div>

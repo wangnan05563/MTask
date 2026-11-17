@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 import type { AIProviderPreset } from '../api/client';
 import { LOCAL_PROVIDER_LOGOS } from '../ui/providerLogos';
@@ -9,9 +9,16 @@ import { LOCAL_PROVIDER_LOGOS } from '../ui/providerLogos';
  * 保证 file:// 打包版离线可用；未收录的厂商回落后端 icon_url，再失败才用首字母兜底。
  */
 export function ProviderIcon({ preset, size = 32 }: { readonly preset: AIProviderPreset; readonly size?: number }) {
-  const [failed, setFailed] = useState(false);
+  // 复查：按「本地图标 → 后端 icon_url → 首字母」逐级回退，且预设切换时复位失败态；
+  // 此前 failed 一旦置真，同一实例换到有效厂商也仍显示首字母。
+  const sources = useMemo(
+    () => Array.from(new Set([LOCAL_PROVIDER_LOGOS[preset.id], preset.icon_url].filter(Boolean) as string[])),
+    [preset.id, preset.icon_url],
+  );
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => { setAttempt(0); }, [preset.id, preset.icon_url]);
   const initial = preset.provider_name.trim().slice(0, 1).toUpperCase() || '?';
-  const logoSrc = LOCAL_PROVIDER_LOGOS[preset.id] ?? preset.icon_url;
+  const logoSrc = sources[attempt] ?? '';
   return (
     <span
       aria-hidden="true"
@@ -31,7 +38,7 @@ export function ProviderIcon({ preset, size = 32 }: { readonly preset: AIProvide
         fontSize: size >= 30 ? 'var(--fs-l)' : 'var(--fs-s)',
       }}
     >
-      {!failed && logoSrc ? (
+      {logoSrc ? (
         <img
           data-t05780="provider-logo"
           data-provider-id={preset.id}
@@ -41,7 +48,7 @@ export function ProviderIcon({ preset, size = 32 }: { readonly preset: AIProvide
           height={size}
           loading="lazy"
           referrerPolicy="no-referrer"
-          onError={() => setFailed(true)}
+          onError={() => setAttempt((a) => a + 1)}
           style={{ width: '100%', height: '100%', objectFit: 'contain', padding: 3 }}
         />
       ) : initial}

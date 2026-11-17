@@ -1,0 +1,1255 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronDown, ChevronUp, FolderPlus, ListTodo, Loader2, Move, Pencil, Plus, RotateCcw, Rocket, Save, SquarePen, Trash2, UnfoldVertical, FoldVertical, Wand2, X, Archive, Layers } from 'lucide-react';
+import { CopyButton } from '../ui/CopyButton';
+import { FontColorButton } from '../ui/FontColorButton';
+import { api, type AITool, type Project, type Prompt, type PromptCategory, type ReqCategory } from '../api/client';
+import { askConfirm, askInput } from '../ui/dialogs';
+import { clearSessionState, useSessionState } from '../ui/session';
+import { ProjectListHint, loadProjectList, useProjectList, type ProjectListView } from '../ui/projectList'; // T02201：项目列表取数容错层
+import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：AI 整理工具取数改走可见失败态层
+import { MarkdownContent } from '../ui/Markdown';
+import { PinToggle } from '../ui/PinToggle';
+import { FavoriteToggle } from '../ui/FavoriteToggle'; // T03683：收藏切换（与置顶正交，两页共用同一组件）
+import { ALL_FAV, isAllFav } from '../ui/favScope'; // T05687：分类下拉「全部收藏」哨兵
+import { OPTIMIZE_SCOPE_PROMPTS, busyScope, runOptimize, useOptimizeStore } from '../stores/optimizeStore'; // T03684：提示词优化运行态切页保持
+import { relTime } from '../ui/format';
+import { OPTIMIZE_EMPTY_MESSAGE, resolveOptimizeInput } from '../ui/optimizeInput'; // T04808：与通用需求菜单共用输入源判定
+import { comparePrompts, type PromptSortKey } from '../ui/promptSort'; // T03248（AI-104④）：排序单源（含使用次数）
+import { missingPromptVars, parsePromptVars } from '../ui/promptTemplate'; // T03247（AI-104①②）：{{变量}} 解析（与服务端同口径）
+
+/** T00636：剥离大模型常见 ``` 代码围栏（仅整段包裹时），供提示词优化结果回写前清洗 */
+function stripFence(text: string): string {
+  const m = /^\s*```(?:markdown|md)?\s*\n?([\s\S]*?)\n?```\s*$/.exec(text);
+  return m ? m[1] : text;
+}
+
+/** 提示词优化按钮（T00636，S3776 抽取） */
+function PromptOptimizeButton({ busy, onClick }: {
+  readonly busy: boolean;
+  readonly onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={busy}
+      title={busy ? '提示词优化进行中…' : '提示词优化 — 用默认模型把当前内容改写为结构化提示词（结果回填草稿）'}
+      aria-label={busy ? '提示词优化进行中' : '提示词优化：改写为结构化提示词'}
+      style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 4px', background: 'transparent', border: 'none', cursor: busy ? 'default' : 'pointer' }}
+      className={busy ? 'task-breathe' : undefined}
+    >
+      {busy ? <Loader2 size={13} className="aispin" /> : <Wand2 size={13} />}
+    </button>
+  );
+}
+
+/** T00873：移动提示词分组弹窗——样式对齐任务页「复用此任务」弹窗（复用对话框布局：描边面板 + 说明 + 目标下拉 + 取消/主按钮）。
+ *  语义为「移动」：把条目从当前提示词分组迁出、整体归到目标分组（覆盖 category_id，原分组不再包含）；
+ *  通用需求分类为 T00837 保留的归属切换（归入/解除），一并沉淀在同一弹窗以免功能缺失。 */
+function MovePromptModal({ p, categories, reqCats, catId, reqId, setCatId, setReqId, onCancel, onConfirm }: {
+  readonly p: Prompt; readonly categories: PromptCategory[]; readonly reqCats: ReqCategory[];
+  readonly catId: string; readonly reqId: string;
+  readonly setCatId: (v: string) => void; readonly setReqId: (v: string) => void;
+  readonly onCancel: () => void; readonly onConfirm: () => void;
+}) {
+  return (
+    // T01361：遮罩为纯装饰层（aria-hidden），点击关闭是鼠标便捷通路，键盘取消走「取消」按钮
+    <div
+      aria-hidden="true"
+      style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100 }}
+      onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}
+    >
+      {/* T00873 四轮：样式严格对齐任务页「复用此任务」（同 width/圆角/阴影 + 标题栏 + 底栏按钮），
+          此前是自绘面板（无标题栏、无关闭按钮、遮罩色与全局不一致） */}
+      <div style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(420px, 92vw)', boxShadow: '0 8px 30px rgba(0,0,0,.18)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600 }}>
+          <Move size={14} style={{ color: 'var(--accent)' }} /> 移动提示词
+          <span style={{ flex: 1 }} />
+          <button onClick={onCancel} title="关闭" aria-label="关闭移动提示词弹窗"
+            style={{ background: 'transparent', border: 'none', color: 'var(--text)', fontSize: 'var(--fs-l)', cursor: 'pointer' }}>×</button>
+        </div>
+        <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10, fontSize: 'var(--fs-s)' }}>
+          <div style={{ color: 'var(--text-muted)' }}>
+            <strong style={{ color: 'var(--text)' }}>{p.title}</strong> 可整体移动到另一个提示词分组（原分组不再包含此条目），
+            或仅归入某个通用需求分类。两个维度可独立改动：只改下方通用需求分类、提示词分组保持当前值也是合法的。
+          </div>
+          <div>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 4 }}>目标分组（提示词分组）</div>
+            <select autoFocus value={catId} onChange={(e) => setCatId(e.target.value)} aria-label="选择目标提示词分组"
+              title="选择该提示词整体迁入的目标分组"
+              style={{ width: '100%', padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>
+              {categories.map((c) => <option key={c.id} value={c.id}>{c.name}{c.id === p.category_id ? '（当前）' : ''}</option>)}
+            </select>
+          </div>
+          <div>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 4 }}>通用需求分类（归入/解除，可留空；标「（当前）」即已归入）</div>
+            <select value={reqId} onChange={(e) => setReqId(e.target.value)} aria-label="选择通用需求分类归属"
+              title="把该提示词归入某个通用需求分类；不改动时保持原值"
+              style={{ width: '100%', padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>
+              <option value="">未归属</option>
+              {reqCats.map((c) => <option key={c.id} value={c.id}>{c.name}{c.id === p.req_category_id ? '（当前）' : ''}</option>)}
+            </select>
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', padding: '10px 14px', borderTop: '1px solid var(--border)' }}>
+          <button onClick={onCancel} className="tbtn-anim"
+            style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>取消</button>
+          <button onClick={onConfirm} title="确认移动 — 按所选项更新提示词分组/通用需求分类（仅提交实际改动项）" aria-label="确认移动提示词分组" className="tbtn-anim"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)' }}>
+            移动
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 新建提示词表单（S3776：条件块下沉为独立组件） */
+function NewPromptForm({ newTitle, setNewTitle, newContent, setNewContent, createPrompt, optimizing, optimizeContent, setCreating }: {
+  readonly newTitle: string; readonly setNewTitle: React.Dispatch<React.SetStateAction<string>>;
+  readonly newContent: string; readonly setNewContent: React.Dispatch<React.SetStateAction<string>>;
+  readonly createPrompt: () => Promise<void>;
+  readonly optimizing: Record<string, boolean>;
+  readonly optimizeContent: (key: string, title: string, content: string) => Promise<void>;
+  readonly setCreating: (v: boolean) => void;
+}) {
+  const busy = optimizing['new'];
+  return (
+    <div style={{ border: '1px solid var(--border-strong)', borderRadius: 8, padding: 12, marginBottom: 12 }}>
+      <input
+        value={newTitle}
+        aria-label="新提示词的标题"
+        onChange={(e) => setNewTitle(e.target.value)}
+        placeholder="提示词标题"
+        style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-l)', boxSizing: 'border-box', marginBottom: 8 }}
+      />
+      <textarea
+        value={newContent}
+        aria-label="新提示词的内容"
+        onChange={(e) => setNewContent(e.target.value)}
+        rows={6}
+        placeholder="提示词内容（可用 {{变量}} 标记发起时需填写的部分）"
+        style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-m)', boxSizing: 'border-box', fontFamily: 'inherit' }}
+      />
+      <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
+        <button
+          onClick={() => void createPrompt()}
+          disabled={!newTitle.trim()}
+          title="保存 — 创建这条提示词"
+          aria-label="保存：创建这条提示词"
+          style={{ background: 'var(--success)', color: 'var(--on-solid)', border: 'none', padding: '6px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}
+        >
+          <Save size={13} />
+        </button>
+        {/* T00636：提示词优化（与任务页同款）——置于保存按钮旁 */}
+        <button
+          onClick={() => void optimizeContent('new', newTitle, newContent)}
+          disabled={busy}
+          className={busy ? 'task-breathe' : undefined}
+          title={busy ? '提示词优化进行中…' : '提示词优化 — 用默认模型把当前内容改写为结构化提示词（结果回填，可编辑后保存）'}
+          aria-label={busy ? '提示词优化进行中' : '提示词优化：改写为结构化提示词'}
+          style={{ background: busy ? 'var(--accent)' : 'transparent', color: busy ? 'var(--accent-text)' : 'var(--accent)', border: '1px solid var(--accent)', padding: '5px 8px', borderRadius: 6, cursor: busy ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-s)' }}
+        >
+          {busy ? <Loader2 size={13} className="aispin" /> : <Wand2 size={13} />} 提示词优化
+        </button>
+        <button onClick={() => setCreating(false)} title="取消 — 放弃新建并收起表单" aria-label="取消：放弃新建并收起表单"
+          style={{ display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
+          <X size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** T03247（AI-104①②）：发起提示词——按 `{{变量}}` 逐个填写，未填齐不可发起。
+ *  变量清单由前端解析只为生成输入框，最终正文由服务端渲染兜底（绕过弹窗直接调接口也拦得住）。
+ *  T03248（AI-104③）：发起成功由服务端把该提示词的 usage_count +1，回来由页面刷新列表。 */
+function PromptLaunchModal({ p, title, onTitle, values, onValue, tools, toolId, onToolId, busy, onCancel, onConfirm }: {
+  readonly p: Prompt; readonly title: string; readonly onTitle: (v: string) => void;
+  readonly values: Record<string, string>; readonly onValue: (name: string, v: string) => void;
+  readonly tools: AITool[]; readonly toolId: string; readonly onToolId: (v: string) => void;
+  readonly busy: boolean; readonly onCancel: () => void; readonly onConfirm: () => void;
+}) {
+  const vars = parsePromptVars(p.content);
+  const missing = missingPromptVars(p.content, values);
+  const blocked = missing.length > 0 || !toolId || !title.trim() || busy;
+  const overlayRef = useOverlayDismiss(true, busy, onCancel);
+  return (
+    <div data-t03247="launch-modal" ref={overlayRef}
+      style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100 }}>
+      <div style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(520px, 94vw)', maxHeight: '86vh', overflow: 'auto', boxShadow: '0 8px 30px rgba(0,0,0,.18)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600 }}>
+          <Rocket size={14} style={{ color: 'var(--accent)' }} /> 发起提示词
+          <span style={{ flex: 1 }} />
+          <button onClick={onCancel} disabled={busy} title="关闭" aria-label="关闭发起提示词弹窗"
+            style={{ background: 'transparent', border: 'none', color: 'var(--text)', fontSize: 'var(--fs-l)', cursor: busy ? 'default' : 'pointer' }}>×</button>
+        </div>
+        <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10, fontSize: 'var(--fs-s)' }}>
+          <div style={{ color: 'var(--text-muted)' }}>
+            <strong style={{ color: 'var(--text)' }}>{p.title}</strong> 将带着填好的内容新建一个 AI 控制台任务，可在「AI 工作台」查看进度与结果。
+          </div>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>任务标题</span>
+            <input value={title} onChange={(e) => onTitle(e.target.value)} placeholder="任务标题"
+              data-t03247="task-title" aria-label="任务标题：在 AI 控制台里显示的名称"
+              style={{ padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' }} />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>模型</span>
+            <select value={toolId} onChange={(e) => onToolId(e.target.value)}
+              data-t03247="tool-select" aria-label="模型：执行该提示词的 AI 工具" title="模型 — 选择执行该提示词的 AI 工具"
+              style={{ padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>
+              {tools.length === 0 && <option value="">（暂无可用模型，请先在「模型」菜单添加）</option>}
+              {tools.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+          </label>
+          {vars.length === 0 ? (
+            <div data-t03247="no-vars" style={{ color: 'var(--text-muted)' }}>
+              {'该模板没有 {{变量}}，可直接发起。'}
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>模板变量（全部必填，未填齐不可发起）</div>
+              {vars.map((name) => (
+                <label key={name} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{name}</span>
+                  <input value={values[name] ?? ''} onChange={(e) => onValue(name, e.target.value)}
+                    data-t03247="var-input" data-var-name={name} aria-label={`模板变量 ${name}`} placeholder={`填写 ${name}`}
+                    style={{ padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' }} />
+                </label>
+              ))}
+              {missing.length > 0 && (
+                <div data-t03247="missing-vars" style={{ color: 'var(--danger)' }}>还差：{missing.join('、')}</div>
+              )}
+            </div>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', padding: '10px 14px', borderTop: '1px solid var(--border)' }}>
+          <button onClick={onCancel} disabled={busy} className="tbtn-anim"
+            title="取消 — 关闭弹窗，不发起任务" aria-label="取消：关闭弹窗不发起任务"
+            style={{ padding: '5px 12px', borderRadius: 6, cursor: busy ? 'default' : 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>取消</button>
+          <button onClick={onConfirm} disabled={blocked} data-t03247="launch-confirm" className="tbtn-anim"
+            title={blocked ? '请先填齐模板变量、标题并选择模型' : '发起 — 新建 AI 控制台任务并开始执行'}
+            aria-label="发起：新建 AI 控制台任务并开始执行"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: blocked ? 'default' : 'pointer', border: 'none', background: blocked ? 'var(--border-strong)' : 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)', opacity: blocked ? 0.7 : 1 }}>
+            {busy ? <Loader2 size={13} className="aispin" /> : <Rocket size={13} />} 发起
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** T00629：复制到待办任务——目标项目选择弹窗（不选则落默认记事项目/收件箱） */
+function TaskCopyModal({ taskCopyPrompt, taskCopyBusy, setTaskCopyPrompt, taskCopyProjectId, setTaskCopyProjectId, projects, view, confirmCopyToTask }: {
+  readonly taskCopyPrompt: Prompt; readonly taskCopyBusy: boolean; readonly setTaskCopyPrompt: (v: Prompt | null) => void;
+  readonly taskCopyProjectId: string; readonly setTaskCopyProjectId: React.Dispatch<React.SetStateAction<string>>;
+  readonly projects: Project[]; readonly view: ProjectListView; readonly confirmCopyToTask: () => Promise<void> | void;
+}) {
+  const overlayRef = useOverlayDismiss(true, taskCopyBusy, () => setTaskCopyPrompt(null));
+  return (
+    <div ref={overlayRef}
+      style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(420px, 92vw)', boxShadow: '0 8px 30px rgba(0,0,0,.18)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600 }}>
+          <ListTodo size={14} style={{ color: 'var(--accent)' }} /> 复制到待办任务
+          <span style={{ flex: 1 }} />
+          <button onClick={() => setTaskCopyPrompt(null)} disabled={taskCopyBusy} title="关闭" aria-label="关闭复制到待办弹窗"
+            style={{ background: 'transparent', border: 'none', color: 'var(--text)', fontSize: 'var(--fs-l)', cursor: taskCopyBusy ? 'default' : 'pointer' }}>×</button>
+        </div>
+        <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10, fontSize: 'var(--fs-s)' }}>
+          <div style={{ color: 'var(--text-muted)' }}>
+            将提示词「<strong style={{ color: 'var(--text)' }}>{taskCopyPrompt.title}</strong>」复制为一条**待办任务**（内容写入任务描述，不改动提示词本身）。
+          </div>
+          <div>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 4 }}>目标项目</div>
+            <select value={taskCopyProjectId} onChange={(e) => setTaskCopyProjectId(e.target.value)} disabled={taskCopyBusy}
+              aria-label="目标项目" title="选择待办任务落到哪个项目"
+              style={{ width: '100%', padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>
+              <option value="">默认记事项目（收件箱）</option>
+              {projects.map((pj) => <option key={pj.id} value={pj.id}>{pj.name}</option>)}
+            </select>
+            {/* T02201：目标项目取数失败时显式提示并给重试入口（此前静默只剩「收件箱」可选） */}
+            <ProjectListHint view={view} />
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4 }}>
+              目标项目若已存在同标题待办，将自动复用（不重复创建）。
+            </div>
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', padding: '10px 14px', borderTop: '1px solid var(--border)' }}>
+          <button onClick={() => setTaskCopyPrompt(null)} disabled={taskCopyBusy} className="tbtn-anim"
+            style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>取消</button>
+          <button onClick={() => confirmCopyToTask()} disabled={taskCopyBusy} className="tbtn-anim"
+            title="确认复制到所选项目的待办任务" aria-label="确认复制到待办"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: taskCopyBusy ? 'default' : 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)' }}>
+            {taskCopyBusy ? <><Loader2 size={12} className="aispin" />复制中…</> : '复制到待办'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** M6-6.1：移动无实际变更时的反馈文案（区分「已归入」与「确实没改」两种真实情形） */
+function describeNoChange(
+  t: { catId: string; reqId: string; p: Prompt },
+  reqCats: ReqCategory[],
+  categories: PromptCategory[],
+): string {
+  const curReqName = t.reqId ? reqCats.find((c) => c.id === t.reqId)?.name : '';
+  const curCatName = categories.find((c) => c.id === t.catId)?.name;
+  if (t.reqId && t.reqId === (t.p.req_category_id ?? '')) {
+    return `该提示词已归入通用需求分类「${curReqName ?? t.reqId}」，无需重复操作；如需换分类请选择其它项，如需换提示词分组请在上方「目标分组」中选择`;
+  }
+  return `提示词分组与通用需求分类均未改动 —— 换分组请用上方「目标分组」（当前「${curCatName ?? '未分类'}」），归入通用需求分类请用下方下拉后点「移动」`;
+}
+
+/** M6-6.1：移动成功的反馈文案（按实际变更项给出，避免误导成"移动了提示词分组"） */
+function describeMove(t: { p: Prompt }, movedCat?: string, movedReq?: string): string {
+  if (movedCat && movedReq) return `已将「${t.p.title}」移动到「${movedCat}」并归入通用需求分类「${movedReq}」`;
+  if (movedReq) return `已将「${t.p.title}」归入通用需求分类「${movedReq}」（提示词分组保持不变）`;
+  if (movedCat) return `已移动至「${movedCat}」分组`;
+  return '已更新该提示词的归属';
+}
+
+/** 遮罩点击关闭：把「点空白处关闭」下沉为文档级监听，避免在非交互容器上挂鼠标事件 */
+function useOverlayDismiss(active: boolean, busy: boolean, close: () => void) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!active) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (e.target === ref.current && !busy) close();
+    };
+    document.addEventListener('click', onDocClick);
+    return () => document.removeEventListener('click', onDocClick);
+  }, [active, busy, close]);
+  return ref;
+}
+
+/** T00873 四轮：按「通用需求分类」过滤——让「归入通用需求分类」有可检索的落点（'' = 全部，'__none__' = 未归属） */
+function scopeByReqCategory(list: Prompt[], reqFilter: string): Prompt[] {
+  if (reqFilter === '') return list;
+  if (reqFilter === '__none__') return list.filter((p) => !p.req_category_id);
+  return list.filter((p) => p.req_category_id === reqFilter);
+}
+
+/** T02283：取数失败时绝不把「加载失败」降格成「暂无分类/暂无提示词」空态（那是用户还没用过的口吻） */
+function describeEmptyList(args: {
+  readonly categoryCount: number;
+  readonly search: string;
+  readonly reqFilter: string;
+  readonly viewScope: 'all' | 'fav';
+  /** T05687：是否「全部收藏」跨分组视图 */
+  readonly allFav: boolean;
+}): string {
+  const keyword = args.search.trim();
+  if (args.categoryCount === 0) return '暂无分类，请先用上方常驻的「新建分类」建一个分类。';
+  if (args.allFav) return '还没有收藏任何提示词 —— 点标题左侧的星标加入收藏，这里会跨分类汇总。';
+  // UX-04⑤：搜索无结果 ≠ 分类里没东西——两者文案必须能分辨，否则用户会以为数据丢了
+  if (keyword && args.reqFilter === '') return `没有匹配「${keyword}」的提示词 —— 换个关键词或清空搜索框。`;
+  if (keyword) return `没有匹配「${keyword}」的提示词 —— 当前还叠加了「通用需求分类」筛选，可一并清掉。`;
+  if (args.viewScope === 'fav') {
+    // T03683：收藏视图空态要说清「不是没数据，是没收藏」，否则用户会以为提示词丢了
+    return args.reqFilter === ''
+      ? '该分类下暂无收藏 —— 点标题左侧的星标把提示词加入收藏，或把「显示范围」切回「全部显示」。'
+      : '当前筛选条件下没有已收藏的提示词 —— 可清掉「通用需求分类」筛选，或把「显示范围」切回「全部显示」。';
+  }
+  if (args.reqFilter === '') return '该分类下暂无提示词。';
+  return '当前筛选条件下没有提示词 —— 可把「通用需求分类」筛选切回「全部通用需求分类」。';
+}
+
+/** 行类名：高亮动画、拖拽态与按压态按当前状态拼装 */
+function promptRowClass(
+  id: string,
+  state: { readonly flashAt: Record<string, number>; readonly dragId: string; readonly overId: string; readonly pressId: string },
+): string {
+  let cls = 'arena-row';
+  if (state.flashAt[id]) cls += ' flush';
+  if (state.dragId === id) cls += ' item-dragging';
+  else if (state.overId === id) cls += ' item-over';
+  if (state.pressId === id) cls += ' item-pressing';
+  return cls;
+}
+
+/** 提示词仓库：按分类管理提示词，支持增删改查与一键复制 */
+export function PromptsPage() {
+  // T00837：通用需求分类列表（调整分组浮层第二区数据源，实时同步 req_categories）
+  const [reqCats, setReqCats] = useState<ReqCategory[]>([]);
+  // T00873 四轮：按「通用需求分类」过滤列表——归入某分类后要能在该维度检索到（T00837「组织与检索效率」）；
+  // '' = 全部，'__none__' = 未归属，其余为具体分类 id
+  // T03684：列表视图轴（筛选/排序/展开）改会话级持久化——切一级菜单再回来不再被重置
+  const [reqFilter, setReqFilter] = useSessionState<string>('prompts.reqFilter', '');
+  // T03683：显示范围（'all' 全部显示 | 'fav' 只看收藏）。与 reqFilter 同属「列表视图轴」，
+  // 但走会话持久化——切菜单再回来不该被重置成全部（T03684 通查里同类失守点之一）
+  const [viewScope, setViewScope] = useSessionState<'all' | 'fav'>('prompts.viewScope', 'all');
+  // T00837：撤销快照——最近一次分组/通用需求分类调整前的归属，用于一键还原
+  const [lastMove, setLastMove] = useState<{ id: string; prevCategoryId: string; prevReqCategoryId: string } | null>(null);
+  // 当前分类：跨切换会话记忆用户选择，便于切回后继续操作
+  const [activeCat, setActiveCat] = useSessionState('prompts.activeCat', '');
+  const [search, setSearch] = useSessionState<string>('prompts.search', ''); // T00560：命令面板跳转写入搜索词
+  const [notice, setNotice] = useState('');
+  // 排序条件：sortKey 排序字段，sortDir 升降序（默认时间降序，与后端默认一致）
+  // T03248（AI-104④）：可选字段含 usage（按累计使用次数），比较逻辑统一在 ui/promptSort
+  const [sortKey, setSortKey] = useSessionState<PromptSortKey>('prompts.sortKey', 'updated_at');
+  const [sortDir, setSortDir] = useSessionState<'asc' | 'desc'>('prompts.sortDir', 'desc');
+  // 新建提示词表单：录入状态跨会话持久化，切页后可续写
+  const [creating, setCreating] = useSessionState('prompts.new.creating', false);
+  const [newTitle, setNewTitle] = useSessionState('prompts.new.title', '');
+  const [newContent, setNewContent] = useSessionState('prompts.new.content', '');
+  // 编辑草稿：promptId -> 草稿
+  // T03684：草稿是用户正在敲的内容 → 会话级持久化（此前是裸 useState，切一级菜单即整页卸载清空；
+  // 且「提示词优化」的结果回填也依赖它存在，否则回切后无处可落）
+  const [drafts, setDrafts] = useSessionState<Record<string, { title: string; content: string; categoryId: string }>>('prompts.drafts', {});
+
+  // T00636：提示词优化——与任务页「提示词优化」同款能力（复用 AI 整理工具把内容改写为结构化提示词）
+  const [organizeToolId, setOrganizeToolId] = useState('');
+  // T03684：优化的进行中标志与结果提升到模块级 store（键域 `prompts:`，'new' = 新建表单）。
+  // 此前二者挂在页面组件里，切页卸载后「正在优化…」呼吸态消失、AI 回来的结果打在已卸载组件上被丢弃。
+  const optimizeSnap = useOptimizeStore(OPTIMIZE_SCOPE_PROMPTS, (key, result) => {
+    if (key === 'new') {
+      setNewContent(result.text);
+      flash(`提示词优化完成（输入来源：${result.source}），可编辑后保存`);
+      return;
+    }
+    const draft = drafts[key];
+    // 编辑态已关闭（草稿不在）时不凭空造一条空标题草稿——那会把行渲染成「标题空着」的编辑态
+    if (!draft) { flash('提示词优化已完成，但该条的编辑态已关闭，请重新进入编辑后再优化'); return; }
+    setDrafts((prev) => ({ ...prev, [key]: { ...(prev[key] ?? draft), content: result.text } }));
+    flash(`提示词优化完成（输入来源：${result.source}），可编辑后保存`);
+  });
+  const optimizing = useMemo(() => busyScope(optimizeSnap, OPTIMIZE_SCOPE_PROMPTS), [optimizeSnap]); // key: 'new' 或 提示词 id
+
+  // T00629：复制到待办任务——目标项目选择弹窗（不选则落默认记事项目/收件箱）
+  const [taskCopyPrompt, setTaskCopyPrompt] = useState<Prompt | null>(null);
+  const [taskCopyProjectId, setTaskCopyProjectId] = useState('');
+  const [taskCopyBusy, setTaskCopyBusy] = useState(false);
+  // T03247（AI-104①②）：发起提示词弹窗——待发起条目、任务标题、变量取值、模型与提交中状态
+  const [launchTarget, setLaunchTarget] = useState<Prompt | null>(null);
+  const [launchTitle, setLaunchTitle] = useState('');
+  const [launchVars, setLaunchVars] = useState<Record<string, string>>({});
+  const [launchToolId, setLaunchToolId] = useState('');
+  const [launchBusy, setLaunchBusy] = useState(false);
+  // T02201：目标项目列表走统一容错层（弹窗打开时强刷一次的口径不变）
+  const projectList = useProjectList();
+  const { projects } = projectList;
+  // 内容 展开/收起：expandedIds 记录已展开的提示词 id，默认全部收起（点击标题切换，降低信息密度）
+  // T03684：展开集合属于「用户看到的视图」，切页回来应保持（此前裸 useState 会被重置成全收起）
+  const [expandedIds, setExpandedIds] = useSessionState<Record<string, boolean>>('prompts.expandedIds', {});
+  // 记录高亮：保存/新增成功后对目标行打标记，flashAt 值变化触发行动画重放
+  const [flashAt, setFlashAt] = useState<Record<string, number>>({});
+  function dropReorder(targetId: string) {
+    if (!dragId || dragId === targetId) { setDragId(''); setOverId(''); return; }
+    const ids = sortedPrompts.map((x) => x.id); // T00494 修正：按显示顺序计算拖拽映射（此前用原始数组顺序，与界面所见不一致导致拖拽错乱）
+    const from = ids.indexOf(dragId);
+    const to = ids.indexOf(targetId);
+    if (from < 0 || to < 0) return;
+    ids.splice(to, 0, ids.splice(from, 1)[0]);
+    setDragId(''); setOverId('');
+    void api.post('/prompts/reorder', { categoryId: activeCat, orderedIds: ids }).then(() => {
+      flash('顺序已保存');
+      void loadPrompts(activeCat, search);
+    }).catch((e) => flash(String((e as Error).message ?? e)));
+  }
+
+  // T00463：条目拖拽排序状态
+  const [dragId, setDragId] = useState('');
+  // T00489：按住行 200ms 才缩放（快速点击/点行内按钮不触发）
+  const [pressId, setPressId] = useState('');
+  const pressTimer = useRef<Record<string, ReturnType<typeof setTimeout>>>({}); // dragId 供 dropReorder 读取，setDragId 用于拖拽态重渲染
+  const [overId, setOverId] = useState(''); // overId 供列表行接入拖拽高亮后读取，setOverId 用于拖拽悬停态重渲染
+  // T00873：移动提示词分组弹窗——moveTarget 记录待移动的提示词及弹窗内选好的目标归属（catId=目标分组，reqId=通用需求分类）；null 关闭
+  const [moveTarget, setMoveTarget] = useState<{ p: Prompt; catId: string; reqId: string } | null>(null);
+
+  // T03683：提示条计时器要单例——此前每次 flash 都新建一个 setTimeout，
+  // 「乐观成功提示 + 紧随其后的失败回滚提示」会在同一个 2500ms 窗口里被前一次的定时器提前清空，
+  // 真机门实测就是这条竞态让「收藏失败，已还原」一闪即没（用户看不到回滚说明）。
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flash = (msg: string) => {
+    if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    setNotice(msg);
+    noticeTimer.current = setTimeout(() => setNotice(''), 2500);
+  };
+  useEffect(() => () => { if (noticeTimer.current) clearTimeout(noticeTimer.current); }, []);
+
+  // T00636：加载 AI 整理工具（模型菜单默认配置优先）——提示词优化使用
+  // T02213：取数改走可见失败态层——此前吞异常后 organizeToolId 保持空，点「优化」只会得到
+  // 「请先在模型菜单添加并选择工具」，把后端故障说成了用户的配置问题。
+  const toolsView = useResource<AITool[]>(() => api.get<AITool[]>('/aitools'));
+  useEffect(() => {
+    const ts = toolsView.data;
+    if (!ts) return;
+    const def = ts.find((t) => t.isDefaultOrganize) ?? ts[0];
+    if (def) setOrganizeToolId(def.id);
+  }, [toolsView.data]);
+
+  /** T03247：打开发起弹窗——解析模板变量并给空值初值；模型默认沿用整理工具或首个可用工具 */
+  function openLaunch(p: Prompt) {
+    setLaunchTarget(p);
+    setLaunchTitle(p.title);
+    setLaunchVars(Object.fromEntries(parsePromptVars(p.content).map((name) => [name, ''])));
+    setLaunchToolId((cur) => cur || organizeToolId || toolsView.data?.[0]?.id || '');
+  }
+
+  /** T03247/T03248：发起——服务端渲染模板并建任务；成功即 usage_count+1（失败预检不计数、不建任务） */
+  async function confirmLaunch() {
+    const p = launchTarget;
+    if (!p || launchBusy) return;
+    const missing = missingPromptVars(p.content, launchVars);
+    if (missing.length > 0) return flash(`请填写模板变量：${missing.join('、')}`);
+    if (!launchTitle.trim()) return flash('请先填写任务标题');
+    if (!launchToolId) return flash('请先在「模型」菜单添加并选择工具');
+    setLaunchBusy(true);
+    try {
+      const r = await api.post<{ id: string; usageCount?: number }>('/console-jobs', {
+        title: launchTitle.trim(), promptId: p.id, variables: launchVars, category: 'custom', toolId: launchToolId,
+      });
+      const sentTitle = launchTitle.trim();
+      setLaunchTarget(null);
+      flash(typeof r.usageCount === 'number'
+        ? `已发起「${sentTitle}」，该提示词累计使用 ${r.usageCount} 次（可在「AI 工作台」查看进度）`
+        : `已发起「${sentTitle}」（可在「AI 工作台」查看进度）`);
+      void loadPrompts(activeCat, search);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLaunchBusy(false);
+    }
+  }
+
+  /** T03248：使用次数归零（只重置计数，不动历史任务与提示词内容） */
+  async function resetUsage(p: Prompt) {
+    if (!(await askConfirm(`将「${p.title}」的使用次数归零？（只重置计数，不影响历史任务）`))) return;
+    try {
+      await api.post(`/prompts/${p.id}/usage/reset`, {});
+      flash('使用次数已归零');
+      void loadPrompts(activeCat, search);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /** T00636 / T04808：提示词优化——把标题/内容交给 AI 改写为结构化提示词，结果回写草稿供确认后保存。
+   *  内容为空时回退用标题作为唯一输入（判定单源见 ui/optimizeInput，与通用需求菜单同口径）；
+   *  标题与内容都为空时提示「请输入标题或描述」；结果剥离代码围栏。
+   *  T03684：运行态与结果交给 optimizeStore，回填由本页挂载时的 drain 完成（切页也能落地）。 */
+  async function optimizeContent(key: string, title: string, content: string) {
+    if (optimizing[key]) return;
+    // T02213：取数失败时不再把它报成「请先添加并选择工具」——那是配置问题，此刻是后端问题
+    if (!organizeToolId) {
+      return flash(toolsView.phase === 'error' ? 'AI 整理工具列表加载失败，请先用工具条的「重试」再优化' : '请先在「模型菜单」添加并选择工具');
+    }
+    const input = resolveOptimizeInput(title, content);
+    if (!input) return flash(OPTIMIZE_EMPTY_MESSAGE);
+    // 后端以 ok:false + error 返回业务失败（不抛异常），原文案优先于 store 的兜底文案
+    let serverError = '';
+    const r = await runOptimize(
+      `${OPTIMIZE_SCOPE_PROMPTS}${key}`,
+      (signal) => api.post<{ ok: boolean; content?: string; error?: string }>('/ai/optimize', {
+        toolId: organizeToolId, title: input.title, description: input.description,
+      }, signal),
+      (result) => {
+        if (!result.ok) { serverError = result.error ?? '优化失败'; return null; }
+        return { text: stripFence(result.content ?? ''), source: input.source };
+      },
+    );
+    if (r.ok) return; // 成功文案由 drain 回填草稿时给出
+    flash(serverError || r.error || '优化失败');
+  }
+
+  // T02283：分类与提示词列表接入共享可见失败态层（T02213 口径）。此前两处 `api.get` 抛错后要么被
+  // 调用方 try/catch 只 flash 一句、要么直接落空，断供时分类下拉变空、列表显示「暂无分类，请先新建
+  // 分类」——把后端故障伪装成用户尚未开始使用的初始态，且没有任何重试入口。
+  const categoriesView = useResource<PromptCategory[]>(async () => {
+    const cats = await api.get<PromptCategory[]>('/prompt-categories');
+    // 保持当前选中；选中项被删除或首次加载时回落到第一个分类
+    setActiveCat((cur) => (isAllFav(cur) || cats.some((c) => c.id === cur) ? cur : cats[0]?.id ?? ''));
+    return cats;
+  });
+  const categories = categoriesView.data ?? [];
+
+  // T00837：拉取通用需求分类，供「调整分组」第二区选择（通用需求菜单分类变更后输入此处同步）
+  const loadReqCats = useCallback(async () => {
+    try { setReqCats(await api.get<ReqCategory[]>('/req-categories')); } catch { /* 忽略 */ }
+  }, []);
+
+  // enabled:false 关掉 hook 的挂载自跑，取数统一由下方 [activeCat, debouncedSearch] effect 触发（与原 L386
+  // 语义一致，避免挂载时重复请求）；关键词取实时 search，防抖只推迟触发时机
+  const promptsView = useResource<Prompt[]>(async () => {
+    if (!activeCat) return [];
+    const qs = new URLSearchParams();
+    // T05687：「全部收藏」不带 categoryId，只传 favorited=1 —— 后端跨分组聚合
+    if (isAllFav(activeCat)) qs.set('favorited', '1');
+    else qs.set('categoryId', activeCat);
+    if (search.trim()) qs.set('keyword', search.trim());
+    return api.get<Prompt[]>(`/prompts?${qs.toString()}`);
+  }, { enabled: false });
+  const prompts = promptsView.data ?? [];
+
+  /* UX-04②：搜索防抖 250ms。取数触发键换成稳定下来的 debouncedSearch，而 loader 闭包仍读实时
+     search——防抖只推迟「何时发请求」，不改变「发出去的是哪个词」，因此不会出现用旧关键词取数、
+     或输入被截断成半截词去查的二次问题。 */
+  const [debouncedSearch, setDebouncedSearch] = useState(search);
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 250);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  // 同名 shim：保留既有 ~18 处 `void/await loadCategories()`、`loadPrompts(activeCat, search)` 调用点。
+  // loader 闭包由 useResource 每轮渲染刷新（loadRef），传入的参数就是当前 state，无需再参与取数。
+  const loadCategories = useCallback(async () => { categoriesView.reload(); }, [categoriesView.reload]);
+  const loadPrompts = useCallback(async (_categoryId?: string, _keyword?: string) => {
+    promptsView.reload();
+  }, [promptsView.reload]);
+
+  useEffect(() => { promptsView.reload(); }, [activeCat, debouncedSearch, promptsView.reload]);
+  useEffect(() => { void loadReqCats(); }, [loadReqCats]);
+
+  // T03184（PM-102）：命令面板点选提示词后「定位 + 高亮」，不再只把用户丢到提示词页。
+  // 两条通道缺一不可：页面已挂载时事件即时生效；未挂载（从别的菜单点选）时事件会丢，
+  // 故面板同时写 prompts.focusId 会话键，本页挂载时读一次并清除，避免再次进页重复高亮。
+  useEffect(() => {
+    const locate = (detail: { promptId?: string; categoryId?: string }) => {
+      const promptId = detail.promptId;
+      if (!promptId) return;
+      if (detail.categoryId) setActiveCat(detail.categoryId); // 目标可能在别的分组：先切过去，否则行根本不在列表里
+      setSearch('');
+      setExpandedIds((prev) => ({ ...prev, [promptId]: true }));
+      setFlashAt((prev) => ({ ...prev, [promptId]: Date.now() }));
+      let tries = 0;
+      const scroll = () => {
+        const el = document.getElementById(`prompt-row-${promptId}`);
+        if (el) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); return; }
+        if (++tries < 20) setTimeout(scroll, 100); // 等列表取数/切分组后行才存在
+      };
+      setTimeout(scroll, 80);
+    };
+    const onFocus = (e: Event) => locate(((e as CustomEvent).detail ?? {}) as { promptId?: string; categoryId?: string });
+    globalThis.addEventListener('mtaskPromptFocus', onFocus);
+    try {
+      const raw = sessionStorage.getItem('prompts.focusId');
+      if (raw) {
+        sessionStorage.removeItem('prompts.focusId');
+        locate(JSON.parse(raw) as { promptId?: string; categoryId?: string });
+      }
+    } catch { /* 键损坏/存储不可用：忽略 */ }
+    return () => globalThis.removeEventListener('mtaskPromptFocus', onFocus);
+  }, []);
+
+  // ---------- 分类管理 ----------
+  async function addCategory() {
+    const name = await askInput({ title: '新建提示词分类', placeholder: '请输入分类名称' });
+    if (!name) return;
+    try {
+      const created = await api.post<PromptCategory>('/prompt-categories', { name });
+      await loadCategories();
+      setActiveCat(created.id);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function renameCategory(cat: PromptCategory) {
+    const name = await askInput({ title: '重命名分类', defaultValue: cat.name });
+    if (!name || name === cat.name) return;
+    try {
+      await api.patch(`/prompt-categories/${cat.id}`, { name });
+      void loadCategories();
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function removeCategory(cat: PromptCategory) {
+    const cnt = cat.promptCount ?? 0;
+    // 影响面文案先算好再插值：避免模板字面量嵌套（内层模板写在外层 ${} 里）
+    const impact = cnt > 0 ? `其下 ${cnt} 条提示词将一并删除，` : '';
+    const ok = await askConfirm(`确认删除分类「${cat.name}」？${impact}此操作不可恢复。`);
+    if (!ok) return;
+    try {
+      await api.del(`/prompt-categories/${cat.id}`);
+      void loadCategories();
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  // ---------- 提示词增删改查 ----------
+  async function createPrompt() {
+    if (!newTitle.trim() || !activeCat) return;
+    try {
+      await api.post('/prompts', { categoryId: activeCat, title: newTitle.trim(), content: newContent });
+      setNewTitle('');
+      setNewContent('');
+      setCreating(false);
+      // 提交成功后清空持久化缓存，避免下次继续显示旧录入内容
+      clearSessionState('prompts.new.creating');
+      clearSessionState('prompts.new.title');
+      clearSessionState('prompts.new.content');
+      void loadPrompts(activeCat, search);
+      void loadCategories();
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function saveDraft(p: Prompt) {
+    const d = drafts[p.id];
+    // 可选链一步覆盖「无草稿」与「标题为空」两种返回条件
+    if (!d?.title.trim()) return;
+    try {
+      await api.patch(`/prompts/${p.id}`, { title: d.title.trim(), content: d.content, categoryId: d.categoryId });
+      setDrafts((prev) => {
+        const next = { ...prev };
+        delete next[p.id];
+        return next;
+      });
+      setFlashAt((prev) => ({ ...prev, [p.id]: Date.now() }));
+      void loadPrompts(activeCat, search);
+      void loadCategories();
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  // T00525：删除改归档——数据保留，可后续恢复
+  async function archivePrompt(p: Prompt) {
+    if (!(await askConfirm(`归档提示词「${p.title}」？归档后列表不再显示（数据保留）。`))) return;
+    try {
+      await api.patch(`/prompts/${p.id}`, { archived: true });
+      flash('已归档');
+      void loadPrompts(activeCat, search);
+      void loadCategories();
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /** T00629：复制到待办任务——支持**指定目标项目**（弹窗选择；不选则落默认记事项目/收件箱） */
+  async function copyToTask(p: Prompt) {
+    setTaskCopyPrompt(p);
+    setTaskCopyProjectId('');
+    // T02201：交统一容错层强刷一次（失败不再静默落回「只有收件箱」——弹窗内显式提示并可重试）
+    void loadProjectList(true);
+  }
+
+  /** T00629：确认复制到待办（目标项目可选） */
+  async function confirmCopyToTask() {
+    if (!taskCopyPrompt) return;
+    const p = taskCopyPrompt;
+    const targetName = taskCopyProjectId
+      ? (projects.find((x) => x.id === taskCopyProjectId)?.name ?? '所选项目')
+      : '默认记事项目（收件箱）';
+    setTaskCopyBusy(true);
+    try {
+      const r = await api.post<{ ok: boolean; reused: boolean }>(`/prompts/${p.id}/to-task`,
+        taskCopyProjectId ? { projectId: taskCopyProjectId } : {});
+      flash(r.reused
+        ? `目标项目已有同标题待办，已复用（${targetName}）`
+        : `已复制「${p.title}」到待办任务（${targetName}）`);
+      setTaskCopyPrompt(null);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTaskCopyBusy(false);
+    }
+  }
+
+  /** 复制到剪贴板：统一走 Clipboard API，失败时给出可见提示（S1874：不再使用已废弃的 execCommand） */
+  async function copyPrompt(p: Prompt) {
+    try {
+      await navigator.clipboard.writeText(p.content);
+      flash('已复制到剪贴板');
+    } catch {
+      flash('复制失败：当前环境不允许访问剪贴板，请手动选择文本复制');
+    }
+  }
+
+  /** 置顶/取消置顶：切换后重新拉取，置顶项经前端排序始终排在最前 */
+  async function togglePin(p: Prompt) {
+    try {
+      await api.patch(`/prompts/${p.id}`, { pinned: !p.pinned });
+      void loadPrompts(activeCat, search);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /** T03683：收藏/取消收藏——乐观更新本地行，失败回滚并提示。
+   *  与 togglePin 的「写库后整表 reload」不同：收藏只决定行是否出现在「收藏」视图，
+   *  不影响排序，本地改一行就能即时反映，省一次 GET，也避免在收藏视图下点收藏后整表闪烁。
+   *  回滚写回点击前快照（PATCH 是单字段通道，同毫秒内别处改同一行的概率极低；
+   *  真发生时下一次 reload 即以库为准纠偏，不会长期错位）。 */
+  async function toggleFavorite(p: Prompt) {
+    const snapshot = promptsView.data ?? [];
+    const withFlag = (favorited: boolean) => snapshot.map((x) => (x.id === p.id ? { ...x, is_favorited: favorited } : x));
+    const next = !p.is_favorited;
+    promptsView.setData(withFlag(next));
+    try {
+      await api.patch(`/prompts/${p.id}`, { isFavorited: next });
+      flash(next ? `已收藏「${p.title}」` : `已取消收藏「${p.title}」`);
+    } catch (e) {
+      promptsView.setData(withFlag(!next));
+      flash(`收藏失败，已还原：${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /** T00873：打开「移动提示词」弹窗——预填当前目标分组与通用需求分类归属 */
+  const openMove = (p: Prompt) => setMoveTarget({ p, catId: p.category_id, reqId: p.req_category_id ?? '' });
+
+  /** T00873：确认移动——把提示词整体迁到目标分组（覆盖 category_id，原分组不再包含），并同步通用需求分类归属。
+   *  只对实际变更的字段发 PATCH（避免无意义写库）；变更前记录撤销快照供 toolbar「撤销」还原。 */
+  async function confirmMove() {
+    const t = moveTarget;
+    if (!t) return;
+    const patch: Record<string, string> = {};
+    if (t.catId !== t.p.category_id) patch.categoryId = t.catId;
+    if (t.reqId !== (t.p.req_category_id ?? '')) patch.reqCategoryId = t.reqId;
+    // T00873 四轮：两份下拉都维持原值才算"无改动"——区分「已归入」与「确实没改」两种真实情形
+    if (Object.keys(patch).length === 0) {
+      flash(describeNoChange(t, reqCats, categories));
+      setMoveTarget(null);
+      return;
+    }
+    const prev = { prevCategoryId: t.p.category_id, prevReqCategoryId: t.p.req_category_id ?? '' };
+    setMoveTarget(null);
+    try {
+      await api.patch(`/prompts/${t.p.id}`, patch);
+      setLastMove({ id: t.p.id, ...prev });
+      void loadPrompts(activeCat, search);
+      void loadCategories();
+      // 反馈文案按实际变更项给出：只切通用需求分类时就提示通用需求归属，避免误导成"移动了提示词分组"
+      const movedCat = patch.categoryId ? categories.find((c) => c.id === t.catId)?.name : undefined;
+      const movedReq = patch.reqCategoryId ? reqCats.find((c) => c.id === t.reqId)?.name : undefined;
+      flash(describeMove(t, movedCat, movedReq));
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /** T00837：撤销最近一次分组/通用需求分类调整，还原到调整前归属 */
+  async function undoMove() {
+    if (!lastMove) return;
+    const patch: Record<string, string> = {};
+    if (lastMove.prevCategoryId) patch.categoryId = lastMove.prevCategoryId;
+    if (lastMove.prevReqCategoryId) patch.reqCategoryId = lastMove.prevReqCategoryId;
+    try {
+      await api.patch(`/prompts/${lastMove.id}`, patch);
+      setLastMove(null);
+      void loadPrompts(activeCat, search);
+      void loadCategories();
+      flash('已撤销最近一次分组调整');
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  const activeCatObj = categories.find((c) => c.id === activeCat);
+
+  // ---- 行级交互回调（S3776/S2004：从 JSX 内联箭头下沉到组件级，降低嵌套与复杂度） ----
+  /** 长按行按压反馈：按下 200ms 记为 pressing（行内按钮/输入框不触发；统一用 pointer 事件，兼容触屏长按） */
+  const startPress = (id: string, target: EventTarget | null) => {
+    if ((target as HTMLElement).closest('button, input, select, a, textarea, label')) return;
+    pressTimer.current[id] = globalThis.setTimeout(() => setPressId(id), 200);
+  };
+  const endPress = (id: string) => {
+    clearTimeout(pressTimer.current[id]);
+    if (pressId) setPressId('');
+  };
+  const endPressRow = (id: string) => {
+    clearTimeout(pressTimer.current[id]);
+    if (pressId === id) setPressId('');
+  };
+  const rowCls = (id: string) => promptRowClass(id, { flashAt, dragId, overId, pressId });
+  /** 全部展开/收起（T00760 按钮回调下沉） */
+  const allRowsExpanded = prompts.length > 0 && prompts.every((x) => expandedIds[x.id]);
+  const toggleAllRows = () => setExpandedIds(allRowsExpanded ? {} : Object.fromEntries(prompts.map((x) => [x.id, true])));
+  /** 编辑草稿字段更新（S3776：从 JSX 内联箭头下沉） */
+  const patchDraft = (id: string, draft: { title: string; content: string; categoryId: string }, field: 'title' | 'content' | 'categoryId', v: string) =>
+    setDrafts((prev) => ({ ...prev, [id]: { ...(prev[id] ?? draft), [field]: v } }));
+  const cancelEdit = (id: string) => setDrafts((prev) => { const next = { ...prev }; delete next[id]; return next; });
+  const startEdit = (p: Prompt) => setDrafts((prev) => ({ ...prev, [p.id]: { title: p.title, content: p.content, categoryId: p.category_id } }));
+  const startPressFor = (id: string) => (e: React.PointerEvent) => startPress(id, e.target);
+  const endPressFor = (id: string) => () => endPress(id);
+  const endPressRowFor = (id: string) => () => endPressRow(id);
+  const dragOverRowFor = (id: string) => (e: React.DragEvent) => dragOverRow(id, e);
+  const dropRowFor = (id: string) => (e: React.DragEvent) => { e.preventDefault(); dropReorder(id); };
+  const dragStartRow = (id: string, e: React.DragEvent) => { setDragId(id); e.dataTransfer.effectAllowed = 'move'; };
+  const dragEndRow = () => { setDragId(''); setOverId(''); };
+  const dragOverRow = (id: string, e: React.DragEvent) => { e.preventDefault(); if (id !== dragId) setOverId(id); };
+  /** 提示词优化：结果回填当前编辑草稿（S2004：抽出避免 JSX 深层嵌套箭头）
+   *  T03684：不再传回填闭包——回填由 store 的 drain 按 key 落到 drafts，切页回来同样生效 */
+  const optimizeRow = (id: string, draft: { title: string; content: string; categoryId: string }) => {
+    void optimizeContent(id, draft.title, draft.content);
+  };
+  const applyColor = (id: string, c: string) => {
+    void api.patch(`/prompts/${id}`, { color: c }).then(() => { void loadPrompts(activeCat, search); });
+  };
+
+  /**
+   * 依据当前排序条件对提示词排序（不改变原始 state）；置顶项始终排在最前。
+   * T00873 四轮：先按「通用需求分类」过滤——让「归入通用需求分类」有可检索的落点。
+   */
+  const reqScopedPrompts = scopeByReqCategory(prompts, reqFilter);
+  // T03683：「显示范围=收藏」在通用需求分类筛选之后叠加——两轴是 AND 关系（归属 × 收藏）
+  const scopePrompts = viewScope === 'fav' ? reqScopedPrompts.filter((p) => Boolean(p.is_favorited)) : reqScopedPrompts;
+  const sortedPrompts = [...scopePrompts].sort((a, b) => comparePrompts(a, b, sortKey, sortDir));
+  const listFailed = categoriesView.phase === 'error' || promptsView.phase === 'error';
+  const emptyListHint = describeEmptyList({
+    categoryCount: categories.length, search, reqFilter, viewScope, allFav: isAllFav(activeCat),
+  });
+  return (
+    <section>
+      {/* 悬浮操作按钮 + 行 hover 高亮 + 记录高亮动画：类名与任务页体验一致 */}
+      <style>{`
+        .arena-row { transition: background-color .15s ease, transform .12s ease; }
+        /* T00467/T00468：图标按钮 hover 动画 */
+        .tbtn-anim svg { transition: transform .18s ease; }
+        .tbtn-anim:hover svg { transform: scale(1.2) rotate(8deg); }
+        .tbtn-anim:active svg { transform: scale(.88); }
+        .arena-row.item-pressing { transform: scale(.985); } /* T00489：仅按住行触发 */
+        .arena-row:hover { background: var(--surface-2); }
+        .abtn { opacity: 0; visibility: hidden; transition: opacity .15s ease, visibility 0s linear .15s; }
+        /* T00469 的 hover/active 两档曾在本页原样再抄一遍：页面级样式在文档里更靠后且特异性更高，
+           会把 App.tsx 修正过特异性后的「按下回弹」盖成 0.9 档。T04547 收回单源，
+           本页只保留自己独有的「行悬浮才显形」规则。 */
+        .abtn svg { transition: transform .15s ease; }
+        .arena-row:hover .abtn, .arena-row:focus-within .abtn { opacity: 1; visibility: visible; transition: opacity .15s ease, visibility 0s; }
+        @keyframes rowflush { 0% { background: var(--accent-soft); } 100% { background: transparent; } }
+        .arena-row.flush { animation: rowflush 1.4s ease; }
+        .item-dragging { opacity: .5; box-shadow: 0 8px 20px rgba(0,0,0,.25); border-color: var(--accent) !important; }
+        .item-over { box-shadow: inset 0 3px 0 var(--accent); border-color: var(--accent) !important; }
+        .move-btn:hover { color: var(--accent); }
+      `}</style>
+      {/* 工具栏：分类切换与管理 */}
+      <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <select value={activeCat} onChange={(e) => setActiveCat(e.target.value)}
+          aria-label="提示词分类：切换要查看的分类" title="分类切换 — 切换要查看的提示词分类"
+          style={{ padding: 6, fontSize: 'var(--fs-s)', minWidth: 180, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          {/* T05687：首项固定「全部收藏」，跨分组聚合；主题色底与普通分类区分 */}
+          <option value={ALL_FAV} style={{ background: 'var(--accent)', color: 'var(--accent-text)', fontWeight: 600 }}>★ 全部收藏</option>
+          {categories.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.promptCount ?? 0}）</option>)}
+        </select>
+        {/* T02283：断供时给出原因与重试入口，而不是让下拉静默变空 */}
+        <ResourceHint view={categoriesView} label="提示词分类" />
+        {/* T00510 调整：分类管理三按钮与任务菜单项目按钮组同款——纯图标+边框、同组紧跟下拉、悬浮显示。
+            UX-04①：一个分类都没有时，「新建分类」是唯一出路，不能藏在悬浮之后——常驻可见。 */}
+        <span className={categories.length === 0 ? '' : 'op-hidden'} style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+        <button onClick={() => void addCategory()} title="新建分类 — 新增一个提示词分类" aria-label="新建分类：新增一个提示词分类"
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}>
+          <FolderPlus size={13} />{categories.length === 0 ? <span>新建分类</span> : null}
+        </button>
+        {activeCatObj && (
+          <>
+          <button onClick={() => void renameCategory(activeCatObj)}
+            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}
+            title="重命名 — 修改当前分类名称" aria-label="重命名：修改当前分类名称">
+            <SquarePen size={13} />
+          </button>
+          <button onClick={() => void removeCategory(activeCatObj)}
+            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', color: 'var(--danger)', background: 'transparent', border: '1px solid var(--danger)', borderRadius: 6, cursor: 'pointer' }}
+            title="删除分类 — 删除当前分类及其下提示词" aria-label="删除分类：删除当前分类及其下提示词">
+            <Trash2 size={13} />
+          </button>
+          </>
+        )}
+        </span>
+        {activeCatObj && (
+            <button className="tbtn-anim op-hidden" onClick={toggleAllRows} // T00760：默认隐藏悬浮显示
+              title={allRowsExpanded ? '全部收起 — 收起全部提示词内容' : '全部展开 — 展开全部提示词内容'} aria-label="全部展开或收起提示词内容"
+              style={{ display: 'inline-flex', alignItems: 'center', padding: '4px 8px', borderRadius: 6 }}>
+              {allRowsExpanded ? <FoldVertical size={13} /> : <UnfoldVertical size={13} />}
+            </button>
+        )}
+        <button
+          onClick={() => { setCreating(!creating); setNewTitle(''); setNewContent(''); }}
+          disabled={!activeCat}
+          // 无文字纯图标按钮：悬浮提示随状态切换（新建/收起），点击动画由全局 button:active 提供
+          // T00760：默认隐藏悬浮显示
+          title={creating ? '收起 — 收起新建提示词表单' : '新建提示词 — 展开新建提示词表单'}
+          aria-label={creating ? '收起：收起新建提示词表单' : '新建提示词：展开新建提示词表单'}
+          className="op-hidden"
+          style={{ marginLeft: 12, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', padding: '6px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}
+        >
+          <Plus size={13} />
+        </button>
+        {/* T00837：撤销最近一次分组/通用需求分类调整（仅在有快照时显示） */}
+        {lastMove && (
+          <button onClick={() => void undoMove()} title="撤销 — 还原最近一次分组/通用需求分类调整" aria-label="撤销分组调整"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 10px', fontSize: 'var(--fs-s)', background: 'var(--card-bg)', border: '1px solid var(--accent)', color: 'var(--accent)', borderRadius: 6, cursor: 'pointer' }}>
+            <UnfoldVertical size={13} /> 撤销
+          </button>
+        )}
+        {/* T00873 四轮：通用需求分类过滤——归入分类后可在此维度检索（T00837「组织与检索效率」）。
+            仅在通用需求菜单确有分类时显示，避免空下拉占位 */}
+        {reqCats.length > 0 && (
+          <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+            <select
+              value={reqFilter}
+              onChange={(e) => setReqFilter(e.target.value)}
+              title="通用需求分类筛选 — 按提示词归属的通用需求分类过滤列表"
+              aria-label="通用需求分类筛选：按通用需求归属过滤提示词列表"
+              style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}
+            >
+              <option value="">全部通用需求分类</option>
+              <option value="__none__">未归入</option>
+              {reqCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </span>
+        )}
+        {/* T03683：显示范围（全部显示 / 收藏）——与「通用需求分类筛选」「排序」同为列表视图轴，
+            但刻意不加 op-hidden：票面要求它出现在筛选栏，藏进悬浮态等于没有入口 */}
+        <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+          <select
+            data-t03683="view-scope"
+            value={viewScope}
+            onChange={(e) => setViewScope(e.target.value as 'all' | 'fav')}
+            title="显示范围 — 全部提示词或只看已收藏"
+            aria-label="显示范围：选择显示全部提示词还是只看已收藏"
+            style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}
+          >
+            <option value="all">全部显示</option>
+            <option value="fav">收藏</option>
+          </select>
+        </span>
+        <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+          <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+          <select
+          value={sortKey}
+          onChange={(e) => setSortKey(e.target.value as PromptSortKey)}
+          title="排序字段 — 选择列表按哪个字段排序"
+          aria-label="排序字段：选择提示词列表的排序依据"
+          style={{ padding: 6, fontSize: 'var(--fs-s)' }}
+        >
+          <option value="manual">手动排序</option>
+          <option value="updated_at">更新时间</option>
+          <option value="created_at">创建时间</option>
+          <option value="title">名称</option>
+          {/* T03248（AI-104④）：按累计成功发起次数排序（次数相同回落更新时间降序） */}
+          <option value="usage">使用次数</option>
+        </select>
+        </span>
+        </span>
+        <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+          <span className="op-hidden" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+          <select
+          value={sortDir}
+          onChange={(e) => setSortDir(e.target.value as 'asc' | 'desc')}
+          title="排序方式 — 升序或降序"
+          aria-label="排序方式：选择升序或降序"
+          style={{ padding: 6, fontSize: 'var(--fs-s)' }}
+        >
+          <option value="desc">降序</option>
+          <option value="asc">升序</option>
+        </select>
+        </span>
+        </span>
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="搜索标题/内容…" data-page-search
+          aria-label="搜索提示词（标题/内容）" title="搜索提示词 — 按标题与内容关键词检索当前分类"
+          className="op-hidden" // T00760：默认隐藏悬浮显示
+          style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', marginLeft: 'auto' }}
+        />
+        {/* T02213：AI 整理工具取数失败时给出原因与重试入口——否则「优化」只会误报「请先添加并选择工具」 */}
+        <ResourceHint view={toolsView} label="AI 整理工具" />
+        {/* T02283：提示词列表取数失败态（配合上方 listFailed 空态抑制，断供不再冒充「暂无提示词」） */}
+        <ResourceHint view={promptsView} label="提示词列表" />
+        {notice && <output className="flash-toast">{notice}</output>}
+      </div>
+
+      {activeCatObj?.description && (
+        <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 10 }}>{activeCatObj.description}</div>
+      )}
+
+      {/* 新建提示词表单 */}
+      {creating && (
+        <NewPromptForm newTitle={newTitle} setNewTitle={setNewTitle} newContent={newContent} setNewContent={setNewContent}
+          createPrompt={createPrompt} optimizing={optimizing} optimizeContent={optimizeContent} setCreating={setCreating} />
+      )}
+
+      {/* 提示词列表 */}
+      {sortedPrompts.length === 0 && !listFailed && (
+        <p style={{ color: 'var(--text-muted)' }}>
+          {emptyListHint}
+        </p>
+      )}
+      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+        {sortedPrompts.map((p) => {
+          const draft = drafts[p.id];
+          const editing = draft !== undefined;
+          return (
+            <li key={`${flashAt[p.id] ?? ''}|${p.id}`}
+              id={`prompt-row-${p.id}`} // T03184：命令面板命中后的滚动定位锚点
+              onPointerDown={startPressFor(p.id)}
+              onPointerUp={endPressFor(p.id)}
+              onPointerLeave={endPressRowFor(p.id)}
+              draggable={sortKey === 'manual'}
+              onDragStart={(e) => dragStartRow(p.id, e)}
+              onDragEnd={dragEndRow}
+              onDragOver={dragOverRowFor(p.id)}
+              onDrop={dropRowFor(p.id)}
+              className={rowCls(p.id)}
+              style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginBottom: 10, cursor: 'grab' }}>
+              {editing ? (
+                <>
+                  <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                    <input
+                      value={draft.title}
+                      aria-label="编辑提示词标题"
+                      onChange={(e) => patchDraft(p.id, draft, 'title', e.target.value)}
+                      style={{ flex: 1, padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-l)' }}
+                    />
+                    <select
+                      value={draft.categoryId}
+                      onChange={(e) => patchDraft(p.id, draft, 'categoryId', e.target.value)}
+                      aria-label="所属分类：改这条提示词归属的分类" title="所属分类 — 改这条提示词归属的分类"
+                      style={{ padding: 6 }}
+                    >
+                      {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    </select>
+                  </div>
+                  <textarea
+                    value={draft.content}
+                    aria-label="编辑提示词内容"
+                    onChange={(e) => patchDraft(p.id, draft, 'content', e.target.value)}
+                    rows={6}
+                    style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-m)', boxSizing: 'border-box', fontFamily: 'inherit' }}
+                  />
+                  <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
+                    <button onClick={() => void saveDraft(p)} disabled={!draft.title.trim()} style={{ fontSize: 'var(--fs-s)', color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                      title="保存 — 保存对这条提示词的修改" aria-label="保存：保存对这条提示词的修改">
+                      <Save size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+                    </button>
+                    {/* T00636：提示词优化（与任务页同款）——置于保存按钮旁，结果回填当前编辑草稿 */}
+                    <PromptOptimizeButton busy={Boolean(optimizing[p.id])} onClick={() => optimizeRow(p.id, draft)} />
+                    <button onClick={() => cancelEdit(p.id)} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }} title="取消 — 放弃编辑修改"
+                      aria-label="取消：放弃编辑修改">
+                      <X size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  {/* T00494 调整：去掉拖拽把手图标（整行即可拖拽） */}
+<div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {/* 标题可点击，切换内容展开/收起（默认收起，降低信息密度） */}
+                    {/* T02146：置顶图标提到标题按钮的**兄弟位**——HTML 不允许 button 套 button
+                        （dev React 报 validateDOMNesting，生产构建只是剥掉告警，DOM 依旧非法）。
+                        PinToggle 自带 stopPropagation，提到外面后「置顶」与「展开」互不干扰的行为不变，
+                        视觉位置仍是标题左侧。
+                        T03683：收藏星标与置顶图标并列在标题左侧（同一 T02146 约束，button 不能套 button），
+                        星标在前、置顶在后；FavoriteToggle 同样自带 stopPropagation。 */}
+                    <FavoriteToggle favorited={Boolean(p.is_favorited)} onToggle={() => void toggleFavorite(p)} />
+                    <PinToggle pinned={Boolean(p.pinned)} onToggle={() => void togglePin(p)} />
+                    <button
+                      onClick={() => setExpandedIds((prev) => ({ ...prev, [p.id]: !prev[p.id] }))}
+                      title={expandedIds[p.id] ? '点击收起提示词内容' : '点击展开提示词内容'}
+                      aria-label={expandedIds[p.id] ? '收起：收起提示词内容' : '展开：展开提示词内容'}
+                      className="row-title-btn"
+                      style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 6, border: 'none', background: 'transparent', padding: 0, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', minWidth: 0 }}
+                    >
+                      <span style={{ fontWeight: 600, fontSize: 'var(--fs-l)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: p.color || undefined }}>{p.title}</span>
+                      {/* 展开/收起箭头：与任务页统一使用 lucide 图标，蓝色 13px */}
+                      <span style={{ color: 'var(--accent)', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}>{expandedIds[p.id] ? <ChevronUp size={13} /> : <ChevronDown size={13} />}</span>
+                    </button>
+                    {/* T05687 二轮（验证失败回填）：来源不再独占一行，改为标题同行末尾、时间字段之前，
+                        长分组名截断并保留悬浮全文，保证记录始终单行列示 */}
+                    {isAllFav(activeCat) && (
+                      <span data-t05687="fav-source" title={`来源分组：${categories.find((c) => c.id === p.category_id)?.name ?? '未分类'}`}
+                        style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flexShrink: 1, minWidth: 0, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        来源：{categories.find((c) => c.id === p.category_id)?.name ?? '未分类'}
+                      </span>
+                    )}
+                    <span className="abtn" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flexShrink: 0 }} title={`更新于 ${p.updated_at}`}>{relTime(p.updated_at)}</span>
+                    {/* T03248（AI-104③）：累计使用次数常驻可见——「用了几次」不该藏在悬浮里 */}
+                    <span data-t03248="usage-chip" title="累计成功发起次数（发起失败/预检拦截不计；可用右侧「归零」重置）"
+                      style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flexShrink: 0, padding: '1px 6px', borderRadius: 10, border: '1px solid var(--border-strong)' }}>
+                      使用 {p.usage_count ?? 0} 次
+                    </span>
+                    {/* T00873 四轮：通用需求归属徽标——此前归属只存在于弹窗下拉里，卡片上完全看不到，
+                        用户"归入后无任何变化"、也看不出是否已归入（误判为被拦截的直接诱因） */}
+                    {p.req_category_id && (
+                      <span className="abtn" title={`通用需求归属：${reqCats.find((c) => c.id === p.req_category_id)?.name ?? p.req_category_id}`}
+                        style={{ fontSize: 'var(--fs-xs)', flexShrink: 0, padding: '1px 6px', borderRadius: 10, border: '1px solid var(--accent)', color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                        <Layers size={11} />{reqCats.find((c) => c.id === p.req_category_id)?.name ?? '通用需求分类'}
+                      </span>
+                    )}
+                    <span className="abtn" style={{ display: 'inline-flex', alignItems: 'center' }}>
+                      <FontColorButton current={p.color ?? ''} onApply={(c) => applyColor(p.id, c)} />
+                    </span>
+                    <CopyButton getText={() => p.title + (p.content ? '\n' + p.content : '')} title="复制 — 复制提示词内容到剪贴板" ariaLabel="复制：复制提示词内容" />
+                    {/* T00436：复制到待办任务 — 转成收件箱项目的待办，悬浮提示按任务规格 */}
+                    <button className="abtn" onClick={() => void copyToTask(p)} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                      title="复制到待办任务 — 以该提示词创建一条待办任务（收件箱项目）" aria-label="复制到待办任务">
+                      <ListTodo size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+                    </button>
+                    {/* T03247（AI-104①②）：发起提示词——填齐 {{变量}} 后新建 AI 控制台任务 */}
+                    <button className="abtn" onClick={() => openLaunch(p)} data-t03247="launch"
+                      style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                      title="发起 — 填齐模板变量后在 AI 控制台新建任务执行" aria-label="发起：填齐模板变量后在 AI 控制台执行">
+                      <Rocket size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+                    </button>
+                    <button
+                      className="abtn"
+                      onClick={() => startEdit(p)}
+                      style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                      title="编辑 — 编辑这条提示词" aria-label="编辑：编辑这条提示词"
+                    >
+                      <Pencil size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+                    </button>
+                    {/* T00873：移动到其他分组——整体迁移（覆盖 category_id，原分组不再包含）；点击打开移动弹窗 */}
+                    <button className="abtn" onClick={() => openMove(p)} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                      title="移动 — 将该提示词整体移动到其他提示词分组（原分组不再包含）" aria-label="移动：将该提示词整体移动到其他分组">
+                      <Move size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+                    </button>
+                    <button className="abtn" onClick={() => void archivePrompt(p)} style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                      title="归档 — 归档这条提示词（数据保留，列表不再显示）" aria-label="归档：归档这条提示词">
+                      <Archive size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+                    </button>
+                    {/* T03248（AI-104③）：使用次数归零——仅在有计数时出现，二次确认后只清计数 */}
+                    {(p.usage_count ?? 0) > 0 && (
+                      <button className="abtn" onClick={() => void resetUsage(p)} data-t03248="usage-reset"
+                        style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                        title="归零 — 把该提示词的累计使用次数重置为 0（不影响历史任务）" aria-label="归零：重置该提示词的使用次数">
+                        <RotateCcw size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+                      </button>
+                    )}
+                  </div>
+                  {expandedIds[p.id] && (
+                    // MarkdownContent 默认渲染富文本、可切源码视图，右上角切换/复制按钮悬浮于内容之上
+                    <div style={{ marginTop: 6 }}>
+                      <MarkdownContent content={p.content} showCopy />
+                    </div>
+                  )}
+                </>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+
+      {/* T00629：复制到待办任务——目标项目选择弹窗（不选则落默认记事项目/收件箱） */}
+      {taskCopyPrompt && (
+        <TaskCopyModal taskCopyPrompt={taskCopyPrompt} taskCopyBusy={taskCopyBusy} setTaskCopyPrompt={setTaskCopyPrompt}
+          taskCopyProjectId={taskCopyProjectId} setTaskCopyProjectId={setTaskCopyProjectId}
+          projects={projects} view={projectList} confirmCopyToTask={confirmCopyToTask} />
+      )}
+
+      {/* T00873：移动提示词分组弹窗（目标分组 + 通用需求分类归属；取消/移动确认） */}
+      {moveTarget && (
+        <MovePromptModal p={moveTarget.p} categories={categories} reqCats={reqCats} catId={moveTarget.catId} reqId={moveTarget.reqId}
+          setCatId={(v) => setMoveTarget((t) => (t ? { ...t, catId: v } : t))}
+          setReqId={(v) => setMoveTarget((t) => (t ? { ...t, reqId: v } : t))}
+          onCancel={() => setMoveTarget(null)} onConfirm={() => void confirmMove()} />
+      )}
+
+      {/* T03247：发起提示词弹窗（模板变量 + 任务标题 + 模型；发起走既有 AI 控制台任务链路） */}
+      {launchTarget && (
+        <PromptLaunchModal p={launchTarget} title={launchTitle} onTitle={setLaunchTitle}
+          values={launchVars} onValue={(name, v) => setLaunchVars((prev) => ({ ...prev, [name]: v }))}
+          tools={toolsView.data ?? []} toolId={launchToolId} onToolId={setLaunchToolId}
+          busy={launchBusy} onCancel={() => { if (!launchBusy) setLaunchTarget(null); }} onConfirm={() => void confirmLaunch()} />
+      )}
+    </section>
+  );
+}

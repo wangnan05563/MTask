@@ -552,7 +552,7 @@ planApi.post('/kickoff-image', (req, res) => {
     ? /^data:(image\/(?:png|jpeg));base64,([A-Za-z0-9+/=\s]+)$/.exec(rawUrl)
     : null;
   if (!hit) return res.status(400).json({ error: '仅支持 PNG / JPEG 的 dataURL（data:image/png;base64,…）' });
-  const buf = Buffer.from(hit[2].replace(/\s+/g, ''), 'base64');
+  const buf = Buffer.from(hit[2].replaceAll(/\s+/g, ''), 'base64');
   if (buf.length === 0) return res.status(400).json({ error: '图片内容为空' });
   if (buf.length > 3 * 1024 * 1024) {
     return res.status(400).json({ error: `图片 ${(buf.length / 1024 / 1024).toFixed(1)}MB 超过 3MB 上限` });
@@ -857,6 +857,8 @@ function normalizePrdImportBody(b: Record<string, unknown>) {
         : undefined,
       // T01875：撞名计划处置口径——'reuse' 走幂等补写，其余（含缺省）保持新建并给新行加「（N）」区分后缀
       onDuplicatePlan: b.onDuplicatePlan === 'reuse' ? 'reuse' as const : undefined,
+      // 2026-11-17：质量门显式豁免（仅测试/迁移；前端正常路径不传）
+      allowQualityOverride: b.allowQualityOverride === true,
     },
   };
 }

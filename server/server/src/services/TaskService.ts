@@ -1,0 +1,1611 @@
+import { getDb } from '../db/connection';
+import { createHash } from 'node:crypto'; // M4-b：外部变更签名的服务端聚合（SHA256 折一下六列拼串）
+import { PushService } from './PushService'; // T01440：Web Push
+import { notifyChange } from './ChangeBus';
+import { v4 as uuid } from 'uuid';
+import { cachedPrepare } from '../util/stmt-cache'; // T00792：热点 SQL 语句复用
+import { TaskImageService, type TaskImageMeta } from './TaskImageService';
+import { ReqEntryService } from './ReqService';
+import { parseReqIds, syncReqStatuses } from './reqStatusSync'; // T02087：需求状态随执行进度派生
+import { recalcMilestonesOfChild } from './milestoneProgress'; // T02090：里程碑进度聚合（任务完成度是聚合输入）
+import { parsePlanDeps, depsSatisfied, topoOrder, type PlanDep } from '../util/planDeps'; // T01284：deps 判定统一实现（FR-3.7）
+import { normalizePlatform } from '../util/platform'; // T01288：平台标识归一化（拉取侧平台偏好匹配）
+import {
+  detectRuling,
+  isRulingSubject,
+  RULING_DEFAULT_OPTIONS,
+  rulingConclusionFromDescription,
+} from '../util/ruling'; // T02949：裁决自动识别（纯函数单源）
+import { WebhookService } from './WebhookService'; // T03196（PM-401）：任务事件外发
+import { alreadyMerged } from './derivedOrigin'; // T03637：派生单闭环判据（与 MCP/脚本归并共用一份标记口径）
+import { FieldService, type ProjectFieldView, type TaskFieldValueView } from './FieldService'; // T03231（PM-203②）：列表行带出项目自定义字段值；T03232 起筛选/排序共用字段定义
+import { scheduleMemoryExtract } from './MemoryService'; // T04143：结论变更异步触发记忆抽取（PRD MEM-201）
+
+/** 批量 IN 查询的每批 id 数：SQLite 变量上限 999，留足余量并与图片批量查询（≤200）同量级 */
+const PLAN_LOOKUP_BATCH = 200;
+/** T01280：就绪任务排水排序权重——与 SupervisorService.PRIORITY_CASE 同口径，
+ *  否则「决策层看到的优先级」与「拉取接口返回的优先级」不一致，高优先级任务可能被低优先级挤掉。 */
+const PRIORITY_CASE = "CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 WHEN 'low' THEN 3 ELSE 9 END";
+/** T02070 口径裁决：tasks.status 恒为 **待办/已完成二元**（tasks 表无 CHECK 约束，白名单只能在写入口钉）。
+ *  第三态不做的原因是消费侧全按二元二分：待办/已完成两页签严格按 status 二分
+ *  （TasksPage.tsx 待办/已完成两页签按 status 严格二分）、AI 待处理与监控队列
+ *  SQL 只取待办值（见本文件 markMonitorReady / listMonitorReady）、
+ *  抽屉与移动端 STATUS_LABEL 只有两键——写进 'doing' 不会报错，而是让任务从两个页签同时消失并
+ *  永久脱离队列（比「父任务显示 30% 却仍是待办」这个原症状更严重）。
+ *  中间态由 progress（0~100）承载、「AI 在途」由 ai_state（running/unread/failed）承载。
+ *  真要上第三态的完整改造清单见工单 T02070 正文第 2 条。 */
+export const TASK_STATUSES: ReadonlySet<string> = new Set(['todo', 'done']);
+/** T00620：running 状态超时阈值——超过则视为 AI 中断并自动置 failed（可用环境变量覆盖，便于调试） */
+// T01297：running 超时兜底阈值——默认从 30 分钟放宽到 1 小时。
+// 原 30 分钟在「长任务执行中无续期」时（如文档识别/AI 生成本身耗时超阈值且期间与 MTask 零交互）
+// 会把仍在执行的任务误置 failed（T00851 曾因此"未执行完就被标中断"）。1 小时覆盖绝大多数长任务，
+// 真正的超长任务仍由 Agent 中途重写 running 续期兜底（见 mtask 技能状态机）。
+const AI_STATE_STALE_MS = Number(process.env.MTASK_AI_STATE_STALE_MS ?? 60 * 60 * 1000);
+
+
+/** DB 原始行：archived 为 number（SQLite 0/1） */
+export interface TaskRow {
+  id: string;
+  /** 任务编号：全局唯一 T+5位数字递增，供 AI Agent 通过 MCP 按编号定位任务 */
+  task_no: string | null;
+  project_id: string;
+  title: string;
+  description: string;
+  priority: string;
+  status: string;
+  verified: number;
+  archived: number;
+  archived_at: string | null;
+  /** T00589：历史资产时间（非空即已沉淀至历史资产，与归档独立） */
+  history_at: string | null;
+  ai_summary: string | null;
+  /** T02164：AI 摘要生成时刻（ISO）——摘要视图标注「更新时间」与时效性判断的数据源 */
+  ai_summary_at: string | null;
+  /** 处理结果：AI 分析结论（根因/解决方案）等，由 MCP 或前端编辑写入 */
+  handle_result: string | null;
+  /** T00566：AI 处理状态动画（'' 已读/无 | running 运行中 | failed 运行失败 | unread 未读） */
+  ai_state: string;
+  /** T00620：AI 状态变更时间（ISO）；'' 状态（已读清空）时保留历史值，用于判断"是否被处理过" */
+  ai_state_at: string;
+  /** T00577：派生单溯源——原任务编号（如 T00422）；处理完成后结论自动整合回原任务 */
+  derived_from: string | null;
+  /** T02949：派生单裁决状态（'' 无 | '待裁决' | '已裁决'）——独立列，不占用 status 的待办/已完成语义 */
+  ruling_state: string;
+  /** T02949：裁决内容（预设选项值或自定义文本） */
+  ruling_result: string;
+  /** T02949：裁决/标记时刻（ISO） */
+  ruling_at: string | null;
+  /** T00719：搁置标记（1=已搁置）——搁置任务从待办/已完成列表与 MCP 查询隔离，仅出现在搁置列表 */
+  shelved: number;
+  /** T00490：记录字体颜色（Excel 风格颜色按钮），空串=默认色 */
+  color: string;
+  pinned: number;
+  category_id: string | null;
+  parent_id: string | null;
+  user_sort: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** T02949：裁决预设选项的服务端单源已迁到 `util/ruling.ts`（`RULING_DEFAULT_OPTIONS`）——
+ *  那里同时承载「从结论抽候选」的规则，选项与判定同文件才不会各说一套。 */
+
+/** 对外输出视图：archived 转为 boolean（API 返回）；images 为截图附件元信息 */
+export interface TaskView {
+  id: string;
+  task_no: string | null;
+  project_id: string;
+  title: string;
+  description: string;
+  priority: string;
+  status: string;
+  verified: boolean;
+  archived: boolean;
+  archived_at: string | null;
+  /** T00589：历史资产时间（非空即已沉淀，与归档独立） */
+  history_at: string | null;
+  ai_summary: string | null;
+  /** T02164：AI 摘要生成时刻（ISO），供前端标注「更新时间」 */
+  ai_summary_at: string | null;
+  handle_result: string | null;
+  /** T00566：AI 处理状态动画（'' 已读/无 | running failed unread） */
+  ai_state: string;
+  /** T01057-FR1.2：失败重试次数（手动重试 +1，历史在 handle_result 追加段） */
+  retry_count?: number;
+  /** T00620：AI 状态变更时间（ISO）；'' 状态（已读清空）时保留历史值 */
+  ai_state_at: string;
+  /** T00577：派生单溯源——原任务编号 */
+  derived_from: string | null;
+  /** T02949：派生单裁决状态（'' 无 | '待裁决' | '已裁决'） */
+  ruling_state: string;
+  /** T02949：裁决内容（预设选项值或自定义文本） */
+  ruling_result: string;
+  /** T02949：裁决/标记时刻（ISO） */
+  ruling_at: string | null;
+  /** T00719：搁置标记 */
+  shelved: boolean;
+  pinned: boolean;
+  category_id: string | null;
+  /** T00450：父任务 id（两级的 epic→task 层级） */
+  parent_id: string | null;
+  /** T00446：手动排序权重（拖拽排序结果；pinned 组内生效） */
+  user_sort: number | null;
+  created_at: string;
+  updated_at: string;
+  images: TaskImageMeta[];
+  /** T00462/T00451：任务由项目计划联动创建/关联——值为来源计划标题，前端据此显示区分徽标与来源引用 */
+  fromPlanTitle?: string;
+  /** T01037：来源计划的类型（milestone=里程碑 / normal=普通 / daily=日常）——
+   *  里程碑联动的待办此前与普通计划一样显示「计划」徽标，无法区分；前端据此显示「里程碑」。 */
+  fromPlanKind?: string;
+  /** T02196：来源计划行（plan_tasks）自身的 id——前端「计划/里程碑」徽标据此在 WBS 视图中定位该节点。
+   *  此前只有标题与类型，跳转方无从知道要落到哪一行。 */
+  fromPlanId?: string;
+  /** T03229（PM-202②）：在途阻塞方摘要——列表/看板徽标据此显示「阻塞 N」，tooltip 直接点名是谁挡的。
+   *  仅列表类读法（`list` / 经 `decorateRows` 的路径）带出；单条 `getById` 由前端改读 `/tasks/:id/blocked-by`。 */
+  blocked_by?: Array<{ id: string; task_no: string | null; title: string }>;
+  /** T03231（PM-203②）：项目自定义字段的值（仅非空项，按字段排序）。
+   *  列表徽标与详情展示直接消费 `display`（单选项已回 label），不必前端再查字段定义。 */
+  field_values?: TaskFieldValueView[];
+}
+
+export interface TaskInput {
+  projectId: string;
+  title: string;
+  description?: string;
+  priority?: 'low' | 'normal' | 'high' | 'urgent';
+  status?: 'todo' | 'done';
+  verified?: boolean;
+  /** 所属任务分类 id；null/空表示未分类 */
+  categoryId?: string | null;
+  /** T00450：父任务 id（两级的 epic→task 层级）；创建子任务时传入 */
+  parentId?: string | null;
+  /** T00577：派生单溯源——原任务编号（如 T00422） */
+  derived_from?: string | null;
+}
+
+/** 任务列表查询选项：全部可选。不传 limit/offset 时保持"一次返回全量"的既有行为 */
+export interface TaskListOptions {
+  projectId?: string;
+  archived?: boolean;
+  /** 分页大小；不传=全量返回。⚠ M7-7.2 起 HTTP /api/tasks 路由层施默认上限（200，env 可配），
+   *  本参数的「不传=全量」语义仅剩 MCP（mtask_list_tasks，AI 全项目枚举依赖）与内部调用方使用 */
+  limit?: number;
+  offset?: number;
+  /** 标题/描述/编号模糊搜索（大小写不敏感；T01568 起编号纳入，供按编号检索与外部跳转定位） */
+  keyword?: string;
+  /** 分类筛选；'none' 表示未分类任务 */
+  categoryId?: string;
+  /** T00474：优先级精确过滤（urgent/high/normal/low），非法值忽略 */
+  priority?: string;
+  /** 状态筛选（待办/已完成）；不传返回该范围内全部状态。供 MCP/AI 按待办/已完成精确拉取，减少返回量 */
+  status?: 'todo' | 'done';
+  /** T00719：搁置筛选——不传/false 排除搁置任务（默认隔离，MCP 处理待办自动忽略搁置）；true 只返回搁置任务 */
+  shelved?: boolean;
+  /** M7-7.1：移动端「需关注」过滤（语义与 MobileHome 告警条完全一致）——
+   *  failed = AI 失败 或 验证失败未复核（含旧数据 ai_state 为空但 handle_result 有标记的情况）；
+   *  已「验证通过」（done+verified）的任务不计入（T03707，与前端 isVerificationPassed 同口径）；
+   *  unread = AI 处理完成未读。服务端过滤避免全量下发后本地筛。 */
+  attention?: 'failed' | 'unread';
+  /** 分析范围：只返回「待处理 或 未验证(verified=0)」的任务。与 status 互斥（优先 pending）
+   *  未验证任务即便已 done，其处理结果可能仍需关联判断，纳入便于 AI 分析上下文 */
+  pending?: boolean;
+  /** 排序键；默认 pinned（置顶优先+创建时间倒序），与旧行为一致 */
+  sort?: 'pinned' | 'created_desc' | 'created_asc' | 'priority_desc' | 'priority_asc' | 'manual';
+  /** T03184（PM-102）：命令面板结构化查询的 WHERE 片段（由 util/taskQuery 编译，参数化）。
+   *  与 keyword 二选一：结构化走语法树，模糊走原关键词匹配。 */
+  queryFilter?: { where: string; values: readonly unknown[] };
+  /** T03232（PM-203③）：自定义字段筛选——在服务端 WHERE 里展开成 EXISTS 子查询，分页前后一致。
+   *  字段必须属于 opts.projectId（字段挂项目）；未知字段/类型不支持的算子/非法值一律忽略该条，
+   *  与 priority 的「非法值不筛」同一口径，避免前端拼错参数就把列表筛成 0 行。 */
+  fieldFilters?: Array<{ fieldId?: string; op?: string; value?: string }>;
+  /** T03232（PM-203③）：按自定义字段排序——未填值的任务固定排最后（与「空值不参与比较」的直觉一致）。
+   *  只替换排序主键，创建时间仍作同值时的次序；pinned 不再前置（用户显式选了排序键）。 */
+  fieldSort?: { fieldId?: string; dir?: 'asc' | 'desc' };
+  /** T03983：可见范围之外计数——只取「已归档 ∪ 历史资产 ∪ 搁置」的行，整段取代默认那三行排除。
+   *  供命令面板给出「同关键词另有 N 条不在当前视图」的实数据提示；置 true 时 archived/shelved 一律忽略。 */
+  outOfSight?: boolean;
+}
+
+/** T03232：各字段类型支持的筛选算子。text 用包含/等于；number/date 可比较；select 只能按选项等于。 */
+const FIELD_OPS: Record<string, ReadonlySet<string>> = {
+  text: new Set(['eq', 'contains', 'empty', 'notEmpty']),
+  number: new Set(['eq', 'gt', 'gte', 'lt', 'lte', 'empty', 'notEmpty']),
+  date: new Set(['eq', 'gt', 'gte', 'lt', 'lte', 'empty', 'notEmpty']),
+  select: new Set(['eq', 'empty', 'notEmpty']),
+};
+
+function now(): string {
+  return new Date().toISOString();
+}
+
+/** 分配下一个任务编号：取库中当前最大的 T+数字 序号 +1，包在写事务外由 create 事务整体提交。
+ *  为何自行分配而非 SQLite 自增：task_no 需对外暴露为稳定业务编号（T00001 可读）且删除任务后不复用。 */
+/** 任务编号生成（T00662 起对外导出：PRD 导入建待办时复用，保证编号单一来源） */
+export function nextTaskNo(): string {
+  const db = getDb();
+  const rows = db.prepare('SELECT task_no FROM tasks WHERE task_no IS NOT NULL').all() as { task_no: string }[];
+  let max = 0;
+  for (const r of rows) {
+    const m = /^T(\d+)$/.exec(r.task_no);
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return `T${String(max + 1).padStart(5, '0')}`;
+}
+
+/** T01064-FR1.4/1.5：任务事件埋点——通知中心与任务时间线的统一数据源（kind: status/verified/ai_state/result） */
+function logEvent(db: ReturnType<typeof getDb>, taskId: string, kind: string, detail: string): void {
+  const row = db.prepare('SELECT task_no, project_id FROM tasks WHERE id = ?').get(taskId) as { task_no: string | null; project_id: string } | undefined;
+  db.prepare('INSERT INTO task_events (id, task_id, task_no, project_id, kind, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(uuid(), taskId, row?.task_no ?? null, row?.project_id ?? '', kind, detail, now());
+  // T03196：webhook 外发不得影响主链路（配置异常/投递失败一律吞掉，事件已落 task_events 可追溯）
+  try { WebhookService.onTaskEvent(db, taskId, kind, detail); } catch { /* noop */ }
+}
+
+function rowToTask(r: TaskRow, images: TaskImageMeta[] = []): TaskView {
+  return { ...r, verified: Boolean(r.verified), archived: Boolean(r.archived), pinned: Boolean(r.pinned), shelved: Boolean(r.shelved), images };
+}
+
+/** 待办状态变更后反向同步关联的计划任务（已完成↔已完成，待办→进行中），并按完成比例汇总父任务进度 */
+function syncPlanOnStatusChange(id: string, status: string): void {
+  const db = getDb();
+  const planStatus = status === 'done' ? 'done' : 'doing';
+  db.prepare('UPDATE plan_tasks SET status = ?, progress = CASE WHEN ? = 100 THEN 100 ELSE progress END, updated_at = ? WHERE linked_task_id = ?')
+    .run(planStatus, planStatus === 'done' ? 100 : -1, now(), id);
+  // T02087：需求状态随执行进度派生。任务与计划可各自经 req_ids 关联需求，任一侧的完成度
+  // 变化都可能改变需求读数，故两侧 req_ids 都喂给派生（任务侧覆盖「直挂任务」的需求，
+  // 计划侧覆盖 linked_task_id 关联的计划所挂的需求——用户报「AI 完成任务后计划更新了、
+  // 需求状态不动」正是缺这一环）。
+  const taskRow = db.prepare('SELECT project_id, req_ids FROM tasks WHERE id = ?').get(id) as { project_id: string; req_ids: string | null } | undefined;
+  if (taskRow) {
+    const planRows = db.prepare('SELECT id, req_ids FROM plan_tasks WHERE linked_task_id = ?').all(id) as Array<{ id: string; req_ids: string | null }>;
+    // T02090：任务完成度是里程碑进度聚合的输入之一——关联计划的父里程碑按子项实况重算
+    // （任务 done → 计划 done → 里程碑 progress/ done 收敛；关联待办在里程碑自动 done 时置 unread）
+    for (const p of planRows) recalcMilestonesOfChild(db, p.id);
+    const reqIds = [taskRow.req_ids, ...planRows.map((p) => p.req_ids)].flatMap((v) => parseReqIds(v));
+    syncReqStatuses(db, taskRow.project_id, reqIds);
+  }
+  // T00450 配套：子任务状态变更后汇总父任务进度（按子任务完成比例），全完成时父自动 done
+  const childRow = db.prepare('SELECT parent_id FROM tasks WHERE id = ?').get(id) as { parent_id: string | null } | undefined;
+  if (childRow?.parent_id) recalcParentProgress(childRow.parent_id);
+}
+
+/** M-5 / T01876：按「未归档子任务」完成比例重算父任务 progress 与 status。
+ *  状态口径维持待办/已完成二元：tasks 全链路按二元消费（TasksPage 待办/已完成页签严格二分、
+ *  TaskDetailDrawer/MobileTaskDetail 的 STATUS_LABEL 只有这两个键、待处理队列 SQL 只取待办值），
+ *  写 doing 会让「部分完成的父」从两个页签同时消失并进不了 AI 队列——比原症状更严重，故只做进度求真，
+ *  第三态支持另立产品单。父的语义是聚合：未完成即待办，进度按子任务比例如实反映（待办 + 50% 不再自相矛盾，
+ *  待办在此读作「未完成」而非「未开始」）。
+ *  子任务全部归档（total=0）时不动父：无可依据的比例，保留人工状态。
+ *  去掉旧写的 `AND status != 'done'` 守卫：它把 done 父整体冻结（生产实测 T00772：3/3 子全 done，父仍 done/0%），
+ *  也正是 T00776「done 父再添待办子后进度状态双双失真」的成因。
+ *  从 syncPlanOnStatusChange 抽出复用——T00776 评审发现新增子任务不重算会导致父进度失真。 */
+function recalcParentProgress(parentId: string): void {
+  const db = getDb();
+  const stat = db.prepare(
+    "SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done FROM tasks WHERE parent_id = ? AND archived = 0",
+  ).get(parentId) as { total: number; done: number };
+  if (stat.total === 0) return;
+  const progress = Math.round((stat.done / stat.total) * 100);
+  const parentStatus = progress === 100 ? 'done' : 'todo';
+  db.prepare('UPDATE tasks SET progress = ?, status = ?, updated_at = ? WHERE id = ?').run(progress, parentStatus, now(), parentId);
+}
+
+/** FR1.2 / FR1.3 / FR1.4 / FR5 */
+/** 动态 WHERE 构建：分页/搜索/分类需精确拼条件，全部走参数绑定防注入 */
+/** T03232：任务是否填写过该字段（EXISTS 用 tasks.id 与外层表名对齐；list/count 都是 SELECT FROM tasks） */
+function fieldValueExists(fieldId: string): string {
+  return 'EXISTS (SELECT 1 FROM task_field_values v WHERE v.task_id = tasks.id AND v.field_id = ?)';
+}
+
+/** T03232：按项目取未归档字段定义——归档字段不参与筛选/排序（与列表徽标、抽屉编辑口径一致） */
+function liveFieldsOf(projectId: string | undefined): Map<string, ProjectFieldView> {
+  if (!projectId) return new Map();
+  return new Map(FieldService.list(projectId).map((f) => [f.id, f]));
+}
+
+/**
+ * T03232：文本/单选字段的比较片段。值绑定顺序与 SQL 占位符出现顺序一致（field_id 在前、比较值在后）。
+ * 返回 null 表示忽略该条（单选项已停用的值不再参与筛选）。
+ */
+function textOrSelectClause(
+  field: ProjectFieldView,
+  op: string,
+  raw: string,
+  values: unknown[],
+  exists: (inner: string) => string,
+): string | null {
+  if (field.type === 'text') {
+    values.push(field.id);
+    if (op === 'contains') {
+      values.push(`%${raw.replaceAll(/[%_]/g, (m) => '\\' + m)}%`);
+      return exists(String.raw`v.value LIKE ? ESCAPE '\'`);
+    }
+    values.push(raw);
+    return exists('v.value = ?');
+  }
+  // 值存选项 id；已停用选项的存量值仍可筛（停用只挡新填写，不抹历史）
+  if (!field.options.some((o) => o.id === raw)) return null;
+  values.push(field.id, raw);
+  return exists('v.value = ?');
+}
+
+/** T03232：数值/日期字段的范围比较片段；非法取值返回 null 表示忽略该条 */
+function rangeClause(
+  field: ProjectFieldView,
+  op: string,
+  raw: string,
+  values: unknown[],
+  exists: (inner: string) => string,
+): string | null {
+  // number 比较走数值、date 走 ISO 字符串（YYYY-MM-DD 的字典序即时间序）
+  const cmp = { eq: '=', gt: '>', gte: '>=', lt: '<', lte: '<=' }[op];
+  if (!cmp) return null;
+  if (field.type === 'date' && !/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
+  const num = Number(raw);
+  if (field.type === 'number' && !Number.isFinite(num)) return null;
+  values.push(field.id, field.type === 'number' ? num : raw);
+  return exists(`${field.type === 'number' ? 'CAST(v.value AS REAL)' : 'v.value'} ${cmp} ?`);
+}
+
+/**
+ * T03232：把一条字段筛选展开成 WHERE 片段，不合法返回 null 表示忽略该条。
+ * 值的绑定顺序必须与 SQL 文本中占位符出现顺序一致（field_id 在前、比较值在后）。
+ */
+function fieldFilterClause(
+  filter: { fieldId?: string; op?: string; value?: string },
+  fields: Map<string, ProjectFieldView>,
+  values: unknown[],
+): string | null {
+  const field = filter.fieldId ? fields.get(filter.fieldId) : undefined;
+  const op = typeof filter.op === 'string' ? filter.op : '';
+  if (!field || !FIELD_OPS[field.type]?.has(op)) return null;
+  if (op === 'empty') { values.push(field.id); return `NOT ${fieldValueExists(field.id)}`; }
+  if (op === 'notEmpty') { values.push(field.id); return fieldValueExists(field.id); }
+
+  const raw = typeof filter.value === 'string' ? filter.value.trim() : '';
+  if (!raw) return null;
+  const exists = (inner: string) =>
+    `EXISTS (SELECT 1 FROM task_field_values v WHERE v.task_id = tasks.id AND v.field_id = ? AND ${inner})`;
+  return field.type === 'text' || field.type === 'select'
+    ? textOrSelectClause(field, op, raw, values, exists)
+    : rangeClause(field, op, raw, values, exists);
+}
+
+/**
+ * T03232：字段排序片段。未填值的任务恒排最后（两个方向都不把空值顶到前面），
+ * 单选项按选项**定义顺序**而非 id 排序——用户看到的顺序就是字段设置里那一列。
+ */
+function fieldSortClause(
+  sort: { fieldId?: string; dir?: 'asc' | 'desc' },
+  fields: Map<string, ProjectFieldView>,
+): { sql: string; values: unknown[] } | null {
+  const field = sort.fieldId ? fields.get(sort.fieldId) : undefined;
+  if (!field) return null;
+  const dir = sort.dir === 'desc' ? 'DESC' : 'ASC';
+  const nullLast = `CASE WHEN ${fieldValueExists(field.id)} THEN 0 ELSE 1 END`;
+  if (field.type === 'select') {
+    const optIds = field.options.map((o) => o.id);
+    const caseRanks = field.options.map((_, i) => `WHEN ? THEN ${i}`).join(' ');
+    const rankExpr = `(SELECT CASE v.value ${caseRanks}
+      ELSE ${optIds.length} END FROM task_field_values v WHERE v.task_id = tasks.id AND v.field_id = ?)`;
+    return { sql: `${nullLast}, ${rankExpr} ${dir}, created_at DESC`, values: [field.id, ...optIds, field.id] };
+  }
+  const valExpr = '(SELECT v.value FROM task_field_values v WHERE v.task_id = tasks.id AND v.field_id = ?)';
+  const lhs = field.type === 'number' ? `CAST(${valExpr} AS REAL)` : valExpr;
+  return { sql: `${nullLast}, ${lhs} ${dir}, created_at DESC`, values: [field.id, field.id] };
+}
+
+/** 关键词模糊搜索（标题/描述/编号）：LIKE 通配符转义后按字面匹配 */
+function pushKeywordFilter(opts: TaskListOptions, where: string[], values: unknown[]): void {
+  if (!opts.keyword) return;
+  // 转义 LIKE 通配符（%/_），让搜索词按字面匹配而非被误当通配
+  const kw = `%${opts.keyword.replaceAll(/[%_]/g, (m) => '\\' + m)}%`;
+  // T01568：编号也纳入模糊搜索——外部跳转（通知/就绪条）以 task_no 作搜索词定位，
+  // 只搜标题/描述时「按编号搜索」会把目标行整条筛掉（列表 0 行 → 定位与抽屉直达都落空）。
+  where.push(String.raw`(title LIKE ? ESCAPE '\' OR description LIKE ? ESCAPE '\' OR task_no LIKE ? ESCAPE '\')`);
+  values.push(kw, kw, kw);
+}
+
+/** 状态/范围筛选：MCP/AI 拉指定范围时在服务端过滤，避免全量下发再本地筛，省 Token。
+ *  pending 优先于 status：返回「待处理 或 未验证」任务的并集。 */
+function pushStatusFilter(opts: TaskListOptions, where: string[], values: unknown[]): void {
+  if (opts.pending) {
+    where.push('(status = ? OR verified = 0)');
+    values.push('todo');
+    return;
+  }
+  if (opts.status) { where.push('status = ?'); values.push(opts.status); }
+}
+
+/** M7-7.1：需关注过滤（移动端告警条的服务端等价实现；与 attention=unread 互斥使用） */
+function pushAttentionFilter(opts: TaskListOptions, where: string[]): void {
+  if (opts.attention === 'failed') {
+    // T03707：「验证通过」（done + verified）与前端 isVerificationPassed 同口径，整体排除——
+    // 否则第一分支会把「已完成已验证但 ai_state 残留 failed」的旧任务继续算作待关注。
+    where.push(String.raw`(NOT (status = 'done' AND COALESCE(verified,0) = 1) AND (ai_state = 'failed' OR (handle_result LIKE '%【验证失败%' AND COALESCE(verified,0) = 0)))`);
+  } else if (opts.attention === 'unread') {
+    where.push("ai_state = 'unread'");
+  }
+}
+
+/** T03232：字段筛选——字段挂项目，未指定项目时既不校验也不生效（全部项目视图由前端禁用该控件） */
+function pushFieldFilters(opts: TaskListOptions, where: string[], values: unknown[]): void {
+  if (!opts.fieldFilters?.length || !opts.projectId) return;
+  const fields = liveFieldsOf(opts.projectId);
+  for (const f of opts.fieldFilters) {
+    const clause = fieldFilterClause(f, fields, values);
+    if (clause) where.push(clause);
+  }
+}
+
+function buildTaskFilter(opts: TaskListOptions): { where: string[]; values: unknown[] } {
+  const where: string[] = [];
+  const values: unknown[] = [];
+  if (opts.outOfSight) {
+    // T03983：「可见范围之外」计数——归档 ∪ 历史资产 ∪ 搁置三态取并集。这里必须整段替换默认的
+    // 「archived=? + history_at 空 + shelved 空」三行排除，否则三者互相抵消，计数恒为 0。
+    where.push("(archived = 1 OR COALESCE(history_at, '') <> '' OR COALESCE(shelved, 0) = 1)");
+  } else {
+    where.push('archived = ?');
+    values.push(opts.archived ? 1 : 0);
+    // T00589：活跃列表排除已入历史资产的内容（历史资产为独立沉淀区，不与活跃/归档混排）
+    if (!opts.archived) where.push("COALESCE(history_at, '') = ''");
+    // T00719：搁置隔离——默认活跃列表（含 MCP pending/status 查询）一律排除搁置任务；
+    // 搁置列表（shelved=true）只返回搁置任务；归档列表不过滤（先搁置后归档的任务仍可在归档区找到）
+    if (opts.shelved) where.push('shelved = 1');
+    else if (!opts.archived) where.push('COALESCE(shelved, 0) = 0');
+  }
+  if (opts.projectId) { where.push('project_id = ?'); values.push(opts.projectId); }
+  pushKeywordFilter(opts, where, values);
+  // T03184：结构化查询整体作为一个条件并入，内部 AND/OR 语义由编译产物自带括号保证
+  if (opts.queryFilter) {
+    where.push(`(${opts.queryFilter.where})`);
+    values.push(...opts.queryFilter.values);
+  }
+  if (opts.categoryId === 'none') where.push('category_id IS NULL');
+  else if (opts.categoryId) { where.push('category_id = ?'); values.push(opts.categoryId); }
+  // T00474：优先级筛选——合法值白名单校验，非法值忽略保持全量
+  if (opts.priority && ['urgent', 'high', 'normal', 'low'].includes(opts.priority)) {
+    where.push('priority = ?'); values.push(opts.priority);
+  }
+  pushStatusFilter(opts, where, values);
+  pushAttentionFilter(opts, where);
+  pushFieldFilters(opts, where, values);
+  return { where, values };
+}
+
+/** 列表排序主键（M4-b 起与 listChangeSig 共用同一份，避免两个形态的排序漂移）。
+ *  优先级按业务档位映射数值，保证 urgent>high>normal>low。 */
+const TASK_LIST_ORDER_BY: Record<NonNullable<TaskListOptions['sort']>, string> = {
+  pinned: 'pinned DESC, created_at DESC',
+  created_desc: 'created_at DESC',
+  created_asc: 'created_at ASC',
+  priority_desc: "CASE priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'normal' THEN 2 ELSE 1 END DESC, created_at DESC",
+  priority_asc: "CASE priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'normal' THEN 2 ELSE 1 END ASC, created_at ASC",
+  // T00446：手动排序（拖拽结果）——pinned 优先，user_sort 空值排最后
+  manual: "pinned DESC, CASE WHEN user_sort IS NULL THEN 1 ELSE 0 END, user_sort, created_at DESC",
+};
+
+/** 列表的 ORDER BY 子句；字段排序（T03232）接管排序主键时把它的参数追加到 WHERE 参数之后。
+ *  参数顺序必须与最终 SQL 的占位符顺序一致，所以这里就地 push 到调用方的 values 里。 */
+function resolveListOrder(opts: TaskListOptions, values: unknown[]): string {
+  // T04181（甲・静默回落）：`Record` 只约束静态字面量键，运行时 `opts.sort` 来自 query 的裸断言，
+  // 任意非白名单值（含空串/空格——`?? 'pinned'` 兜不住空串）查表 miss 会得到 undefined 并被拼成
+  // `ORDER BY undefined` ⇒ 500。未命中即回落默认序，与同文件 priority 的「非法值忽略保持全量」同口径。
+  let orderSql = TASK_LIST_ORDER_BY[opts.sort ?? 'pinned'] ?? TASK_LIST_ORDER_BY.pinned;
+  if (opts.fieldSort?.fieldId && opts.projectId) {
+    const byField = fieldSortClause(opts.fieldSort, liveFieldsOf(opts.projectId));
+    if (byField) { orderSql = byField.sql; values.push(...byField.values); }
+  }
+  return orderSql;
+}
+
+/**
+ * 分页子句与它的绑定参数（同样追加进 values，接在过滤/排序参数之后）。limit 缺省时不加分页。
+ * 这里的 `if (opts.limit) { … if (opts.offset) { … } }` 嵌套形态由 T03334 的 P-06 判据按字面锚定
+ * （钉的是「offset 只在 limit 分支内才拼」这一语义），M4-b 把 list/listChangeSig 的分页收拢到这里时
+ * 刻意保持原形态，避免等价重构把那条判据打成红。
+ */
+function resolveListPage(opts: TaskListOptions, values: unknown[]): string {
+  let sql = '';
+  if (opts.limit) {
+    sql += ' LIMIT ?';
+    values.push(opts.limit);
+    if (opts.offset) { sql += ' OFFSET ?'; values.push(opts.offset); }
+  }
+  return sql;
+}
+
+/** M4-b：构成「外部变更签名」的六列——前端每 10s 只为判断「这批任务有没有被人改过」，
+ *  取的就是这六个标量（列表页其余字段是渲染用的，签名不看）。列名与拼接顺序单源在此，
+ *  服务端拼串与等价探针共用，避免两处各写一份而漂移。 */
+export const TASK_SIG_COLUMNS = ['id', 'status', 'verified', 'updated_at', 'category_id', 'priority'] as const;
+
+/** 一行任务的签名片段：与前端 TasksPage 原实现逐字同形（verified 取真值性、category_id 空值归 ''） */
+function taskSigCell(r: { id: string; status: string; verified: number; updated_at: string; category_id: string | null; priority: string }): string {
+  return `${r.id}:${r.status}:${r.verified ? 1 : 0}:${r.updated_at}:${r.category_id ?? ''}:${r.priority}`;
+}
+
+/** T00462/T00451：批量反查项目计划关联（linked_task_id 命中即「计划联动任务」），值=来源计划标题。
+ *  必须分批：SQLite 变量上限 999，而无 limit 的调用（移动端/归档/队列页）会传入全量任务 id，
+ *  单条 IN (?,?,...) 在任务数 >999 时直接抛错（真实缺陷）；分批后同时把 SQL 文本长度控制住。 */
+/** T01037：返回 { taskId → { planId, title, kind } }——kind 一并带出，供前端区分「计划」与「里程碑」徽标；
+ *  T02196：planId 为 plan_tasks 行自身 id，徽标点击定位 WBS 节点必需。 */
+function loadPlanLinked(db: ReturnType<typeof getDb>, rows: TaskRow[]): Map<string, { planId: string; title: string; kind: string }> {
+  const planLinked = new Map<string, { planId: string; title: string; kind: string }>();
+  for (let i = 0; i < rows.length; i += PLAN_LOOKUP_BATCH) {
+    const chunk = rows.slice(i, i + PLAN_LOOKUP_BATCH);
+    if (chunk.length === 0) continue;
+    const placeholders = chunk.map(() => '?').join(',');
+    const hits = db.prepare(
+      `SELECT pt.id AS planId, pt.linked_task_id AS id, pt.title, COALESCE(pt.kind, 'normal') AS kind FROM plan_tasks pt
+       WHERE pt.archived = 0 AND pt.linked_task_id IN (${placeholders})`,
+    ).all(...chunk.map((r) => r.id)) as Array<{ planId: string; id: string; title: string; kind: string }>;
+    for (const h of hits) planLinked.set(h.id, { planId: h.planId, title: h.title, kind: h.kind });
+  }
+  return planLinked;
+}
+
+/** PATCH 布尔列归一：verified/pinned/shelved/archived 统一转 0/1（better-sqlite3 不支持 boolean 绑定）。
+ *  T00779：archived 原先不在白名单，REST/MCP 归档请求被静默忽略（派生单闭环「归并后归档」依赖此路径）。 */
+function normalizeBoolPatch(patch: Record<string, unknown>): void {
+  for (const k of ['verified', 'pinned', 'shelved', 'archived']) {
+    if (patch[k] !== undefined) patch[k] = patch[k] ? 1 : 0;
+  }
+}
+
+/** M6-6.1：阶段①——批量取任务关联的计划行 deps（分批 IN 规避变量上限） */
+function loadDepsByTask(db: ReturnType<typeof getDb>, taskIds: string[]): { depsByTask: Map<string, PlanDep[]>; depPlanIds: Set<string> } {
+  const depsByTask = new Map<string, PlanDep[]>();
+  const depPlanIds = new Set<string>();
+  for (let i = 0; i < taskIds.length; i += PLAN_LOOKUP_BATCH) {
+    const chunk = taskIds.slice(i, i + PLAN_LOOKUP_BATCH);
+    const plans = db.prepare(
+      `SELECT linked_task_id, deps FROM plan_tasks
+        WHERE archived = 0 AND linked_task_id IN (${chunk.map(() => '?').join(',')})`,
+    ).all(...chunk) as Array<{ linked_task_id: string; deps: string | null }>;
+    for (const p of plans) {
+      const deps = parsePlanDeps(p.deps);
+      depsByTask.set(p.linked_task_id, deps);
+      for (const d of deps) depPlanIds.add(d.id);
+    }
+  }
+  return { depsByTask, depPlanIds };
+}
+
+/** M6-6.1：阶段②——批量取依赖计划行的状态与反向关联（任务 id） */
+function loadDepPlanStatus(db: ReturnType<typeof getDb>, depPlanIds: Set<string>): { statusById: Map<string, string>; linkedTaskByPlanId: Map<string, string> } {
+  const statusById = new Map<string, string>();
+  const linkedTaskByPlanId = new Map<string, string>();
+  const depList = [...depPlanIds];
+  for (let i = 0; i < depList.length; i += PLAN_LOOKUP_BATCH) {
+    const chunk = depList.slice(i, i + PLAN_LOOKUP_BATCH);
+    const found = db.prepare(
+      `SELECT id, status, linked_task_id FROM plan_tasks WHERE id IN (${chunk.map(() => '?').join(',')})`,
+    ).all(...chunk) as Array<{ id: string; status: string; linked_task_id: string | null }>;
+    for (const f of found) {
+      statusById.set(f.id, f.status);
+      if (f.linked_task_id) linkedTaskByPlanId.set(f.id, f.linked_task_id);
+    }
+  }
+  return { statusById, linkedTaskByPlanId };
+}
+
+/** M6-6.1：阶段④——构建本轮就绪集内的可排序拓扑边 */
+function buildReadyEdges(ready: Array<{ id: string }>, depsByTask: Map<string, PlanDep[]>, linkedTaskByPlanId: Map<string, string>, readyIds: Set<string>): Array<{ from: string; to: string }> {
+  const edges: Array<{ from: string; to: string }> = [];
+  for (const r of ready) {
+    for (const d of depsByTask.get(r.id) ?? []) {
+      const from = linkedTaskByPlanId.get(d.id);
+      if (from && from !== r.id && readyIds.has(from)) edges.push({ from, to: r.id });
+    }
+  }
+  return edges;
+}
+
+/**
+ * T01280/T01284（FR-3.1 / FR-3.7）：依赖感知的**就绪判定 + 拓扑排序**。
+ *
+ * 一次查询同时产出两者（原先只有判定，排序在 T01284 补上），避免「判定查一遍、排序再查一遍」的口径漂移。
+ * 依赖语义见 `util/planDeps`：serial 严格先后、parallel 不阻塞、deps 指向的计划行已不存在按已完成；
+ * 分批 IN 规避 SQLite 变量上限 999（与图片批量查询同口径）。
+ * M6-6.1：三阶段（取 deps / 取计划状态 / 构边）提取为模块级助手，本函数仅保留编排。
+ */
+function readyAndOrder<T extends { id: string }>(db: ReturnType<typeof getDb>, rows: T[]): T[] {
+  if (rows.length === 0) return [];
+  const { depsByTask, depPlanIds } = loadDepsByTask(db, rows.map((r) => r.id));
+  // 无任何任务挂计划行时无需查依赖状态，直接按原序返回（绝大多数项目的常态）
+  if (depsByTask.size === 0) return [...rows];
+
+  const { statusById, linkedTaskByPlanId } = loadDepPlanStatus(db, depPlanIds);
+
+  const ready = rows.filter((r) => depsSatisfied(depsByTask.get(r.id) ?? [], statusById));
+  if (ready.length <= 1) return ready;
+
+  // 拓扑序偏好：仅当依赖方的计划行也指向**本轮就绪集内**的任务时才构成可排序的边
+  const readyIds = new Set(ready.map((r) => r.id));
+  const edges = buildReadyEdges(ready, depsByTask, linkedTaskByPlanId, readyIds);
+  if (edges.length === 0) return ready;
+  const byId = new Map(ready.map((r) => [r.id, r]));
+  return topoOrder(ready.map((r) => r.id), edges).map((id) => byId.get(id)!);
+}
+
+/** 行→视图装饰：批量补截图与来源计划（list / listMonitorReady 共用，避免第二套装饰逻辑漂移） */
+function decorateRows(db: ReturnType<typeof getDb>, rows: TaskRow[]): TaskView[] {
+  const imageMap = TaskImageService.mapByTasks(rows.map((r) => r.id));
+  const planLinked = loadPlanLinked(db, rows);
+  const blockers = loadOpenBlockers(db, rows.map((r) => r.id));
+  // T03231：自定义字段值随行带出（一次分批 IN，不按行回查）；无值的任务不挂空数组
+  const fields = FieldService.mapByTasks(rows.map((r) => r.id));
+  return rows.map((r) => {
+    const view = rowToTask(r, imageMap.get(r.id) ?? []);
+    const link = planLinked.get(r.id);
+    if (link) {
+      view.fromPlanTitle = link.title;
+      view.fromPlanKind = link.kind; // T01037：里程碑联动任务要显示「里程碑」而非「计划」
+      view.fromPlanId = link.planId; // T02196：徽标点击定位来源 WBS 节点
+    }
+    view.blocked_by = blockers.get(r.id) ?? [];
+    const fv = fields.get(r.id);
+    if (fv) view.field_values = fv;
+    return view;
+  });
+}
+
+/** M6-6.1：事件埋点相关类型与助手（自 update 提取，降低认知复杂度） */
+type UpdateEventPatch = Partial<Pick<TaskRow, 'status' | 'verified' | 'ai_state' | 'handle_result'>>;
+type UpdateEventBefore = { status: string; verified: number; ai_state: string; handle_result: string | null };
+/** PATCH 可写字段白名单（update 与联动副作用共用同一形状） */
+type TaskPatch = Partial<Pick<TaskRow, 'title' | 'description' | 'priority' | 'status' | 'verified' | 'ai_summary' | 'handle_result' | 'pinned' | 'category_id' | 'parent_id' | 'color' | 'ai_state' | 'ai_state_at' | 'derived_from' | 'shelved' | 'archived'>>;
+
+/** T01072-FR1.9：旧结果留档（diff/回滚数据源）——每任务保留最近 10 条 */
+function recordResultHistory(db: ReturnType<typeof getDb>, taskId: string, prevResult: string | null): void {
+  db.prepare('INSERT INTO task_result_history (id, task_id, prev_result, replaced_at) VALUES (?, ?, ?, ?)')
+    .run(uuid(), taskId, prevResult ?? '', now());
+  db.prepare(
+    `DELETE FROM task_result_history WHERE task_id = ? AND id NOT IN (SELECT id FROM task_result_history WHERE task_id = ? ORDER BY replaced_at DESC LIMIT 10)`,
+  ).run(taskId, taskId);
+}
+
+/** T01064：ai_state 变更的埋点文案 */
+function aiStateEventDetail(next: string): string {
+  if (next === 'unread') return 'AI 处理完成';
+  if (next === 'failed') return 'AI 处理失败';
+  return `AI 状态：${next}`;
+}
+
+/** T01064 事件埋点——按变更前快照 diff 生成事件（running 态不记，避免开工噪声） */
+function collectUpdateEvents(patch: UpdateEventPatch, before: UpdateEventBefore, db: ReturnType<typeof getDb>, id: string): Array<[string, string]> {
+  const ev: Array<[string, string]> = [];
+  if (patch.status !== undefined && patch.status !== before.status) ev.push(['status', `${before.status} → ${patch.status}`]);
+  if (patch.verified !== undefined && patch.verified !== before.verified) ev.push(['verified', patch.verified ? '验证通过' : '验证未通过 / 退回']);
+  if (patch.ai_state !== undefined && patch.ai_state !== before.ai_state && patch.ai_state !== 'running') ev.push(['ai_state', aiStateEventDetail(patch.ai_state)]);
+  if (patch.handle_result !== undefined && patch.handle_result !== before.handle_result) {
+    ev.push(['result', '处理结果回传/更新']);
+    recordResultHistory(db, id, before.handle_result ?? '');
+  }
+  return ev;
+}
+
+/**
+ * update() 之后的联动副作用：裁决重判、计划状态回写、阻塞解除、派生单补归档、父进度重算。
+ * 全部挂在 update() 一处即覆盖 REST PATCH、MCP 写入、看板标记完成等所有写入口；
+ * 每一项都只在对应字段出现在 patch 里时触发，重复 PATCH 同一值不会重复产生历史。
+ */
+function applyUpdateSideEffects(id: string, patch: TaskPatch, before: UpdateEventBefore | undefined): void {
+  // T04143（PRD MEM-201，v1.2·F3）：结论变更 → 异步 fire-and-forget 触发记忆抽取。
+  // 挂在本函数（update() 唯一副作用出口）即天然覆盖 MCP update_task_result 与 Web PATCH 等全部写入口；
+  // scheduleMemoryExtract 内部自读开关/绑定/幂等并吞掉一切异常（失败仅记遥测），主链路零等待零风险。
+  if (patch.handle_result && before && patch.handle_result !== before.handle_result) {
+    scheduleMemoryExtract(id, patch.handle_result);
+  }
+  // T02949 方案 A：结论/标题/描述/溯源一变更就重判「是否需要裁决」
+  if (patch.handle_result !== undefined || patch.title !== undefined
+    || patch.description !== undefined || patch.derived_from !== undefined) TaskService.autoRuling(id);
+  // 反向计划联动（T00436）：待办被项目计划关联时，状态变更同步回计划任务（已完成↔已完成，待办→进行中）
+  if (patch.status !== undefined) syncPlanOnStatusChange(id, patch.status);
+  // T03230（PM-202③）：阻塞方「迁入 done 的那一次跃迁」触发自动解除；
+  // 只认跃迁（before.status !== 'done'），重复 PATCH done 不该把同一批解除历史再刷一遍。
+  if (patch.status === 'done' && before && before.status !== 'done') TaskService.releaseBlockersByCompletion(id);
+  // T03637：派生单完成即补归档（归并早于 done 由结果通道完成；同样只认 done 这一次跃迁）
+  if (patch.status === 'done' && before && before.status !== 'done') TaskService.archiveDerivedIfClosed(id);
+  // T01876：归档态变更同样要重算父进度（REST/MCP 单条归档走本方法，批量归档见 ArchiveService）
+  if (patch.archived !== undefined) TaskService.recalcParentsOfChildren([id]);
+}
+
+  /**
+ * T02949 复验：判定输入统一从这里组装——标题/描述/结论三个面一起交给纯函数，
+ * 避免每个调用方各挑一个字段（旧口径只喂 handle_result，标题徽标请求裁决的单全部漏标）。
+ */
+function rulingInputOf(task: { title?: string | null; description?: string | null; handle_result?: string | null; derived_from?: string | null }) {
+  return {
+    title: task.title ?? '',
+    description: task.description ?? '',
+    handleResult: task.handle_result ?? '',
+    derivedFrom: task.derived_from ?? '',
+  };
+}
+
+/* ---------------- T03229（PRD PM-202①②）：任务级阻塞关系 ---------------- */
+
+/** 一行 = 「`blocked_id` 被 `blocker_id` 阻塞」；`released_at` 空即在途。
+ *  解除只封口不删行——PM-202④ 要求「历史事件仍可查」，删行会把关系变化变成不可追溯的改写。 */
+export interface TaskBlockerView {
+  /** 关系行 id */
+  id: string;
+  blocked_id: string;
+  blocker_id: string;
+  /** 阻塞方编号与标题（随行带出，前端徽标 tooltip 与抽屉列表直接用，无需二次查询） */
+  blocker_no: string | null;
+  blocker_title: string;
+  blocker_status: string;
+  created_at: string;
+  released_at: string | null;
+  released_reason: string | null;
+}
+
+/** 列表/看板徽标的在途阻塞摘要（分批 IN 与 `loadPlanLinked` 同口径，规避 SQLite 999 变量上限）。
+ *  带出阻塞方的编号与标题而不是只给计数：徽标 tooltip 要能回答「被谁挡住」，
+ *  否则用户看到「阻塞 2」还得逐条开抽屉才知道是什么。 */
+function loadOpenBlockers(db: ReturnType<typeof getDb>, taskIds: string[]): Map<string, Array<{ id: string; task_no: string | null; title: string }>> {
+  const byTask = new Map<string, Array<{ id: string; task_no: string | null; title: string }>>();
+  for (let i = 0; i < taskIds.length; i += PLAN_LOOKUP_BATCH) {
+    const chunk = taskIds.slice(i, i + PLAN_LOOKUP_BATCH);
+    if (chunk.length === 0) continue;
+    const rows = db.prepare(
+      `SELECT b.blocked_id, b.blocker_id, t.task_no, t.title FROM task_blockers b
+         JOIN tasks t ON t.id = b.blocker_id
+        WHERE b.released_at IS NULL AND b.blocked_id IN (${chunk.map(() => '?').join(',')})
+        ORDER BY b.created_at`,
+    ).all(...chunk) as Array<{ blocked_id: string; blocker_id: string; task_no: string | null; title: string }>;
+    for (const r of rows) {
+      const list = byTask.get(r.blocked_id) ?? [];
+      list.push({ id: r.blocker_id, task_no: r.task_no, title: r.title });
+      byTask.set(r.blocked_id, list);
+    }
+  }
+  return byTask;
+}
+
+/** 关系行的事件文案：两侧各记一条，使「谁被谁挡住」与「谁挡住了谁」都能在各自时间线读到 */
+function blockerEventDetail(t: BlockerLabel): string {
+  const noPrefix = t.task_no ? `${t.task_no} ` : '';
+  return `${noPrefix}「${t.title}」`;
+}
+
+/**
+ * T03230（PM-202⑤）：沿「X 阻塞 Y」的**在途**边找 from→to 的通路（BFS + 前驱回溯）。
+ * 新增「B 阻塞 A」之前，若 A 已能沿这条路走到 B，这条边正好把环闭上。
+ * 返回值是从 A 到 B 的节点序列，调用方拼上 B 就是完整环路——拒收时要原样报出这条路，
+ * 只说一句「存在循环」用户仍然不知道是哪几条在打转。
+ */
+function findBlockingPath(db: ReturnType<typeof getDb>, projectId: string, from: string, to: string): string[] | null {
+  const rows = db.prepare(
+    'SELECT blocked_id, blocker_id FROM task_blockers WHERE released_at IS NULL AND project_id = ?',
+  ).all(projectId) as Array<{ blocked_id: string; blocker_id: string }>;
+  const out = new Map<string, string[]>();
+  for (const r of rows) {
+    const next = out.get(r.blocker_id) ?? [];
+    next.push(r.blocked_id);
+    out.set(r.blocker_id, next);
+  }
+  const prev = new Map<string, string>();
+  const seen = new Set<string>([from]);
+  const queue: string[] = [from];
+  let hit = false;
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    if (cur === to) { hit = true; break; }
+    for (const next of out.get(cur) ?? []) {
+      if (seen.has(next)) continue;
+      seen.add(next);
+      prev.set(next, cur);
+      queue.push(next);
+    }
+  }
+  if (!hit) return null;
+  const path: string[] = [to];
+  for (let cur = to; cur !== from; ) {
+    const p = prev.get(cur);
+    if (p === undefined) return null; // 前驱链断裂只可能是图被并发改写，宁可判「无环」也不误拒
+    path.unshift(p);
+    cur = p;
+  }
+  return path;
+}
+
+/** 环路文案：把节点 id 换成「编号 + 标题」，与徽标 tooltip 同一读法 */
+function blockerChainText(db: ReturnType<typeof getDb>, ids: string[]): string {
+  const labels = new Map<string, BlockerLabel>();
+  for (let i = 0; i < ids.length; i += PLAN_LOOKUP_BATCH) {
+    const chunk = ids.slice(i, i + PLAN_LOOKUP_BATCH);
+    const rows = db.prepare(`SELECT id, task_no, title FROM tasks WHERE id IN (${chunk.map(() => '?').join(',')})`)
+      .all(...chunk) as Array<{ id: string; task_no: string | null; title: string }>;
+    for (const r of rows) labels.set(r.id, r);
+  }
+  return ids.map((id) => blockerEventDetail(labels.get(id) ?? { task_no: null, title: id })).join(' → ');
+}
+
+/** 建立关系时的两侧最小投影（`SELECT id, task_no, title, project_id, status, archived`） */
+type BlockerLabel = { task_no: string | null; title: string };
+type BlockerParty = BlockerLabel & { id: string; project_id: string; status: string; archived: number };
+
+export const TaskService = {
+  create(input: TaskInput): TaskView {    const db = getDb();
+    const id = uuid();
+    const t = now();
+    if (input.parentId && !db.prepare('SELECT id FROM tasks WHERE id = ?').get(input.parentId)) {
+      throw new Error('父任务不存在');
+    }
+    const r = db.prepare(
+      `INSERT INTO tasks (id, task_no, project_id, title, description, priority, status, category_id, parent_id, derived_from, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(id, nextTaskNo(), input.projectId, input.title, input.description ?? '', input.priority ?? 'normal', input.status ?? 'todo', input.categoryId ?? null, input.parentId ?? null, input.derived_from ?? null, t, t);
+    if (r.changes !== 1) throw new Error('创建任务失败');
+    if (input.parentId) recalcParentProgress(input.parentId); // M-5：新增子任务后父进度同步重算（done/100% 下再添子任务不再失真）
+    // T03196：创建事件单独埋点（create 路径不写 task_events）
+    try { WebhookService.onTaskCreated(id); } catch { /* noop */ }
+    // T04458：AI 回写派生单走 create（裁决请求/结论常在 description，handle_result 为空），
+    // 不像 update 那样有统一副作用出口；这里补同一套 autoRuling，避免创建时漏标。
+    this.autoRuling(id);
+    return this.getById(id)!;
+  },
+
+  getById(id: string): TaskView | null {
+    // T00620：读取路径不再惰性过期 running（已移除，避免只读接口挂写锁）；超时兜底由 startStaleRunningGuard 定时收敛
+    const row = getDb().prepare('SELECT * FROM tasks WHERE id = ?').get(id) as TaskRow | undefined;
+    return row ? rowToTask(row, TaskImageService.listByTask(id)) : null;
+  },
+
+  /** T01064-FR1.4：通知中心数据源——项目（或全部）最近事件；since（ISO）只取其后（未读增量） */
+  // T01616：通知中心条目带项目归属（project_id/project_name）——单次 LEFT JOIN projects 随行带出，无 N+1
+  listEvents(opts: { projectId?: string; limit?: number; since?: string }): Array<{ id: string; task_no: string | null; task_id: string; project_id: string; project_name: string | null; kind: string; detail: string; title: string; created_at: string }> {
+    const lim = Math.min(200, Math.max(1, opts.limit ?? 50));
+    if (opts.projectId) {
+      const sinceWhere = opts.since ? 'AND e.created_at > ?' : '';
+      const args: unknown[] = [opts.projectId, ...(opts.since ? [opts.since] : []), lim];
+      return getDb().prepare(
+        `SELECT e.id, e.task_no, e.task_id, e.project_id, pr.name AS project_name, e.kind, e.detail, e.created_at, t.title
+           FROM task_events e LEFT JOIN tasks t ON t.id = e.task_id
+           LEFT JOIN projects pr ON pr.id = e.project_id
+          WHERE e.project_id = ? ${sinceWhere}
+          ORDER BY e.created_at DESC LIMIT ?`,
+      ).all(...args) as Array<{ id: string; task_no: string | null; task_id: string; project_id: string; project_name: string | null; kind: string; detail: string; title: string; created_at: string }>;
+    }
+    const sinceWhere = opts.since ? 'WHERE e.created_at > ?' : '';
+    const args: unknown[] = [...(opts.since ? [opts.since] : []), lim];
+    return getDb().prepare(
+      `SELECT e.id, e.task_no, e.task_id, e.project_id, pr.name AS project_name, e.kind, e.detail, e.created_at, t.title
+         FROM task_events e LEFT JOIN tasks t ON t.id = e.task_id
+         LEFT JOIN projects pr ON pr.id = e.project_id
+         ${sinceWhere}
+        ORDER BY e.created_at DESC LIMIT ?`,
+    ).all(...args) as Array<{ id: string; task_no: string | null; task_id: string; project_id: string; project_name: string | null; kind: string; detail: string; title: string; created_at: string }>;
+  },
+
+  /**
+   * L3 丁档（2026-11-06 裁定「丁」）：通知铃铛的未读数——口径必须与前端原实现逐字一致：
+   * 「最近 limit 条事件里 created_at > since 的条数」（先截断再计数，不是全库未读）。
+   * 存在的理由：铃铛每 30s 拉 30 行 × 9 列整行事件（实测 12,643B）只为算这一个数。
+   * since 为空串时与前端 `created_at > ''` 等价（全部计入）。
+   */
+  countUnreadEvents(opts: { since?: string; limit?: number } = {}): number {
+    const lim = Math.min(200, Math.max(1, opts.limit ?? 30));
+    const row = getDb().prepare(
+      'SELECT COUNT(*) AS n FROM (SELECT created_at FROM task_events ORDER BY created_at DESC LIMIT ?) WHERE created_at > ?',
+    ).get(lim, opts.since ?? '') as { n: number };
+    return row.n;
+  },
+
+  /** T01064-FR1.5：单任务事件时间线（状态流转/回传/验证历史，正序） */
+  listTaskEvents(taskId: string): Array<{ kind: string; detail: string; created_at: string }> {
+    return getDb().prepare(
+      'SELECT kind, detail, created_at FROM task_events WHERE task_id = ? ORDER BY created_at, rowid',
+    ).all(taskId) as Array<{ kind: string; detail: string; created_at: string }>;
+  },
+
+  /** T01072-FR1.9：处理结果历史（新→旧，diff 视图与回滚数据源） */
+  listResultHistory(taskId: string): Array<{ id: string; prev_result: string; replaced_at: string }> {
+    return getDb().prepare(
+      'SELECT id, prev_result, replaced_at FROM task_result_history WHERE task_id = ? ORDER BY replaced_at DESC LIMIT 10',
+    ).all(taskId) as Array<{ id: string; prev_result: string; replaced_at: string }>;
+  },
+
+  /** T01072-FR1.9：回滚到历史版本——当前结果先入历史（可再回滚回来），再将 handle_result 置为历史值 */
+  rollbackResult(taskNo: string, historyId: string): TaskView | null {
+    const db = getDb();
+    const task = db.prepare('SELECT id FROM tasks WHERE task_no = ?').get(taskNo) as { id: string } | undefined;
+    if (!task) throw new Error(`任务「${taskNo}」不存在`);
+    const h = db.prepare('SELECT prev_result FROM task_result_history WHERE id = ? AND task_id = ?').get(historyId, task.id) as { prev_result: string } | undefined;
+    if (!h) throw new Error('历史版本不存在');
+    return this.update(task.id, { handle_result: h.prev_result });
+  },
+
+  /** T00566：AI 处理状态回写（running/failed/unread；'' = 已读清空）。非法值忽略。 */
+  setAiState(id: string, state: string): TaskView | null {
+    const allowed = new Set(['running', 'failed', 'unread', '']);
+    if (!allowed.has(state)) return this.getById(id);
+    // T00620：同步记录状态变更时间。
+    // - 置 ''（用户已读清空）时**保留**原 ai_state_at：它是"该任务是否被 AI 处理过"的判据，
+    //   丢掉会让 MCP 的"读取即开始处理"再次误判，把已完成的卡片重新转圈；
+    // - 其余状态（含 failed/超时兜底）刷新时间戳，供 running 超时判断使用。
+    if (state === '') {
+      return this.update(id, { ai_state: state });
+    }
+    // T05748：ai_state_at 语义是「进入该状态的时刻」，状态没变就不该刷新。
+    // 已完工任务被派生单归并/结果修订反复写 unread 时，旧时间戳会让它看起来像"刚处理完"
+    // （通知清单按 ai_state_at 排序，桌面端据此弹「任务处理完成」）；running 例外——
+    // 它靠重复写入续心跳，避免被 MTASK_AI_STATE_STALE_MS 判超时。
+    if (state !== 'running') {
+      const current = getDb().prepare('SELECT ai_state FROM tasks WHERE id = ?').get(id) as { ai_state: string } | undefined;
+      if (current?.ai_state === state) return this.getById(id);
+    }
+    return this.update(id, { ai_state: state, ai_state_at: new Date().toISOString() });
+  },
+
+  /** T01057-FR1.1：系统通知轮询数据源——ai_state 处于 unread/failed 的任务（跨项目，按处理时间倒序）。
+   *  主进程 30s 轮询 diff 快照后发 OS 通知；仅返回轻量字段，避免把整表拉进主进程。
+   *
+   *  T05748（缺陷：任务早已完成，通知弹窗隔很久才提示）：
+   *  已完成任务的「结果修订 / 派生单归并」会把 ai_state 重新置为 unread，主进程只要看到
+   *  ai_state 由 '' → unread 就再弹一次「任务处理完成」——任务其实几小时前就 done 了。
+   *  因此这里把「完工后才被重新置 unread」的条目排除出通知清单：
+   *    · 没有 todo→done 事件 ⇒ 完成时刻早于事件埋点（T01064 于 2026-11-10 上线，存量任务无历史事件）
+   *      或已被 90 天保留期裁剪，无法证明「刚完成」，按老任务处理、不弹；
+   *    · 有事件但最后一次进入 unread（ai_state='AI 处理完成'，早期无事件的任务回退 ai_state_at）
+   *      晚于该 done 事件超过 60s（留出正常完成时 result/done 两次写入的毫秒级抖动）
+   *  ⇒ 视为完工后的补充更新，不派发系统通知（任务本身的 unread 圆点与通知中心事件不受影响）。
+   *
+   *  同时取消原 `LIMIT 20`：主进程每轮先 notifySeen.clear() 再只装本轮条目，窗口外的任务
+   *  一旦后续挤进前 20（用户读掉更靠前的条目），prev 为 undefined 就会被误判成「新完成」再弹一次。
+   *  过滤后清单只剩真正新鲜的条目（生产约 456 条），全量返回的负载可接受。 */
+  listAiPending(): Array<{ task_no: string; title: string; ai_state: string; project_name: string; state_at: string }> {
+    return getDb().prepare(
+      `SELECT t.task_no, t.title, t.ai_state, t.ai_state_at AS state_at, p.name AS project_name
+         FROM tasks t JOIN projects p ON p.id = t.project_id
+        WHERE t.ai_state IN ('unread','failed') AND t.archived = 0
+          AND NOT (
+            t.ai_state = 'unread' AND t.status = 'done'
+            AND (
+              NOT EXISTS (SELECT 1 FROM task_events e
+                           WHERE e.task_id = t.id AND e.kind = 'status' AND e.detail = 'todo → done')
+              OR (
+                COALESCE((SELECT MAX(e2.created_at) FROM task_events e2
+                           WHERE e2.task_id = t.id AND e2.kind = 'ai_state' AND e2.detail = 'AI 处理完成'),
+                         t.ai_state_at) IS NOT NULL
+                AND julianday(COALESCE((SELECT MAX(e2.created_at) FROM task_events e2
+                           WHERE e2.task_id = t.id AND e2.kind = 'ai_state' AND e2.detail = 'AI 处理完成'),
+                         t.ai_state_at))
+                    > julianday((SELECT MAX(e3.created_at) FROM task_events e3
+                                  WHERE e3.task_id = t.id AND e3.kind = 'status' AND e3.detail = 'todo → done'))
+                      + (60.0 / 86400.0)
+              )
+            )
+          )
+        ORDER BY t.ai_state_at DESC`,
+    ).all() as Array<{ task_no: string; title: string; ai_state: string; project_name: string; state_at: string }>;
+  },
+
+  /** T01057-FR1.2：失败一键重试——ai_state=failed 的任务回待办并累计重试次数；
+   *  历史结果保留在 handle_result 追加段（历次尝试链），重试后由 AI Agent 重新领取执行。 */
+  retryTask(taskNo: string): TaskView | null {
+    const db = getDb();
+    const row = db.prepare('SELECT id, handle_result, retry_count FROM tasks WHERE task_no = ?').get(taskNo) as
+      | { id: string; handle_result: string | null; retry_count: number }
+      | undefined;
+    if (!row) throw new Error(`任务「${taskNo}」不存在`);
+    const cur = db.prepare('SELECT ai_state FROM tasks WHERE id = ?').get(row.id) as { ai_state: string };
+    if (cur.ai_state !== 'failed') throw new Error('仅 AI 处理失败（failed）的任务可重试');
+    const n = (row.retry_count ?? 0) + 1;
+    const stamp = new Date().toISOString();
+    const marker = `${(row.handle_result ?? '').trimEnd()}${row.handle_result ? '\n\n' : ''}---\n[重试 #${n}] ${stamp}：任务被手动重试，已回到待办，等待 AI 重新领取执行。`;
+    // A 方案（2026-09-28）：重试时把 ai_state_at 一并清空，使重试后的任务与「全新待办」在
+    // mcp/server.ts:314 的 markRunning 领取条件（status=待办 && ai_state==='' && !ai_state_at）
+    // 上完全一致——否则重试后 ai_state_at 被写成 now，markRunning 仍因 !ai_state_at 不满足而领不走，
+    // 表现为「点了重试也没变化」。清空后重试即「重新武装」，下一次 markRunning 调用即可领走转 running。
+    db.prepare(
+      `UPDATE tasks SET status = 'todo', ai_state = '', ai_state_at = '', retry_count = ?, handle_result = ?, updated_at = ? WHERE id = ?`,
+    ).run(n, marker, stamp, row.id);
+    return this.getById(row.id);
+  },
+
+  /**
+   * T00620：running 超时兜底——AI Agent 中断（进程被杀/会话结束/网络断开）时
+   * 不会有任何回调来收尾，任务会永远停在转圈态。这里在读取路径上**惰性过期**：
+   * 把 running 且超过 maxAgeMs 未更新的任务置为 failed（红色警示，用户可据此重试）。
+   *
+   * 实现要点：
+   * - **探测优先**：先用一次轻量 SELECT 判断是否存在过期项（配 idx_tasks_ai_state 索引），
+   *   无过期项直接返回——避免每次 list/get 都做写事务；
+   * - **不做时间节流**：曾经加过 30s 节流，结果中断检测被最长延迟 30s（验证脚本当场暴露），
+   *   而探测本身已足够便宜（真实库 619 任务、running 通常 0~2 条），故直接去掉；
+   * - 时间戳缺失的历史数据回退用 updated_at 判断年龄（否则老数据永远不过期）；
+   * - 直接 SQL 更新（只改 ai_state/ai_state_at，**不动 updated_at**），避免污染"最近更新"排序。
+   */
+  expireStaleRunning(maxAgeMs: number = AI_STATE_STALE_MS, force = false): number {
+    const db = getDb();
+    const nowMs = Date.now();
+    const cutoff = new Date(nowMs - maxAgeMs).toISOString();
+    const ageExpr = "CASE WHEN COALESCE(ai_state_at, '') <> '' THEN ai_state_at ELSE COALESCE(updated_at, '') END";
+    const stale = db.prepare(
+      `SELECT id FROM tasks WHERE ai_state = 'running' AND ${ageExpr} < ? LIMIT 1`,
+    ).get(cutoff) as { id: string } | undefined;
+    if (!stale && !force) return 0;
+
+    const r = db.prepare(
+      `UPDATE tasks SET ai_state = 'failed', ai_state_at = ? WHERE ai_state = 'running' AND ${ageExpr} < ?`,
+    ).run(new Date(nowMs).toISOString(), cutoff);
+    if (r.changes > 0) {
+      console.warn(`[TaskService] ${r.changes} 个 running 任务超过 ${Math.round(maxAgeMs / 60000)} 分钟未更新，自动置 failed（AI 中断兜底）`);
+      // T01440：Web Push 通知（fire-and-forget，不阻塞探测）
+      void PushService.notify('任务执行停滞', `${r.changes} 个 AI 任务心跳超时已置为失败，请查看处理`).catch(() => {});
+    }
+    return r.changes;
+  },
+
+  /** 按编号查找任务：供 AI Agent 通过 MCP 的 taskNo 参数定位。不存在返回 null。 */
+  findByNo(taskNo: string): TaskView | null {
+    const row = getDb().prepare('SELECT * FROM tasks WHERE task_no = ?').get(taskNo) as TaskRow | undefined;
+    return row ? rowToTask(row, TaskImageService.listByTask(row.id)) : null;
+  },
+
+  /** 按项目/条件列出；archived=false 为活跃列表（待办/已完成由 status 区分）。支持可选分页/搜索/分类/排序 */
+  list(opts: TaskListOptions = {}): TaskView[] {
+    // T00620：列表读取路径不再惰性过期 running（已移除，避免只读接口挂写锁）；超时兜底由 startStaleRunningGuard 定时收敛
+    const db = getDb();
+    const { where, values } = buildTaskFilter(opts);
+    const orderSql = resolveListOrder(opts, values);
+    let sql = `SELECT * FROM tasks WHERE ${where.join(' AND ')} ORDER BY ${orderSql}`;
+    sql += resolveListPage(opts, values);
+    // T00792：SQL 文本由「过滤组合 × 6 种排序 × limit/offset」决定，变体数有限且高度重复
+    //（前端固定几种视图来回切），缓存 Statement 避免每次请求重新编译（实测 3.48× 于编译环节）
+    const rows = cachedPrepare(db, sql).all(...values) as TaskRow[];
+    return decorateRows(db, rows);
+  },
+
+  /**
+   * M4-b：与 {@link list} **同一套过滤 + 同一套排序 + 同一套分页**，但只取签名所需的六列，
+   * 并把它们折成一个 SHA256 返回。存在的理由：TasksPage 每 10s 轮询一次整行列表
+   * （实测 200MB 快照上 limit=500 命中 500 行 = 402,501B，服务端单次 9–21ms），
+   * 只为读出六个标量列；本形态 0.4–2.0ms、响应 ~100B。
+   * 刻意不做 decorateRows：图片/计划关联/阻塞项/自定义字段值都进不了签名，取它们才是那 9–21ms 的大头。
+   *
+   * ⚠ 拼串前先按单元格排序再折哈希，而不是照抄 SQL 的返回顺序。这是等价探针实测出来的坑：
+   * 排序键存在并列时（如 sort=manual 下 user_sort 相同或同为 NULL 的一批行），`SELECT *` 与六列投影
+   * 可能给出**不同的并列次序**——行数与内容都相同、拼串却不同。照搬旧的顺序敏感拼法会让每 10s
+   * 的轮询都判定「外部改过了」，反而比原实现更贵。按单元格排序后取集合等价，才是「这六个标量有没有变过」
+   * 的真实语义；行顺序本身（拖拽 user_sort）旧实现同样不进签名，所以这不是新盲区。
+   */
+  listChangeSig(opts: TaskListOptions = {}): { sig: string; rows: number } {
+    const db = getDb();
+    const { where, values } = buildTaskFilter(opts);
+    const orderSql = resolveListOrder(opts, values);
+    const sql = `SELECT ${TASK_SIG_COLUMNS.join(', ')} FROM tasks WHERE ${where.join(' AND ')} ORDER BY ${orderSql}${resolveListPage(opts, values)}`;
+    const rows = cachedPrepare(db, sql).all(...values) as Array<{
+      id: string; status: string; verified: number; updated_at: string; category_id: string | null; priority: string;
+    }>;
+    return { sig: createHash('sha256').update(rows.map(taskSigCell).sort().join('|')).digest('hex'), rows: rows.length };
+  },
+
+  /**
+   * T02284：与 list **同一套过滤条件**的总数（归档页服务端分页的「共 N 条」）。
+   * 与 list 分开走 COUNT 而不是复用 rows.length，是因为 list 受 limit 钳制——
+   * 分页后的单页条数不等于筛选命中总数。
+   */
+  count(opts: TaskListOptions = {}): number {
+    const db = getDb();
+    const { where, values } = buildTaskFilter(opts);
+    const row = cachedPrepare(db, `SELECT COUNT(*) AS n FROM tasks WHERE ${where.join(' AND ')}`)
+      .get(...values) as { n: number };
+    return row.n;
+  },
+
+  /**
+   * T03983：与 count 同一套关键词/结构化条件，但把可见性反转成「只看得见范围之外」——
+   * 归档 ∪ 历史资产 ∪ 搁置。命令面板据此提示「另有 N 条不在当前视图」并给出分桶跳转。
+   * 分桶用一条聚合查询出全部数字：逐桶 COUNT(*) 会让每次按键打出四次同样的全表 LIKE 扫描。
+   * ⚠ 桶之间可重叠（先搁置后归档、进历史再归档），故各桶之和可能大于 total——展示按桶，不做相加校验。
+   */
+  countOutOfSight(opts: TaskListOptions = {}): { total: number; archived: number; history: number; shelved: number } {
+    const db = getDb();
+    const { where, values } = buildTaskFilter({ ...opts, outOfSight: true, limit: undefined, offset: undefined });
+    const row = cachedPrepare(db, `SELECT COUNT(*) AS total,
+        SUM(CASE WHEN archived = 1 THEN 1 ELSE 0 END) AS archived,
+        SUM(CASE WHEN COALESCE(history_at, '') <> '' THEN 1 ELSE 0 END) AS history,
+        SUM(CASE WHEN COALESCE(shelved, 0) = 1 THEN 1 ELSE 0 END) AS shelved
+        FROM tasks WHERE ${where.join(' AND ')}`).get(...values) as
+      { total: number; archived: number | null; history: number | null; shelved: number | null };
+    return { total: row.total, archived: row.archived ?? 0, history: row.history ?? 0, shelved: row.shelved ?? 0 };
+  },
+
+  /**
+   * T01280（FR-3.1）：就绪标记——把「无未完成前置依赖」的待办置 monitor_ready=1，供外部平台拉取执行。
+   *
+   * 为何由监督器统一驱动、而非拉取时惰性标记：标记是排水链路的输入（FR-3.5 拓扑排序的前置），
+   * 若放进拉取接口，外部平台的轮询/重试就会产生写副作用（同一请求既有读又有写，难以审计）。
+   *
+   * 只处理 monitor_ready=0 的候选，已标记的不重复进入依赖判定，常态下为空操作、成本随积压量线性。
+   * 有意不改 updated_at：monitor_ready 是内部调度标记，不是用户可见的「最近更新」，改动会污染列表排序。
+   */
+  markMonitorReady(): number {
+    const db = getDb();
+    const candidates = db.prepare(
+      "SELECT id FROM tasks WHERE status = 'todo' AND archived = 0 AND shelved = 0 AND ai_state = '' AND monitor_ready = 0",
+    ).all() as Array<{ id: string }>;
+    if (candidates.length === 0) return 0;
+    const ids = readyAndOrder(db, candidates).map((r) => r.id);
+    if (ids.length === 0) return 0;
+    const stmt = db.prepare('UPDATE tasks SET monitor_ready = 1 WHERE id = ?');
+    db.transaction(() => {
+      for (const id of ids) stmt.run(id);
+    })();
+    return ids.length;
+  },
+
+  /**
+   * T01280（FR-3.1）：外部平台拉取——返回可执行的就绪待办。
+   * 过滤：未被认领（ai_state 为空）、未归档未搁置、monitor_ready=1、平台偏好匹配（NULL 视为不限平台），
+   * 且依赖满足（serial 前置已完成；parallel 不阻塞）——依赖做**二次校验**：monitor_ready 是 tick 时刻的
+   * 快照，依赖可能在其后又被回退成未完成。
+   * T01284（FR-3.7）：返回顺序按 deps 拓扑序（前置优先），同层级保持优先级/创建时间原序。
+   */
+  listMonitorReady(opts: { platform?: string; projectId?: string; limit?: number } = {}): TaskView[] {
+    const db = getDb();
+    const limit = Math.min(200, Math.max(1, opts.limit ?? 20));
+    const where = ["status = 'todo'", 'archived = 0', 'shelved = 0', "ai_state = ''", 'monitor_ready = 1'];
+    const values: unknown[] = [];
+    // T05741：多项目共用同一 WorkBuddy 实例时，按项目过滤避免 A 通道把别的项目任务拉走
+    if (opts.projectId) {
+      where.push('project_id = ?');
+      values.push(opts.projectId);
+    }
+    // 平台缺省=不限平台（不能退化成 platform='' 的等值匹配，否则有平台偏好的任务会被整体排除）
+    // T01288：两侧都归一化——请求侧过 normalizePlatform，存量列值用 LOWER/TRIM 兜底，
+    // 否则「Trae 自称 Trae、偏好存成 trae」会静默漏取（排水停滞却无告警）。
+    const platform = normalizePlatform(opts.platform);
+    if (platform) {
+      where.push("(monitor_preferred_platform IS NULL OR LOWER(TRIM(monitor_preferred_platform)) = ?)");
+      values.push(platform);
+    }
+    // 依赖未满足的候选会被滤掉，故先取 3 倍候选量再截断，避免「取 limit 条→过滤后不足」过早返空
+    const candidates = db.prepare(
+      `SELECT * FROM tasks WHERE ${where.join(' AND ')} ORDER BY ${PRIORITY_CASE}, created_at LIMIT ?`,
+    ).all(...values, limit * 3) as TaskRow[];
+    const rows = readyAndOrder(db, candidates).slice(0, limit);
+    return decorateRows(db, rows);
+  },
+
+  /** T01876：归档/还原子任务后补重算其父任务进度。
+   *  status 变更路径已由 syncPlanOnStatusChange 触发重算，archived 变更此前无人重算，
+   *  导致「归档最后一个未完成子任务」后父进度永久停在旧值（实测 33% 不回落 50%/100%）。 */
+  recalcParentsOfChildren(childIds: string[]): void {
+    const db = getDb();
+    const sel = db.prepare('SELECT parent_id FROM tasks WHERE id = ?');
+    for (const id of childIds) {
+      const p = sel.get(id) as { parent_id: string | null } | undefined;
+      if (p?.parent_id) recalcParentProgress(p.parent_id);
+    }
+  },
+
+  update(id: string, patch: TaskPatch): TaskView {
+    const db = getDb();
+    // better-sqlite3 不支持 boolean 绑定且 SQLite 无布尔型，布尔列先归一整型 0/1 再落库
+    normalizeBoolPatch(patch as Record<string, unknown>);
+    // T00779：归档时间联动——取消归档时清空 archived_at（archived 白名单见 normalizeBoolPatch 上方注释）
+    if (patch.archived !== undefined) {
+      db.prepare("UPDATE tasks SET archived_at = ? WHERE id = ?").run(patch.archived ? now() : null, id);
+    }
+    // T00566：ai_state 白名单防御（PATCH 直传路径）——非法值静默忽略
+    if (patch.ai_state !== undefined && !['running', 'failed', 'unread', ''].includes(patch.ai_state)) {
+      delete (patch as { ai_state?: string }).ai_state;
+    }
+    // 路由层会把未提供的字段用 undefined 塞进 patch，若全部纳入会把该列置为 NULL
+    //（例如只 PATCH status 时 title 被清空，触发 NOT NULL）。因此过滤掉值为 undefined 的键。
+    const keys = (Object.keys(patch) as (keyof typeof patch)[]).filter((k) => patch[k] !== undefined);
+    if (keys.length === 0) return this.getById(id)!;
+    // T01064：事件埋点基线——变更前快照，写库后 diff 生成事件（仅记录有实际变化的字段）
+    const before = db.prepare('SELECT status, verified, ai_state, handle_result FROM tasks WHERE id = ?').get(id) as
+      | { status: string; verified: number; ai_state: string; handle_result: string | null }
+      | undefined;
+    const sets = keys.map((k) => `${k} = ?`).join(', ');
+    const values = keys.map((k) => patch[k]);
+    db.prepare(`UPDATE tasks SET ${sets}, updated_at = ? WHERE id = ?`).run(...values, now(), id);
+    // T01064-FR1.4/1.5：事件埋点——状态/验证/AI 状态/回传结果变更写 task_events（M6-6.1：埋点段提取为模块级助手）
+    if (before) {
+      for (const [kind, detail] of collectUpdateEvents(patch as UpdateEventPatch, before, db, id)) logEvent(db, id, kind, detail);
+    }
+    applyUpdateSideEffects(id, patch, before);
+    notifyChange('tasks');
+    return this.getById(id)!;
+  },
+
+  /** FR5.1 / FR5.3：完成或退回待办 */
+  setStatus(id: string, status: 'todo' | 'done'): TaskView {
+    return this.update(id, { status });
+  },
+
+  /**
+   * T03637：派生单闭环的最后一步——「结论已归并 + 本单已完成」时自动归档。
+   *
+   * 缺陷形态（2026-10-29 实测）：结论归并由 `mtask_update_task_result` 自动完成，但**归档没有任何
+   * 自动路径**——技能把「回传→归并→done→归档」四步写成一句话，Agent 看到回执「已整合回原任务」
+   * 便认为闭环结束，归档步骤被跳过。存量 71 张 done 未归档的派生单里 67 张结论早已归并
+   * （T03314 即此形态），它们在待办/完成列表里永远滞留。
+   *
+   * 挂点选在 `update()` 而不是 MCP 工具内：REST PATCH、MCP update_task、看板标记完成都经过这里，
+   * 一处挂即全链覆盖。守卫三条（不归档）：待裁决（等用户拍板）、【缺环境】（规则 3 要求保持可见）、
+   * 结论未归并（信息还在子单里，归档即失联）。幂等：已归档/未完成/非派生单直接返回 false。
+   */
+  archiveDerivedIfClosed(id: string): boolean {
+    const t = this.getById(id);
+    if (!t || t.archived || t.status !== 'done' || !t.derived_from) return false;
+    if (t.ruling_state === '待裁决') return false;
+    if ((t.title ?? '').startsWith('【缺环境')) return false;
+    const origin = this.findByNo(t.derived_from.trim());
+    if (!origin || !alreadyMerged(origin.handle_result, t.task_no)) return false;
+    this.update(id, { archived: 1 });
+    return true;
+  },
+
+  /** T00719：搁置 / 恢复——搁置任务从待办/已完成列表与 MCP 查询隔离（shelved=1），恢复即回到原列表 */
+  setShelved(id: string, shelved: boolean): TaskView {
+    if (!this.getById(id)) throw new Error('任务不存在');
+    // update 的 patch 类型按 TaskRow（number），这里先归一 0/1（update 内 boolean 归一为冗余兜底）
+    return this.update(id, { shelved: shelved ? 1 : 0 });
+  },
+
+  /**
+   * T03229（PM-202①）：某任务的阻塞关系，默认只回在途（`released_at IS NULL`）；
+   * `includeReleased` 时连同已解除的历史一并带出——④ 的「历史仍可查」靠这条与 task_events 双轨。
+   */
+  listBlockers(id: string, opts: { includeReleased?: boolean } = {}): TaskBlockerView[] {
+    const db = getDb();
+    if (!db.prepare('SELECT 1 FROM tasks WHERE id = ?').get(id)) throw new Error('任务不存在');
+    return db.prepare(
+      `SELECT b.id, b.blocked_id, b.blocker_id, t.task_no AS blocker_no, t.title AS blocker_title,
+              t.status AS blocker_status, b.created_at, b.released_at, b.released_reason
+         FROM task_blockers b JOIN tasks t ON t.id = b.blocker_id
+        WHERE b.blocked_id = ?${opts.includeReleased ? '' : ' AND b.released_at IS NULL'}
+        ORDER BY b.created_at DESC`,
+    ).all(id) as TaskBlockerView[];
+  },
+
+  /**
+   * T03229（PM-202①）：建立「`blockedId` 被 `blockerId` 阻塞」。
+   *
+   * 三条边界在写入口钉死，而不是留给前端约束：
+   * - 已完成/已归档的任务不能充当阻塞方。③ 的自动解除只盯「迁入 done」这一次跃迁，
+   *   若建关系时对方就已 done，这条在途阻塞永远不会被解除——徽标会钉在任务上摘不掉。
+   * - 同项目（与 parentId 挂接同口径）：跨项目的阻塞没有共同的列表/看板可读，只会造成困惑。
+   * - 在途关系唯一（部分唯一索引兜底，服务层先给出人话错误）。
+   */
+  addBlocker(blockedId: string, blockerId: string): TaskBlockerView {
+    const db = getDb();
+    const sel = db.prepare('SELECT id, task_no, title, project_id, status, archived FROM tasks WHERE id = ?');
+    const blocked = sel.get(blockedId) as BlockerParty | undefined;
+    if (!blocked) throw new Error('任务不存在');
+    if (blockedId === blockerId) throw new Error('任务不能阻塞自身');
+    const blocker = sel.get(blockerId) as BlockerParty | undefined;
+    if (!blocker) throw new Error('阻塞方任务不存在');
+    if (blocked.project_id !== blocker.project_id) throw new Error('阻塞关系只能在同一项目内建立');
+    if (blocker.archived) throw new Error('阻塞方已归档，不能作为阻塞方');
+    if (blocker.status === 'done') throw new Error('阻塞方已完成，不构成阻塞');
+    if (db.prepare('SELECT 1 FROM task_blockers WHERE blocked_id = ? AND blocker_id = ? AND released_at IS NULL').get(blockedId, blockerId)) {
+      throw new Error('该阻塞关系已存在');
+    }
+    // T03230（PM-202⑤）：成环拒收。只查在途边——已解除的历史行不参与连通，否则「解除后再建」会被误判成环。
+    const loop = findBlockingPath(db, blocked.project_id, blockedId, blockerId);
+    if (loop) throw new Error(`将形成循环阻塞：${blockerChainText(db, [blockerId, ...loop])}（箭头读作「阻塞」）`);
+    const id = uuid();
+    db.transaction(() => {
+      db.prepare('INSERT INTO task_blockers (id, project_id, blocked_id, blocker_id, created_at) VALUES (?, ?, ?, ?, ?)')
+        .run(id, blocked.project_id, blockedId, blockerId, now());
+      // 两侧各写一条：被挡的一方要知道谁挡的，挡人的一方要知道自己钉住了谁（③ 解除时同一对文案对称）
+      logEvent(db, blockedId, 'blocked', `被${blockerEventDetail(blocker)}阻塞`);
+      logEvent(db, blockerId, 'blocked', `阻塞了${blockerEventDetail(blocked)}`);
+    })();
+    notifyChange('tasks');
+    return this.listBlockers(blockedId).find((b) => b.id === id)!;
+  },
+
+  /**
+   * T03229（PM-202①）：解除阻塞——封口不删行（`released_at` + `released_reason`），两侧补写 `unblock` 事件。
+   * `reason` 由调用方给出：手动解除用默认值，③ 的自动解除（T03230）传「阻塞方已完成」。
+   */
+  removeBlocker(blockedId: string, blockerId: string, reason = '手动解除'): { blocked_id: string; blocker_id: string; released_at: string } {
+    const db = getDb();
+    const rel = db.prepare('SELECT id FROM task_blockers WHERE blocked_id = ? AND blocker_id = ? AND released_at IS NULL')
+      .get(blockedId, blockerId) as { id: string } | undefined;
+    if (!rel) throw new Error('阻塞关系不存在或已解除');
+    const sel = db.prepare('SELECT task_no, title FROM tasks WHERE id = ?');
+    const blocked = (sel.get(blockedId) as BlockerLabel | undefined) ?? { task_no: null, title: '' };
+    const blocker = (sel.get(blockerId) as BlockerLabel | undefined) ?? { task_no: null, title: '' };
+    const releasedAt = now();
+    db.transaction(() => {
+      db.prepare('UPDATE task_blockers SET released_at = ?, released_reason = ? WHERE id = ?').run(releasedAt, reason, rel.id);
+      logEvent(db, blockedId, 'unblock', `解除阻塞：${blockerEventDetail(blocker)}（${reason}）`);
+      logEvent(db, blockerId, 'unblock', `不再阻塞${blockerEventDetail(blocked)}（${reason}）`);
+    })();
+    notifyChange('tasks');
+    return { blocked_id: blockedId, blocker_id: blockerId, released_at: releasedAt };
+  },
+
+  /**
+   * T03230（PM-202③）：任务迁入 done 的那一刻，它作为**阻塞方**的全部在途关系自动解除。
+   * 走 removeBlocker 同一条封口通道（写 released_at/released_reason + 双向 unblock 事件），
+   * 不另写第二套解除逻辑——否则「手动解除」与「自动解除」会留下两种形状的历史。
+   *
+   * 反向不成立：阻塞方从 done 退回待办时**不自动恢复**这些关系。
+   * 「已完成 ⇒ 挡住的东西已让路」是用户当时据以标记完成的语义，重新打开后把阻塞悄悄钉回去，
+   * 会让徽标在用户没做任何操作的情况下自己变红；要恢复就回到阻塞面板重新建立一次（历史行带着原因可对照）。
+   */
+  releaseBlockersByCompletion(doneTaskId: string): number {
+    const db = getDb();
+    const open = db.prepare('SELECT blocked_id FROM task_blockers WHERE blocker_id = ? AND released_at IS NULL')
+      .all(doneTaskId) as Array<{ blocked_id: string }>;
+    for (const r of open) this.removeBlocker(r.blocked_id, doneTaskId, '阻塞方已完成，自动解除');
+    return open.length;
+  },
+
+  /**
+   * 手动排序（T00446）：前端传拖拽后的完整 id 顺序（限定同一项目），事务内写入 user_sort（1..n）。
+   * 列表 sort='manual' 时 pinned 优先、user_sort 空值排后——与拖拽结果一致。
+   */
+  reorder(orderedIds: string[]): { reordered: number } {
+    if (orderedIds.length === 0) throw new Error('orderedIds 必填');
+    const db = getDb();
+    db.transaction(() => {
+      orderedIds.forEach((id, i) => {
+        db.prepare('UPDATE tasks SET user_sort = ?, updated_at = ? WHERE id = ?').run(i + 1, now(), id);
+      });
+    })();
+    return { reordered: orderedIds.length };
+  },
+
+  /** FR1.3：批量移动项目 */
+  moveProject(taskIds: string[], projectId: string): void {
+    const db = getDb();
+    const stmt = db.prepare('UPDATE tasks SET project_id = ?, updated_at = ? WHERE id = ?');
+    db.transaction(() => {
+      for (const id of taskIds) stmt.run(projectId, now(), id);
+    })();
+  },
+
+  /**
+   * 复用（复制）任务到目标项目：生成新 id/时间，但完整保留标题、描述、优先级、状态、
+   * 验证态、AI 摘要、置顶、分类与全部截图附件；源任务归属不受影响（仅读取）。
+   * 目标项目存在同名任务时抛错（由路由层映射为 409），不做静默覆盖。
+   */
+  reuse(taskId: string, projectId: string): TaskView {
+    const db = getDb();
+    const src = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as TaskRow | undefined;
+    if (!src) throw new Error('任务不存在');
+    if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw new Error('目标项目不存在');
+    const clash = db.prepare('SELECT 1 FROM tasks WHERE project_id = ? AND archived = 0 AND title = ?').get(projectId, src.title);
+    if (clash) throw new Error(`目标项目已存在同名任务「${src.title}」`);
+    const id = uuid();
+    const t = now();
+    db.transaction(() => {
+      // 复用生成新 id 但保留原任务编号？不复用：新任务需全局唯一编号，重新分配避免重复
+      // T00631：复用需**适度清洗**，使新任务开箱可执行——
+      //   status 固定 待办（不继承源任务的完成态）、verified 归零、清空 handle_result（原任务产物）、取消置顶；
+      //   保留 title/description/priority/category_id/ai_summary（内容与参考信息）与截图附件。
+      db.prepare(
+        `INSERT INTO tasks (id, task_no, project_id, title, description, priority, status, verified, archived, archived_at, ai_summary, handle_result, pinned, category_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'todo', 0, 0, NULL, ?, NULL, 0, ?, ?, ?)`
+      ).run(id, nextTaskNo(), projectId, src.title, src.description, src.priority, src.ai_summary, src.category_id, t, t);
+      // 复制截图：读取原图二进制，为新任务建立相同图片元信息与内容
+      const imgs = db.prepare('SELECT mime_type, data FROM task_images WHERE task_id = ?').all(taskId) as { mime_type: string; data: Buffer }[];
+      const ins = db.prepare('INSERT INTO task_images (id, task_id, mime_type, data, created_at) VALUES (?, ?, ?, ?, ?)');
+      for (const im of imgs) ins.run(uuid(), id, im.mime_type, im.data, t);
+    })();
+    return this.getById(id)!;
+  },
+
+  /**
+   * 将任务复制为提示词页可复用的结构化资产：把任务核心字段（标题/优先级/状态/描述/AI 摘要）
+   * 拼为单份可读 Markdown 文本写入 prompts 表（资产存储复用现有管理页字段，不新建表/不改架构）。
+   * 不再用 JSON 序列化：JSON 转义/引号/嵌套对用户阅读与直接复用都不友好。
+   * 不做自动价值打分——「有价值」由用户在任务页手动确认；仅读取源任务，不改动其归属。
+   */
+  toPromptAsset(taskId: string, categoryId: string): { id: string; category_id: string; title: string; content: string } {
+    const db = getDb();
+    const src = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as TaskRow | undefined;
+    if (!src) throw new Error('任务不存在');
+    if (!db.prepare('SELECT 1 FROM prompt_categories WHERE id = ?').get(categoryId)) throw new Error('目标提示词分类不存在');
+    // 直接组织为可读的纯文本（Markdown 友好），不再 JSON 序列化：
+    // JSON 结构对用户观感差（转义、引号、嵌套），提示词页按 Markdown 渲染 content，
+    // 用「标题 + 分块」的平铺文本既保留完整信息，又方便直接复用/粘贴给 AI。
+    const parts: string[] = [`**任务标题**：${src.title}`];
+    if (src.priority) parts.push(`**优先级**：${src.priority}`);
+    if (src.status) parts.push(`**状态**：${src.status === 'done' ? '已完成' : '待办'}`);
+    if (src.description) parts.push(`**任务描述**：\n${src.description}`);
+    if (src.ai_summary) parts.push(`**AI 梳理摘要**：\n${src.ai_summary}`);
+    const id = uuid();
+    const t = now();
+    db.prepare('INSERT INTO prompts (id, category_id, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(id, categoryId, src.title, parts.join('\n\n'), t, t);
+    return db.prepare('SELECT id, category_id, title, content FROM prompts WHERE id = ?')
+      .get(id) as { id: string; category_id: string; title: string; content: string };
+  },
+
+  /**
+   * 将任务复制为「通用需求」条目：与 toPromptAsset 同构，但写入 req_entries 表，
+   * 便于把有跨项目复用价值的优秀任务沉淀到「通用需求」菜单做分类管理。
+   * 仅读取源任务，不改动其归属；内容组织为可读 Markdown 平铺文本，方便在需求页直接查看/复用。
+   */
+  toReqAsset(taskId: string, categoryId: string): { id: string; category_id: string; title: string; content: string } {
+    const src = this.getById(taskId);
+    if (!src) throw new Error('任务不存在');
+    if (!getDb().prepare('SELECT 1 FROM req_categories WHERE id = ?').get(categoryId)) throw new Error('目标通用需求分类不存在');
+    const parts: string[] = [`**任务标题**：${src.title}`];
+    if (src.priority) parts.push(`**优先级**：${src.priority}`);
+    if (src.status) parts.push(`**状态**：${src.status === 'done' ? '已完成' : '待办'}`);
+    if (src.description) parts.push(`**任务描述**：\n${src.description}`);
+    if (src.ai_summary) parts.push(`**AI 梳理摘要**：\n${src.ai_summary}`);
+    const entry = ReqEntryService.create({ categoryId, title: src.title, content: parts.join('\n\n') });
+    return { id: entry.id, category_id: entry.category_id, title: entry.title, content: entry.content };
+  },
+
+  /**
+   * FR5.1 采纳：将用户审阅后的 AI 文本保存到任务 ai_summary，并将任务置为 done。
+   * 采纳语义 = 仅保存文本待人工合并，不自动写入代码（FR4.4/FR5.1）。
+   */
+  adoptContent(id: string, content: string): TaskView {
+    // 可选链一步覆盖「未传内容」与「空白内容」，与原 !content || !content.trim() 语义一致
+    if (!content?.trim()) throw new Error('采纳内容不能为空');
+    if (!this.getById(id)) throw new Error('任务不存在');
+    const db = getDb();
+    // T02164：采纳写入的同样是摘要，必须一起记生成时刻——否则摘要视图有正文却显示「未标注」，
+    // 更新时间与时效提示双双失效。取同一时刻，避免两个字段差出毫秒级「摘要已旧」误报。
+    const t = now();
+    db.prepare('UPDATE tasks SET ai_summary = ?, ai_summary_at = ?, status = ?, updated_at = ? WHERE id = ?')
+      .run(content, t, 'done', t, id);
+    return this.getById(id)!;
+  },
+
+  /** T02164：保存「生成总结摘要」的结果并记录生成时刻。
+   *  不改 updated_at：它是「任务正文是否又被动过」的判据，摘要相对它更晚即视为新鲜；
+   *  若摘要写入也刷新 updated_at，两个时间永远相等，时效性提示便失去意义。 */
+  saveAiSummary(id: string, content: string): TaskView {
+    if (!this.getById(id)) throw new Error('任务不存在');
+    getDb().prepare('UPDATE tasks SET ai_summary = ?, ai_summary_at = ? WHERE id = ?')
+      .run(content, now(), id);
+    return this.getById(id)!;
+  },
+
+  /**
+   * T02949 方案 A：选项按**任务结论动态抽取**（如「方案 A / 方案 B」），抽不到才回落通用四枚。
+   * 传 id 才动态——无 id 的调用方（旧 MCP / 老前端）仍拿到通用清单，行为不变。
+   * 抽到 1 条也回落：单候选不构成「二选一」，多半是叙述而非待选。
+   */
+  rulingOptions(id?: string): string[] {
+    if (!id) return [...RULING_DEFAULT_OPTIONS];
+    const task = this.getById(id);
+    if (!task) throw new Error('任务不存在');
+    const picked = detectRuling(rulingInputOf(task)).options;
+    return picked.length >= 2 ? picked : [...RULING_DEFAULT_OPTIONS];
+  },
+
+  /** T02949：打「待裁决」标记。裁决主体 = 派生单（字段/描述来源行/【AI回写待审核】）或标题自带裁决徽标的单。
+   *  幂等：已是待裁决则原样返回（不报错、不刷时间）；已裁决则拒绝（流程是单向的）。 */
+  markRuling(id: string): TaskView {
+    const task = this.getById(id);
+    if (!task) throw new Error('任务不存在');
+    if (!isRulingSubject(rulingInputOf(task))) throw new Error('本单不是裁决对象（非派生单且标题未请求裁决）');
+    if (task.ruling_state === '已裁决') throw new Error('本单已裁决，不能重复标记');
+    if (task.ruling_state === '待裁决') return task;
+    const t = now();
+    getDb().prepare('UPDATE tasks SET ruling_state = ?, ruling_at = ?, updated_at = ? WHERE id = ?')
+      .run('待裁决', t, t, id);
+    logEvent(getDb(), id, 'ruling', '标记待裁决');
+    return this.getById(id)!;
+  },
+
+  /** T02949：提交裁决——待裁决→已裁决。结果**追加**到任务详情末尾（T02949 约束：不得覆盖已有内容），
+   *  同时落 ruling_result/at 独立列（结构化可读）并写 task_events 留痕。
+   *  不校验必须先在「待裁决」：允许未经标记直接提交（标记只是提示手段，不是前置门槛）。 */
+  submitRuling(id: string, result: string): TaskView {
+    if (!result?.trim()) throw new Error('裁决结果不能为空');
+    const task = this.getById(id);
+    if (!task) throw new Error('任务不存在');
+    if (!isRulingSubject(rulingInputOf(task))) throw new Error('本单不是裁决对象（非派生单且标题未请求裁决）');
+    if (task.ruling_state === '已裁决') throw new Error('本单已裁决，不能重复提交');
+    const db = getDb();
+    const t = now();
+    const body = result.trim();
+    const nextDesc = task.description.trim() ? `${task.description}\n\n【裁决】${body}` : `【裁决】${body}`;
+    db.prepare('UPDATE tasks SET description = ?, ruling_state = ?, ruling_result = ?, ruling_at = ?, updated_at = ? WHERE id = ?')
+      .run(nextDesc, '已裁决', body, t, t, id);
+    logEvent(db, id, 'ruling', `裁决结果：${body.slice(0, 120)}`);
+    return this.getById(id)!;
+  },
+
+  /**
+   * T02949 方案 A：结论/标题变更后**自动**判定是否需要人工裁决，并自动打标 / 撤标。
+   * - 只作用于裁决主体（见 `isRulingSubject`）：非主体的普通单没有可裁决对象，不挂徽标；
+   * - 已裁决的单是终态，无论结论怎么改都不回退（否则归并母单写回会把它翻回待裁决）；
+   * - 不刷 updated_at：标记是流程标注，不代表任务正文又被人动过，否则列表时效与「最新编辑」全乱；
+   * - 待裁决可以撤销：它只是提示态，结论被改写成不再要求裁决时就该撤回，避免挂着过期徽标。
+   */
+  autoRuling(id: string): void {
+    const task = this.getById(id);
+    if (!task) return;
+    if (!isRulingSubject(rulingInputOf(task))) return;
+    if (task.ruling_state === '已裁决') return;
+    const detected = detectRuling(rulingInputOf(task));
+    const db = getDb();
+    // T04458：用户可能直接在派生描述里手写「## 裁决结论」。这是已下裁决，不是待裁决；
+    // 将正文同步进独立列，避免 `ruling_result` 与用户看到的内容不一致。
+    if (detected.conclusion) {
+      const t = now();
+      db.prepare('UPDATE tasks SET ruling_state = ?, ruling_result = ?, ruling_at = ? WHERE id = ?')
+        .run('已裁决', detected.conclusion, t, id);
+      logEvent(db, id, 'ruling', `自动识别：描述已有裁决结论「${detected.conclusion.slice(0, 120)}」`);
+      return;
+    }
+    if (detected.needed && task.ruling_state !== '待裁决') {
+      db.prepare('UPDATE tasks SET ruling_state = ?, ruling_at = ? WHERE id = ?').run('待裁决', now(), id);
+      logEvent(db, id, 'ruling', `自动识别：${detected.reason}`);
+      return;
+    }
+    if (!detected.needed && task.ruling_state === '待裁决') {
+      db.prepare("UPDATE tasks SET ruling_state = '', ruling_at = NULL WHERE id = ?").run(id);
+      logEvent(db, id, 'ruling', '自动撤销：结论已不含裁决请求');
+    }
+  },
+
+  /**
+   * T02949 方案 A：历史单补标——旧版本没有自动识别，已回传且明确要求裁决的单仍是空态。
+   * 两道闸都和实时路径同口径，缺一不可：
+   *  - `isRulingSubject`：只有裁决主体（派生单 / 标题请求裁决）才补。生产副本实测少了这道闸，
+   *    会把 30+ 支普通单（含 [PRD] 拆解单）挂上徽标，而它们提交裁决时又被 `submitRuling` 拒绝——
+   *    「挂着徽标却点不动」比漏标更难解释；
+   *  - `strict`：避开「结论里叙述方案 A/B 但已收口」的历史单。补标不是重判历史业务，
+   *    只把明确请求过裁决的漏标项补上。返回补标条数供启动日志使用。
+   */
+  backfillRuling(): number {
+    const db = getDb();
+    const rows = db
+      .prepare("SELECT id, title, description, handle_result, derived_from FROM tasks WHERE ruling_state IS NULL OR ruling_state = ''")
+      .all() as Array<{ id: string; title: string; description: string; handle_result: string | null; derived_from: string | null }>;
+    const t = now();
+    let marked = 0;
+    for (const row of rows) {
+      const input = rulingInputOf(row);
+      if (!isRulingSubject(input)) continue;
+      const detected = detectRuling(input, { strict: true });
+      if (detected.conclusion) {
+        const t = now();
+        db.prepare('UPDATE tasks SET ruling_state = ?, ruling_result = ?, ruling_at = ? WHERE id = ?')
+          .run('已裁决', detected.conclusion, t, row.id);
+        logEvent(db, row.id, 'ruling', `历史识别：描述已有裁决结论「${detected.conclusion.slice(0, 120)}」`);
+        marked += 1;
+        continue;
+      }
+      if (!detected.needed) continue;
+      db.prepare('UPDATE tasks SET ruling_state = ?, ruling_at = ? WHERE id = ?').run('待裁决', t, row.id);
+      logEvent(db, row.id, 'ruling', `历史补标：${detected.reason}`);
+      marked += 1;
+    }
+    if (marked) notifyChange('tasks');
+    return marked;
+  },
+};
+
+/**
+ * T01368 后续（P1）：把 running 超时兜底从「每次读」移出，改为启动后定时收敛。
+ * 原 list()/getById() 每次读取都调用 expireStaleRunning()，等于在只读接口上挂写锁——
+ * 并发列表刷新会互相阻塞（压测显示 /api/tasks 并发下吞吐从数千 rps 跌到十几 rps）。
+ * 改为每 60s 跑一轮：running 超时窗口默认 1 小时，60s 粒度足够兜底 AI 中断，且彻底去掉读路径写锁。
+ */
+let staleGuardTimer: ReturnType<typeof setInterval> | null = null;
+export function startStaleRunningGuard(intervalMs = 60000): void {
+  if (staleGuardTimer) return;
+  // 启动即收敛一轮（DB 未就绪时静默忽略）
+  try { TaskService.expireStaleRunning(); } catch { /* 启动期 DB 未就绪 */ }
+  staleGuardTimer = setInterval(() => {
+    try { TaskService.expireStaleRunning(); } catch { /* 单轮失败不中断定时器 */ }
+  }, intervalMs);
+}

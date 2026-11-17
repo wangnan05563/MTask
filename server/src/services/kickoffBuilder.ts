@@ -1059,7 +1059,7 @@ export function quarterSwimlaneBlocks(b: KickoffBundle, frame: Box): DiagramResu
     else groups.set(key, [m]);
   }
   // 季度字典序即时间序；「未排期」永远放最后，避免被当成最早的一段
-  const quarters = [...groups.keys()].filter((k) => k !== '未排期').sort();
+  const quarters = [...groups.keys()].filter((k) => k !== '未排期').sort((a, b) => a.localeCompare(b));
   if (groups.has('未排期')) quarters.push('未排期');
   const cols = quarters.slice(0, SWIMLANE_MAX_QUARTERS);
   const restCount = quarters.slice(SWIMLANE_MAX_QUARTERS).reduce((s, k) => s + (groups.get(k)?.length ?? 0), 0);

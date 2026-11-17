@@ -37,6 +37,13 @@ function normalizeInterval(n: unknown): number {
   return Number.isFinite(v) && v >= 1 ? Math.min(365, Math.floor(v)) : 1;
 }
 
+/** cron 语法合法不代表有解（如 `0 0 30 2 *`）；写库前必须确认未来 5 年内有触发时刻，否则不能静默退化成每天。 */
+function nextCronOrThrow(expr: string, from = new Date()): string {
+  const next = nextCronRunText(expr, from);
+  if (!next) throw new Error('cron 表达式在未来 5 年内没有可触发时刻，请检查日期与月份组合');
+  return next;
+}
+
 const VALID_PRIORITIES = ['low', 'normal', 'high', 'urgent'] as const;
 type TaskPriority = (typeof VALID_PRIORITIES)[number];
 function normalizePriority(v: unknown): TaskPriority {
@@ -53,16 +60,25 @@ function normalizePriority(v: unknown): TaskPriority {
 function advanceNext(freq: Freq, from = new Date(), cron = '', intervalN = 1): string {
   if (cron.trim()) {
     const next = nextCronRunText(cron.trim(), from);
-    // 无解（如 2 月 30 日）时不能返回空串写库——那会让 next_run_at <= now 恒成立、每 tick 都生成一份
+    // 无解（如 2 月 30 日）时不能返回空串写库——那会让 next_run_at <= now 恒成立、每 tick 都生成一份。
+    // 复查：也不能静默退回「按天推进」，否则历史坏数据会从按 cron 变成每天高频生成；让调用方按失败处理。
     if (next) return next;
+    throw new Error('cron 表达式在未来 5 年内没有可触发时刻，无法推进下次调度');
   }
   const d = new Date(from);
   if (freq === 'daily') d.setDate(d.getDate() + 1);
   else if (freq === 'weekly') d.setDate(d.getDate() + 7);
-  else if (freq === 'monthly') d.setMonth(d.getMonth() + 1);
-  else if (freq === 'interval_days') d.setDate(d.getDate() + normalizeInterval(intervalN));
+  else if (freq === 'monthly') {
+    // 复查：直接 setMonth 会让 1/31 溢出到 3/3，跳过 2 月。按月推进时保留「日」，短月钳到当月最后一天。
+    const day = d.getDate();
+    d.setDate(1);
+    d.setMonth(d.getMonth() + 1);
+    const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+    d.setDate(Math.min(day, lastDay));
+  } else if (freq === 'interval_days') d.setDate(d.getDate() + normalizeInterval(intervalN));
   else if (freq === 'interval_weeks') d.setDate(d.getDate() + 7 * normalizeInterval(intervalN));
-  else d.setDate(d.getDate() + 1); // freq='cron' 但表达式缺失/无解时的兜底：按天推进，避免空转
+  else if (freq === 'cron') throw new Error('cron 规则缺少可用的表达式，无法推进下次调度'); // 历史坏数据不再按天兜底
+  else d.setDate(d.getDate() + 1);
   return d.toISOString().slice(0, 19).replace('T', ' ');
 }
 
@@ -122,9 +138,14 @@ export const RecurringService = {
     const id = cryptoId();
     const t = now();
     const firstImmediate = input.firstRunImmediate !== false ? 1 : 0;
-    // T05820：首次生成策略显式化——cron 且不立即生成时，next_run_at 对齐首个计划时刻；其余仍立即生成首份。
-    const nextAt = !firstImmediate && cron ? (nextCronRunText(cron, new Date()) || t) : t;
     const intervalN = normalizeInterval(input.intervalN);
+    // T05820 复查：首次策略对所有频率一致——不立即生成时，cron 取首个计划时刻，非 cron 取首个间隔到期时刻。
+    // 写入前确认 cron 必有未来触发时刻，避免 `0 0 30 2 *` 这类无解表达式被静默退化成每天。
+    const firstCronNext = cron ? nextCronOrThrow(cron) : '';
+    const scheduledFirst = cron
+      ? firstCronNext
+      : advanceNext(freq as Freq, new Date(), '', intervalN);
+    const nextAt = firstImmediate ? t : scheduledFirst;
     db.prepare(
       `INSERT INTO recurring_rules (id, project_id, title, description, priority, category_id, freq, cron_expr, interval_n, first_run_immediate, next_run_at, enabled, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
@@ -152,13 +173,16 @@ export const RecurringService = {
     if (expr) {
       const bad = validateCron(expr);
       if (bad) throw new Error(bad);
+      const next = nextCronOrThrow(expr);
       getDb().prepare("UPDATE recurring_rules SET cron_expr = ?, freq = 'cron', next_run_at = ? WHERE id = ?")
-        .run(expr, nextCronRunText(expr, new Date()) || now(), id);
+        .run(expr, next, id);
     } else {
-      // 清空 cron：freq 需退回一个可用的频率，否则 'cron' 无表达式时会走按天兜底、与用户预期不符
+      // 清空 cron：freq 需退回一个可用的频率，否则 'cron' 无表达式时会走按天兜底、与用户预期不符。
+      // 复查：清空也是调度变更，必须按回退后的频率重算 next_run_at；否则会沿用旧的 cron 时刻。
       const row = this.byId(id);
       const back = row && freqText(row.freq, '') === 'cron' ? 'weekly' : freqText(row?.freq, 'weekly');
-      getDb().prepare('UPDATE recurring_rules SET cron_expr = ?, freq = ? WHERE id = ?').run('', back, id);
+      const next = advanceNext(back as Freq, new Date(), '', normalizeInterval(row?.interval_n));
+      getDb().prepare('UPDATE recurring_rules SET cron_expr = ?, freq = ?, next_run_at = ? WHERE id = ?').run('', back, next, id);
     }
     return this.byId(id);
   },
@@ -184,9 +208,12 @@ export const RecurringService = {
     const projectId = has('projectId') && String(patch.projectId ?? '').trim() ? String(patch.projectId) : row.project_id;
     const categoryId = has('categoryId') ? ((patch.categoryId as string | null) ?? null) : row.category_id;
     const cron = has('cron') ? String(patch.cron ?? '').trim() : (row.cron_expr ?? '').trim();
+    let cronNext = '';
     if (cron) {
       const bad = validateCron(cron);
       if (bad) throw new Error(bad);
+      // 复查：即使调度字段没有变化，也要确认表达式有未来触发时刻——历史坏数据不能借「只改标题」继续留在库里。
+      cronNext = nextCronOrThrow(cron);
     }
     let freq = row.freq;
     if (has('freq')) {
@@ -195,23 +222,31 @@ export const RecurringService = {
       freq = candidate;
     }
     if (cron) freq = 'cron';
-    else if (!has('freq') && freq === 'cron') freq = 'weekly';
+    else if (freq === 'cron') freq = 'weekly';
+    // T05820 复查：前端保存时会把 freq/cron/intervalN 一并回传，不能用「字段存在」判断调度是否变化——
+    // 只改标题/说明也会被误判为调度变更，firstRunImmediate=1 时会把 next_run_at 置 now，下一 tick 多生成一份。
     const intervalN = has('intervalN') ? normalizeInterval(patch.intervalN) : normalizeInterval(row.interval_n);
+    const currentCron = (row.cron_expr ?? '').trim();
+    const currentInterval = normalizeInterval(row.interval_n);
+    const scheduleChanged = cron !== currentCron || freq !== row.freq || intervalN !== currentInterval;
     const firstImmediate = has('firstRunImmediate') ? (patch.firstRunImmediate === false ? 0 : 1) : Number(row.first_run_immediate ?? 1);
     const enabled = has('enabled') ? (patch.enabled ? 1 : 0) : row.enabled;
-    const scheduleChanged = has('cron') || has('freq') || has('intervalN');
     let nextAt = row.next_run_at;
     if (scheduleChanged) {
+      // 先校验 cron 有解，再决定「立即」还是「按首个计划时刻」；无解表达式不能写库后静默按天兜底。
       if (firstImmediate) nextAt = now();
-      else if (cron) nextAt = nextCronRunText(cron, new Date()) || now();
+      else if (cron) nextAt = cronNext;
       else nextAt = advanceNext(freq as Freq, new Date(), '', intervalN);
     }
+    // 复查：调度未变时传 null，COALESCE 保留库中当前 next_run_at——否则只改标题的 UPDATE
+    // 会把并发 tick 刚推进的下一次覆盖回旧值，导致同一轮被再次生成。
     db.prepare(
       `UPDATE recurring_rules
           SET project_id = ?, title = ?, description = ?, priority = ?, category_id = ?,
-              freq = ?, cron_expr = ?, interval_n = ?, first_run_immediate = ?, enabled = ?, next_run_at = ?
+              freq = ?, cron_expr = ?, interval_n = ?, first_run_immediate = ?, enabled = ?,
+              next_run_at = COALESCE(?, next_run_at)
         WHERE id = ?`,
-    ).run(projectId, title, description, priority, categoryId, freq, cron, intervalN, firstImmediate, enabled, nextAt, id);
+    ).run(projectId, title, description, priority, categoryId, freq, cron, intervalN, firstImmediate, enabled, scheduleChanged ? nextAt : null, id);
     return this.byId(id)!;
   },
 
@@ -223,8 +258,11 @@ export const RecurringService = {
       if (bad) throw new Error(bad);
     }
     const freq = (FREQS as readonly string[]).includes(input.freq ?? '') && input.freq !== 'cron' ? input.freq as Freq : 'weekly';
+    // 复查：即使勾选「立即生成」，无解 cron 也必须在这里报错——create 会拒绝写库，
+    // 预览若仍显示「现在」会与保存结果矛盾，用户要到提交后才知道表达式不可用。
+    const cronNext = cron ? nextCronOrThrow(cron) : '';
     if (input.firstRunImmediate !== false) return { nextRunAt: now() };
-    if (cron) return { nextRunAt: nextCronRunText(cron, new Date()) || now() };
+    if (cron) return { nextRunAt: cronNext };
     return { nextRunAt: advanceNext(freq, new Date(), '', normalizeInterval(input.intervalN)) };
   },
 
@@ -234,9 +272,14 @@ export const RecurringService = {
     const row = this.byId(id) as RecurringRow | undefined;
     if (!row) throw new Error('规则不存在');
     const tx = db.transaction(() => {
-      const { taskNo } = createTaskFromRule(row);
       const nextRunAt = advanceNext(row.freq as Freq, new Date(), row.cron_expr ?? '', row.interval_n ?? 1);
-      db.prepare('UPDATE recurring_rules SET last_task_no = ?, next_run_at = ? WHERE id = ?').run(taskNo, nextRunAt, id);
+      // T05820 复查：用 next_run_at 条件抢占，避免与编辑/调度更新并发时用旧快照覆盖已排定的下一次；
+      // 同一进程内的连续点击仍按产品语义「每次点击各生成一份」，不做冷却或幂等键。
+      const claimed = db.prepare('UPDATE recurring_rules SET next_run_at = ? WHERE id = ? AND next_run_at = ?')
+        .run(nextRunAt, id, row.next_run_at);
+      if (claimed.changes !== 1) throw new Error('规则已被其他操作更新，请稍后重试');
+      const { taskNo } = createTaskFromRule(row);
+      db.prepare('UPDATE recurring_rules SET last_task_no = ? WHERE id = ?').run(taskNo, id);
       return { taskNo, nextRunAt };
     });
     const r = tx.immediate();

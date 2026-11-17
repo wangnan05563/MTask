@@ -31,8 +31,6 @@ import {
   statusMeta,
   windowSlice,
   type CommitFileEntry,
-  type FileDir,
-  type FileLeaf,
   type FileTreeRow,
   type RepoCommitFiles,
 } from '../utils/gitFileTree';
@@ -474,8 +472,8 @@ function TreeRow({ row, repoKey, colorIndex, expanded, compareMode, onToggle }: 
   const node = row.node;
   const isDir = node.kind === 'dir';
   const color = repoColorVar(colorIndex[repoKey]);
-  const meta = isDir ? null : statusMeta((node as FileLeaf).status);
-  const leaf = isDir ? null : node as FileLeaf;
+  const meta = isDir ? null : statusMeta(node.status);
+  const leaf = isDir ? null : node;
   const indent = 6 + row.depth * GIT_TREE_INDENT;
   return (
     <div className="gt-row" data-lck="git-tree-file-row" data-kind={isDir ? 'dir' : 'file'}
@@ -511,7 +509,7 @@ function TreeRow({ row, repoKey, colorIndex, expanded, compareMode, onToggle }: 
       </span>
       {/* 目录的文件数只在**折叠**时显示：展开后子项自己会数，逐层印同一个数字只是噪声 */}
       {isDir && !expanded && (
-        <span style={{ flex: '0 0 auto', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{(node as FileDir).fileCount}</span>
+        <span style={{ flex: '0 0 auto', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{node.fileCount}</span>
       )}
       {leaf && meta && (
         <>

@@ -2,9 +2,9 @@ import { realpathSync } from 'node:fs';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-// `web` 在部分工作区是指向 E:\mtask-build-cache 的 junction：
+// node_modules 实体集中在 %NODE_MODULES_HOME%（项目内只留 junction），不再依赖 E:\mtask-build-cache：
 // Vite 默认以 process.cwd() 为 root，但 HTML 入口会被解析成真实路径；
-// 两者不在同一盘符时，vite:build-html 会把入口 fileName 算成绝对路径并报错。
+// 若目录本身仍链到别的盘符，两者不同盘时 vite:build-html 会把入口 fileName 算成绝对路径并报错。
 // 统一 root 到 realpath，正常目录下与 process.cwd() 等价，junction 下则对齐到目标盘。
 const projectRoot = realpathSync(process.cwd());
 

@@ -1,0 +1,1996 @@
+/**
+ * MTask MCP server：把现有 Express REST 服务能力以 MCP tools 形式暴露给外部 AI agent。
+ *
+ * 设计原则：直接复用现有 service（TaskService/ReportService/SettingsService 等），
+ * 因此数据校验、图片 BLOB、密钥加密、导入导出逻辑与 Web 端完全一致，不产生第二套业务实现。
+ * 传输层（streamable HTTP）与会话管理在 mcp/http.ts，鉴权复用现有 accessToken 体系。
+ */
+import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
+import { McpServer, type CallToolResult } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { getDb } from '../db/connection';
+import { getDefaultNoteProjectId } from '../services/AppSettings';
+import { readPoolStatus, poolFullHint } from '../services/ConcurrencyPool'; // T01066 后续：MCP 领取路径池满提示
+import { TaskService } from '../services/TaskService';
+import { resolveCreateOrigin, alreadyMerged, mergedContentMatches, refreshMergedBody } from '../services/derivedOrigin'; // T02320：溯源兜底 + 归并幂等（与 REST 建单共用同一判据）；T04546：修订回灌
+import { AIService } from '../services/AIService'; // T02168：mtask_summarize_task 直接复用页面/REST 同一条摘要链
+import { TaskImageService } from '../services/TaskImageService'; // T00610：截图读取（供 AI 识别验证失败反馈截图）
+import { PlanService } from '../services/PlanService';
+import { parsePlanDeps } from '../util/planDeps'; // T01689：deps 解析单源复用（T01284 统一实现，MCP 层不再自造第二套口径）
+import { resolveProjectByName } from '../util/projectRouting'; // T02938：项目名→id 单源（同名「归档+现行」多行时必须认现行项目）
+import { ExecSessionService } from '../services/ExecSessionService'; // T01269：执行会话心跳上报（FR-1.2）
+import { SupervisorService } from '../services/SupervisorService'; // T01286：监督状态查询（FR-5.2）
+import { resolvePrdContext } from '../util/prdContext'; // T00763：PRD 上下文反查
+import { buildPrdDocsPayload } from '../util/prdDocLink'; // T05208：方案 B 显式关联（docs[] 纯增量）
+import { TestCaseService, type CaseBatchPatch, type CasePatch } from '../services/TestCaseService'; // T01493：测试用例 MCP 工具（复用服务层单源枚举与幂等落库）
+import { CASE_PRIORITY, CASE_TYPE, CASE_METHOD, CASE_STATUS, CASE_RESULT } from '../util/testCaseEnums'; // T01493：zod 枚举从单源导入，杜绝第三次口径漂移
+import { ArchiveService } from '../services/ArchiveService';
+import { EstimateService, ESTIMATE_META, ESTIMATE_PHASES, ESTIMATE_SOURCES } from '../services/EstimateService'; // T02044：估算 MCP 工具（枚举单源，zod 不许自造第二套词表）
+import { expected, sigma } from '../services/estimate-engine'; // T02044：回写后回执里的 E/σ 由引擎给，MCP 层不重算三点
+import { ESTIMATE_ARTIFACT_FORMATS, buildEstimateArtifact, estimatesSnapshot, parseAudience, parsePhases, parseScope } from '../routes/estimates'; // T02044：与 REST 同一份取数与导出流水线
+import {
+  gatherReportData,
+  generateReport,
+  aiGenerateReport,
+  readAndDeleteReport,
+  validateProjectIds,
+  type ReportPeriod,
+  type ReportFormat,
+} from '../services/ReportService';
+import { exportBundle, importBundle, type ImportMode } from '../services/SettingsService';
+import * as TaskGit from '../services/taskGitLinks'; // 八期 T03349：AI 回写提交 ID 主通道（与 REST 手动绑定同一实现，仅 source 不同）
+import {
+  deleteMemory, listMemories, listPendingMemories, listProductTags,
+  queryForContext, queryMemories, saveMemory, updateMemory,
+} from '../services/MemoryService'; // T04151（PRD MEM-401/402/403）：记忆七件工具复用服务层
+import { resolveMemoryScope } from '../util/memoryScope'; // T04151：作用域解析与 REST 同源（C4 / MEM-302）
+
+/** MCP 工具统一返回结构：文本供 LLM 阅读，structuredContent 供程序消费 */
+function ok(text: string, data?: Record<string, unknown>): CallToolResult {
+  return { content: [{ type: 'text', text }], structuredContent: data ?? {} };
+}
+function err(msg: string): CallToolResult {
+  return { content: [{ type: 'text', text: `错误：${msg}` }], isError: true };
+}
+const json = (d: unknown) => JSON.stringify(d, null, 2);
+
+const PERIODS = ['day', 'week', 'month'] as const;
+const FORMATS = ['xlsx', 'docx', 'pdf', 'pptx'] as const;
+
+/**
+ * 按 id 或 taskNo 解析任务：二选一必传。
+ * 返回 null 表示既未提供定位参数，也代表参数提供但任务不存在（调用方据文案区分）。
+ */
+function resolveTask({ id, taskNo }: { id?: string; taskNo?: string }) {
+  if (id) return TaskService.getById(id);
+  if (taskNo) return TaskService.findByNo(taskNo);
+  return null;
+}
+
+/** 任务定位参数的缺省提示（缺失时返回错误信息） */
+function taskLocateError(): string {
+  return 'id 与 taskNo 至少提供一个；id 为任务内部 id，taskNo 为任务编号（如 T00001）';
+}
+
+/**
+ * 按项目名解析（精确 → 大小写不敏感，同名多行时现行项目优先）已收口到
+ * `../util/projectRouting.ts` 单源（T02938）——本文件曾有 8 处 `SELECT id FROM projects WHERE name = ?`
+ * 抄本，全都取库序第一行，于是同名「归档 + 现行」两行时按名建单会静默落进归档项目。
+ * 新实现返回 `{ id, name, error, warning, active, via }`；`warning` 非空时必须回显到工具响应里。
+ */
+
+/**
+ * T02938 薄封装：只把「取库序首行」换成单源口径（现行项目优先），
+ * 各调用点保留自己原有的报错文案，避免顺手改掉与既有门文案锚相关的措辞。
+ * 返回空串=按名解析不到，调用方按旧语义回「项目不存在」。
+ */
+function projectIdByName(name: string, db = getDb()): string {
+  return resolveProjectByName(name, db).id ?? '';
+}
+
+/** 父任务校验（存在且同项目）；通过返回 null，否则返回错误文案 */
+function validateParent(parentId: string | undefined, pid: string): string | null {
+  if (parentId) {
+    const parent = getDb().prepare('SELECT id, project_id FROM tasks WHERE id = ?').get(parentId) as { project_id: string } | undefined;
+    if (!parent) return '父任务不存在';
+    if (parent.project_id !== pid) return '子任务与父任务必须同项目';
+  }
+  return null;
+}
+
+/**
+ * mtask_import_plan 的条目形状：handler 参数经 zod 推断后在闭包/辅助函数的回调里会丢类型，
+ * 故显式标注（同时供下面几条 import_plan 辅助共用）。
+ */
+type PlanImportItem = { title: string; description?: string; startDate?: string; durationDays?: number; assignee?: string; status?: 'todo' | 'doing' | 'done' | 'blocked'; kind?: 'normal' | 'milestone' | 'daily'; complexity?: number; reqNos?: string[]; ref?: string; deps?: Array<{ ref?: string; planId?: string; planTitle?: string; type: 'serial' | 'parallel' | 'child' }> };
+
+/**
+ * T01704：依赖解析——创建完成后把 ref/planId/planTitle 引用解析为 [{id,type}] 落库
+ * （serial/parallel 触发排期联动；child 归属触发里程碑包络收口，均在 PlanService.update 内完成）。
+ * T02131：两条通道共用，rowIds 必须与 items 下标对齐（关联通道用 importPrd 的 planRowIds，
+ * 因为撞名让号/复用命中会让「按标题找 id」不可靠）。未解析到的引用写进 warnings。
+ */
+function applyPlanItemDeps(pid: string, items: PlanImportItem[], rowIds: Array<string | null>, warnings: string[]): void {
+  if (!items.some((it) => it.deps?.length)) return;
+  const refToId = new Map<string, string>();
+  items.forEach((it, i) => { const id = rowIds[i]; if (it.ref?.trim() && id) refToId.set(it.ref.trim(), id); });
+  items.forEach((it, i) => {
+    const id = rowIds[i];
+    if (!id || !it.deps?.length) return;
+    const parsed: Array<{ id: string; type: string }> = [];
+    for (const d of it.deps) {
+      let target: string | undefined;
+      if (d.ref?.trim()) target = refToId.get(d.ref.trim());
+      else if (d.planId?.trim()) target = d.planId.trim();
+      else if (d.planTitle?.trim()) {
+        const row = getDb().prepare('SELECT id FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0').get(pid, d.planTitle.trim()) as { id: string } | undefined;
+        target = row?.id;
+      }
+      if (!target) {
+        warnings.push(`条目「${it.title}」的依赖 ${d.ref ?? d.planId ?? d.planTitle}（${d.type}）未解析到，已跳过`);
+        continue;
+      }
+      parsed.push({ id: target, type: d.type });
+    }
+    if (parsed.length > 0) PlanService.update(id, { deps: JSON.stringify(parsed) });
+  });
+}
+
+/** T01868 防重入前检：回传本批里与项目已有计划同名的标题清单 + 去重后的标题总数（供占比判定与文案） */
+function scanDuplicatePlanTitles(pid: string, items: PlanImportItem[]): { dups: string[]; titleCount: number } {
+  const titles = new Set(items.map((it) => it.title.trim()));
+  const countSame = getDb().prepare('SELECT COUNT(*) AS n FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0');
+  const dups: string[] = [];
+  for (const title of titles) {
+    if ((countSame.get(pid, title) as { n: number }).n > 0) dups.push(title);
+  }
+  return { dups, titleCount: titles.size };
+}
+
+/** T02131：importPrd 回执的可读告警汇总（编号顺延 / 断链 / 争号 / 零关联需求 / 未挂矩阵的计划） */
+function pushPrdImportWarnings(warnings: string[], r: ReturnType<typeof PlanService.importPrd>, items: PlanImportItem[]): void {
+  if (r.reqNoMap.length > 0) {
+    const moved = r.reqNoMap.slice(0, 5).map((x) => `${x.from}→${x.to}`).join('、');
+    const moreNote = r.reqNoMap.length > 5 ? ` 等 ${r.reqNoMap.length} 项` : '';
+    warnings.push(`需求编号已按项目内唯一顺延（避免与存量矩阵撞号）：${moved}${moreNote}`);
+  }
+  for (const n of r.unlinkedReqNos) warnings.push(`计划引用的需求编号「${n}」在矩阵中不存在，关联未落`);
+  for (const n of r.ambiguousReqNos) warnings.push(`本批有两条需求争用同一编号「${n}」，关联按后登记者落位，请核对归属`);
+  if (r.orphanRequirements.length > 0) {
+    const orphanList = r.orphanRequirements.slice(0, 5).map((x) => `${x.reqNo} ${x.title}`).join('、');
+    warnings.push(`${r.orphanRequirements.length} 条新建需求零关联（无任何计划/待办挂到它）：${orphanList}`);
+  }
+  const unanchored = items.filter((it, i) => it.kind !== 'milestone' && !it.reqNos?.length && r.planRowIds[i]).length;
+  if (unanchored > 0) warnings.push(`${unanchored} 条计划未带 reqNos，本轮只建了计划行（无矩阵关联）`);
+}
+
+/** update/delete 计划条目共用定位：projectId → projectName 解析项目，再按 id 或标题解析计划条目 id；失败回错误文案 */
+function locatePlanEntry(a: { projectId?: string; projectName?: string; id?: string; title?: string }): { pid: string; id: string; error?: string } {
+  const db = getDb();
+  let pid = a.projectId?.trim() || '';
+  if (!pid && a.projectName?.trim()) {
+    // T02938：单源解析（同名多行时认现行项目）
+    pid = projectIdByName(a.projectName.trim(), db);
+    if (!pid) return { pid, id: '', error: `项目不存在：${a.projectName}` };
+  }
+  let id = a.id?.trim() || '';
+  if (!id && a.title?.trim()) {
+    if (!pid) return { pid, id: '', error: '按标题定位需要 projectId 或 projectName' };
+    const row = db.prepare('SELECT id FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0').get(pid, a.title.trim()) as { id: string } | undefined;
+    if (!row) return { pid, id: '', error: `计划条目不存在：${a.title}` };
+    id = row.id;
+  }
+  if (!id) return { pid, id: '', error: 'id 或 title 必填' };
+  return { pid, id };
+}
+
+/** 把 update_plan 传入的 deps 引用（planId/planTitle）解析为 [{id,type}] 的 JSON 串，未解析到的回警告 */
+function serializePlanDeps(pid: string, deps: Array<{ planId?: string; planTitle?: string; type: string }>): { depsStr: string; warnings: string[] } {
+  const warnings: string[] = [];
+  const parsed: Array<{ id: string; type: string }> = [];
+  for (const d of deps) {
+    let target: string | undefined;
+    if (d.planId?.trim()) target = d.planId.trim();
+    else if (d.planTitle?.trim()) {
+      const row = getDb().prepare('SELECT id FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0').get(pid, d.planTitle.trim()) as { id: string } | undefined;
+      target = row?.id;
+    }
+    if (!target) { warnings.push(`依赖 ${d.planId ?? d.planTitle}（${d.type}）未解析到，已跳过`); continue; }
+    parsed.push({ id: target, type: d.type });
+  }
+  return { depsStr: JSON.stringify(parsed), warnings };
+}
+
+/** mtask_update_testcases 各通道（省略字段 = 不改，落库与枚举回落都在 TestCaseService） */
+function buildCasePatch(a: CasePatch): CasePatch {
+  const patch: CasePatch = {};
+  if (a.title !== undefined) patch.title = a.title;
+  if (a.caseNo !== undefined) patch.caseNo = a.caseNo;
+  if (a.module !== undefined) patch.module = a.module;
+  if (a.preconditions !== undefined) patch.preconditions = a.preconditions;
+  if (a.expected !== undefined) patch.expected = a.expected;
+  if (a.testData !== undefined) patch.testData = a.testData;
+  if (a.postconditions !== undefined) patch.postconditions = a.postconditions;
+  if (a.priority !== undefined) patch.priority = a.priority;
+  if (a.type !== undefined) patch.type = a.type;
+  if (a.method !== undefined) patch.method = a.method;
+  if (a.status !== undefined) patch.status = a.status;
+  if (a.lastResult !== undefined) patch.lastResult = a.lastResult;
+  if (a.tags !== undefined) patch.tags = a.tags;
+  if (a.reqId !== undefined) patch.reqId = a.reqId;
+  if (a.steps !== undefined) patch.steps = a.steps;
+  return patch;
+}
+
+/** batch-patch 通道：参数校验（缺 caseIds/patch 拒写）+ 服务层批量落库 */
+function patchCasesInBatch(caseIds: string[] | undefined, patch: CaseBatchPatch | undefined): CallToolResult {
+  if (!Array.isArray(caseIds) || caseIds.length === 0) return err('batch-patch 需要 caseIds 数组');
+  if (!patch) return err('batch-patch 需要 patch');
+  const r = TestCaseService.batchPatch(caseIds, patch);
+  return ok(JSON.stringify({ ok: true, ...r }), { ok: true, ...r });
+}
+
+/** link 通道：reqId 必传（空串或 null 即解除关联） */
+function linkCaseToReq(caseId: string, reqId: string | null | undefined): CallToolResult {
+  if (reqId === undefined) return err('link 需要 reqId（传空串或 null 解除关联）');
+  const row = TestCaseService.update(caseId, { reqId });
+  return ok(JSON.stringify(row), { ...row });
+}
+
+/** update 通道：并入显式提供的字段后交服务层 */
+function patchSingleCase(caseId: string, patch: CasePatch): CallToolResult {
+  const row = TestCaseService.update(caseId, patch);
+  return ok(JSON.stringify(row), { ...row });
+}
+
+/** 响应正文里的告警段；无告警返回空串，保持原响应逐字不变 */
+function warningNote(label: string, text: string | undefined): string {
+  return text ? `\n\n⚠ ${label}：${text}` : '';
+}
+
+/**
+ * T05208（裁决方案 B）：`docs[]` = 主 PRD + 显式关联的配套文档（主 PRD 恒在首）。
+ * 纯增量字段，顶层 content/filename/prdId/hitBy/found 语义不变；无关联时仅 1 项（单文档行为）。
+ * 关联查询失败降级为 `[]`，不影响主查询（found 判定与 content 仍按原口径）。
+ */
+function buildPrdDocs(primaryPrdId: string, includeContent: boolean): ReturnType<typeof buildPrdDocsPayload> {
+  return buildPrdDocsPayload(primaryPrdId, {
+    includeContent,
+    readContent: (id) => (PlanService.getPrdDoc(id).content_md as string) ?? '',
+  });
+}
+
+/**
+ * T00482/T02938：建单的项目归属路由——projectId 优先；其次 projectName 按名解析（精确 → 大小写不敏感）；
+ * 都未提供才缺省「默认记事项目」（用户设置优先，否则收件箱），并打日志警告便于排查误入收件箱。
+ * 按名解析走单源：同名「归档 + 现行」多行时不再取库序首行，解析到非现行/歧义行时回 warning。
+ */
+function routeCreateProject(
+  projectId: string | undefined,
+  projectName: string | undefined,
+  title: string | undefined,
+): { pid: string; warning: string } | { error: string } {
+  let pid = projectId?.trim() || '';
+  let projectWarning = '';
+  if (!pid && projectName?.trim()) {
+    const r = resolveProjectByName(projectName.trim());
+    if (r.error) return { error: r.error };
+    pid = r.id ?? '';
+    projectWarning = r.warning ?? '';
+    if (projectWarning) console.warn(`[mtask-mcp] mtask_create_task 项目路由告警（${projectName.trim()}）：${projectWarning}`);
+  }
+  if (!pid) {
+    pid = getDefaultNoteProjectId();
+    console.warn(`[mtask-mcp] mtask_create_task 缺少项目归属（projectId/projectName 均未提供），任务「${title?.trim()}」落入默认记事项目 ${pid}`);
+  }
+  return { pid, warning: projectWarning };
+}
+
+/** T00445 查重：同项目同标题（规范化在 JS 侧统一做——SQLite 无 regexp，比对「去所有空白」后的标题，避免空格差异漏配） */
+function findDuplicateTask(pid: string, title: string): Record<string, unknown> | undefined {
+  const rows = getDb().prepare('SELECT * FROM tasks WHERE project_id = ?').all(pid) as Array<Record<string, unknown>>;
+  const normTitle = title.replaceAll(/\s+/g, '');
+  return rows.find((r) => (typeof r.title === 'string' ? r.title : '').replaceAll(/\s+/g, '') === normTitle);
+}
+
+/** 创建 MCP server 并注册全部工具 */
+export async function createMCPServer(): Promise<McpServer> {
+  const server = new McpServer({ name: 'mtask', version: '1.0.0' });
+
+  // ---------------- 任务管理 ----------------
+  server.registerTool('mtask_list_projects', {
+    title: '列出项目',
+    description: '返回 MTask 全部项目（项目维度任务管理的容器）。',
+  }, async () => {
+    try {
+      const rows = getDb().prepare('SELECT * FROM projects ORDER BY sort_weight, created_at').all();
+      return ok(json(rows), { projects: rows });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_create_task', {
+    title: '创建任务',
+    description: '在指定项目下新建任务；projectId/projectName 均缺省时落到默认记事项目（附日志警告）。建议传 projectName 按名路由。title 必填。默认开启查重：同项目存在同标题任务时不再新建，直接返回既有任务（reused=true），避免多渠道回写产生重复待办。',
+    inputSchema: {
+      projectId: z.string().optional().describe('目标项目 id；与 projectName 二选一，都在时 projectId 优先'),
+      projectName: z.string().optional().describe('目标项目名称（T00482：按名路由到对应项目，大小写不敏感；无命中/多命中时报错并列出候选）'),
+      title: z.string().describe('任务标题（必填）'),
+      description: z.string().optional().describe('任务描述'),
+      priority: z.enum(['low', 'normal', 'high', 'urgent']).optional().describe('优先级'),
+      status: z.enum(['todo', 'done']).optional().describe('状态'),
+      categoryId: z.string().optional().describe('任务分类 id'),
+      parentId: z.string().optional().describe('父任务 id（T00450：创建子任务挂到 epic→task 层级；须与目标项目一致）'),
+      dedupe: z.boolean().optional().describe('同项目同标题查重（默认开启；命中时返回既有任务且 reused=true，不新建）'),
+      derivedFrom: z.string().optional().describe('T00577：原任务编号（如 T00422）——本单为该任务派生出的待办单时传入，便于处理后自动把结论整合回原任务，避免单子过多'),
+    },
+  }, async (a) => {
+    try {
+      // 可选链：title 为空时 ?. 短路返回 undefined，与原「判空 || trim 判空」逻辑等价
+      if (!a.title?.trim()) return err('title 必填');
+      const routed = routeCreateProject(a.projectId, a.projectName, a.title);
+      if ('error' in routed) return err(routed.error);
+      const { pid, warning: projectWarning } = routed;
+      if (!getDb().prepare('SELECT 1 FROM projects WHERE id = ?').get(pid)) {
+        return err(`归属项目不存在：${pid}`);
+      }
+      // 查重（T00445 教训：MCP 回传/计划镜像/手动创建多渠道并存，无查重会产生重复待办）
+      if (a.dedupe !== false) {
+        const exist = findDuplicateTask(pid, a.title);
+        // T02938：查重命中同样要回显项目路由告警——「复用到归档项目里的既有单」与「新建落错项目」是同一种事故
+        if (exist) {
+          return ok(json({ reused: true, task: exist }) + warningNote('项目路由告警', projectWarning), {
+            reused: true, task: exist, ...(projectWarning ? { project_warning: projectWarning } : {}),
+          });
+        }
+      }
+      // T00450：父子层级——父任务校验（存在且同项目）
+      const parentId = a.parentId?.trim() || undefined;
+      const perr = validateParent(parentId, pid);
+      if (perr) return err(perr);
+      // T02320：溯源兜底——derivedFrom 缺省时按正文首行「来源：Txxxx」回填（只在母单真实存在时认），
+      // 认不到但标题带【AI回写待审核】时把告警回显到响应里，不再让结论静默躺在子单。
+      const origin = resolveCreateOrigin({ derivedFrom: a.derivedFrom, description: a.description, title: a.title });
+      if (origin.warning) console.warn(`[mtask-mcp] mtask_create_task 溯源告警（${a.title.trim()}）：${origin.warning}`);
+      const task = TaskService.create({ derived_from: origin.derived_from, /* T00577 / T02320 */
+        projectId: pid,
+        title: a.title,
+        description: a.description,
+        priority: a.priority,
+        status: a.status,
+        categoryId: a.categoryId,
+        parentId,
+      });
+      // T00713：AI 建单（含回写派生单）后置 unread 未读圆点——否则派生单在列表中与手工单无异，
+      // 用户无从感知「AI 产生了新单待处理」（T00620 显式驱动后不再有读取自动置 running 的兜底表现）
+      const fresh = (task.status ?? 'todo') === 'todo' ? TaskService.setAiState(task.id, 'unread') ?? task : task;
+      return ok(json(fresh) + warningNote('溯源告警', origin.warning) + warningNote('项目路由告警', projectWarning), {
+        task: fresh, ...(origin.warning ? { create_warning: origin.warning } : {}),
+        ...(projectWarning ? { project_warning: projectWarning } : {}),
+      });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_list_plans', {
+    title: '列出项目计划',
+    description: '列出指定项目的计划任务（串行瀑布时间线，含 id/类型 kind/起止日期/工期/状态/进度/关联待办编号）。Agent 用于了解项目排期与规划上下文，避免与既有计划重复回写。条目多时建议 brief=true（省掉 description 与依赖明细、只回 depsCount/reqIdsCount，避免响应被截断）；只看里程碑可用 kind=milestone 过滤。includeArchived=true 时返回已归档计划。T01689：完整模式每条另回 deps（[{id,type:serial|parallel}] 前置依赖——外部 Agent 可用于排期/排水校验与「里程碑↔子任务」归属判定）、reqIds（需求矩阵锚点——校验计划↔需求覆盖度/重复锚定）、complexity（AI 复杂度评级 1~5，参与工期判断）；响应 meta 附 withDeps/withReqAnchors 计数（带依赖/带需求锚点的条目数，一眼看出覆盖缺口）。',
+    inputSchema: {
+      projectId: z.string().optional().describe('项目 id，与 projectName 二选一'),
+      projectName: z.string().optional().describe('项目名称（如 MTask），按名称解析'),
+      includeArchived: z.boolean().optional().describe('是否包含已归档计划（默认否）'),
+      // T01490：计划条目多时（>5KB）SSE 传输会被中途截断、客户端只拿到残缺 JSON。
+      // brief=true 省略 description 并跳过关联待办查询，显著降低响应体量。
+      brief: z.boolean().optional().describe('精简输出：省略 description 与关联待办查询，降低响应体量（计划条目多时避免传输截断）；需要看详情时不传'),
+      kind: z.enum(['normal', 'milestone', 'daily']).optional().describe('按计划类型过滤（如只取里程碑 kind=milestone）'),
+    },
+  }, async (a) => {
+    try {
+      let pid = a.projectId?.trim() || '';
+      if (!pid && a.projectName?.trim()) {
+        // T02938：走单源解析（同名多行时认现行项目），不再取库序首行
+        pid = projectIdByName(a.projectName.trim());
+        if (!pid) return err(`项目不存在：${a.projectName}`);
+      }
+      if (!pid) return err('projectId 或 projectName 必填');
+      // T01689：req_ids JSON → string[]（与 PlanService 内部 parseLinkIds 同口径；私有函数不跨层引用）
+      const parseReqIds = (raw: string | null | undefined): string[] => {
+        try {
+          const v: unknown = JSON.parse(raw || '[]');
+          return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+        } catch { return []; }
+      };
+      // complexity 列由 ensureColumn 补齐、PRD 导入写入；PlanTaskRow 已声明为可选字段，历史行为 NULL
+      const cx = (r: { complexity?: number | null }): number | null => r.complexity ?? null;
+      if (a.includeArchived) {
+        const all = PlanService.listArchived().filter((r) => r.project_id === pid);
+        return ok(json(all.map((r) => ({
+          id: r.id, title: r.title, kind: r.kind, startDate: r.start_date, endDate: r.end_date,
+          durationDays: r.duration_days, status: r.status, progress: r.progress, assignee: r.assignee, archived: true,
+          deps: parsePlanDeps(r.deps), reqIds: parseReqIds(r.req_ids), complexity: cx(r),
+        }))), { plans: all });
+      }
+      let rows = PlanService.list(pid);
+      if (a.kind) rows = rows.filter((r) => r.kind === a.kind);
+      // T01490：brief 模式省略 description + 跳过关联待办查询，压低体量避免传输截断
+      // T01689：brief 仍回 depsCount/reqIdsCount/complexity（数量级字段，Agent 可低成本判断覆盖度）
+      if (a.brief) {
+        const brief = rows.map((r) => {
+          const deps = parsePlanDeps(r.deps); const reqIds = parseReqIds(r.req_ids);
+          return {
+            id: r.id, title: r.title, kind: r.kind, startDate: r.start_date, endDate: r.end_date,
+            durationDays: r.duration_days, progress: r.progress, status: r.status, assignee: r.assignee,
+            depsCount: deps.length, reqIdsCount: reqIds.length, complexity: cx(r),
+          };
+        });
+        return ok(json(brief), {
+          plans: brief, count: brief.length,
+          withDeps: brief.filter((p) => p.depsCount > 0).length,
+          withReqAnchors: brief.filter((p) => p.reqIdsCount > 0).length,
+        });
+      }
+      const plans = rows.map((r) => ({
+        id: r.id, title: r.title, kind: r.kind, description: r.description,
+        startDate: r.start_date, endDate: r.end_date,
+        durationDays: r.duration_days, progress: r.progress, status: r.status, assignee: r.assignee,
+        deps: parsePlanDeps(r.deps), reqIds: parseReqIds(r.req_ids), complexity: cx(r),
+        linkedTaskNo: null as string | null,
+      }));
+      // 附关联待办编号（Agent 回传时需要 taskNo 而非内部 id）
+      for (let i = 0; i < rows.length; i++) {
+        const lid = rows[i].linked_task_id;
+        if (lid) {
+          const t = getDb().prepare('SELECT task_no FROM tasks WHERE id = ?').get(lid) as { task_no: string | null } | undefined;
+          plans[i].linkedTaskNo = t?.task_no ?? null;
+        }
+      }
+      return ok(json(plans), {
+        plans, count: plans.length,
+        withDeps: plans.filter((p) => p.deps.length > 0).length,
+        withReqAnchors: plans.filter((p) => p.reqIds.length > 0).length,
+      });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_create_plans', {
+    title: '批量创建项目计划',
+    description: '把 WBS/需求拆解结果批量写入指定项目的计划时间线（各行日期独立；首条可带 startDate 作锚点）。适用于「把需求文档/PRD 拆分为项目计划」类回写。item.kind 可指定 milestone 建里程碑（如「5 M5 AI 编排大脑落地」），缺省为 normal。落库前会查重：本批标题与项目已有计划同名占比过高时按「同一份拆解重复回写」拦截（T01868），需确认新增时传 allowDuplicates。⚠ T02131：不传关联字段时本工具只写计划行——既无需求跟踪矩阵（RTM）关联也无待办联动，会留下「计划孤岛」（四期 K1~K8 事故）。PRD/需求拆解类回写必须带上 requirements + items[].reqNos（或 createTasks 生成待办），此时走与页面 PRD 导入同一条联动通道：矩阵行、计划、待办三者一次建齐并回填 req_ids/linked_task_id。',
+    inputSchema: {
+      projectId: z.string().optional().describe('目标项目 id，与 projectName 二选一'),
+      projectName: z.string().optional().describe('项目名称，按名称解析'),
+      // T02131：关联通道入口——与 PlanService.importPrd 同语义（编号在项目内唯一，撞号自动顺延并回传 reqNoMap）
+      requirements: z.array(z.object({
+        reqNo: z.string().optional().describe('需求编号（如 REQ-001，可缺省由服务端顺延）；与 items[].reqNos 对应'),
+        title: z.string().describe('需求标题（必填）'),
+        content: z.string().optional().describe('需求正文/验收口径'),
+        sourceRef: z.string().optional().describe('来源出处（PRD 章节/页码等定位串）'),
+        priority: z.string().optional().describe('优先级，缺省 normal'),
+      })).optional().describe('同批写入需求跟踪矩阵的行；计划条目经 reqNos 挂到这些编号上'),
+      createTasks: z.boolean().optional().describe('true 时为每条计划生成 [PRD] 前缀待办，并回填 plan.linked_task_id 与 tasks.req_ids（计划↔待办联动）。需求拆解类回写建议开启。'),
+      items: z.array(z.object({
+        title: z.string().describe('任务标题（必填，建议带 WBS 编号）'),
+        description: z.string().optional().describe('描述'),
+        startDate: z.string().optional().describe('开始日期 YYYY-MM-DD（仅首条生效作时间线锚点，其余由串行排期推导）'),
+        durationDays: z.number().optional().describe('工期（工作日数，默认 1）'),
+        assignee: z.string().optional().describe('负责人'),
+        status: z.enum(['todo', 'doing', 'done', 'blocked']).optional().describe('状态，默认 todo'),
+        // T01490：kind 原先未暴露——导致经 MCP 回写的计划全部落为 normal，建不出里程碑
+        // （PlanService.createBatch 内部支持 kind，仅 MCP schema 缺字段被 zod 剥离）。
+        kind: z.enum(['normal', 'milestone', 'daily']).optional()
+          .describe('计划类型：milestone=里程碑（汇总节点，如「5 M5 AI 编排大脑落地」，先子后父收口）/ normal=普通工作项（默认）/ daily=日常'),
+        // T02122：复杂度钳位早拒——非法值在入口处被 zod 拦截，服务层 clampComplexity 作兜底
+        complexity: z.number().int().min(1).max(5).optional().describe('T01058 / T02122：AI 复杂度评级（1~5 整数），随导入落库供工期估算参考'),
+        // T02131：需求锚点——引用本批 requirements[].reqNo，或库内已存在的同编号矩阵行（增量回写不断链）
+        reqNos: z.array(z.string()).optional().describe('本条计划覆盖的需求编号列表，落库到 plan_tasks.req_ids；缺省则该条无矩阵关联'),
+        // T01704：结构化依赖——ref 为本条目在本批次内的临时标识，deps 用 ref/planId/planTitle 引用其它条目
+        ref: z.string().optional().describe('本批次内唯一临时标识（如 "W005"），供同批其它条目的 deps 引用，不落库'),
+        deps: z.array(z.object({
+          ref: z.string().optional().describe('引用同批次条目的 ref（与 planId/planTitle 三选一）'),
+          planId: z.string().optional().describe('引用库内已有计划条目的 id'),
+          planTitle: z.string().optional().describe('按标题引用库内已有计划条目（同项目内唯一匹配）'),
+          type: z.enum(['serial', 'parallel', 'child']).describe('serial=串行前置（排在被引条目之后）/ parallel=并行（同起）/ child=归属里程碑（本条为里程碑下的子任务，写在本条；里程碑工期自动按子任务包络收口）'),
+        })).optional().describe('依赖/归属关系；serial/parallel 驱动排期联动，child 表达里程碑↔子任务归属'),
+      })).describe('计划条目数组（按执行顺序排列）'),
+      // T01868：AI 通道防重入——同一份拆解重复回写会留下并排两套计划，默认拦截并拒写
+      allowDuplicates: z.boolean().optional().describe('默认 false：本批标题与项目已有计划同名占比过高时判定为重复拆解并拒写。确为新增/补录条目时传 true 放行（仅回警告）。'),
+    },
+  }, async (a) => {
+    try {
+      let pid = a.projectId?.trim() || '';
+      if (!pid && a.projectName?.trim()) {
+        // T02938：走单源解析（同名多行时认现行项目），不再取库序首行
+        pid = projectIdByName(a.projectName.trim());
+        if (!pid) return err(`项目不存在：${a.projectName}`);
+      }
+      if (!pid) return err('projectId 或 projectName 必填');
+      const warnings: string[] = [];
+      const items = a.items as PlanImportItem[];
+      // T02131：关联通道判定——带矩阵行 / 带需求编号 / 要求生成待办三者之一，即改走 importPrd
+      // （与页面「PRD 导入」同一条链路：需求项→计划 req_ids→待办 linked_task_id，含里程碑工期汇总与 child 边）。
+      // 不传关联字段仍走 createBatch 纯计划通道，保持既有轻量语义与 T01868 拦截口径。
+      const wantLinkage = (a.requirements?.length ?? 0) > 0 || items.some((it) => it.reqNos?.length) || a.createTasks === true;
+      if (wantLinkage) {
+        // T01868 防重入前检：importPrd 内部按 T01875 默认口径给撞名行加「（2）」后缀，
+        // 会让重复拆解静默落成第二条轨道（比 createBatch 的拦截更隐蔽），故在入口按同阈值先拒。
+        if (!a.allowDuplicates) {
+          const { dups, titleCount } = scanDuplicatePlanTitles(pid, items);
+          if (dups.length >= 3 && dups.length / titleCount >= 0.6) {
+            return err(`防重入拦截：本批 ${dups.length}/${titleCount} 个标题与项目已有计划同名，判定为同一份拆解重复落库（示例：${dups.slice(0, 5).join('、')}）。确属新增条目请显式传 allowDuplicates`);
+          }
+        }
+        type ReqShape = { reqNo?: string; title: string; content?: string; sourceRef?: string; priority?: string };
+        const r = PlanService.importPrd(pid, {
+          requirements: (a.requirements as ReqShape[] | undefined)?.map((x) => ({ reqNo: x.reqNo, title: x.title, content: x.content, sourceRef: x.sourceRef, priority: x.priority })),
+          plans: items.map((it) => ({
+            title: it.title, description: it.description, startDate: it.startDate, durationDays: it.durationDays,
+            assignee: it.assignee, kind: it.kind, complexity: it.complexity, status: it.status, reqNos: it.reqNos,
+          })),
+          createTasks: a.createTasks === true,
+        });
+        applyPlanItemDeps(pid, items, r.planRowIds, warnings);
+        pushPrdImportWarnings(warnings, r, items);
+        const result = {
+          channel: 'prd_import' as const, requirements: r.requirements, plans: r.plans, reusedPlans: r.reusedPlans,
+          tasks: r.tasks, unlinkedReqNos: r.unlinkedReqNos, reqNoMap: r.reqNoMap, dupPlanTitles: r.dupPlanTitles,
+          ambiguousReqNos: r.ambiguousReqNos, orphanRequirements: r.orphanRequirements, planRowIds: r.planRowIds, warnings,
+        };
+        return ok(json(result), result);
+      }
+      const r = PlanService.createBatch(pid, items, { dupPolicy: a.allowDuplicates ? 'warn' : 'block' });
+      warnings.unshift(...(r.warnings ?? []));
+      applyPlanItemDeps(pid, items, r.ids, warnings);
+      // T02131：孤儿回写点名——纯计划通道不会写 req_ids/linked_task_id（四期 K1~K8 12 行孤儿当时零提示）。
+      // 只对成规模的拆解回写（≥3 条）提示，一两条的临时补录不值得报警。
+      if (items.length >= 3) {
+        warnings.push(`本批 ${items.length} 条计划走的是纯计划通道：无需求矩阵关联（req_ids 空）、无待办联动（linked_task_id 空）。需求/PRD 拆解类回写请改传 requirements + items[].reqNos（并按需 createTasks）`);
+      }
+      return ok(json({ ...r, warnings }), { ok: true, ...r, warnings });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // T01704：计划条目维护工具——补齐「只能建不能改/删」缺口（swork 20 条日期失真由此可修正）
+  server.registerTool('mtask_update_plan', {
+    title: '更新计划条目',
+    description: '按 id 或标题更新计划条目（日期/工期/进度/状态/负责人/类型/描述/依赖）。serial/parallel 依赖变更会触发后续条目排期联动；child 归属变更会触发父里程碑按子任务包络重算起止与工期（里程碑止期不再晚于其子任务）。',
+    inputSchema: {
+      projectId: z.string().optional().describe('项目 id（按标题定位时用于限定范围，与 projectName 二选一）'),
+      projectName: z.string().optional().describe('项目名称（按标题定位时用于限定范围）'),
+      id: z.string().optional().describe('计划条目 id（与 title 二选一）'),
+      title: z.string().optional().describe('当前标题（与 id 二选一；同项目内唯一匹配，用于定位）'),
+      newTitle: z.string().optional().describe('新标题'),
+      description: z.string().optional(),
+      startDate: z.string().optional().describe('开始日期 YYYY-MM-DD'),
+      durationDays: z.number().optional().describe('工期（工作日数，≥1）'),
+      progress: z.number().optional().describe('进度 0~100'),
+      status: z.enum(['todo', 'doing', 'done', 'blocked']).optional(),
+      assignee: z.string().optional(),
+      kind: z.enum(['normal', 'milestone', 'daily']).optional(),
+      color: z.string().optional().describe('强调色 hex，如 #2563eb'),
+      deps: z.array(z.object({
+        planId: z.string().optional().describe('被引条目 id（与 planTitle 二选一）'),
+        planTitle: z.string().optional().describe('被引条目标题（同项目内唯一匹配）'),
+        type: z.enum(['serial', 'parallel', 'child']).describe('serial/parallel=排期依赖；child=归属里程碑（写在本条上）'),
+      })).optional().describe('依赖/归属关系；传空数组表示清空依赖'),
+    },
+  }, async (a) => {
+    try {
+      const db = getDb();
+      const loc = locatePlanEntry(a);
+      if (loc.error) return err(loc.error);
+      const id = loc.id;
+      if (a.deps !== undefined) {
+        const cur = db.prepare('SELECT project_id FROM plan_tasks WHERE id = ?').get(id) as { project_id: string } | undefined;
+        if (!cur) return err('计划条目不存在：' + id);
+        // 依赖引用先解析成 [{id,type}] JSON（未解析到的项回警告并跳过），再与其余字段一并交服务层
+        const { depsStr, warnings } = serializePlanDeps(cur.project_id, a.deps);
+        const row = PlanService.update(id, {
+          title: a.newTitle, description: a.description, startDate: a.startDate, durationDays: a.durationDays,
+          progress: a.progress, status: a.status, assignee: a.assignee, kind: a.kind, color: a.color, deps: depsStr,
+        });
+        if (!row) return err('计划条目不存在：' + id);
+        return ok(json({ plan: row, warnings }), { ok: true, warnings });
+      }
+      const row = PlanService.update(id, {
+        title: a.newTitle, description: a.description, startDate: a.startDate, durationDays: a.durationDays,
+        progress: a.progress, status: a.status, assignee: a.assignee, kind: a.kind, color: a.color,
+      });
+      if (!row) return err('计划条目不存在：' + id);
+      // 展开为字面量对象：PlanTaskRow 接口不满足 json/ok 的 Record<string, unknown> 索引签名约束
+      return ok(json({ ...row }), { ...row });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_delete_plan', {
+    title: '删除计划条目',
+    description: '归档（软删）指定计划条目：从计划时间线移除并衔接重排，可在归档菜单恢复——不物理删除，避免依赖引用悬空。',
+    inputSchema: {
+      id: z.string().optional().describe('计划条目 id（与 title 二选一）'),
+      projectId: z.string().optional().describe('项目 id（按标题定位时限定范围，与 projectName 二选一）'),
+      projectName: z.string().optional().describe('项目名称'),
+      title: z.string().optional().describe('当前标题（与 id 二选一；同项目内唯一匹配）'),
+    },
+  }, async (a) => {
+    try {
+      const db = getDb();
+      let pid = a.projectId?.trim() || '';
+      if (!pid && a.projectName?.trim()) {
+        // T02938：单源解析（同名多行时认现行项目）
+        pid = projectIdByName(a.projectName.trim(), db);
+        if (!pid) return err(`项目不存在：${a.projectName}`);
+      }
+      let id = a.id?.trim() || '';
+      if (!id && a.title?.trim()) {
+        if (!pid) return err('按标题定位需要 projectId 或 projectName');
+        const row = db.prepare('SELECT id FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0').get(pid, a.title.trim()) as { id: string } | undefined;
+        if (!row) return err(`计划条目不存在：${a.title}`);
+        id = row.id;
+      }
+      if (!id) return err('id 或 title 必填');
+      const okDel = PlanService.archive(id);
+      if (!okDel) return err('计划条目不存在或已归档：' + id);
+      return ok(json({ ok: true, id, archived: true }), { ok: true, id });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_update_task', {
+    title: '更新任务',
+    description: '按 id 或任务编号 taskNo 更新任务字段（title/description/priority/status/verified/pinned/categoryId）；未提供的字段保持不变。T00502：verified=false + feedback 时自动回退待办并把失败反馈写入处理结果。',
+    inputSchema: {
+      id: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
+      taskNo: z.string().optional().describe('任务编号（如 T00001，与 id 二选一）'),
+      title: z.string().optional(),
+      description: z.string().optional(),
+      priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
+      status: z.enum(['todo', 'done']).optional(),
+      verified: z.boolean().optional().describe('验证完成标记'),
+      feedback: z.string().optional().describe('T00502：验证失败反馈——verified=false 时建议提供，将自动回退待办并以【验证失败】前缀写入处理结果'),
+      pinned: z.boolean().optional().describe('置顶'),
+      categoryId: z.string().nullish().describe('任务分类 id，传 null 清除分类'),
+    },
+  }, async (a) => {
+    try {
+      const target = resolveTask(a);
+      if (!target) return err(a.id || a.taskNo ? `任务不存在：${a.id || a.taskNo}` : taskLocateError());
+      // T00502：验证失败闭环——verified=false 时强制回退待办，feedback 以【验证失败】前缀追加到处理结果
+      const failRollback = a.verified === false;
+      const status = failRollback ? 'todo' as const : a.status;
+      let handle_result: string | undefined = undefined;
+      if (failRollback && a.feedback?.trim()) {
+        const stamp = new Date().toISOString().slice(0, 10);
+        handle_result = `${target.handle_result ?? ''}\n\n【验证失败 ${stamp}】${a.feedback.trim()}`.trim();
+      }
+      const task = TaskService.update(target.id, {
+        title: a.title, description: a.description, priority: a.priority,
+        status, verified: a.verified, pinned: a.pinned, category_id: a.categoryId,
+        handle_result,
+      });
+      // T00566 二轮：状态**自动驱动**（不依赖技能显式调用）——验证失败→failed；标记完成→unread（待查看）
+      if (failRollback) TaskService.setAiState(target.id, 'failed');
+      else if (a.status === 'done') TaskService.setAiState(target.id, 'unread');
+      const fresh = TaskService.getById(target.id) ?? task;
+      return ok(json(fresh), { task: fresh });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_list_tasks', {
+    title: '列出任务',
+    description: '按项目/状态/归档态列出任务；projectId 或 projectName 二者可选其一过滤项目，都不传则列出全部项目。默认只返回「待处理 或 未验证」的任务（利于 AI 分析决策）；需查其他需显式传 status。'
+      + '每项附带 gitLinks（最新一条关联提交）与 gitLinkCount（关联总数），可用于自查已完工但未回写 git ID 的任务（T03350）。'
+      + '【并发池提示】T01066 后续：并发池已满（运行中任务数 ≥ 上限，默认 3）时，返回文本开头会带一段 ⚠ 软引导，'
+      + '提示先收口已领取任务；structuredContent.pool 给出 limit/running/queued/full。此为提示不是拦截——是否继续领取由 Agent 自行判断。',
+    inputSchema: {
+      projectId: z.string().optional().describe('项目 id，缺省列出全部项目任务'),
+      projectName: z.string().optional().describe('项目名称（如 MTask/wiki/xianyu），按名称解析为项目 id 过滤，与 projectId 二选一'),
+      status: z.enum(['todo', 'done']).optional().describe('按状态精确过滤（todo/done）；status 与 scope 均不传时默认返回「待处理+未验证」'),
+      scope: z.enum(['pending', 'all']).optional().describe('查询范围：pending=待处理或未验证（默认）；all=该范围内全部任务（等价旧行为）'),
+      archived: z.boolean().optional().default(false).describe('是否列出已归档任务'),
+    },
+  }, async (a) => {
+    try {
+      // AI Agent 更习惯直接给项目名称而非 UUID：projectName 存在时先解析成 project_id 再过滤
+      let pid = a.projectId;
+      if (!pid && a.projectName?.trim()) {
+        // T02938：旧口径 `ORDER BY sort_weight, created_at LIMIT 1` 取的是**最早创建**的同名行——
+        // 归档后重建（T02481）场景下那正是归档项目，按名过滤永远列不到新项目的单。
+        // 现改单源：现行项目优先，其次创建时间最新。
+        pid = projectIdByName(a.projectName.trim());
+        if (!pid) return err(`项目不存在：${a.projectName}`);
+      }
+      // 范围解析：显式 status 按状态精确过滤；否则 scope=all 表示全量，scope=pending 或未说明时默认「待处理+未验证」分析范围
+      let listOpts: Parameters<typeof TaskService.list>[0] = { projectId: pid, archived: a.archived ?? false };
+      if (a.status) listOpts.status = a.status;
+      else if (a.scope !== 'all') listOpts.pending = true;
+      const tasks = TaskService.list(listOpts);
+      // T03350：列表内联关联提交（与 REST 列表同一实现）——Agent 不必逐条查详情即可发现
+      // 「done 但 gitLinkCount=0」的任务，把漏回写暴露在查询入口而不是等人工发现。
+      const withLinks = TaskGit.attachGitLinks(tasks);
+      // T01066 后续：领取路径的池满提示——说明"上限"是软引导而非硬拦截，
+      // 让 Agent 自己决定是先收口旧任务还是继续领取（硬拦会破坏多 Agent 自主并发）。
+      const pool = readPoolStatus();
+      const hint = poolFullHint(pool);
+      return ok(hint ? `${hint}\n\n${json(withLinks)}` : json(withLinks), { tasks: withLinks, pool });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_get_task', {
+    title: '查询任务',
+    description: '按 id 或任务编号 taskNo 返回单个任务详情（含 task_no 与截图元信息）。不存在返回错误。'
+      + '【状态不再自动驱动】T00620：读取详情**不会**自动置 running（原行为导致"仅查看也转圈、处理完仍转圈"）；'
+      + 'Agent 确实开始处理时请显式调用 mtask_write_task_status({state:"running"})，或本次读取传 markRunning:true。',
+    inputSchema: {
+      id: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
+      taskNo: z.string().optional().describe('任务编号（如 T00001，与 id 二选一）'),
+      markRunning: z.boolean().optional().describe('T00620：显式声明"本次读取即开始处理"，仅在任务从未被处理过（ai_state 与 ai_state_at 均空）时置 running；默认 false'),
+    },
+  }, async (a) => {
+    try {
+      const task = resolveTask(a);
+      if (!task) return err(a.id || a.taskNo ? `任务不存在：${a.id || a.taskNo}` : taskLocateError());
+      // T00620：状态**不再自动驱动**。原实现「读取待办即置 running」会把
+      // ①仅查看/三查的任务钉成转圈、②已完成的 unread 与中断后的 failed 抹回 running
+      // （用户实测："任务处理结束后状态还是运行态"）。
+      // 现在：状态只由显式写入驱动（mtask_write_task_status / markRunning:true），
+      // 且 running 超时（默认 1 小时，见 TaskService.expireStaleRunning）自动兜底为 failed。
+      if (a.markRunning && task.status === 'todo' && task.ai_state === '' && !task.ai_state_at) {
+        TaskService.setAiState(task.id, 'running');
+      }
+      const fresh = TaskService.getById(task.id) ?? task;
+      // T01066 后续：markRunning 是真正的「领取」动作——领取后若池已满，把提示带回去，
+      // 让 Agent 知道自己已占满槽位、继续领取会挤掉上下文（仍不硬拦）。
+      const claimHint = a.markRunning ? poolFullHint(readPoolStatus()) : '';
+      return ok(claimHint ? `${claimHint}\n\n${json(fresh)}` : json(fresh), { task: fresh });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // T00610：读取任务截图（含 base64 dataURL）——供 AI 识别验证失败反馈中的截图内容
+  server.registerTool('mtask_get_task_images', {
+    title: '读取任务截图',
+    description: '按 id 或任务编号 taskNo 读取该任务的全部截图（含验证失败反馈随附的截图）。默认返回 base64 dataURL，AI 可直接识别图片内容（如报错弹窗、异常界面）。单张超过 3MB 时仅返回元信息（避免超出上下文）。',
+    inputSchema: {
+      id: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
+      taskNo: z.string().optional().describe('任务编号（如 T00001，与 id 二选一）'),
+      includeData: z.boolean().optional().describe('是否返回 base64 图片数据（默认 true 供 AI 识别；仅需元信息时传 false）'),
+    },
+  }, async (a) => {
+    try {
+      const task = resolveTask(a);
+      if (!task) return err(a.id || a.taskNo ? `任务不存在：${a.id || a.taskNo}` : taskLocateError());
+      const metas = TaskImageService.listByTask(task.id);
+      if (metas.length === 0) return ok(JSON.stringify({ count: 0, images: [], note: '该任务没有截图' }), { count: 0, images: [] });
+      const includeData = a.includeData !== false;
+      const maxBytes = 3 * 1024 * 1024;
+      const images = metas.map((m) => {
+        const base: Record<string, unknown> = { id: m.id, mime_type: m.mime_type, size: m.size, created_at: m.created_at };
+        if (!includeData) return base;
+        if (m.size > maxBytes) {
+          base.note = `图片 ${(m.size / 1024 / 1024).toFixed(1)}MB 超过 3MB 上限，未返回数据（可用 GET /api/images/${m.id} 下载后本地查看）`;
+          return base;
+        }
+        const data = TaskImageService.getData(m.id);
+        if (!data) { base.note = '图片数据缺失'; return base; }
+        base.dataUrl = `data:${data.mime_type};base64,${data.data.toString('base64')}`;
+        return base;
+      });
+      return ok(JSON.stringify({ task_no: task.task_no, count: images.length, images }), { task_no: task.task_no, count: images.length, images });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // ---------- T00662：PRD 导入 + 需求跟踪矩阵（外部 AI Agent 全链路） ----------
+
+  /** 项目解析辅助（projectId 优先；projectName 精确 → 大小写不敏感），供 PRD/矩阵系列工具复用 */
+  const resolveProjectIdOf = (projectId?: string, projectName?: string): { id?: string; error?: string } => {
+    const pid = projectId?.trim();
+    if (pid) {
+      const hit = getDb().prepare('SELECT id FROM projects WHERE id = ?').get(pid) as { id: string } | undefined;
+      return hit ? { id: hit.id } : { error: `项目 id 不存在：${pid}` };
+    }
+    const name = projectName?.trim();
+    if (!name) return { error: 'projectId 或 projectName 必填' };
+    // T02938：单源解析（同名多行时认现行项目）；非现行/歧义时打日志，文案仍由调用方按旧格式回
+    const r = resolveProjectByName(name);
+    if (r.warning) console.warn(`[mtask-mcp] 项目路由告警（${name}）：${r.warning}`);
+    return r.id ? { id: r.id } : { error: r.error ?? `项目「${name}」不存在` };
+  };
+
+  server.registerTool('mtask_import_prd', {
+    title: '从 PRD 导入项目计划',
+    description: '上传 PRD 文件（base64）：自动提取文本（.docx/.md/.txt/.xlsx/.csv/.pdf）→ AI 拆分 WBS 并**逐条提取可跟踪需求** → 事务创建需求项（需求跟踪矩阵行）+ 项目计划（自动关联需求）+ 可选同步生成待办任务。返回导入统计与清单摘要。**先带 dryRun:true 用同一份 payload 预演一次**（只读、不落库，返回将要新建/复用/改名的计数与明细），确认连带影响后再实导。',
+    inputSchema: {
+      projectId: z.string().optional().describe('目标项目 id（与 projectName 二选一）'),
+      projectName: z.string().optional().describe('目标项目名称（与 projectId 二选一）'),
+      toolId: z.string().describe('AI 模型工具 id（必填——PRD 解析需要模型）'),
+      filename: z.string().describe('原始文件名（决定解析方式，如 prd.docx / prd.pdf）'),
+      fileBase64: z.string().describe('文件内容的 base64（不含 data: 前缀）'),
+      createTasks: z.boolean().optional().describe('是否同时把 WBS 节点转为待办任务（默认 false，便于 AI 推进执行）'),
+      // T01875：撞名计划处置（同一份 PRD 重复导入的幂等口径）
+      onDuplicatePlan: z.enum(['new', 'reuse']).optional().describe("项目内已有同名计划时的处置：'new'（默认）= 仍新建，但新行标题自动加「（N）」后缀区分，原行不动；'reuse' = 命中同名原行做幂等补写（只补空描述/复杂度与需求关联，只增不减），不新建、绝不改原行状态与进度"),
+      // T02967 回补（原 T02354 能力被 5eee8de 的过期副本覆盖掉）：预演与页面「导入预览」同源
+      dryRun: z.boolean().optional().describe('true = 只预演不落库：用**完全相同的 payload**跑一遍判重，返回将要新建/复用/改名的计数与明细，业务表逐字节不变。Agent 在真导之前应先带 dryRun:true 跑一次（重复导入会把需求跟踪矩阵行数翻倍，T02303 实测 35→70），看过连带影响再去掉该参数实导'),
+    },
+  }, async (a) => {
+    try {
+      const loc = resolveProjectIdOf(a.projectId, a.projectName);
+      if (!loc.id) return err(loc.error ?? '项目未指定');
+      const buf = Buffer.from(a.fileBase64, 'base64');
+      if (buf.length === 0) return err('fileBase64 解析为空');
+      const { text, warnings: parseWarnings } = await PlanService.extractPrdTextDetailed(buf, a.filename);
+      const parsed = await PlanService.aiParsePrd(a.toolId, text);
+      // T02967 回补（T02354）：预演走与页面「导入预览」同源的纯读通道，落库路径一行不动。
+      // 预演也必须跑同一份解析结果，否则「预告的计数」与「实导的计数」不同源（M-02 对账必红）。
+      if (a.dryRun === true) {
+        const preview = PlanService.previewPrdImport(loc.id, {
+          requirements: parsed.requirements, plans: parsed.drafts,
+          createTasks: a.createTasks === true, prdMd: text, prdFilename: a.filename, onDuplicatePlan: a.onDuplicatePlan,
+        });
+        // T03730：HTML 输入被跳过的片段随回执透出（Agent 可据此提示人补文或换格式）
+        const dry = { projectId: loc.id, dryRun: true, readOnly: true, preview, coverageWarn: parsed.coverageWarn || undefined, uncoveredReqNos: parsed.uncoveredReqNos ?? [], parseWarnings: parseWarnings.length ? parseWarnings : undefined };
+        return ok(JSON.stringify(dry), dry);
+      }
+      // T00763：PRD 原文（提取后的 Markdown）随导入完整落库，需求行回填 prd_id
+      const r = PlanService.importPrd(loc.id, { requirements: parsed.requirements, plans: parsed.drafts, createTasks: a.createTasks === true, prdMd: text, prdFilename: a.filename, onDuplicatePlan: a.onDuplicatePlan });
+      const summary = {
+        projectId: loc.id,
+        imported: r,
+        requirements: parsed.requirements.slice(0, 20),
+        plans: parsed.drafts.slice(0, 20).map((d) => ({ title: d.title, durationDays: d.durationDays, reqNos: d.reqNos })),
+        truncated: parsed.requirements.length > 20 || parsed.drafts.length > 20,
+        coverageWarn: parsed.coverageWarn || undefined,
+        uncoveredReqNos: parsed.uncoveredReqNos ?? [],
+        truncatedNote: parsed.truncatedNote || undefined,
+        parseWarnings: parseWarnings.length ? parseWarnings : undefined,
+      };
+      return ok(JSON.stringify(summary), summary);
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_list_matrix', {
+    title: '查询需求跟踪矩阵',
+    description: '按项目返回需求跟踪矩阵：每条需求（reqNo/标题/状态/原文定位）及其**关联的计划与待办任务**（含状态、是否已验证）。供 AI 核对需求覆盖与进度。',
+    inputSchema: {
+      projectId: z.string().optional().describe('项目 id（与 projectName 二选一）'),
+      projectName: z.string().optional().describe('项目名称（与 projectId 二选一）'),
+    },
+  }, async (a) => {
+    try {
+      const loc = resolveProjectIdOf(a.projectId, a.projectName);
+      if (!loc.id) return err(loc.error ?? '项目未指定');
+      const rows = PlanService.listRequirements(loc.id);
+      return ok(JSON.stringify({ projectId: loc.id, count: rows.length, requirements: rows }), { projectId: loc.id, count: rows.length, requirements: rows });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_update_matrix', {
+    title: '更新需求跟踪矩阵',
+    description: '维护需求跟踪矩阵：action=create（新建需求，需 projectId/projectName + title）/ update（改需求字段，需 reqId）/ delete（删需求并清理关联）/ link（调整需求与计划或待办的关联，需 reqId + kind + targetId + linked）。',
+    inputSchema: {
+      action: z.enum(['create', 'update', 'delete', 'link']).describe('操作类型'),
+      projectId: z.string().optional().describe('create 时使用：项目 id'),
+      projectName: z.string().optional().describe('create 时使用：项目名称'),
+      reqId: z.string().optional().describe('update/delete/link 时使用：需求 id（可由 mtask_list_matrix 获取）'),
+      reqNo: z.string().optional().describe('create/update：需求编号（留空自动生成 REQ-xxx）'),
+      title: z.string().optional().describe('create 必填 / update 可选：需求标题'),
+      content: z.string().optional().describe('需求描述/原文要点'),
+      sourceRef: z.string().optional().describe('PRD 原文定位（章节/段落）'),
+      priority: z.enum(['low', 'normal', 'high', 'urgent', 'P0', 'P1', 'P2', 'P3', 'p0', 'p1', 'p2', 'p3']).optional()
+        .describe('优先级：low|normal|high|urgent 或 P0~P3（P 档自动换算入库：P0=urgent / P1=high / P2=normal / P3=low，与用例词表统一）'),
+      status: z.enum(['todo', 'doing', 'done', 'changed']).optional().describe('需求状态（todo/doing/done 会随关联计划与待办的完成度自动派生：全部完成→done、有进行中或部分完成→doing、全部未开始→todo；changed 为人工业务状态不被覆盖。留空则不改动）'),
+      kind: z.enum(['plan', 'task']).optional().describe('link 时使用：关联目标类型'),
+      targetId: z.string().optional().describe('link 时使用：计划或待办的任务 id'),
+      linked: z.boolean().optional().describe('link 时使用：true 建立关联 / false 解除（默认 true）'),
+    },
+  }, async (a) => {
+    try {
+      // T01703：P 档 → 存储枚举换算（存储层不动，兼容旧客户端读取）；非法值原样传入由服务层报错
+      const PRIO_ALIAS: Record<string, 'low' | 'normal' | 'high' | 'urgent'> = { P0: 'urgent', P1: 'high', P2: 'normal', P3: 'low' };
+      const normPrio = (p?: string): string | undefined => {
+        if (!p) return p;
+        const hit = PRIO_ALIAS[p.toUpperCase()];
+        return hit ?? p;
+      };
+      if (a.action === 'create') {
+        const loc = resolveProjectIdOf(a.projectId, a.projectName);
+        if (!loc.id) return err(loc.error ?? '项目未指定');
+        if (!a.title?.trim()) return err('create 需要 title');
+        const row = PlanService.createRequirement(loc.id, {
+          reqNo: a.reqNo, title: a.title, content: a.content, sourceRef: a.sourceRef, priority: normPrio(a.priority), status: a.status,
+        });
+        return ok(JSON.stringify(row), row);
+      }
+      if (!a.reqId) return err(`${a.action} 需要 reqId`);
+      if (a.action === 'update') {
+        const row = PlanService.updateRequirement(a.reqId, {
+          title: a.title, content: a.content, reqNo: a.reqNo, sourceRef: a.sourceRef, priority: normPrio(a.priority), status: a.status,
+        });
+        return ok(JSON.stringify(row), row);
+      }
+      if (a.action === 'delete') {
+        PlanService.deleteRequirement(a.reqId);
+        return ok(JSON.stringify({ ok: true, deleted: a.reqId }), { ok: true, deleted: a.reqId });
+      }
+      // link
+      if (!a.kind || !a.targetId) return err('link 需要 kind(plan|task) 与 targetId');
+      PlanService.linkRequirement(a.reqId, { kind: a.kind, targetId: a.targetId, linked: a.linked !== false });
+      return ok(JSON.stringify({ ok: true, reqId: a.reqId, kind: a.kind, targetId: a.targetId, linked: a.linked !== false }), { ok: true });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // ---------- T01493：测试用例（查询 / 维护），zod 枚举从 testCaseEnums 单源导入 ----------
+
+  server.registerTool('mtask_list_testcases', {
+    title: '查询测试用例',
+    description: '按项目返回测试用例列表（含步骤与关联需求摘要 reqNo/reqTitle）+ 覆盖度摘要（总/已覆盖/未覆盖/覆盖率）。可按需求行 reqId、关键词 q、模块、优先级/类型/状态/执行结果筛选，orphanOnly 仅取未关联需求的孤儿用例，支持 limit/offset 分页。供 AI 核对用例覆盖与进度。',
+    inputSchema: {
+      projectId: z.string().optional().describe('项目 id（与 projectName 二选一）'),
+      projectName: z.string().optional().describe('项目名称（与 projectId 二选一）'),
+      reqId: z.string().optional().describe('可选：按需求 id（矩阵行）过滤'),
+      q: z.string().optional().describe('可选：关键词（标题/模块/预期等）'),
+      module: z.string().optional().describe('可选：按模块过滤'),
+      priority: z.enum(CASE_PRIORITY).optional().describe('可选：优先级 P0~P3'),
+      type: z.enum(CASE_TYPE).optional().describe('可选：用例类型'),
+      status: z.enum(CASE_STATUS).optional().describe('可选：生命周期状态'),
+      result: z.enum(CASE_RESULT).optional().describe('可选：最近执行结果'),
+      orphanOnly: z.boolean().optional().describe('可选：仅返回未关联需求的孤儿用例'),
+      limit: z.number().int().optional().describe('可选：分页大小（省略=200；≤0=全部）'),
+      offset: z.number().int().optional().describe('可选：分页偏移'),
+    },
+  }, async (a) => {
+    try {
+      const loc = resolveProjectIdOf(a.projectId, a.projectName);
+      if (!loc.id) return err(loc.error ?? '项目未指定');
+      const res = TestCaseService.list({
+        projectId: loc.id, reqId: a.reqId, q: a.q, module: a.module,
+        priority: a.priority, type: a.type, status: a.status, result: a.result,
+        orphanOnly: a.orphanOnly, limit: a.limit, offset: a.offset,
+      });
+      const cov = TestCaseService.coverage(loc.id);
+      const summary = {
+        projectId: loc.id, total: res.total, returned: res.items.length,
+        coverage: { total: cov.total, caseTotal: cov.caseTotal, covered: cov.covered, uncovered: cov.uncovered, rate: cov.rate },
+      };
+      return ok(JSON.stringify({ ...summary, cases: res.items }), { ...summary, cases: res.items });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_update_testcases', {
+    title: '维护测试用例',
+    description: '维护测试用例：action=create（新建，需 projectId/projectName + title，可带 reqId/steps/枚举字段）/ update（改字段，需 caseId；字符串传空串=清空）/ delete（删单条，需 caseId）/ link（挂/解需求，需 caseId + reqId，reqId 传空串或 null 解除）/ batch-patch（批量改枚举/模块/关联，需 caseIds + patch，不含 title/caseNo）。字段一律走 TestCaseService，枚举经单源校验（非法值回落默认）、写后 notifyChange(\'plans\')，落库以返回体的实际字段为准。',
+    inputSchema: {
+      action: z.enum(['create', 'update', 'delete', 'link', 'batch-patch']).describe('操作类型'),
+      projectId: z.string().optional().describe('create 时使用：项目 id（与 projectName 二选一）'),
+      projectName: z.string().optional().describe('create 时使用：项目名称'),
+      caseId: z.string().optional().describe('update/delete/link 时使用：用例 id（可由 mtask_list_testcases 获取）'),
+      caseIds: z.array(z.string()).optional().describe('batch-patch 时使用：目标用例 id 数组'),
+      reqId: z.string().nullable().optional().describe('create/link：关联的需求 id；link 传空串或 null 解除关联'),
+      title: z.string().optional().describe('create 必填 / update 可选：用例标题'),
+      caseNo: z.string().optional().describe('create/update：用例编号（留空自动 TC-xxx）'),
+      module: z.string().optional().describe('模块'),
+      preconditions: z.string().optional().describe('前置条件'),
+      expected: z.string().optional().describe('预期结果'),
+      testData: z.string().optional().describe('测试数据'),
+      postconditions: z.string().optional().describe('后置条件'),
+      priority: z.enum(CASE_PRIORITY).optional().describe('优先级'),
+      type: z.enum(CASE_TYPE).optional().describe('用例类型'),
+      method: z.enum(CASE_METHOD).optional().describe('执行方式'),
+      status: z.enum(CASE_STATUS).optional().describe('生命周期状态'),
+      lastResult: z.enum(CASE_RESULT).optional().describe('最近执行结果'),
+      tags: z.string().optional().describe('标签'),
+      steps: z.array(z.object({ action: z.string().optional(), expected: z.string().optional(), stepNo: z.number().int().optional() })).optional().describe('create/update 全量替换步骤：[{action,expected,stepNo?}]'),
+      patch: z.object({
+        priority: z.enum(CASE_PRIORITY).optional(), type: z.enum(CASE_TYPE).optional(), method: z.enum(CASE_METHOD).optional(),
+        status: z.enum(CASE_STATUS).optional(), lastResult: z.enum(CASE_RESULT).optional(),
+        module: z.string().optional(), reqId: z.string().nullable().optional(),
+      }).optional().describe('batch-patch 时使用：批量改动字段'),
+    },
+  }, async (a) => {
+    try {
+      if (a.action === 'create') {
+        const loc = resolveProjectIdOf(a.projectId, a.projectName);
+        if (!loc.id) return err(loc.error ?? '项目未指定');
+        if (!a.title?.trim()) return err('create 需要 title');
+        const row = TestCaseService.create({
+          projectId: loc.id, reqId: a.reqId ?? null, title: a.title, caseNo: a.caseNo, module: a.module,
+          preconditions: a.preconditions, expected: a.expected, testData: a.testData, postconditions: a.postconditions,
+          priority: a.priority, type: a.type, method: a.method, status: a.status, lastResult: a.lastResult,
+          tags: a.tags, steps: a.steps,
+        });
+        return ok(JSON.stringify(row), { ...row });
+      }
+      if (a.action === 'batch-patch') return patchCasesInBatch(a.caseIds, a.patch);
+      if (!a.caseId) return err(`${a.action} 需要 caseId`);
+      if (a.action === 'delete') {
+        TestCaseService.remove(a.caseId);
+        return ok(JSON.stringify({ ok: true, deleted: a.caseId }), { ok: true, deleted: a.caseId });
+      }
+      if (a.action === 'link') return linkCaseToReq(a.caseId, a.reqId);
+      // update：仅把调用方显式提供的字段并入 patch（省略=不改）
+      return patchSingleCase(a.caseId, buildCasePatch(a));
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // ---------- T00763：PRD 原文文档（查询 / 反向更新） ----------
+
+  server.registerTool('mtask_get_prd', {
+    title: '查询关联的 PRD 原文',
+    description: '按任务 id/编号、计划 id 或需求 id 反查其关联的 PRD 文档完整 Markdown 原文（导入时保留）；也可按项目列出全部 PRD 文档。AI 处理待办/评估时应先调用本工具获取需求背景作为上下文。返回体 `docs[]` 为主 PRD + 显式关联的配套文档全集（主 PRD 在首，含方案设计 SDD/测试用例，每项带 id/filename/doc_kind/relation/content）；顶层 content 仍为主 PRD 全文。',
+    inputSchema: {
+      taskId: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
+      taskNo: z.string().optional().describe('任务编号（如 T00763，与 taskId 二选一）'),
+      planId: z.string().optional().describe('计划条目 id'),
+      reqId: z.string().optional().describe('需求 id（矩阵行）'),
+      prdId: z.string().optional().describe('PRD 文档 id（直接取全文）'),
+      includeDocsContent: z.boolean().optional().describe('docs[] 是否附带全文，默认 true；只需文档目录时传 false 可显著减小响应'),
+      projectId: z.string().optional().describe('按项目列出全部 PRD 文档（与 projectName 二选一；仅列表元信息不含正文）'),
+      projectName: z.string().optional().describe('按项目列出全部 PRD 文档'),
+    },
+  }, async (a) => {
+    try {
+      const db = getDb();
+      const withDocs = a.includeDocsContent !== false;
+      if (a.prdId) {
+        const doc = PlanService.getPrdDoc(a.prdId);
+        const docs = buildPrdDocs(a.prdId, withDocs); // T05208
+        const payload = { ...doc, docsCount: docs.length, docs };
+        return ok(JSON.stringify(payload), payload);
+      }
+      // 任务编号 → 内部 id
+      let taskId = a.taskId;
+      if (!taskId && a.taskNo) {
+        const row = db.prepare('SELECT id FROM tasks WHERE task_no = ?').get(a.taskNo) as { id: string } | undefined;
+        if (!row) return err(`任务不存在：${a.taskNo}`);
+        taskId = row.id;
+      }
+      if (taskId || a.planId || a.reqId) {
+        const ctx = resolvePrdContext({ taskId, planId: a.planId, requirementId: a.reqId });
+        if (!ctx) return ok(JSON.stringify({ found: false, message: '该对象未关联 PRD 文档' }), { found: false });
+        const doc = { ...ctx, content: PlanService.getPrdDoc(ctx.prdId).content_md };
+        // T05208：显式关联的配套文档全集（未关联 PRD 时上面已返回 found:false；无配套设计文档时 docs 仅 1 项）
+        const docs = buildPrdDocs(ctx.prdId, withDocs);
+        return ok(JSON.stringify({ found: true, ...doc, docsCount: docs.length, docs }), { found: true, ...doc, docsCount: docs.length, docs });
+      }
+      const loc = resolveProjectIdOf(a.projectId, a.projectName);
+      if (!loc.id) return err('需提供 taskId/taskNo/planId/reqId/prdId 之一，或 projectId/projectName 列出项目文档');
+      const docs = PlanService.listPrdDocs(loc.id);
+      return ok(JSON.stringify({ projectId: loc.id, count: docs.length, docs }), { projectId: loc.id, count: docs.length, docs });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_update_prd', {
+    title: '反向更新 PRD 原文',
+    description: '把修订后的 PRD 内容（完整 Markdown）反向覆盖到指定 PRD 文档（全量覆盖，非增量）。用于 AI 依据实施结论修订需求文档等场景。',
+    inputSchema: {
+      prdId: z.string().describe('PRD 文档 id（可由 mtask_get_prd 获取）'),
+      contentMd: z.string().describe('修订后的完整 Markdown 原文（全量覆盖，不能为空）'),
+      filename: z.string().optional().describe('可选：更新文档名'),
+    },
+  }, async (a) => {
+    try {
+      const doc = PlanService.updatePrdDoc(a.prdId, { contentMd: a.contentMd, filename: a.filename });
+      const contentMd: string = (doc.content_md ?? '') as string;
+      return ok(JSON.stringify({ ok: true, id: doc.id, updated_at: doc.updated_at, content_chars: contentMd.length }), { ok: true, id: doc.id });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_update_task_result', {
+    title: '同步任务处理结果',
+    description: '把 AI 总结的根因分析与解决方案等结论写入指定任务的「处理结果」字段（Markdown 文本）。按 id 或任务编号 taskNo 定位。适合在排查结束后将结论回写到 MTask 对应任务，供用户在任务「处理结果」区块查看/编辑。',
+    inputSchema: {
+      id: z.string().optional().describe('任务内部 id（与 taskNo 二选一），来自 mtask_list_tasks / mtask_get_task 的 id'),
+      taskNo: z.string().optional().describe('任务编号（如 T00001，与 id 二选一）'),
+      result: z.string().describe('处理结果正文（Markdown）：根因分析、解决方案、验证结论等'),
+    },
+  }, async (a) => {
+    try {
+      const target = resolveTask(a);
+      if (!target) return err(a.id || a.taskNo ? `任务不存在：${a.id || a.taskNo}` : taskLocateError());
+      if (!a.result) return err('result 必填');
+      const task = TaskService.update(target.id, { handle_result: a.result });
+      // T00566 二轮：状态**自动驱动**——回传处理结果 = 处理完成待用户查看（unread）
+      TaskService.setAiState(target.id, 'unread');
+      // T00577：派生单整合——本任务若为派生单（derived_from 有值），把结论同时追加回原任务处理结果，
+      // 让原任务成为唯一信息汇聚点，避免派生单越积越多
+      const row = getDb().prepare('SELECT derived_from FROM tasks WHERE id = ?').get(target.id) as { derived_from: string | null } | undefined;
+      const originNo = row?.derived_from?.trim();
+      let merged = '';
+      if (originNo) {
+        const origin = TaskService.findByNo(originNo);
+        if (!origin) {
+          // T02320：编号查无（历史脏值/母单已被物理删除）⇒ 如实回告，不猜目标、不静默
+          merged = `；⚠ 溯源母单 ${originNo} 在库中查无，结论未归并（请补正 derived_from 或按脚本 merge 手工补录）`;
+        } else if (alreadyMerged(origin.handle_result, task.task_no)) {
+          // T02320 归并幂等：母单已含本单号的标记（自动归并节或脚本补录节）⇒ 不重复叠加同一段结论。
+          // T04546：旧判据只看「编号标记在不在」，于是子单**二次修订**永远不回灌——
+          // 母单被钉在首次整合快照上（实测 T04186 修订 3 行、母单 85 秒即冻结）。
+          // 现在比内容：一致才真幂等跳过，不一致就把母单那一节就地刷新（母单其余内容逐字保留）。
+          if (mergedContentMatches(origin.handle_result, task.task_no, a.result)) {
+            merged = `；母单 ${originNo} 已含本单归并记录且内容一致，未重复追加`;
+          } else {
+            const stamp = new Date().toISOString().slice(0, 10);
+            TaskService.update(origin.id, {
+              handle_result: refreshMergedBody(origin.handle_result, task.task_no, a.result, stamp),
+            });
+            // 与首次归并同口径：回灌了就要让用户看得见（原单置 unread）
+            TaskService.setAiState(origin.id, 'unread');
+            merged = `；母单 ${originNo} 的归并快照已按本次修订刷新（旧版只按编号判幂等，修订不回灌）`;
+          }
+        } else {
+          const stamp = new Date().toISOString().slice(0, 10);
+          const originText = (origin.handle_result ?? '').trim();
+          const prefix = originText ? originText + '\n\n' : '';
+          const mergedText = `${prefix}---
+【派生单 ${task.task_no ?? target.id} 处理结果 ${stamp}】
+${a.result}`;
+          TaskService.update(origin.id, { handle_result: mergedText });
+          // T00713：结论归并进原单后置原单 unread——用户在列表上能看到「原单有新内容待查看」，
+          // 否则回流结论只躺在处理结果里无人知晓
+          TaskService.setAiState(origin.id, 'unread');
+          merged = `；并已整合回原任务 ${originNo}`;
+        }
+      }
+      // T03637：若该派生单早已完成（先 done 后补结论的顺序），归并完成的这一刻就是闭环终点，补归档。
+      // 正常顺序（回传→done）由 TaskService.update 的 done 跃迁钩子负责，两条入口互为兜底、均幂等。
+      if (originNo) TaskService.archiveDerivedIfClosed(target.id);
+      return ok(`已同步处理结果到任务 ${task.task_no ?? target.id}${merged}`, { task, mergedTo: originNo || undefined });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // T02949：派生单裁决——外部 Agent 侧三件套（预设选项单源 / 打待裁决标记 / 提交裁决）。
+  // 与前端面板、REST /tasks/:id/ruling* 复用同一条 TaskService 通道（取数、追加详情、留痕不另写一套）。
+  server.registerTool('mtask_get_ruling_options', {
+    title: '获取派生单裁决选项',
+    description: '返回裁决的候选选项（服务端单源，与前端裁决面板同读）。'
+      + '【动态口径】传 id/taskNo 时按该单「处理结果」抽取候选（如结论里写「方案 A / 方案 B」就返回这两项），'
+      + '结论抽不到时改用标题里的裁决徽标（如「【等你一句话裁决：A/B/C】」拆出 A全量纳管/B…/C…）；'
+      + '两条都抽不到 2 条以上才回落通用四枚（采纳合并/部分采纳/暂不采纳/需补充信息）。不传任务则直接返回通用四枚。'
+      + '裁决是把待裁决单的结论标记为采纳/不采纳的流程；提交时可直接传选项值，也可传自定义文本。'
+      + '【自动识别】结论回传时已自动判定是否打「待裁决」（见 mtask_update_task_result），无需先调本工具。',
+    inputSchema: {
+      id: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
+      taskNo: z.string().optional().describe('任务编号（如 T00001，与 id 二选一）'),
+    },
+  }, async (a) => {
+    try {
+      const target = a.id || a.taskNo ? resolveTask(a) : undefined;
+      if (a.id || a.taskNo) {
+        if (!target) return err(`任务不存在：${a.id || a.taskNo}`);
+        const options = TaskService.rulingOptions(target.id);
+        return ok(`裁决候选（${target.task_no ?? target.id}）：${options.join(' / ')}`, { options });
+      }
+      const options = TaskService.rulingOptions();
+      return ok(`裁决通用选项：${options.join(' / ')}`, { options });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_mark_ruling', {
+    title: '标记派生单待裁决',
+    description: '给指定单打「待裁决」标记。可标对象（裁决主体）：派生单（derived_from 有值 / 描述首行「来源：Txxxx」/ 标题带「【AI回写待审核】」），或标题本身在请求裁决（含「裁决/裁定/定夺/拍板」徽标）的单——非主体的普通单会被拒绝，不凭空挂徽标。幂等：已标记原样返回；已裁决则拒绝。'
+      + '【通常不需要手动调】结论经 mtask_update_task_result 回传时，服务端已按标题徽标与结论里的裁决请求短语自动识别并打标/撤标；'
+      + '本工具仅用于措辞不在识别规则内、但确需人工裁决时显式补标。',
+    inputSchema: {
+      id: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
+      taskNo: z.string().optional().describe('任务编号（如 T00001，与 id 二选一）'),
+    },
+  }, async (a) => {
+    try {
+      const target = resolveTask(a);
+      if (!target) return err(a.id || a.taskNo ? `任务不存在：${a.id || a.taskNo}` : taskLocateError());
+      const task = TaskService.markRuling(target.id);
+      return ok(`已标记待裁决：${task.task_no ?? target.id}`, { task });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_submit_ruling', {
+    title: '提交派生单裁决',
+    description: '提交裁决：result 为候选选项值（见 mtask_get_ruling_options，按该单结论/标题徽标动态生成，抽不到回落通用四枚）或自定义文本。提交后任务标记为「已裁决」，裁决结果**追加**到任务详情末尾（不覆盖已有内容），并写任务事件留痕。仅裁决主体（派生单或标题请求裁决的单）可裁决；重复提交会被拒绝。',
+    inputSchema: {
+      id: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
+      taskNo: z.string().optional().describe('任务编号（如 T00001，与 id 二选一）'),
+      result: z.string().describe('裁决结果：预设选项值或自定义文本（非空）'),
+    },
+  }, async (a) => {
+    try {
+      const target = resolveTask(a);
+      if (!target) return err(a.id || a.taskNo ? `任务不存在：${a.id || a.taskNo}` : taskLocateError());
+      if (!a.result?.trim()) return err('result（裁决结果）必填');
+      const task = TaskService.submitRuling(target.id, a.result);
+      return ok(`已提交裁决并标记「已裁决」：${task.task_no ?? target.id}`, { task });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // T02168：外部 Agent 侧触发「生成总结摘要」——与抽屉入口、REST POST /tasks/:id/ai-summary
+  // 复用同一条 AIService.summarizeTask（取数与提示词不另写一套）。
+  server.registerTool('mtask_summarize_task', {
+    title: '生成任务全量总结摘要',
+    description: '按 id 或任务编号 taskNo 触发一次任务全量总结摘要：把基本信息/正文/关联计划与需求/时间线事件/关联 PRD 原文交模型收拢成结论，'
+      + '成功后写入任务 ai_summary，并返回最新的 ai_summary 与 ai_summary_at。toolId 可选，不传则回落到配置里的「默认整理工具」，两者都没有时返回可读错误。'
+      + '【时间口径】ai_summary_at 由服务端在保存成功那一刻记录，模型不产出时间——不要把时间戳写进摘要正文，否则界面与 Agent 各说一套时间。'
+      + '【分工】本工具面向「把已有信息收拢成结论」；把任务描述改写成可执行提示词仍走页面/AI 梳理通道。',
+    inputSchema: {
+      id: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
+      taskNo: z.string().optional().describe('任务编号（如 T00001，与 id 二选一）'),
+      toolId: z.string().optional().describe('可选：指定整理类工具 id；不传则回落「默认整理工具」'),
+    },
+  }, async (a) => {
+    try {
+      const target = resolveTask(a);
+      if (!target) return err(a.id || a.taskNo ? `任务不存在：${a.id || a.taskNo}` : taskLocateError());
+      const task = await AIService.summarizeTask(target.id, a.toolId);
+      return ok(`已生成任务 ${task.task_no ?? target.id} 的总结摘要（更新时间 ${task.ai_summary_at ?? '未记录'}）\n\n${task.ai_summary ?? ''}`,
+        { task_no: task.task_no, ai_summary: task.ai_summary, ai_summary_at: task.ai_summary_at, task });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // T00566：AI 处理状态回写——AIAgent 生命周期专用（running 处理中 / failed 中断失败 / unread 完成待查看）
+  // 状态机：running → failed | unread；failed → running（重试）；unread →（用户查看）→ ''（已读隐藏）
+  // T03349 / T03396 / T03419（八期 §4.2，Q7' 裁定：独立工具而非扩展 update_task.gitCommit）
+  server.registerTool('mtask_link_git_commit', {
+    title: '回写任务关联的 Git 提交',
+    description:
+      '外部 AI Agent 提交代码后回写 commit ID（任务↔提交关联的**主通道**，落库 source=agent）。'
+      + '入参 commits 支持 1 个或多个（7–40 位十六进制，短 SHA 由服务端在当前工作空间解析为 40 位）。'
+      + 'repoSub 指定工作空间目录内的子仓库（相对路径，如 `served`；省略/空 = 项目根仓库）——'
+      + '子仓库的提交若不传 repoSub，会按根仓库解析并判 missing。'
+      + '幂等：同任务同 SHA 同仓库重复回写只记 skipped，不产生重复行；解析不出或仓库不存在时逐条点名进 errors（不静默失败）。'
+      + '不做任何提交信息解析——关联只由显式写入产生。',
+    inputSchema: {
+      taskNo: z.string().optional().describe('任务编号（如 T03325，与 id 二选一）'),
+      id: z.string().optional().describe('任务内部 id（与 taskNo 二选一）'),
+      commits: z.union([z.string(), z.array(z.string())]).describe('commit ID：单个字符串或数组，支持多个'),
+      repoSub: z.string().optional().describe('工作空间目录内的子仓库相对路径（空/省略 = 项目根仓库）'),
+    },
+  }, async (a) => {
+    try {
+      if (!a.taskNo && !a.id) return err(taskLocateError());
+      const res = await TaskGit.linkCommits({ taskNo: a.taskNo, id: a.id }, a.commits, 'agent', a.repoSub ?? '');
+      const lines = [
+        `linked=${res.linked} skipped=${res.skipped} resolved=${res.resolved.length} repoSub=${res.repoSub || '.'}`,
+        ...res.resolved.map((r) => `  ${r.input} -> ${r.sha}${r.repoSub ? ` @ ${r.repoSub}` : ''}`),
+        ...res.errors.map((e) => `  错误：${e}`),
+      ];
+      // T03350：一条都没写进去时必须置 isError——否则 Agent 看到的是「成功态」结果，
+      // 关联 0 行也不会有人回头查（存量 2030 条 done 任务零关联的放大因素之一）。
+      if (res.linked + res.skipped === 0 && res.errors.length) return err(lines.join('\n'));
+      return ok(lines.join('\n'), { ...res });
+    } catch (e) {
+      return err((e as Error).message);
+    }
+  });
+
+  server.registerTool('mtask_write_task_status', {
+    title: '回写任务 AI 处理状态',
+    description: '按 id 或任务编号 taskNo 回写任务的 AI 处理状态动画（任务编号前显示）。state=running 表示 Agent 开始处理（旋转动画）；state=failed 表示处理中断/异常（红色警示）；state=unread 表示处理完成等待用户查看（未读圆点）；用户查看后前端自动清空（已读隐藏）。',
+    inputSchema: {
+      taskNo: z.string().optional().describe('任务编号（如 T00001），与 id 二选一'),
+      id: z.string().optional().describe('任务内部 id，与 taskNo 二选一'),
+      state: z.enum(['running', 'failed', 'unread']).describe('目标状态：running=开始处理；failed=处理中断/异常；unread=处理完成待查看'),
+    },
+  }, async (a) => {
+    try {
+      const target = resolveTask(a);
+      if (!target) return err(a.id || a.taskNo ? `任务不存在：${a.id || a.taskNo}` : taskLocateError());
+      const task = TaskService.setAiState(target.id, a.state);
+      if (!task) return err('任务不存在');
+      return ok(JSON.stringify({ id: task.id, task_no: task.task_no, ai_state: task.ai_state }), { task });
+    } catch (e) {
+      return err((e as Error).message);
+    }
+  });
+
+  server.registerTool('mtask_move_tasks', {
+    title: '批量移动项目',
+    description: '把一组任务移动到目标项目（taskIds 与 projectId 均必填）。',
+    inputSchema: {
+      taskIds: z.array(z.string()).describe('任务 id 数组'),
+      projectId: z.string().describe('目标项目 id'),
+    },
+  }, async (a) => {
+    try {
+      TaskService.moveProject(a.taskIds, a.projectId);
+      return ok(`已移动 ${a.taskIds.length} 个任务`); 
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_set_tasks_archived', {
+    title: '归档/还原任务',
+    description: '批量归档（archived=true）或还原（archived=false）一组任务。',
+    inputSchema: {
+      taskIds: z.array(z.string()).describe('任务 id 数组'),
+      archived: z.boolean().describe('true=归档，false=还原'),
+    },
+  }, async (a) => {
+    try {
+      const tasks = a.archived ? ArchiveService.archive(a.taskIds) : ArchiveService.restore(a.taskIds);
+      return ok(json(tasks), { tasks });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // ---------------- AI 编排大脑（观测 / 监督，T01269 起） ----------------
+  // T01269（PRD FR-1.2）：外部平台执行会话心跳上报——观测层入口，仅观测不自动动作（P0）
+  server.registerTool('mtask_report_progress', {
+    title: '上报执行会话进度',
+    description: '外部 AI 平台（WorkBuddy/Trae/中继）执行任务期间周期调用（建议 30~60s），上报平台会话标识、关联任务与进度/阶段并刷新会话心跳。MTask 据此在「执行会话」面板展示存活与进度、判定停滞。task_id 可传任务内部 id 或任务编号（Txxxxx）。pct>=100 或 done=true 表示本轮完成（会话置 done、任务置完成待查看）；failed=true 表示本轮执行失败（会话置 failed，面板显示「失败」，失败原因写 phase）——done 与 failed 同传时以 done 为准。',
+    inputSchema: {
+      platform: z.string().describe("平台标识，如 'workbuddy' | 'trae' | 'relay:xxx'。大小写/空白不敏感（内部统一归一为小写）"),
+      session_id: z.string().describe('平台侧会话标识'),
+      task_id: z.string().describe('关联任务：任务内部 id 或任务编号（Txxxxx）'),
+      phase: z.string().optional().describe('当前阶段描述（如「读取代码」「执行测试」）'),
+      pct: z.number().optional().describe('进度百分比 0~100'),
+      note: z.string().optional().describe('附注（可选）'),
+      done: z.boolean().optional().describe('平台显式声明本轮执行完成'),
+      failed: z.boolean().optional().describe('平台显式声明本轮执行失败（T01356，PRD §8）：会话置 failed，面板显示「失败」；失败原因请写入 phase。与 done 互斥，同传时以 done 为准'),
+    },
+  }, async (a) => {
+    try {
+      const r = ExecSessionService.reportProgress({
+        platform: a.platform,
+        sessionId: a.session_id,
+        taskRef: a.task_id,
+        phase: a.phase,
+        pct: a.pct,
+        note: a.note,
+        done: a.done,
+        failed: a.failed,
+      });
+      return ok(json(r), { ...r });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // T01280（PRD FR-3.1 / §6.1）：外部平台拉取就绪待办——执行层入口（拉取式）
+  server.registerTool('mtask_list_ready_tasks', {
+    title: '拉取就绪任务',
+    description: '外部 AI 平台拉取可执行的就绪待办。仅返回：未被认领（ai_state 为空）、status=todo、monitor_ready=1（监督器已判定无未完成前置依赖）、且平台偏好匹配（monitor_preferred_platform 为空或等于 platform）的任务，并按优先级排序。T05741 起 supervisor.enabled=0 时仍会标记就绪（readyMarkEnabled 默认 true），A 兜底不再恒空；readyMarkEnabled=0 才完全停排水。',
+    inputSchema: {
+      platform: z.string().optional().describe("请求方平台标识（如 'workbuddy' | 'trae'）；只返回无平台偏好或偏好等于该值的任务，缺省则不按平台过滤。大小写/空白不敏感（内部统一归一为小写）"),
+      projectId: z.string().optional().describe('T05741：只返回指定项目的就绪任务（任务内部 projectId）；多项目共用一个 WorkBuddy 时用它隔离，缺省则不限项目'),
+      limit: z.number().optional().describe('返回条数上限（默认 20，上限 200）'),
+    },
+  }, async (a) => {
+    try {
+      const tasks = TaskService.listMonitorReady({ platform: a.platform?.trim() || undefined, projectId: a.projectId?.trim() || undefined, limit: a.limit });
+      return ok(json(tasks), { tasks });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // T01281（PRD FR-3.2 / §6.1）：原子认领——多平台拉到同一任务时只有一个能认领成功，防重复执行
+  server.registerTool('mtask_claim_task', {
+    title: '原子认领任务',
+    description: '外部 AI 平台从 mtask_list_ready_tasks 拿到任务后，先调本工具认领再开始执行。事务内校验任务未被认领（ai_state 为空）后原子置 ai_state=running、绑定执行会话并清零就绪标记，从而防止多平台抢同一任务导致重复执行。已被其他平台抢走（conflict=true, reason=already_claimed）、或任务非待办/已归档（reason=not_ready）时认领失败，应换下一个任务而不是重试。task_id 可传任务内部 id 或任务编号（Txxxxx）。',
+    inputSchema: {
+      task_id: z.string().describe('要认领的任务：任务内部 id 或任务编号（Txxxxx）'),
+      platform: z.string().describe("认领方平台标识，如 'workbuddy' | 'trae' | 'relay:xxx'。大小写/空白不敏感（内部统一归一为小写）"),
+      session_id: z.string().describe('认领方平台侧会话标识（后续 mtask_report_progress 用同一标识续上报）'),
+    },
+  }, async (a) => {
+    try {
+      const r = ExecSessionService.claimTask({ taskRef: a.task_id, platform: a.platform, sessionId: a.session_id });
+      if (!r.claimed) {
+        // PRD 契约「返回成功/冲突(409)」：MCP 无 HTTP 状态码，用 isError + conflict 标记表达冲突语义
+        let why: string;
+        if (r.reason === 'not_found') {
+          why = '任务不存在';
+        } else if (r.reason === 'already_claimed') {
+          why = `任务已被认领（ai_state=${r.aiState || '非空'}）`;
+        } else {
+          why = '任务不是可执行的待办（非 todo 或已归档）';
+        }
+        const taskNoSuffix = r.taskNo ? `（${r.taskNo}）` : '';
+        return {
+          content: [{ type: 'text', text: `认领冲突：${why}${taskNoSuffix}` }],
+          structuredContent: { conflict: true, ...r },
+          isError: true,
+        };
+      }
+      return ok(json(r), { conflict: false, ...r });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // T01286（PRD FR-5.2 / §6.1）：监督状态查询——外部平台在拉取任务前先判断监督器是否开启、当前是否可执行
+  server.registerTool('mtask_supervisor_status', {
+    title: '查询监督状态',
+    description: '查询 AI 监督器的当前运行态：熔断开关（enabled，关闭时决策层停摆，但 T05741 起 readyMarkEnabled 默认 true 仍会标记就绪任务）、就绪排水开关、tick 周期与下次 tick 时刻、token 预算占用、活跃/停滞会话、以及最近一轮决策的动作与所用模型。只读接口，不触发决策。',
+  }, async () => {
+    try {
+      const s = SupervisorService.getStatus();
+      return ok(json(s), { ...s });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // ---------------- 提示词管理 ----------------
+  server.registerTool('mtask_list_prompt_categories', {
+    title: '列出提示词分类',
+    description: '返回全部提示词分类及其下提示词数量。',
+  }, async () => {
+    try {
+      const cats = getDb().prepare('SELECT * FROM prompt_categories ORDER BY sort_weight, created_at').all() as { id: string }[];
+      const counts = getDb().prepare('SELECT category_id, COUNT(*) AS c FROM prompts GROUP BY category_id').all() as { category_id: string; c: number }[];
+      const countMap = new Map(counts.map((r) => [r.category_id, r.c]));
+      const rows = cats.map((c) => ({ ...c, promptCount: countMap.get(c.id) ?? 0 }));
+      return ok(json(rows), { categories: rows });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_create_prompt_category', {
+    title: '创建提示词分类',
+    description: '新建提示词分类（name 必填）。',
+    inputSchema: { name: z.string().describe('分类名称'), description: z.string().optional().describe('分类说明') },
+  }, async (a) => {
+    try {
+      // 与 create_task 一致：空名 trim 判空，拒绝生成空名分类
+      if (!a.name?.trim()) return err('name 必填');
+      const id = randomUUID();
+      const t = new Date().toISOString();
+      getDb().prepare('INSERT INTO prompt_categories (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+        .run(id, a.name.trim(), a.description ?? '', t, t);
+      const row = getDb().prepare('SELECT * FROM prompt_categories WHERE id = ?').get(id);
+      return ok(json(row), { category: row });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_list_prompts', {
+    title: '列出提示词',
+    description: '按分类/关键词列出提示词库中的条目。',
+    inputSchema: {
+      categoryId: z.string().optional().describe('分类 id，缺省列出全部'),
+      keyword: z.string().optional().describe('标题/内容模糊检索关键词'),
+    },
+  }, async (a) => {
+    try {
+      const where: string[] = [];
+      const values: unknown[] = [];
+      if (a.categoryId) { where.push('category_id = ?'); values.push(a.categoryId); }
+      if (a.keyword) { where.push('(title LIKE ? OR content LIKE ?)'); values.push(`%${a.keyword}%`, `%${a.keyword}%`); }
+      // WHERE 子句提取为独立变量：避免模板字面量嵌套，拼接逻辑也更易读
+      const whereClause = where.length ? ` WHERE ${where.join(' AND ')}` : '';
+      const sql = `SELECT * FROM prompts${whereClause} ORDER BY pinned DESC, updated_at DESC`;
+      const rows = getDb().prepare(sql).all(...values);
+      return ok(json(rows), { prompts: rows });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_create_prompt', {
+    title: '创建提示词',
+    description: '在指定分类下创建提示词条目（categoryId 与 title 必填）。',
+    inputSchema: {
+      categoryId: z.string().describe('目标提示词分类 id'),
+      title: z.string().describe('提示词标题（必填）'),
+      content: z.string().optional().default('').describe('提示词内容'),
+    },
+  }, async (a) => {
+    try {
+      // 与 create_task 一致：title 判空，拒绝空标题提示词
+      if (!a.title?.trim()) return err('title 必填');
+      const id = randomUUID();
+      const t = new Date().toISOString();
+      getDb().prepare('INSERT INTO prompts (id, category_id, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(id, a.categoryId, a.title.trim(), a.content ?? '', t, t);
+      const row = getDb().prepare('SELECT * FROM prompts WHERE id = ?').get(id);
+      return ok(json(row), { prompt: row });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_update_prompt', {
+    title: '更新提示词',
+    description: '更新提示词（title/content/categoryId/pinned），未提供的字段保持不变。',
+    inputSchema: {
+      id: z.string().describe('提示词 id'),
+      title: z.string().optional(),
+      content: z.string().optional(),
+      categoryId: z.string().optional(),
+      pinned: z.boolean().optional().describe('置顶'),
+    },
+  }, async (a) => {
+    try {
+      const sets: string[] = [];
+      const values: unknown[] = [];
+      if (a.title !== undefined) { sets.push('title = ?'); values.push(a.title); }
+      if (a.content !== undefined) { sets.push('content = ?'); values.push(a.content); }
+      if (a.categoryId !== undefined) { sets.push('category_id = ?'); values.push(a.categoryId); }
+      if (a.pinned !== undefined) { sets.push('pinned = ?'); values.push(a.pinned ? 1 : 0); }
+      if (sets.length === 0) return err('无更新字段');
+      sets.push('updated_at = ?'); values.push(new Date().toISOString(), a.id);
+      getDb().prepare(`UPDATE prompts SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+      const row = getDb().prepare('SELECT * FROM prompts WHERE id = ?').get(a.id);
+      return ok(json(row), { prompt: row });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_delete_prompt', {
+    title: '删除提示词',
+    description: '按 id 删除提示词条目（不可恢复）。',
+    inputSchema: { id: z.string().describe('提示词 id') },
+  }, async (a) => {
+    try {
+      getDb().prepare('DELETE FROM prompts WHERE id = ?').run(a.id);
+      return ok(`已删除提示词 ${a.id}`);
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // ---------------- 周报生成 ----------------
+  // T02165：三张报表工具的范围口径与页面/REST 一致——projectIds 数组优先（多项目聚合），
+  // projectId 单串保留兼容；上限与非法 id 由 validateProjectIds 统一点名，不静默丢项目
+  server.registerTool('mtask_gather_report_data', {
+    title: '聚合周期数据',
+    description: '聚合指定周期（day/week/month）内的真实任务数据（项目汇总 + 任务明细），供 AI 据此分析。只读，不生成文件。支持多项目聚合：projectIds 传 2~8 个项目 id（缺省或空数组=全部项目）。',
+    inputSchema: {
+      period: z.enum(PERIODS).describe('周期：day=日报/week=周报/month=月报'),
+      projectId: z.string().optional().describe('项目 id（单选，旧口径），缺省聚合全部项目'),
+      projectIds: z.array(z.string()).optional().describe('多项目聚合的项目 id 数组（优先级高于 projectId），上限 8'),
+    },
+  }, async (a) => {
+    try {
+      if (!(PERIODS as readonly string[]).includes(a.period)) return err('period 非法（day|week|month）');
+      const scope = validateProjectIds(a.projectIds ?? a.projectId);
+      if (scope.error) return err(scope.error);
+      const data = gatherReportData(a.period as ReportPeriod, scope.ids);
+      return ok(json(data), { data });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_generate_report', {
+    title: '生成周期报表文件',
+    description: '按周期+格式生成标准报表文件（真实数据排版），返回 base64 文件内容与文件名。支持多项目聚合（projectIds），多项目时报表头部带「项目范围」行。',
+    inputSchema: {
+      period: z.enum(PERIODS).describe('周期'),
+      format: z.enum(FORMATS).describe('输出格式'),
+      projectId: z.string().optional().describe('项目 id（单选，旧口径），缺省全项目'),
+      projectIds: z.array(z.string()).optional().describe('多项目聚合的项目 id 数组（优先级高于 projectId），上限 8'),
+      templateId: z.string().optional().describe('用户模板文件名（仅 xlsx/docx）'),
+    },
+  }, async (a) => {
+    try {
+      if (!(PERIODS as readonly string[]).includes(a.period)) return err('period 非法（day|week|month）');
+      if (!(FORMATS as readonly string[]).includes(a.format)) return err('format 非法（xlsx|docx|pdf|pptx）');
+      const scope = validateProjectIds(a.projectIds ?? a.projectId);
+      if (scope.error) return err(scope.error);
+      const r = await generateReport(a.period as ReportPeriod, a.format as ReportFormat, {
+        projectIds: scope.ids, templateId: a.templateId,
+      });
+      return ok('', { filename: r.filename, format: a.format, size: r.buffer.length, base64: r.buffer.toString('base64') });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_ai_generate_report', {
+    title: 'AI 生成周报',
+    description: '基于周期真实数据由 AI 撰写洞察并合成指定格式文件；返回洞察正文 Markdown + 文件 base64。toolId 为已配置且可用的 AI 工具。支持多项目聚合（projectIds），多项目时提示词显式携带项目范围并要求按项目分块作答。',
+    inputSchema: {
+      period: z.enum(PERIODS).describe('周期'),
+      format: z.enum(FORMATS).describe('输出格式'),
+      toolId: z.string().describe('AI 工具 id'),
+      projectId: z.string().optional().describe('项目 id（单选，旧口径），缺省全项目'),
+      projectIds: z.array(z.string()).optional().describe('多项目聚合的项目 id 数组（优先级高于 projectId），上限 8'),
+    },
+  }, async (a) => {
+    try {
+      if (!(PERIODS as readonly string[]).includes(a.period)) return err('period 非法（day|week|month）');
+      if (!(FORMATS as readonly string[]).includes(a.format)) return err('format 非法（xlsx|docx|pdf|pptx）');
+      const scope = validateProjectIds(a.projectIds ?? a.projectId);
+      if (scope.error) return err(scope.error);
+      const { token, filename, insight } = await aiGenerateReport(a.period as ReportPeriod, a.format as ReportFormat, {
+        projectIds: scope.ids, toolId: a.toolId,
+      });
+      // 消费一次性临时文件：读取即删除，换取 base64 供调用方直接存储/使用
+      const buf = readAndDeleteReport(token);
+      return ok(insight, { insight, filename, format: a.format, size: buf?.length, base64: buf?.toString('base64') });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // ---------------- 数据迁移 ----------------
+  server.registerTool('mtask_export_data', {
+    title: '导出全量数据',
+    description: '导出 MTask 全部业务数据为 bundle JSON（任务/项目/提示词/AI 工具等），用于换机迁移或备份。',
+  }, async () => {
+    try {
+      const bundle = await exportBundle();
+      return ok('', { bundle });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_import_data', {
+    title: '导入全量数据',
+    description: '导入 export 产出的 bundle JSON；mode: overwrite=清空后全量覆盖 / keep=保留已有 id / merge=覆盖同名 id 合并。整个导入在单事务内完成，失败回滚。keep/merge 写 projects 前按项目名查重（大小写不敏感，含归档/历史行）：撞重名的行按行跳过不落库，响应以 skippedDuplicateNames 计数、nameConflicts 点名 bundle 行名与占用行 id。',
+    inputSchema: {
+      data: z.unknown().describe('export 工具导出的 bundle 对象（结构含 app/version/data）'),
+      mode: z.enum(['overwrite', 'keep', 'merge'] as const).describe('冲突策略'),
+    },
+    annotations: { destructiveHint: true },
+  }, async (a) => {
+    try {
+      const r = importBundle(a.data, a.mode as ImportMode);
+      return ok(json(r), { result: r });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // ---------------- 估算视图（T02044 · E10：PRD-估算视图与工作量评估导出 §8 三枚工具） ----------------
+  // 分层与 `mtask_list_plans` 一致：三点校验、PERT 汇总、导出流水线全部复用既有导出
+  // （`routes/estimates.ts` 的 `estimatesSnapshot` / `buildEstimateArtifact`、`EstimateService`），
+  // MCP 层只做**定位参数翻译**（projectName / taskNo → id）与**响应体量控制**（默认精简 + 显式 full）。
+  // 体量口径沿用 T01490 的实测教训：给 LLM 的 `content[0].text` 恒为精简摘要，
+  // 全量数据只进 `structuredContent`——两处都塞全文会让 SSE 帧翻倍、大项目直接被截断。
+  const resolveEstimateProject = (a: { projectId?: string; projectName?: string }): { id: string; name: string } => {
+    const db = getDb();
+    const id = (a.projectId ?? '').trim();
+    const name = (a.projectName ?? '').trim();
+    if (id) {
+      const row = db.prepare('SELECT id, name FROM projects WHERE id = ?').get(id) as { id: string; name: string } | undefined;
+      if (!row) throw new Error(`项目不存在：${id}`); // 外部调用方拼错 id 必须报错，不能出一份空报价件
+      return row;
+    }
+    if (!name) throw new Error('projectId 或 projectName 必填');
+    // T02938：单源解析（同名多行时认现行项目）。报错文案保留「项目不存在」词干——
+    // estimateCopy.ESTIMATE_PROJECT_NOT_FOUND 是估算族拒绝文案的单源锚（verify-t02044-mcp-e10 M-16 逐字比对）
+    const byName = resolveProjectByName(name, db);
+    if (byName.warning) console.warn(`[mtask-mcp] mtask_get_estimates 项目路由告警（${name}）：${byName.warning}`);
+    if (!byName.id) throw new Error(`项目不存在：${name}`);
+    return { id: byName.id, name: byName.name ?? name };
+  };
+
+  /**
+   * taskNo → 计划行。权威 linkage 只有一处：`plan_tasks.linked_task_id`（`schema.ts:196`，
+   * 与「共享 req_ids 的软关联」是两套机制，`PlanService.ts:499` 已注明——估算是按 planId 记账的，
+   * 这里只认硬关联，多条命中时把消歧责任交回调用方，不猜。
+   */
+  const planByTaskNo = (taskNo: string): { planId: string; projectId: string; planTitle: string } => {
+    const rows = getDb()
+      .prepare(
+        `SELECT pt.id AS planId, pt.project_id AS projectId, pt.title AS planTitle
+           FROM plan_tasks pt JOIN tasks t ON t.id = pt.linked_task_id
+          WHERE t.task_no = ? AND t.archived = 0 AND COALESCE(pt.archived, 0) = 0`,
+      )
+      .all(taskNo) as Array<{ planId: string; projectId: string; planTitle: string }>;
+    if (rows.length === 0) throw new Error(`待办 ${taskNo} 没有关联计划行（plan_tasks.linked_task_id 为空），请改传 planId`);
+    if (rows.length > 1) {
+      throw new Error(`待办 ${taskNo} 关联了 ${rows.length} 条计划（${rows.map((r) => r.planTitle).join(' / ')}），请改传 planId 指明哪一条`);
+    }
+    return rows[0];
+  };
+
+  const r3 = (v: number): number => Math.round(v * 1000) / 1000;
+
+  /** 精简摘要（也是 full 模式给 LLM 的那段文本）：字段名与 REST `GET /api/estimates` 的 summary 同源 */
+  function estimateBriefView(s: ReturnType<typeof estimatesSnapshot>, projectName: string) {
+    const su = s.summary;
+    return {
+      projectName,
+      totals: {
+        directManDays: r3(su.directManDays.expected),
+        idealManMonths: r3(su.idealManMonths.expected),
+        actualManMonths: r3(su.actualManMonths.expected),
+        coefSum: r3(su.coefSum),
+        sigmaTotal: r3(su.sigmaTotal),
+      },
+      quote: {
+        p50ManDays: r3(su.quote.p50ManDays),
+        p84ManDays: r3(su.quote.p84ManDays),
+        p50ManMonth: r3(su.quote.p50ManMonth),
+        p84ManMonth: r3(su.quote.p84ManMonth),
+      },
+      phases: su.phases
+        .filter((p) => p.rowCount > 0)
+        .map((p) => ({
+          phase: p.phase,
+          label: ESTIMATE_META.phaseLabels[p.phase],
+          manDays: r3(p.expected),
+          idealManMonth: r3(p.idealManMonth),
+          ratio: r3(p.ratio),
+          rowCount: p.rowCount,
+        })),
+      coefs: su.coefRows.map((c) => ({ key: c.key, label: c.label, value: r3(c.expected) })),
+      checks: {
+        sumRatio: r3(su.ratioCheck.sumRatio),
+        deviationPct: r3(su.ratioCheck.deviationPct),
+        danger: su.ratioCheck.danger,
+        excluded: su.ratioCheck.excluded,
+        coverage: s.checks.coverage,
+        estimated: s.checks.estimated,
+        visiblePlans: s.checks.visiblePlans,
+        detached: s.checks.detached,
+      },
+      params: {
+        manDaysPerManMonth: s.params.config.manDaysPerManMonth,
+        hoursPerManDay: s.params.config.hoursPerManDay,
+        caseWeightK: s.params.caseWeightK,
+      },
+    };
+  }
+
+  server.registerTool('mtask_get_estimates', {
+    title: '读取估算汇总（可选明细）',
+    description: '读取某项目的估算数据：三点加权后的 E 人天、理想/实际预估人月、阶段构成、报价区间 P50/P84、调节系数与自检结果。**默认精简模式**（阶段汇总 + 计数，不含逐行明细，避免响应被截断 T01490）；full=true 才附 items 明细行（每条估算的 planId/planTitle/phase/optimistic/likely/pessimistic/source/note）。所有数字由服务端估算引擎产出，本工具不做二次计算；includeArchived 与 REST 同口径——只影响 items，不影响汇总（§3.1「归档行不进 Σ」）。外部 Agent 出报价取 actualManMonths.expected（= 理想人月 ×(1+Σ系数)），对外报价口径看 quote.p84*。',
+    inputSchema: {
+      projectId: z.string().optional().describe('项目 id，与 projectName 二选一'),
+      projectName: z.string().optional().describe('项目名称，按名称解析'),
+      full: z.boolean().optional().describe('true=附逐行明细 items；缺省为精简模式（只有汇总与计数）'),
+      includeArchived: z.boolean().optional().describe('明细是否包含已归档计划的估算行（默认否；不影响汇总数值）'),
+    },
+  }, async (a) => {
+    try {
+      const proj = resolveEstimateProject(a);
+      const snap = estimatesSnapshot(proj.id, { includeArchived: a.includeArchived === true });
+      const brief = estimateBriefView(snap, proj.name);
+      if (!a.full) return ok(json(brief), brief);
+      // full：text 仍是精简摘要（LLM 侧不必读全文），items/params/meta 进 structuredContent
+      return ok(json(brief), {
+        ...brief,
+        items: snap.items,
+        meta: snap.meta,
+        params: snap.params,
+        detailRows: snap.items.length,
+      });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_update_estimates', {
+    title: '回写三点估算',
+    description: '按 planId 或 taskNo 回写一条计划的三点估算（乐观/最可能/悲观，人天）。校验 O≤M≤P，不合格直接报错、不落库；写入走 `EstimateService.upsert`，与界面行内录入同一条通道（阶段、单位、updatedAt 与 §4.3 的 E/σ 由服务端重算，本工具不回写计算结果）。定位优先级：planId 优先；只给 taskNo 时按 `plan_tasks.linked_task_id` 反查计划，反查不到或命中多条会报错并要求改传 planId。source 缺省 `manual`——与 REST PATCH 同口径（人工/代理显式录入即视为已复核）；若只是按规则批量补数、不希望计入复核率，显式传 rule 或 default。项目定位可靠 planId 单独给出（由计划行反查项目），也可用 projectId/projectName 并做一致性校验。',
+    inputSchema: {
+      planId: z.string().optional().describe('计划任务 id（估算行的记账主键）'),
+      taskNo: z.string().optional().describe('待办编号（如 T00001），反查其关联计划行'),
+      projectId: z.string().optional().describe('项目 id；给了就与计划行所属项目比对'),
+      projectName: z.string().optional().describe('项目名，用于解析 projectId'),
+      optimistic: z.number().describe('乐观值（人天）'),
+      likely: z.number().describe('最可能值（人天）'),
+      pessimistic: z.number().describe('悲观值（人天）'),
+      phase: z.enum(ESTIMATE_PHASES).optional().describe('阶段；缺省沿用原值，新行按标题推断'),
+      source: z.enum(ESTIMATE_SOURCES).optional().describe('来源标记，缺省 manual'),
+      note: z.string().optional().describe('备注'),
+    },
+    annotations: { destructiveHint: false },
+  }, async (a) => {
+    try {
+      const planId = (a.planId ?? '').trim();
+      const taskNo = (a.taskNo ?? '').trim();
+      // 定位结果在下面两个分支各自赋值（第三分支直接 return），初值不会被读到，故只声明不赋死值
+      let resolved: { planId: string; projectId: string };
+      let planTitle = '';
+      if (planId) {
+        const row = getDb()
+          .prepare('SELECT id, project_id AS projectId, title FROM plan_tasks WHERE id = ? AND COALESCE(archived, 0) = 0')
+          .get(planId) as { projectId: string; title: string } | undefined;
+        if (!row) throw new Error(`计划不存在或已归档：${planId}`);
+        resolved = { planId, projectId: row.projectId };
+        planTitle = row.title;
+      } else if (taskNo) {
+        const p = planByTaskNo(taskNo);
+        resolved = { planId: p.planId, projectId: p.projectId };
+        planTitle = p.planTitle;
+      } else {
+        return err('planId 与 taskNo 至少提供一个');
+      }
+      if (a.projectId?.trim() || a.projectName?.trim()) {
+        const proj = resolveEstimateProject(a);
+        if (proj.id !== resolved.projectId) {
+          throw new Error(`项目与计划不匹配：计划属于 ${resolved.projectId}，请求里给的是 ${proj.id}（${proj.name}）`);
+        }
+      }
+      const item = EstimateService.upsert(resolved.projectId, resolved.planId, {
+        optimistic: a.optimistic,
+        likely: a.likely,
+        pessimistic: a.pessimistic,
+        phase: a.phase,
+        source: a.source ?? 'manual',
+        note: a.note,
+      });
+      return ok(json({ planId: item.plan_id, planTitle, expected: r3(expected({ optimistic: item.optimistic, likely: item.likely, pessimistic: item.pessimistic })), sigma: r3(sigma({ optimistic: item.optimistic, likely: item.likely, pessimistic: item.pessimistic })) }), {
+        projectId: resolved.projectId,
+        planId: item.plan_id,
+        planTitle,
+        item,
+      });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_export_estimate_workload', {
+    title: '导出工作量评估件',
+    description: '生成《项目工作量评估》交付件并返回 base64。与界面「导出 Excel / 导出 PDF」走**同一条流水线**（`buildEstimateArtifact`）：同一份行落位与汇总、同一个件名口径、每次成功导出都写一条快照并回 snapshotId，因此外部 Agent 出的件与用户在面板上下载的是同一份数。format=xlsx 是正式交付（严格复刻客户模板、公式与缓存值双轨）；format=pdf 是汇报/预览件（裁决 D4，中文依赖系统黑体）。audience=client 时脱敏发生在服务端组装阶段：系数分项、σ/置信区间、备注三条、附加 sheet 名都不出现在件里，报价数不变。scope/phases/audience 的词表校验与 REST 一致，未知值直接报错而不是忽略。base64 是文件正文，调用方应直接落盘，不要读进上下文。',
+    inputSchema: {
+      projectId: z.string().optional().describe('项目 id，与 projectName 二选一'),
+      projectName: z.string().optional().describe('项目名称，按名称解析'),
+      format: z.enum(ESTIMATE_ARTIFACT_FORMATS).describe('交付格式：xlsx=正式交付件 / pdf=预览件'),
+      audience: z.string().optional().describe("internal（默认）/ client；客户版按服务端脱敏"),
+      scope: z.string().optional().describe("all（默认）/ estimated_only：只导已估算行"),
+      phases: z.string().optional().describe('阶段筛选，逗号分隔（req,design,dev,impl,common,onsite）；缺省全部六阶段'),
+    },
+  }, async (a) => {
+    try {
+      const proj = resolveEstimateProject(a);
+      const artifact = await buildEstimateArtifact(proj.id, a.format, {
+        audience: parseAudience(a.audience),
+        scope: parseScope(a.scope),
+        phases: parsePhases(a.phases),
+      });
+      const su = artifact.layout.summary;
+      return ok(
+        json({
+          filename: artifact.filename,
+          format: a.format,
+          size: artifact.buffer.length,
+          snapshotId: artifact.snapshotId,
+          actualManMonths: r3(su.actualManMonths.expected),
+          directManDays: r3(su.directManDays.expected),
+          unreviewed: artifact.layout.unreviewed,
+        }),
+        {
+          projectId: proj.id,
+          projectName: proj.name,
+          filename: artifact.filename,
+          format: a.format,
+          audience: artifact.audience,
+          scope: artifact.scope,
+          size: artifact.buffer.length,
+          base64: artifact.buffer.toString('base64'),
+          snapshotId: artifact.snapshotId,
+          unreviewed: artifact.layout.unreviewed,
+          milestoneSkipped: artifact.layout.milestoneSkipped,
+          actualManMonths: r3(su.actualManMonths.expected),
+        },
+      );
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  // ---------------- T04151（PRD MEM-401/402/403）：长期记忆七件工具 ----------------
+  /** 记忆作用域解析：productKey 直传 / projectId / projectName 三种入口，产品标签走归一化 */
+  const memoryScopeOf = (a: { productKey?: string; projectId?: string; projectName?: string }) => {
+    let projectId = a.projectId?.trim();
+    if (!projectId && a.projectName?.trim()) {
+      const loc = resolveProjectIdOf(undefined, a.projectName);
+      if (!loc.id) return { kind: 'error' as const, error: loc.error ?? '项目解析失败' };
+      projectId = loc.id;
+    }
+    return resolveMemoryScope({
+      productKey: a.productKey,
+      projectId,
+      lookupProductKey: (pid) => {
+        const row = getDb().prepare('SELECT product_key FROM projects WHERE id = ?').get(pid) as
+          | { product_key: string | null }
+          | undefined;
+        return row ? (row.product_key ?? '') : null;
+      },
+    });
+  };
+
+  const MEMORY_TYPE_Z = z.enum(['user', 'feedback', 'project', 'reference'])
+    .describe('记忆类型：user 用户偏好 / feedback 反馈纠正 / project 项目事实 / reference 外部参考');
+  const MEMORY_SCOPE_SCHEMA = {
+    productKey: z.string().optional().describe('产品标签（作用域必填之一；空串＝该项目未绑产品，返回空集+hint）'),
+    projectId: z.string().optional().describe('项目 id（未传 productKey 时按其 product_key 解析作用域）'),
+    projectName: z.string().optional().describe('项目名称（按名解析出项目后取其 product_key）'),
+  };
+
+  server.registerTool('mtask_save_memory', {
+    title: '保存一条长期记忆',
+    description: '把一条结论写入产品维度的长期记忆（人工/显式写入，source_kind 默认 manual）。必须能解析出产品作用域。疑似个人敏感内容（身份证/手机号/银行卡/住址）不会入库，而是转入待确认队列并返回 queued=true。',
+    inputSchema: {
+      ...MEMORY_SCOPE_SCHEMA,
+      type: MEMORY_TYPE_Z,
+      title: z.string().describe('记忆标题（一句话结论）'),
+      content: z.string().describe('记忆内容（声明式事实，≤400 字）'),
+      tags: z.array(z.string()).optional().describe('关键词标签（≤5 个）'),
+      sourceKind: z.enum(['auto', 'manual', 'user_said', 'tool_output', 'inferred']).optional()
+        .describe('溯源标记（默认 manual；用户明确要求记住用 user_said）'),
+      sourceTaskId: z.string().optional().describe('来源任务编号（如 T04148）'),
+    },
+  }, async (a) => {
+    try {
+      const scope = memoryScopeOf(a);
+      if (scope.kind === 'error') return err(scope.error);
+      if (scope.kind === 'empty') return ok(JSON.stringify({ ok: false, hint: scope.hint }), { ok: false, hint: scope.hint });
+      const r = saveMemory({ scope, type: a.type, title: a.title, content: a.content, tags: a.tags, sourceKind: a.sourceKind, sourceTaskId: a.sourceTaskId });
+      if (r.kind === 'error') return err(r.error);
+      const payload = { ok: true, id: r.id, queued: r.kind === 'queued', piiKind: r.kind === 'queued' ? r.piiKind : undefined };
+      return ok(json(payload), payload);
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_query_memories', {
+    title: '查询长期记忆',
+    description: '按产品作用域召回记忆（产品级共享 + 本期特有），默认排除已失效行；排序=类型权重→溯源权重→访问衰减→最近访问。context=true 时返回可直接注入提示词的 <memory-context> 参考块（≤2k token）。**完全缺省作用域会报错**；项目未绑产品时返回空集 + hint（不报错）。',
+    inputSchema: {
+      ...MEMORY_SCOPE_SCHEMA,
+      type: MEMORY_TYPE_Z.optional(),
+      query: z.string().optional().describe('标题/内容关键词模糊匹配'),
+      tag: z.string().optional().describe('单个标签精确匹配'),
+      limit: z.number().int().min(1).max(20).optional().describe('条数（默认 10，硬上限 20）'),
+      context: z.boolean().optional().describe('true=返回 <memory-context> 注入块而非原始行'),
+    },
+  }, async (a) => {
+    try {
+      const scope = memoryScopeOf(a);
+      if (scope.kind === 'error') return err(scope.error);
+      if (scope.kind === 'empty') return ok(JSON.stringify({ ok: true, memories: [], hint: scope.hint }), { ok: true, memories: [], hint: scope.hint });
+      const opts = { type: a.type, query: a.query, tags: a.tag ? [a.tag] : undefined, limit: a.limit };
+      if (a.context) {
+        const ctx = queryForContext(scope, opts);
+        return ok(json(ctx) + (ctx.block ? '' : '\n（本产品暂无记忆）'), ctx as unknown as Record<string, unknown>);
+      }
+      const rows = queryMemories(scope, opts);
+      return ok(json(rows), { ok: true, memories: rows });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_list_memories', {
+    title: '管理页：列出记忆',
+    description: '分页列出某产品的全部记忆（含失效行与访问计数），按更新时间倒序；用于管理/审核。召回请用 mtask_query_memories。',
+    inputSchema: {
+      ...MEMORY_SCOPE_SCHEMA,
+      type: MEMORY_TYPE_Z.optional(),
+      query: z.string().optional(),
+      includeInvalidated: z.boolean().optional().describe('true=包含已软失效行（带 invalidated_at/superseded_by）'),
+      limit: z.number().int().min(1).max(200).optional().describe('默认 50，上限 200'),
+      offset: z.number().int().min(0).optional(),
+    },
+  }, async (a) => {
+    try {
+      const scope = memoryScopeOf(a);
+      if (scope.kind === 'error') return err(scope.error);
+      if (scope.kind === 'empty') return ok(JSON.stringify({ ok: true, total: 0, memories: [], hint: scope.hint }), { ok: true, total: 0, memories: [], hint: scope.hint });
+      const r = listMemories(scope, { type: a.type, query: a.query, includeInvalidated: a.includeInvalidated, limit: a.limit, offset: a.offset });
+      return ok(json(r), { ok: true, total: r.total, memories: r.rows });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_update_memory', {
+    title: '编辑记忆',
+    description: '按 id 修改记忆的内容字段（type/title/content/tags）。必须带同一产品作用域，跨产品改会被拒绝；溯源字段 source_kind/source_task_id 不可改。',
+    inputSchema: {
+      ...MEMORY_SCOPE_SCHEMA,
+      id: z.string().describe('记忆 id'),
+      type: MEMORY_TYPE_Z.optional(),
+      title: z.string().optional(),
+      content: z.string().optional(),
+      tags: z.array(z.string()).optional(),
+    },
+  }, async (a) => {
+    try {
+      const scope = memoryScopeOf(a);
+      if (scope.kind === 'error') return err(scope.error);
+      if (scope.kind === 'empty') return err(scope.hint);
+      const r = updateMemory(a.id, scope, { type: a.type, title: a.title, content: a.content, tags: a.tags });
+      if (!r.ok) return err(r.error);
+      return ok(json({ ok: true, id: r.id }), { ok: true, id: r.id });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_delete_memory', {
+    title: '删除记忆',
+    description: '物理删除一条记忆（仅管理页/显式调用提供；自动流程只做软失效）。必须带同一产品作用域，跨产品删除会被拒绝。',
+    inputSchema: {
+      ...MEMORY_SCOPE_SCHEMA,
+      id: z.string().describe('记忆 id'),
+    },
+  }, async (a) => {
+    try {
+      const scope = memoryScopeOf(a);
+      if (scope.kind === 'error') return err(scope.error);
+      if (scope.kind === 'empty') return err(scope.hint);
+      const r = deleteMemory(a.id, scope);
+      if (!r.ok) return err(r.error);
+      return ok(json({ ok: true, id: r.id }), { ok: true, id: r.id });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_list_product_tags', {
+    title: '列出产品标签',
+    description: '返回全部产品标签及其项目数/有效记忆数（新建项目绑定弹窗与管理页筛选的数据源）。',
+  }, async () => {
+    try {
+      const tags = listProductTags();
+      return ok(json(tags), { ok: true, tags });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  server.registerTool('mtask_list_pending_memories', {
+    title: '列出待确认记忆',
+    description: '返回疑似个人敏感、尚未入库的待确认候选（memory_review_queue）。确认/驳回由管理页处理；本工具只读。必须带产品作用域。',
+    inputSchema: {
+      ...MEMORY_SCOPE_SCHEMA,
+      limit: z.number().int().min(1).max(200).optional().describe('默认 50'),
+    },
+  }, async (a) => {
+    try {
+      const scope = memoryScopeOf(a);
+      if (scope.kind === 'error') return err(scope.error);
+      if (scope.kind === 'empty') return ok(JSON.stringify({ ok: true, memories: [], hint: scope.hint }), { ok: true, memories: [], hint: scope.hint });
+      const rows = listPendingMemories(scope.productKey, a.limit);
+      return ok(json(rows), { ok: true, memories: rows });
+    } catch (e) { return err((e as Error).message); }
+  });
+
+  return server;
+}

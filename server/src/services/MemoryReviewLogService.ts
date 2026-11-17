@@ -95,7 +95,7 @@ export interface ReviewSample {
 export function sampleMemoriesForReview(productKey: string, batchSize = REVIEW_BATCH_SIZE): ReviewSample {
   const size = Math.min(Math.max(1, Math.floor(batchSize)), 50);
   const pk = (productKey ?? '').trim().toLowerCase();
-  const batchId = `rev-${new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14)}`;
+  const batchId = `rev-${new Date().toISOString().replaceAll(/[-:T.Z]/g, '').slice(0, 14)}`;
   const rows = getDb().prepare(`SELECT id, type, title, content, source_kind, updated_at
     FROM memories WHERE product_key = ? AND invalidated_at IS NULL
     ORDER BY RANDOM() LIMIT ?`).all(pk, size) as ReviewSample['memories'];

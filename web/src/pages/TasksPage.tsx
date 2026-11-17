@@ -3523,7 +3523,8 @@ export function TasksPage() {
         <button onClick={() => void archive(t)} title="归档 — 将该任务移入归档" aria-label="归档：将该任务移入归档" className="task-op" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Archive size={13} /></button>
         {/* T05712：7 项低频功能不再直接显示，统一收进「...」下拉；
             原按钮的回调/参数/禁用/显隐全部原样迁移至 moreItems，主工具栏只留高频操作。 */}
-        <TaskMoreMenu items={moreItems} taskTitle={t.title} />
+        <TaskMoreMenu items={moreItems} taskTitle={t.title}
+          triggerTitle="更多操作 — 展开低频功能（创建子任务 / 文件导出 / 字体颜色 / 搁置 / 分类建议 / 修改处理结果 / 复用此任务）" />
         {/* 记录时间：与操作按钮同行的最右侧，紧凑格式，创建/编辑并排 */}
         <span style={{ display: 'inline-flex', gap: 10 }}>
           <span>{fmtShort(t.created_at)} 创建</span>

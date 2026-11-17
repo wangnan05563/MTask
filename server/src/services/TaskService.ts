@@ -1091,7 +1091,7 @@ export const TaskService = {
     const rows = cachedPrepare(db, sql).all(...values) as Array<{
       id: string; status: string; verified: number; updated_at: string; category_id: string | null; priority: string;
     }>;
-    return { sig: createHash('sha256').update(rows.map(taskSigCell).sort().join('|')).digest('hex'), rows: rows.length };
+    return { sig: createHash('sha256').update(rows.map(taskSigCell).sort((a, b) => a.localeCompare(b)).join('|')).digest('hex'), rows: rows.length };
   },
 
   /**

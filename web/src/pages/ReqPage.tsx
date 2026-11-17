@@ -140,6 +140,12 @@ export function ReqPage() {
   // 记录高亮：保存/新增成功后对目标行打标记，flashAt 值变化触发行动画重放
   const [flashAt, setFlashAt] = useState<Record<string, number>>({});
   function dropReorder(targetId: string) {
+    // 复查：「全部收藏」是跨分类子集，服务端按该哨兵 categoryId 找不到任何行，重排会返回 0 条却提示已保存。
+    if (isAllFav(activeCat) || viewScope === 'fav') {
+      setDragId(''); setOverId('');
+      flash(isAllFav(activeCat) ? '「全部收藏」是跨分类汇总视图，不支持拖拽排序；请先选择具体分类' : '收藏筛选视图不支持拖拽排序；请切回「全部显示」');
+      return;
+    }
     if (!dragId || dragId === targetId) { setDragId(''); setOverId(''); return; }
     const ids = sortedEntries.map((x) => x.id); // T00494 修正：按显示顺序计算拖拽映射（此前用原始数组顺序，与界面所见不一致导致拖拽错乱）
     const from = ids.indexOf(dragId);
@@ -289,7 +295,10 @@ export function ReqPage() {
    */
   async function aiRewriteTitle(p: ReqEntry, mode: 'beautify' | 'simplify') {
     if (aiTitleBusy[p.id]) return;
-    if (mode === 'simplify' && !p.content.trim()) {
+    const draft = drafts[p.id];
+    const baseTitle = draft?.title ?? p.title;
+    const baseContent = draft?.content ?? p.content;
+    if (mode === 'simplify' && !baseContent.trim()) {
       flash('AI 简化需先有正文内容 —— 请先展开并补充这条通用需求的描述');
       return;
     }
@@ -299,15 +308,20 @@ export function ReqPage() {
       if (!toolId) { flash('请先在「模型管理」页添加并选择 AI 工具'); return; }
       const endpoint = mode === 'beautify' ? '/ai/beautify' : '/ai/simplify';
       const body = mode === 'beautify'
-        ? { toolId, title: p.title }
-        : { toolId, title: p.title, description: p.content };
+        ? { toolId, title: baseTitle }
+        : { toolId, title: baseTitle, description: baseContent };
       const r = await api.post<{ ok: boolean; content?: string; error?: string }>(endpoint, body);
       if (!r.ok) { flash(r.error ?? (mode === 'beautify' ? 'AI 美化失败' : 'AI 简化失败')); return; }
       const nextTitle = (r.content ?? '').trim();
       if (!nextTitle) { flash(mode === 'beautify' ? 'AI 未返回美化标题' : 'AI 未返回简化标题'); return; }
+      // 复查：只替换标题，保留用户尚未保存的正文/分类草稿，不能把编辑中的内容回退成服务端旧值。
       setDrafts((prev) => ({
         ...prev,
-        [p.id]: { title: nextTitle, content: p.content, categoryId: p.category_id },
+        [p.id]: {
+          title: nextTitle,
+          content: prev[p.id]?.content ?? baseContent,
+          categoryId: prev[p.id]?.categoryId ?? draft?.categoryId ?? p.category_id,
+        },
       }));
       flash(mode === 'beautify'
         ? 'AI 美化完成，已填入标题草稿，请核对后保存'
@@ -695,7 +709,7 @@ export function ReqPage() {
               onPointerDown={(e) => startPress(p.id, e.target)}
               onPointerUp={() => endPress(p.id)}
               onPointerLeave={() => endPressRow(p.id)}
-              draggable={sortKey === 'manual' && viewScope !== 'fav'} // T03683：收藏视图（子集）下禁用拖拽重排
+              draggable={sortKey === 'manual' && viewScope !== 'fav' && !isAllFav(activeCat)} // T03683 + 复查：收藏子集/全部收藏视图下禁用拖拽重排
               onDragStart={(e) => dragStartRow(p.id, e)}
               onDragEnd={dragEndRow}
               onDragOver={(e) => dragOverRow(p.id, e)}

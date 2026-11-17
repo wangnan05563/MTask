@@ -395,6 +395,17 @@ const sectionPhase = (index: number): string => `section:${index + 1}`;
 const sectionStartProgress = (index: number): number => 20 + Math.round((70 * index) / LECTURE_SECTIONS.length);
 const sectionDoneProgress = (index: number): number => 20 + Math.round((70 * (index + 1)) / LECTURE_SECTIONS.length);
 
+/** T05715：锚点归属判定抽成独立函数，避免 flatMap→map→find 三层回调嵌套（S2004） */
+function ownerProjectOf(
+  projects: readonly LectureCollectedProject[],
+  projectId: string,
+  file: string,
+): LectureCollectedProject | undefined {
+  return projects.find(
+    (p) => (projectId === 'all' || p.projectId === projectId) && p.files.some((f) => f.path === file),
+  );
+}
+
 async function attachAnchors(
   sections: readonly LectureSectionResult[],
   projects: readonly LectureCollectedProject[],
@@ -403,9 +414,7 @@ async function attachAnchors(
   // T05715：每个锚点归属到「拥有该文件的条目」(projectId + repoSub 维度)，避免同项目多仓库锚点错位。
   // 同文件相对路径跨仓库罕见碰撞时，归属首个匹配条目，保证每条锚点只解析一次。
   const flat = sections.flatMap((section) => section.segments.flatMap((segment) => segment.anchors.map((a) => {
-    const owner = projects.find(
-      (p) => (segment.projectId === 'all' || p.projectId === segment.projectId) && p.files.some((f) => f.path === a.file),
-    );
+    const owner = ownerProjectOf(projects, segment.projectId, a.file);
     return {
       ...a,
       section: section.key,

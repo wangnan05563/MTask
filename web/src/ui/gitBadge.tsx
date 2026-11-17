@@ -291,7 +291,8 @@ export function GitBadge({ task, summaries, gitOn, onOpenGit, flash }: GitBadgeP
     /* T04577：拦截必须留在 React 合成事件层。原生 addEventListener 挂在徽标上会抢在
        React 18 的 #root 委托之前 stopPropagation，内层按钮的 onClick 永远不派发；
        挂 onClick 则按 fiber 树自内向外：内层控件先执行，任务行的「打开抽屉」再被止住。 */
-    <span data-t03343="git-badge" data-ttask-git-sha={link.sha}
+    <span /* NOSONAR - 仅阻止冒泡，不承载交互；键盘交互由内部按钮承担 */
+      data-t03343="git-badge" data-ttask-git-sha={link.sha}
       onClick={(e) => e.stopPropagation()}
       style={{ display: 'inline-flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
       {/* Q14（REQ-071）：列表内的悬浮详情从多行 title 升级成 HoverCard——原生提示放不下外链与整 SHA。

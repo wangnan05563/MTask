@@ -1,5 +1,5 @@
 import { getDb } from '../db/connection';
-import { isMemoryType, type MemoryType } from '../util/memoryTypes';
+import { isMemoryType } from '../util/memoryTypes';
 import { normalizeProductKey } from '../util/productKey';
 import { detectPiiKind, guardMemoryCandidate, type MemorySourceKind } from '../util/memoryGuard';
 import { applyRewriteBudget } from '../util/memoryRewrite'; // T04145：W1-W8 重写限次
@@ -45,7 +45,7 @@ export function splitResultSections(text: string): { sections: ResultSection[]; 
   for (const line of lines) {
     const m = /^##\s+(.+?)\s*$/.exec(line);
     if (m) {
-      cur = { title: m[1].replace(/（可选）|\(可选\)/g, '').trim(), body: '' };
+      cur = { title: m[1].replaceAll(/（可选）|\(可选\)/g, '').trim(), body: '' };
       if (EXTRACT_SECTIONS.includes(cur.title)) sections.push(cur);
       else skipped.push(cur.title);
       continue;
@@ -183,7 +183,7 @@ export async function runRulesExtraction(args: {
     if (detectPiiKind(`${title} ${content}`)) {
       guardMemoryCandidate({
         id: `q-${args.taskId}-${i}`, productKey: pk, projectId: args.projectId ?? null,
-        title, content, type: c.type as MemoryType, sourceTaskId: args.taskId,
+        title, content, type: c.type, sourceTaskId: args.taskId,
         sourceKind: (SOURCE_KINDS.includes(String(c.source_kind)) ? c.source_kind : 'auto') as MemorySourceKind,
         confidence: Number(c.confidence),
       });

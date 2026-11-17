@@ -1,0 +1,454 @@
+/**
+ * T01269（PRD FR-1.2）：外部平台执行会话服务——AI 编排大脑的观测层。
+ *
+ * 外部平台（WorkBuddy/Trae/中继）执行期间周期调用 `mtask_report_progress` 上报心跳，
+ * 本服务 upsert `exec_sessions` 并同步任务 AI 状态；Supervisor 据此判定会话存活/停滞
+ * （FR-1.3）并驱动后续 RESUME/REDISPATCH 决策。
+ *
+ * 数据模型见 PRD §5.1（exec_sessions）；本服务只负责观测写入，不做自动动作（P0 仅观测）。
+ */
+import { createHash, randomUUID } from 'node:crypto';
+import { getDb } from '../db/connection';
+import { getSetting } from './AppSettings'; // T01270：停滞阈值读 app_settings（supervisor.sessionStaleMs）
+import { normalizePlatform } from '../util/platform'; // T01288：平台标识归一化（会话按平台唯一，防大小写分裂）
+import { TaskService } from './TaskService';
+import { armReady, dispatchTask } from './RelayDispatchService'; // T03175（AI-402③）：重派复用既有 RelayDispatch 派发与归位口径
+
+/** T01270（FR-1.3）：会话停滞默认阈值 10 分钟——超过无心跳即视为停滞（PRD FR-1.3） */
+const DEFAULT_SESSION_STALE_MS = 10 * 60 * 1000;
+/** 阈值配置键：与 PRD 配置命名一致，M2 的 SupervisorService 直接复用同一键 */
+const SESSION_STALE_KEY = 'supervisor.sessionStaleMs';
+
+/** 停滞阈值解析：显式入参 > app_settings 配置 > 默认 10 分钟（非法值一律回退默认，避免 0/NaN 把全部会话误判停滞） */
+function resolveStaleMs(explicit?: number): number {
+  if (typeof explicit === 'number' && Number.isFinite(explicit) && explicit > 0) return explicit;
+  const raw = getSetting(SESSION_STALE_KEY);
+  const n = raw === null ? Number.NaN : Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_SESSION_STALE_MS;
+}
+
+/** exec_sessions 行（PRD §5.1） */
+export interface ExecSessionRow {
+  id: string;
+  platform: string;
+  session_id: string | null;
+  task_ids: string;
+  status: string;
+  progress: number;
+  phase: string;
+  last_heartbeat: string;
+  started_at: string;
+  finished_at: string | null;
+}
+
+export interface ReportProgressInput {
+  platform: string;
+  /** 平台侧会话标识 */
+  sessionId: string;
+  /** 任务内部 id 或任务编号（Txxxxx），二者皆可 */
+  taskRef: string;
+  phase?: string;
+  pct?: number;
+  /** 平台侧附注（当前数据模型无对应列，仅回显，供后续审计扩展） */
+  note?: string;
+  /** 平台显式声明本轮执行已完成 */
+  done?: boolean;
+  /**
+   * T01356（PRD §8）：平台显式声明本轮执行失败——会话置 `failed`，
+   * 面板据此展示「失败」（否则只能等心跳超时被判「停滞」，与任务侧 failed 口径打架）。
+   * 与 `done` 互斥：两者同传时以 `done` 为准（避免调用方笔误把已完成的会话标成失败）。
+   * 失败原因请写入 `phase`（数据模型无独立原因列），随会话留存供排查。
+   */
+  failed?: boolean;
+}
+
+export interface ReportProgressResult {
+  sessionRowId: string;
+  status: string;
+  progress: number;
+  taskNo: string | null;
+  taskState: string;
+}
+
+/** T01271：会话关联任务的轻量摘要（面板列表展示，不拉整行任务） */
+export interface SessionTaskBrief {
+  id: string;
+  task_no: string | null;
+  title: string;
+  /** T04065：任务所属项目——多项目并行时让会话卡的任务 chip 一眼可辨 */
+  project_id: string;
+  project_name: string | null;
+}
+
+/** T01271（FR-1.4）：面板视图 = 会话行 + 关联任务摘要 */
+export interface ExecSessionView extends ExecSessionRow {
+  tasks: SessionTaskBrief[];
+}
+
+/** T03175（AI-402②）：单任务重派明细——skipped=派发前置校验挡下；dispatched=已走 RelayDispatch */
+export interface RedispatchEntry {
+  taskId: string;
+  taskNo: string | null;
+  dispatched: boolean;
+  /** 未派发原因：not_found=任务行已删 | archived=已归档 | 状态非待办（枚举值 not_ 前缀） */
+  skipped?: 'not_found' | 'archived' | 'not_todo';
+  /** 已派发时回显 RelayDispatch 结果（成功/失败与 detail 都算「已尝试派发」） */
+  state?: string;
+  ok?: boolean;
+  detail?: string;
+}
+
+export interface RedispatchSessionResult {
+  ok: boolean;
+  /** 整单拒绝原因：session_not_found | status_not_redispatchable（仅 stalled/failed 可重派） */
+  reason?: string;
+  platform?: string;
+  entries: RedispatchEntry[];
+}
+
+const clampPct = (n: number): number => Math.max(0, Math.min(100, n));
+
+/** T01281：认领冲突的内部信号——仅在事务内抛出以触发回滚，不外泄给调用方（MCP 层只看到结构化结果） */
+class ClaimConflictError extends Error {}
+
+/** T01281（FR-3.2 / §6.1）：原子认领入参 */
+export interface ClaimTaskInput {
+  platform: string;
+  sessionId: string;
+  /** 任务内部 id 或任务编号（Txxxxx），与心跳上报同口径 */
+  taskRef: string;
+}
+
+/** T01281（FR-3.2）：认领结果——冲突不抛异常：外部平台需要区分「被别人抢走」与「服务出错」，前者应换任务而非重试 */
+export interface ClaimTaskResult {
+  claimed: boolean;
+  /** 未认领成功的原因：not_found=任务不存在 | already_claimed=已被认领 | not_ready=非待办/已归档 */
+  reason?: 'not_found' | 'already_claimed' | 'not_ready';
+  taskNo?: string | null;
+  /** 冲突时回显当前 ai_state，便于平台判断是否是自己已有会话在跑 */
+  aiState?: string;
+  sessionRowId?: string;
+}
+
+/** 任务定位：内部 id 优先，其次任务编号（外部平台通常只持有编号） */
+function resolveTaskRef(ref: string): { id: string; task_no: string | null } | null {
+  const db = getDb();
+  const byId = db.prepare('SELECT id, task_no FROM tasks WHERE id = ?').get(ref) as
+    | { id: string; task_no: string | null }
+    | undefined;
+  if (byId) return byId;
+  return (db.prepare('SELECT id, task_no FROM tasks WHERE task_no = ?').get(ref) as
+    | { id: string; task_no: string | null }
+    | undefined) ?? null;
+}
+
+/** task_ids（JSON 数组字符串）并入新任务 id 并去重；脏数据按空数组处理 */
+function mergeTaskIds(raw: string, taskId: string): string {
+  let list: string[] = [];
+  try {
+    const v = JSON.parse(raw);
+    if (Array.isArray(v)) list = v.filter((x): x is string => typeof x === 'string');
+  } catch {
+    // 存量脏数据不阻断上报：按空数组重建
+  }
+  if (!list.includes(taskId)) list.push(taskId);
+  return JSON.stringify(list);
+}
+
+/** task_ids 解析（T01271 面板反查任务用）；脏数据按空数组处理 */
+function parseTaskIds(raw: string): string[] {
+  try {
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/** M6-6.1：会话状态/进度优先级链（完成 > 失败 > 心跳复活 stalled/failed > 保持；进度仅在未完成且显式上报时采用）。
+ *  cur=null 表示新建会话（insert 分支）。update/insert 两分支共用，消除重复的优先级 if 链。 */
+function resolvedProgressState(
+  cur: { status: string; progress: number } | null,
+  finished: boolean,
+  failedReported: boolean,
+  pctProvided: boolean,
+  pctValue: number,
+): { status: string; pct: number } {
+  if (finished) return { status: 'done', pct: 100 };
+  if (failedReported) return { status: 'failed', pct: cur ? cur.progress : 0 };
+  if (cur && (cur.status === 'stalled' || cur.status === 'failed')) return { status: 'active', pct: cur.progress };
+  if (cur) return { status: cur.status, pct: cur.progress };
+  if (pctProvided) return { status: 'active', pct: clampPct(pctValue) };
+  return { status: 'active', pct: 0 };
+}
+
+export const ExecSessionService = {
+  /**
+   * FR-1.2：心跳与进度上报。按 platform+session_id upsert 会话、刷新 last_heartbeat，
+   * 并把关联任务置 running（完成则置终态 unread）。
+   * T01356：新增 `failed` 上报口径——会话可置 `failed`（PRD §8「active ──平台报错──▶ failed」），
+   * 补上面板与监督器此前拿不到「平台报错」信号的缺口。
+   */
+  reportProgress(input: ReportProgressInput): ReportProgressResult {
+    const db = getDb();
+    const platform = normalizePlatform(input.platform);
+    const sessionId = (input.sessionId ?? '').trim();
+    if (!platform) throw new Error('platform 必填');
+    if (!sessionId) throw new Error('session_id 必填');
+    const task = resolveTaskRef((input.taskRef ?? '').trim());
+    if (!task) throw new Error(`任务不存在：${input.taskRef}`);
+
+    const now = new Date().toISOString();
+    const pctProvided = typeof input.pct === 'number' && Number.isFinite(input.pct);
+    // 完成判定：平台显式声明 done，或进度已到 100（PRD §6.1）
+    const finished = input.done === true || (pctProvided && clampPct(input.pct as number) >= 100);
+    // 失败判定放在完成之后参与三元优先级：done 与 failed 同传时以 done 为准（见入参注释）
+    const failedReported = input.failed === true;
+
+    // T01288：列侧 LOWER/TRIM 兜底存量行——归一化只在写入侧生效，会话行按 platform+session_id 唯一，
+    // 大小写不一致会让同一会话被判成两个（面板分裂、停滞判定各看一半）。
+    const existing = db.prepare(
+      'SELECT * FROM exec_sessions WHERE LOWER(TRIM(platform)) = ? AND session_id = ? ORDER BY started_at DESC LIMIT 1',
+    ).get(platform, sessionId) as ExecSessionRow | undefined;
+
+    // M6-6.1：状态/进度优先级链统一由 resolvedProgressState 计算（update/insert 共用）
+    const state = resolvedProgressState(
+      existing ? { status: existing.status, progress: existing.progress } : null,
+      finished, failedReported, pctProvided, typeof input.pct === 'number' ? input.pct : 0,
+    );
+
+    let sessionRowId: string;
+    if (existing) {
+      sessionRowId = existing.id;
+      // 状态优先级：完成（终态）> 失败 > 心跳复活（stalled/failed → active，PRD §8 状态机）。
+      // failed 可被新心跳复活是刻意的（PRD §8「failed ──REDISPATCH──▶ active(换台)」）：同一会话标识
+      // 再次上报即证明该平台已重新执行；done 保持终态不可复活——重新执行必须换新会话标识。
+      db.prepare(
+        `UPDATE exec_sessions
+            SET task_ids = ?, status = ?, progress = ?, phase = ?, last_heartbeat = ?, finished_at = ?
+          WHERE id = ?`,
+      ).run(
+        mergeTaskIds(existing.task_ids, task.id), state.status, state.pct, input.phase ?? existing.phase, now,
+        finished ? (existing.finished_at ?? now) : existing.finished_at, sessionRowId,
+      );
+    } else {
+      sessionRowId = randomUUID();
+      // 初始状态与已完成会话行同口径：完成 > 失败 > 执行中；进度仅在未完成且显式上报时采用
+      db.prepare(
+        `INSERT INTO exec_sessions
+           (id, platform, session_id, task_ids, status, progress, phase, last_heartbeat, started_at, finished_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        sessionRowId, platform, sessionId, JSON.stringify([task.id]),
+        state.status, state.pct,
+        input.phase ?? '', now, now, finished ? now : null,
+      );
+    }
+
+    // 任务↔会话绑定（PRD §5.3 exec_session_id）：心跳即证明该任务正在此会话中执行
+    db.prepare('UPDATE tasks SET exec_session_id = ? WHERE id = ?').run(sessionRowId, task.id);
+    // 同步任务 AI 状态：执行中 running；完成 → unread 终态（PRD §6.1 / §8）
+    const taskState = finished ? 'unread' : 'running';
+    TaskService.setAiState(task.id, taskState);
+
+    const saved = db.prepare('SELECT * FROM exec_sessions WHERE id = ?').get(sessionRowId) as ExecSessionRow;
+    return {
+      sessionRowId: saved.id,
+      status: saved.status,
+      progress: saved.progress,
+      taskNo: task.task_no,
+      taskState,
+    };
+  },
+
+  /**
+   * T01281（FR-3.2 / §6.1）：原子认领——多平台同时拉到同一任务时，保证只有一个能认领成功。
+   *
+   * 并发安全由「immediate 写事务 + 条件 UPDATE」双重保证，缺一不可：
+   * - `immediate`：事务开始即取写锁，避免 deferred 事务「先读后写」时升级锁失败（SQLITE_BUSY），
+   *   或两个事务都基于同一份旧快照做判断的竞态；
+   * - `WHERE ai_state = ''`：认领成立与否由数据库在写入瞬间裁决（changes=0 即已被抢走），
+   *   而不是「先 SELECT 校验、再 UPDATE」——两者之间有窗口，正是重复执行/多平台抢单的根源。
+   *
+   * 冲突时抛内部信号回滚整个事务：新会话行一并撤销，不留「有会话但任务没跑」的脏数据。
+   */
+  claimTask(input: ClaimTaskInput): ClaimTaskResult {
+    const db = getDb();
+    const platform = normalizePlatform(input.platform);
+    const sessionId = (input.sessionId ?? '').trim();
+    if (!platform) throw new Error('platform 必填');
+    if (!sessionId) throw new Error('session_id 必填');
+    const task = resolveTaskRef((input.taskRef ?? '').trim());
+    if (!task) return { claimed: false, reason: 'not_found' };
+
+    const ts = new Date().toISOString();
+    const run = db.transaction((): ClaimTaskResult => {
+      // 会话先行：exec_session_id 要写进任务，必须先拿到（或建好）会话行
+      const existing = db.prepare(
+        'SELECT * FROM exec_sessions WHERE LOWER(TRIM(platform)) = ? AND session_id = ? ORDER BY started_at DESC LIMIT 1',
+      ).get(platform, sessionId) as ExecSessionRow | undefined;
+      const sessionRowId = existing?.id ?? randomUUID();
+      if (existing) {
+        // 复用会话：并入本次认领的任务、刷新心跳；已 done/stalled 的会话被重新认领即回 active（PRD §8）
+        db.prepare(
+          "UPDATE exec_sessions SET task_ids = ?, status = 'active', last_heartbeat = ?, finished_at = NULL WHERE id = ?",
+        ).run(mergeTaskIds(existing.task_ids, task.id), ts, sessionRowId);
+      } else {
+        db.prepare(
+          `INSERT INTO exec_sessions
+             (id, platform, session_id, task_ids, status, progress, phase, last_heartbeat, started_at, finished_at)
+           VALUES (?, ?, ?, ?, 'active', 0, '', ?, ?, NULL)`,
+        ).run(sessionRowId, platform, sessionId, JSON.stringify([task.id]), ts, ts);
+      }
+      // 原子认领：status=待办 + archived=0 一并约束——已完成/已归档任务即便 ai_state 为空也不该被拉走重跑（PRD §8 状态机）。
+      // monitor_ready 同事务清零：认领即出就绪池，否则任务日后被清空 ai_state 时仍带旧标记、会被再次拉取执行。
+      const r = db.prepare(
+        `UPDATE tasks
+            SET ai_state = 'running', ai_state_at = ?, exec_session_id = ?, monitor_ready = 0, updated_at = ?
+          WHERE id = ? AND ai_state = '' AND status = 'todo' AND archived = 0`,
+      ).run(ts, sessionRowId, ts, task.id);
+      if (r.changes === 0) throw new ClaimConflictError();
+      return { claimed: true, taskNo: task.task_no, aiState: 'running', sessionRowId };
+    });
+
+    try {
+      return run.immediate();
+    } catch (e) {
+      if (!(e instanceof ClaimConflictError)) throw e;
+      // 回滚后重新读库判定冲突原因（回滚已撤销会话侧写入，此处读到的是其他赢家提交后的状态）
+      const cur = db.prepare('SELECT ai_state FROM tasks WHERE id = ?').get(task.id) as { ai_state: string } | undefined;
+      const taken = !!cur && cur.ai_state !== '';
+      return { claimed: false, reason: taken ? 'already_claimed' : 'not_ready', taskNo: task.task_no, aiState: cur?.ai_state ?? '' };
+    }
+  },
+
+  /** 按平台+会话标识取会话（供 MCP 返回与后续停滞判定复用）；T01288：入参先归一化，与写入侧同口径 */
+  getByPlatformSession(platform: string, sessionId: string): ExecSessionRow | null {
+    return (getDb().prepare(
+      'SELECT * FROM exec_sessions WHERE LOWER(TRIM(platform)) = ? AND session_id = ? ORDER BY started_at DESC LIMIT 1',
+    ).get(normalizePlatform(platform), sessionId) as ExecSessionRow | undefined) ?? null;
+  },
+
+  /**
+   * T01270（FR-1.3）：停滞兜底——把 last_heartbeat 超阈值（默认 10min，可配 `supervisor.sessionStaleMs`）
+   * 的 active 会话置 stalled。
+   *
+   * 设计取舍：
+   * - **探测优先**（对齐 TaskService.expireStaleRunning）：先用一次轻量 SELECT 判断有无超时会话
+   *   （走 idx_exec_platform_status），无则直接返回，避免每次 tick 都开写事务；
+   * - **只改会话状态，不动任务 ai_state**：任务侧超时由 TaskService.expireStaleRunning 兜底
+   *   （PRD FR-1.3 后半句），两者阈值语义不同（会话 10min 是「平台是否还在干活」，任务 1h 是
+   *   「Agent 是否已中断」），混用会让长任务被误判中断；
+   * - 停滞只是**观测信号**，M1 阶段不触发任何自动动作（P0 仅观测）；自愈路径在 reportProgress
+   *   里（stalled 会话收到新心跳即回 active，PRD §8 状态机）。
+   */
+  expireStaleSessions(maxAgeMs?: number): number {
+    const db = getDb();
+    const staleMs = resolveStaleMs(maxAgeMs);
+    const cutoff = new Date(Date.now() - staleMs).toISOString();
+    const probe = db.prepare(
+      "SELECT id FROM exec_sessions WHERE status = 'active' AND last_heartbeat < ? LIMIT 1",
+    ).get(cutoff) as { id: string } | undefined;
+    if (!probe) return 0;
+    const r = db.prepare(
+      "UPDATE exec_sessions SET status = 'stalled' WHERE status = 'active' AND last_heartbeat < ?",
+    ).run(cutoff);
+    if (r.changes > 0) {
+      console.warn(`[ExecSessionService] ${r.changes} 个执行会话超过 ${Math.round(staleMs / 60000)} 分钟无心跳，置 stalled（FR-1.3 停滞兜底）`);
+    }
+    return r.changes;
+  },
+
+  /**
+   * T01271（FR-1.4）：执行会话面板数据源——按最近心跳倒序返回会话，并带出关联任务摘要。
+   *
+   * 读取路径先做一次停滞判定（对齐 TaskService.list 的惰性过期模式）：面板刚打开时即使
+   * 定时器尚未跑到，也能看到正确的停滞标记，避免「明明超时了仍显示存活」。
+   */
+  listSessions(limit = 100): ExecSessionView[] {
+    this.expireStaleSessions();
+    const db = getDb();
+    const rows = db.prepare(
+      'SELECT * FROM exec_sessions ORDER BY last_heartbeat DESC LIMIT ?',
+    ).all(Math.min(500, Math.max(1, limit))) as ExecSessionRow[];
+
+    // 关联任务一次性批量查（SQLite 变量上限 999，按 200 分批，与 TaskService 同口径）
+    const ids = new Set<string>();
+    for (const r of rows) for (const id of parseTaskIds(r.task_ids)) ids.add(id);
+    const taskMap = new Map<string, SessionTaskBrief>();
+    const all = [...ids];
+    for (let i = 0; i < all.length; i += 200) {
+      const chunk = all.slice(i, i + 200);
+      const placeholders = chunk.map(() => '?').join(',');
+      const found = db.prepare(
+        `SELECT t.id, t.task_no, t.title, t.project_id, p.name AS project_name
+           FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+          WHERE t.id IN (${placeholders})`,
+      ).all(...chunk) as SessionTaskBrief[];
+      for (const t of found) taskMap.set(t.id, t);
+    }
+
+    return rows.map((r) => ({
+      ...r,
+      tasks: parseTaskIds(r.task_ids)
+        .map((id) => taskMap.get(id))
+        .filter((t): t is SessionTaskBrief => !!t),
+    }));
+  },
+
+  /**
+   * L3 丁档（2026-11-06 裁定「丁」）：执行会话轮询摘要——面板每 2s 拉整行列表（实测 51,346B，
+   * 含内嵌 tasks）只为判断「有没有变化、要不要重绘」。本方法回同一批会话的指纹，响应 ~100B，
+   * 形状与 /tasks/change-sig 同量级。
+   * 口径必须与 listSessions 一致：先做停滞判定，否则摘要说 active、整行列表说 stalled。
+   * 指纹按拼串排序后取集合等价，不照搬 SQL 的返回次序——last_heartbeat 并列时两次查询可能给出
+   * 不同顺序，顺序敏感会把每次轮询都判成「变了」（M4-b 实测过的坑）。
+   */
+  digest(limit = 100): { sig: string; rows: number } {
+    this.expireStaleSessions();
+    const rows = getDb().prepare(
+      'SELECT id, status, progress, phase, last_heartbeat, finished_at, task_ids FROM exec_sessions ORDER BY last_heartbeat DESC LIMIT ?',
+    ).all(Math.min(500, Math.max(1, limit))) as Array<{
+      id: string; status: string; progress: number; phase: string; last_heartbeat: string; finished_at: string | null; task_ids: string;
+    }>;
+    const sig = createHash('sha256')
+      .update(rows
+        .map((r) => `${r.id}\u0001${r.status}\u0001${r.progress}\u0001${r.phase}\u0001${r.last_heartbeat}\u0001${r.finished_at ?? ''}\u0001${r.task_ids}`)
+        .sort()
+        .join('\u0002'))
+      .digest('hex');
+    return { sig, rows: rows.length };
+  },
+
+  /**
+   * T03175（AI-402②③）：停滞/失败会话一键重派——逐任务经既有 `RelayDispatchService.dispatchTask`
+   * 推送派发（不新建第二套派发引擎），前置校验（存在/未归档/待办）在这里做完，派发侧只做归位。
+   *
+   * 口径：
+   * - 仅 `stalled`/`failed` 可重派（PRD §8：failed ──REDISPATCH──▶ active；心跳超时判停滞是重派的主场景）；
+   * - 派发失败且未进入队列（如未配置中继工具）时 `armReady` 把任务归位就绪池——否则任务会带着
+   *   已停滞会话的 running 态永不再被拉取（正是「停滞」要一键救活的东西）；
+   * - 会话行不动：平台侧新执行按同 session_id 上报即经 reportProgress 复活为 active（§8 状态机）。
+   */
+  async redispatchSession(sessionRowId: string): Promise<RedispatchSessionResult> {
+    const db = getDb();
+    const row = db.prepare('SELECT * FROM exec_sessions WHERE id = ?').get(sessionRowId) as ExecSessionRow | undefined;
+    if (!row) return { ok: false, reason: 'session_not_found', entries: [] };
+    if (row.status !== 'stalled' && row.status !== 'failed') {
+      return { ok: false, reason: 'status_not_redispatchable', platform: row.platform, entries: [] };
+    }
+    const entries: RedispatchEntry[] = [];
+    for (const taskId of parseTaskIds(row.task_ids)) {
+      const task = db.prepare('SELECT id, task_no, status, archived FROM tasks WHERE id = ?').get(taskId) as
+        | { id: string; task_no: string | null; status: string; archived: number }
+        | undefined;
+      if (!task) { entries.push({ taskId, taskNo: null, dispatched: false, skipped: 'not_found' }); continue; }
+      if (task.archived) { entries.push({ taskId, taskNo: task.task_no, dispatched: false, skipped: 'archived' }); continue; }
+      if (task.status !== 'todo') { entries.push({ taskId, taskNo: task.task_no, dispatched: false, skipped: 'not_todo' }); continue; }
+      const r = await dispatchTask(taskId, row.platform);
+      if (!r.ok && r.state === 'ready' && !r.queueId) armReady(taskId, row.platform);
+      entries.push({ taskId, taskNo: task.task_no, dispatched: true, state: r.state, ok: r.ok, detail: r.detail });
+    }
+    return { ok: entries.some((e) => e.dispatched && e.ok), platform: row.platform, entries };
+  },
+};

@@ -101,7 +101,7 @@ export function resolveMixedConfirmation(
     if (hits.length === 0) { missing.push(sha); continue; }
     for (const sub of hits) subs.add(sub);
   }
-  const repoSubs = [...subs].sort();
+  const repoSubs = [...subs].sort((a, b) => a.localeCompare(b));
   if (missing.length > 0 || repoSubs.length === 0) {
     return { ok: false, code: 'missing', repoSubs, missing };
   }

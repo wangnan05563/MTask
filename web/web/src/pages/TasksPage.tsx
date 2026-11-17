@@ -1,0 +1,5756 @@
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type CSSProperties } from 'react';
+import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
+import { createPortal } from 'react-dom';
+import { api, imageUrl, fetchImage, imageDataURL, type AITool, type CustomField, type CustomFieldType, type Project, type PromptCategory, type ReqCategory, type Task, type TaskCategory, type TaskImage } from '../api/client';
+import { ResultDiffPanel } from '../ui/ResultDiff'; // T01072-FR1.9：结果历史 diff 与回滚
+import { beautifyStore } from '../stores/beautifyStore';
+import { OPTIMIZE_SCOPE_TASKS, busyScope, optimizeStore, runOptimize, useOptimizeStore } from '../stores/optimizeStore'; // T03684：提示词优化运行态切页保持
+import { askConfirm, askInput } from '../ui/dialogs';
+import { MarkdownContent } from '../ui/Markdown';
+import { TaskEventTimeline } from '../components/TaskEventTimeline';
+import { TaskDetailDrawer, type TaskDetailTab, type TaskPatch } from '../components/TaskDetailDrawer'; // T01562：真抽屉详情
+import { focusPlanNode, focusTaskByNo, type FocusTaskIntent } from '../ui/focusTask'; // T01568：外部跳转定位意图（通知/铃铛/就绪条）；T02196：徽标点击定位
+import { ProjectListHint, getProjectListSnapshot, patchProject, refreshProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
+import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：选中项有效性校验失败态提示；T02257：AI 工具列表同层接入
+import { PinToggle } from '../ui/PinToggle';
+import { priorityAriaLabel, priorityBadgeLabel, priorityColor } from '../ui/priority'; // PM-302 ③：优先级 → 颜色/文案单源（列表/看板/矩阵/移动端共用）
+import { blockBadgeNames, blockBadgeNode } from '../ui/blockBadge'; // T03229（PM-202②）：阻塞徽标单源（列表行与看板卡共用）
+import { GitBadge, GitBoardBadge, gitTruncatedNote } from '../ui/gitBadge'; // 八期 §3.1：任务↔提交关联徽标（列表行 + 看板卡）
+import { GitTreePickerModal } from '../ui/GitTreePickerModal'; // 八期 §3.1.5：未回写「手动关联」批量补录走同一取数弹窗
+import { OVERLAY_MASK } from '../ui/primitives'; // T03621：遮罩底走单源 --overlay 令牌（不自写 rgba）
+import { useGitSummaries } from '../utils/gitSummaries'; // 八期 §3.1.6：本页提交摘要一次批量解析 + 60s 缓存
+import { fieldBadgesNode } from '../ui/fieldBadges'; // T03231（PM-203②）：自定义字段值徽标（列表行展示）
+import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
+import { NoticeToast, useNotice } from '../ui/notice'; // T03214（UX-02 ③）：提示分级——成功短驻、错误长驻且可关闭/复制
+import { paginationStatus, type PaginationView } from '../utils/taskPagination'; // T03214（UX-02 ①）：剩余条数与「已加载全部」判据
+import { suggestEntryState } from '../utils/suggestVisibility'; // T03257（AI-203④）：建议入口显隐口径（未启用隐藏 / 失效禁用）
+import { isValidIanaTz, tzOptions } from '../utils/timezone'; // T03268（PRD 4.2）：项目时区候选与本地校验
+import { buildImportFailureReceipt, buildImportReceipt } from '../utils/importReceipt'; // T03214（UX-02 ④）：导入结果分列成功/跳过/失败
+import { arrangeTaskTree, makeTaskMatcher, matchVerified, sortOptions, sortTasks, type SortKey } from '../utils/taskListQuery'; // T03215（PM-304）：列表派生计算提为模块级纯函数，供 useMemo 稳定缓存
+import { useTaskListWindow } from '../utils/taskListWindow'; // T03215（PM-304）：文档滚动 + 变高行的窗口化
+import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin as togglePinShared, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
+import { useBusy, setBusy } from '../ui/busy';
+import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, CheckCheck, ChevronDown, ChevronUp, Circle, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, Download, FolderPlus, GitBranch, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, MoreHorizontal, Palette, PanelRightOpen, Pin, Plus, Save, ScanSearch, MessageSquareText, Sparkle, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
+import { FontColorButton } from '../ui/FontColorButton';
+import { TaskMoreMenu, type TaskMoreMenuItem } from '../ui/TaskMoreMenu'; // T05712：低频功能「...」下拉
+import { CopyButton } from '../ui/CopyButton'; // T04544：项目下拉条右缘的项目名复制按钮（复用全站统一按钮，动画/交互一致）
+import { WorkspaceSelect } from '../ui/WorkspaceSelect'; // T00771：工作空间选择器（项目上下文根路径）
+import { WorkspaceSearchPanel } from '../ui/WorkspaceSearchPanel'; // T00786：工作空间全文检索面板（partial 提示）
+import { WorkspaceAskPanel } from '../ui/WorkspaceAskPanel'; // T03250：工作空间只读问答（引用可跳转）
+import { AiPolishButton } from '../ui/AiPolishButton'; // T00796 二轮：正文 AI 美化（反馈/处理结果共用）
+import { AiUnavailableHint, aiBlocked, aiBlockedTitle, useAiReadiness, type AiReadiness } from '../ui/aiReadiness'; // T03176（D-14）：AI 不可用入口可见但禁用 + 原因/修复动作
+import { classifyResultMessage, createClassifyStore, runClassifyBatch, type ClassifyResponse, type ClassifyStoreState } from './tasksClassifyBatch'; // T02307：批量分类三态分流 + 账户级门禁/连续失败熔断
+
+/** 顶部 tab 三态：待办 / 已完成 / 搁置（S4323：具名类型别名替代内联联合类型） */
+type ActiveTab = 'todo' | 'done' | 'shelved';
+
+/** T03621：AI 智能关联建议（服务端二次校验后的形状；sha 为仓库内校验通过的完整 ID） */
+interface AiLinkSuggestion {
+  taskId: string;
+  taskNo: string | null;
+  taskTitle: string;
+  confidence: number;
+  reason: string;
+  commits: { sha: string; short: string; subject: string; date: string; author: string }[];
+}
+interface AiLinkResult {
+  ok: boolean;
+  suggestions: AiLinkSuggestion[];
+  message?: string;
+  error?: string;
+  kind?: string;
+  candidates?: { tasks: number; commits: number };
+  dropped?: number;
+}
+
+/** T03621：三枚图标按钮的共用外观（尺寸/圆角/边框与系统小图标按钮一致，不带动画类） */
+const iconOnlyBtn: CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+  padding: '4px 6px', borderRadius: 6,
+  border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)',
+  cursor: 'pointer',
+};
+
+/** T02291：`total=1` 加性通道的分页信封（与 server/src/util/list-page.ts 的 Paged、ArchivePage 同形状） */
+interface Paged<T> {
+  items: T[];
+  total: number;
+}
+
+/** T01568：详情抽屉合法标签页（会话键 focusDrawerTab 的白名单校验口径，与 TaskDetailDrawer 标签页一致） */
+const DRAWER_TABS: readonly TaskDetailTab[] = ['desc', 'result', 'summary', 'timeline', 'plans', 'git', 'blocks'];
+
+/** T01568：会话键里的抽屉标签页 → 合法标签页（白名单外回落 desc；空值不落任何页） */
+function resolveDrawerTab(raw: string): TaskDetailTab | null {
+  if (!raw) return null;
+  return (DRAWER_TABS as string[]).includes(raw) ? (raw as TaskDetailTab) : 'desc';
+}
+
+// ---------- T00552：批量分类运行态模块级化——切页后循环继续、返回不卡死 ----------
+// T02365：补「没命中」的原因分桶——AI 判定无匹配、调用失败、分类候选为空要分得开，
+// 否则一律显示「未能为这些任务匹配到合适分类」，用户既不知道是配置问题还是模型没选中。
+// T02307：三态判定与熔断（账户级门禁首次即停 / 连续 K 次失败）收敛在 tasksClassifyBatch.ts，门可直接驱动。
+export const classifyStore: ClassifyStoreState = createClassifyStore();
+
+async function runBatchClassifyModule(target: Array<{ id: string; title: string; priority: string }>, toolId: string, cats: Array<{ id: string; name: string }>): Promise<void> {
+  if (classifyStore.busy) return;
+  classifyStore.busy = true;
+  try {
+    await runClassifyBatch({
+      target, toolId, categories: cats, store: classifyStore,
+      post: (path, body) => api.post<ClassifyResponse>(path, body),
+      patch: (path, body) => api.patch(path, body),
+      isActive: () => classifyStore.busy, // 防御：外部复位即中止
+      batch: true, // T03297：大批量走服务端分批调用，不再逐条打厂商
+    });
+  } finally {
+    classifyStore.busy = false;
+  }
+}
+
+/** 粘贴截图项：id 为入列时生成的稳定唯一标识，供列表 key 使用，删除中间项不会导致其余项身份错位 */
+interface PastedImage {
+  id: string;
+  url: string;
+}
+
+/** 描述编辑中的图片草稿：added 为待上传的粘贴截图，removed 为待删除的已有图片 id */
+interface ImageDraft {
+  added: PastedImage[];
+  removed: string[];
+}
+
+/** T00658：三态复选框（支持半选态）——原生 indeterminate 只能经属性设置，封装为受控组件。
+ *  用于多选模式标题旁的「全选框」：全选=checked、部分选中=indeterminate、未选=空。 */
+/** T01064-FR1.5：任务事件时间线——状态流转/回传/验证历史（/api/events/by-task/:id，正序；无事件不渲染） */
+/** T01065-FR1.6：批量操作动作的中文名（撤销按钮提示用） */
+/** T01065-FR1.6：批量操作动作（中文名见 ACTION_LABEL） */
+type BatchAction = 'status' | 'category' | 'priority' | 'color' | 'archive' | 'verified';
+const ACTION_LABEL: Record<BatchAction, string> = {
+  status: '批量改状态', category: '批量设分类', priority: '批量设优先级', color: '批量字体颜色', archive: '批量归档',
+  verified: '批量验收结果',
+};
+
+/**
+ * T01065 后续：一级撤销快照（一次批量操作 = 一步）。
+ * entries 为操作前旧值；还原时逐条 PATCH 回去。字段按动作取用——验收结果只回填 verified，
+ * 避免撤销时把期间被他人改过的状态/优先级一并覆盖。
+ */
+interface BatchUndoPatch {
+  status?: string;
+  priority?: string;
+  category_id?: string | null;
+  color?: string;
+  verified?: boolean;
+}
+/** T03255（AI-203①）：分类/优先级建议——服务端只读给出，采纳前不改任何任务数据 */
+interface TaskSuggestion {
+  /** T03256（AI-203②）：台账 id，采纳/不用/超时/被覆盖时回传，服务端据此记终态 */
+  suggestionId?: string;
+  categoryId: string | null;
+  categoryName: string | null;
+  priority: 'urgent' | 'high' | 'normal' | 'low';
+  reason: string;
+  historyCount: number;
+}
+
+/** T03256：建议未处理自动记超时的时长——与建议条清理同时发生，避免「看过但没点」永远停在 shown */
+const SUGGESTION_TIMEOUT_MS = 120_000;
+interface BatchSnapshot {
+  entries: Array<{ id: string; patch: BatchUndoPatch }>;
+  label: string;
+  /** 操作时刻（ISO），步骤列表里按时间展示，便于辨认「要撤到哪一步」 */
+  at: string;
+}
+/** T03211（PM-105）：批量操作逐条回执——成功/失败计数与每条失败原因，常驻到手动关闭 */
+interface BatchReceipt {
+  label: string;
+  okCount: number;
+  failed: Array<{ id: string; title: string; reason: string }>;
+  /** T03214（UX-02 ④）：跳过项与原因（导入预览的问题行、服务端未创建的条目） */
+  skipped?: Array<{ ref: string; reason: string }>;
+  at: string;
+}
+/** T03211（PM-105）：批量接口的逐条结果项 */
+interface BatchResultItem {
+  id: string;
+  title?: string;
+  ok: boolean;
+  reason?: string;
+}
+
+/** 撤销栈标签的动作后缀：验收结果用可读文案，其余直接带目标值 */
+function batchValueSuffix(action: BatchAction, value?: string): string {
+  if (action === 'verified') return value === 'true' ? '（验证通过）' : '（未验证）';
+  return value ? `（${value}）` : '';
+}
+
+/** 批量操作一条都没改成功时的提示——验收动作单独说明「没有已完成任务」的原因 */
+function batchNoopMessage(action: BatchAction): string {
+  return action === 'verified' ? '选中任务中没有已完成任务，验收状态未变更（原因见回执）' : '没有可更新的任务（原因见回执）';
+}
+
+/** 批量操作成功提示：有失败项时补一句「原因见回执」，避免长句嵌套模板 */
+function batchDoneMessage(affected: number, failedCount: number): string {
+  return failedCount > 0
+    ? `批量操作完成：成功 ${affected} 条，失败 ${failedCount} 条（原因见回执）`
+    : `批量操作完成：成功 ${affected} 条`;
+}
+
+/** 服务端逐条回执 → 常驻回执的失败项（缺省原因统一兜底文案） */
+function batchFailedItems(results: BatchResultItem[]): Array<{ id: string; title: string; reason: string }> {
+  return results
+    .filter((x) => !x.ok)
+    .map((x) => ({ id: x.id, title: x.title ?? '', reason: x.reason ?? '未说明原因' }));
+}
+
+/**
+ * T01065 后续：构造撤销快照条目——只收真正成功的条目（失败项没有改动，回填会制造无意义的「还原」）。
+ * T02980：验收结果只回填 verified；待办任务服务端本就不改，不入栈。
+ */
+function buildUndoEntries(action: BatchAction, ids: string[], results: BatchResultItem[], all: Task[]): Array<{ id: string; patch: BatchUndoPatch }> {
+  const okIds = new Set(results.filter((x) => x.ok).map((x) => x.id));
+  return ids
+    .filter((id) => okIds.has(id))
+    .map((id): { id: string; patch: BatchUndoPatch } | null => {
+      const t = all.find((x) => x.id === id);
+      if (!t) return null;
+      if (action === 'verified') return t.status === 'done' ? { id, patch: { verified: t.verified } } : null;
+      return { id, patch: { status: t.status, priority: t.priority, category_id: t.category_id, color: t.color || '' } };
+    })
+    .filter((x): x is { id: string; patch: BatchUndoPatch } => x !== null);
+}
+/** 撤销栈上限：再深的历史用户基本不会翻，且每条快照都占内存（含逐条旧值） */
+const MAX_UNDO_STEPS = 10;
+
+/** T03267（PM-402①）：CSV 来源识别结果的中文名——只影响提示，解析口径由服务端单源决定 */
+const CSV_SOURCE_LABEL: Record<'github' | 'jira' | 'generic', string> = {
+  github: 'GitHub Issues CSV（自动识别）',
+  jira: 'Jira CSV（自动识别）',
+  generic: '通用 CSV（自动识别）',
+};
+/** T03267（PM-402②）：预览里可人工调整的字段；标题必选，其余留空即不导入该字段 */
+const CSV_MAP_FIELDS: Array<{ field: 'title' | 'description' | 'priority' | 'status' | 'category'; label: string; required?: boolean }> = [
+  { field: 'title', label: '标题', required: true },
+  { field: 'description', label: '描述' },
+  { field: 'priority', label: '优先级' },
+  { field: 'status', label: '状态' },
+  { field: 'category', label: '分类' },
+];
+
+/** T03211（PM-105）：全部项目视图的哨兵值——任务查询不带 projectId，选中集合可跨项目 */
+const ALL_PROJECTS = '__all__';
+
+/**
+ * T03703：「验证通过」= 已完成 + 已验证（与批量验证入口「已完成的标记为已验证」同口径——
+ * verified 只对 done 有意义，单看 verified 会把「退回待办但标记未清」的任务误判为已通过）。
+ * 该态属正常态，行内不得再出现异常类标签；异常事实（ai_state / retry_count / 【验证失败】段）
+ * 仍原样留在数据里供追溯，只在展示层收口。
+ * 异常类标签集合＝指示「处理中断/失败、重试、验证失败」的四处；
+ * running（处理中）与 unread（待查看）是过程态提示，不属异常集合，不受本判据影响。
+ */
+function isVerificationPassed(t: Task): boolean {
+  return t.status === 'done' && t.verified === true;
+}
+
+/** 视图作用域 → 请求参数：全部项目不带 projectId（后端缺省即全量），其余照常传 */
+function scopeParams(projectId: string): URLSearchParams {
+  const p = new URLSearchParams();
+  if (projectId !== ALL_PROJECTS) p.set('projectId', projectId);
+  return p;
+}
+
+/** T03209（PM-101）：项目待办/已完成计数乐观增减——项目列表缓存 60s，状态流转/新建后看板列头需即时反映 */
+function bumpProjectCounts(projectId: string, deltaTodo: number, deltaDone: number) {
+  if (!projectId) return;
+  const cur = getProjectListSnapshot().find((p) => p.id === projectId);
+  if (!cur) return;
+  patchProject(projectId, {
+    todo_count: Math.max(0, (cur.todo_count ?? 0) + deltaTodo),
+    done_count: Math.max(0, (cur.done_count ?? 0) + deltaDone),
+  });
+}
+
+/**
+ * T03232（PM-203③）：字段类型 → 可选筛选算子。
+ * 与服务端 TaskService.FIELD_OPS 对齐——前端只负责不给用户端出无效算子，服务端仍按字段定义再校验一次。
+ */
+const FIELD_FILTER_OPS: Record<CustomFieldType, Array<{ value: string; label: string }>> = {
+  text: [{ value: 'contains', label: '包含' }, { value: 'eq', label: '等于' }, { value: 'empty', label: '未填' }, { value: 'notEmpty', label: '已填' }],
+  number: [
+    { value: 'eq', label: '等于' }, { value: 'gt', label: '大于' }, { value: 'gte', label: '大于等于' },
+    { value: 'lt', label: '小于' }, { value: 'lte', label: '小于等于' }, { value: 'empty', label: '未填' }, { value: 'notEmpty', label: '已填' },
+  ],
+  date: [
+    { value: 'eq', label: '等于' }, { value: 'gt', label: '晚于' }, { value: 'gte', label: '不早于' },
+    { value: 'lt', label: '早于' }, { value: 'lte', label: '不晚于' }, { value: 'empty', label: '未填' }, { value: 'notEmpty', label: '已填' },
+  ],
+  select: [{ value: 'eq', label: '选择' }, { value: 'empty', label: '未填' }, { value: 'notEmpty', label: '已填' }],
+};
+
+/** 需要填值的算子（empty/notEmpty 只看有没有值） */
+const FIELD_OP_NEEDS_VALUE = new Set(['eq', 'contains', 'gt', 'gte', 'lt', 'lte']);
+
+function defaultFieldOp(type: CustomFieldType): string {
+  return type === 'text' ? 'contains' : 'eq';
+}
+
+/** T03232：字段筛选是否处于「生效中」——算子缺省或为 empty/notEmpty 都属于无需填值的有效状态 */
+function needsFieldValue(op: string): boolean {
+  return !!op && FIELD_OP_NEEDS_VALUE.has(op);
+}
+
+/** §3.1.5：单项目视图（全部项目/未选项目时不支持批量补录 Git 关联，需逐行操作） */
+function isSingleProjectScope(projectId: string): boolean {
+  return Boolean(projectId) && projectId !== ALL_PROJECTS;
+}
+
+/** 主列表查询条件（均经服务端过滤，保证分页前后口径一致） */
+interface TaskListFilters {
+  search: string;
+  catFilter: string;
+  priorityFilter: string;
+  fieldFilterField: string;
+  fieldFilterOp: string;
+  fieldFilterValue: string;
+  fieldSort: string;
+}
+
+/**
+ * T03211/T03232：组装主列表请求参数（分页的 limit 由调用方按页大小常量下发，这里只管过滤）。
+ * 「需要填值」的算子没填值时不下发（等同于未启用），避免用户刚选中字段就把列表筛空；
+ * 自定义字段筛选/排序仅单项目视图生效（跨项目字段定义不同，无法统一谓词）。
+ */
+function buildTaskListParams(projectId: string, offset: number, filters: TaskListFilters): URLSearchParams {
+  const { search, catFilter, priorityFilter, fieldFilterField, fieldFilterOp, fieldFilterValue, fieldSort } = filters;
+  const p = scopeParams(projectId);
+  if (offset > 0) p.set('offset', String(offset));
+  const kw = search.trim();
+  if (kw) p.set('keyword', kw);
+  if (catFilter === 'none') p.set('categoryId', 'none');
+  else if (catFilter) p.set('categoryId', catFilter);
+  if (priorityFilter) p.set('priority', priorityFilter);
+  const fieldFilterOn = Boolean(fieldFilterField) && Boolean(fieldFilterOp)
+    && (!FIELD_OP_NEEDS_VALUE.has(fieldFilterOp) || Boolean(fieldFilterValue.trim()));
+  if (projectId !== ALL_PROJECTS && fieldFilterOn) {
+    p.set('fieldFilters', JSON.stringify([{ fieldId: fieldFilterField, op: fieldFilterOp, value: fieldFilterValue }]));
+  }
+  if (projectId !== ALL_PROJECTS && fieldSort) {
+    const [fid, dir] = fieldSort.split('|');
+    if (fid) p.set('fieldSort', JSON.stringify({ fieldId: fid, dir: dir === 'desc' ? 'desc' : 'asc' }));
+  }
+  return p;
+}
+
+/**
+ * T01700：抽屉镜像合并——把新快照里同 id 的任务换给抽屉，快照 updated_at 更旧时跳过，
+ * 杜绝「外部 PATCH→立即保存/回滚→被旧快照打回」的丢更新竞态。
+ */
+function newerDrawerTask(cur: Task | null, find: (id: string) => Task | undefined): Task | null {
+  if (!cur) return cur;
+  const next = find(cur.id);
+  if (!next) return cur;
+  if ((next.updated_at ?? '') < (cur.updated_at ?? '')) return cur;
+  return next;
+}
+
+/** 在多份任务快照里按 id 找第一条命中（首份命中即返回，语义同 ?? 串联的 find） */
+function findTaskInLists(lists: Task[][], id: string): Task | undefined {
+  for (const list of lists) {
+    const hit = list.find((x) => x.id === id);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+/** 工具条小按钮：展开/选中态配色 */
+const TOGGLE_STYLE_ACTIVE: CSSProperties = { background: 'var(--accent-soft)', color: 'var(--accent-ink)' };
+/** 工具条小按钮：收起/未选中态配色 */
+const TOGGLE_STYLE_IDLE: CSSProperties = { background: 'transparent', color: 'var(--text)' };
+
+/** Git 徽标开关：显示态配色 */
+const GIT_TOGGLE_ACTIVE: CSSProperties = { background: 'var(--accent-soft)', color: 'var(--accent-ink)' };
+/** Git 徽标开关：隐藏态用卡片底，与首排常驻按钮一致 */
+const GIT_TOGGLE_IDLE: CSSProperties = { background: 'var(--card-bg)', color: 'var(--text-muted)' };
+
+/** 项目下拉行：选中底色 */
+const ROW_BG_SELECTED = 'var(--accent-soft)';
+/** 项目下拉行：未选中（透明） */
+const ROW_BG_IDLE = 'transparent';
+
+/** 导入入口提示：上一批操作进行中 */
+const IMPORT_TITLE_BUSY = '导入数据 — 上一批操作进行中，完成后恢复可选';
+/** 导入入口提示：可用（CSV/JSON 两格式说明） */
+const IMPORT_TITLE_READY = '导入数据 — CSV/JSON（JSON 支持 Trello 导出与 JSON 数组），预览确认后入库';
+
+/** 手动关联按钮提示：单项目视图可用 */
+const MANUAL_LINK_TITLE_SINGLE = '手动关联 — 逐条打开提交选取弹窗补录（跨项目视图请逐行操作）';
+/** 手动关联按钮提示：跨项目视图逐行操作 */
+const MANUAL_LINK_TITLE_CROSS = '跨项目视图请逐行手动关联（点击任务行提交徽标进抽屉）';
+
+/** 项目切换按钮上的当前项目名 */
+function activeProjectLabel(activeProject: string, projects: Project[]): string {
+  if (activeProject === ALL_PROJECTS) return '全部项目';
+  return projects.find((p) => p.id === activeProject)?.name ?? '选择项目';
+}
+
+/** 工作空间全文检索按钮提示 */
+function wsSearchTitle(activeProject: string): string {
+  const base = activeProject
+    ? '工作空间全文检索 — 在绑定工作空间内检索关键词，结果可能不完整的 partial 状态会提示'
+    : '请先选择项目再检索工作空间';
+  return `${base}（默认隐藏，悬浮工具栏显示）`;
+}
+
+/** Git 徽标开关提示：已显示态（点一下隐藏） */
+const GIT_TOGGLE_TITLE_ON = 'Git 徽标（已显示）— 点击隐藏任务行的提交关联徽标；会话内保持（默认隐藏，悬浮工具栏显示）';
+/** Git 徽标开关提示：已隐藏态（点一下显示） */
+const GIT_TOGGLE_TITLE_OFF = 'Git 徽标（已隐藏）— 点击显示任务行的提交关联徽标；会话内保持（默认隐藏，悬浮工具栏显示）';
+
+/** 「更多」按钮提示：已展开态 */
+const MORE_TITLE_OPEN = '更多（已展开）— 再次点击或点击空白处收起第二排功能';
+
+/** 「更多」按钮提示：收起态，生效筛选数单独拼装，避免嵌套模板字符串 */
+function moreTitleCollapsed(activeCount: number): string {
+  const badge = activeCount > 0 ? `（当前 ${activeCount} 项筛选生效）` : '';
+  return `更多 — 展开导出项目 / 分类筛选 / 优先级筛选 / 自定义字段筛选与排序${badge}`;
+}
+
+/** 项目导出下拉提示 */
+function exportProjectTitle(activeProject: string): string {
+  return activeProject === ALL_PROJECTS
+    ? '导出项目 — 请先选择具体项目'
+    : '导出项目 — 任务/计划导出为 Markdown 或 JSON（含层级/状态/优先级）';
+}
+
+/** 自定义字段筛选下拉提示：可用态 */
+const FIELD_FILTER_TITLE_READY = '自定义字段筛选 — 在服务端按字段值筛选（翻页后条件仍生效）';
+/** 自定义字段排序下拉提示：可用态 */
+const FIELD_SORT_TITLE_READY = '自定义字段排序 — 未填值的任务排在最后';
+/** 自定义字段下拉的禁用原因：项目还没有任何字段 */
+const FIELD_PICKER_TITLE_NO_FIELDS = '当前项目还没有自定义字段——可到「设置 → 自定义字段」创建';
+/** 自定义字段下拉的禁用原因：跨项目/未选项目（字段定义按项目） */
+const FIELD_PICKER_TITLE_NO_PROJECT = '自定义字段按项目定义，请先在项目下拉里选择具体项目';
+
+/** 自定义字段筛选/排序下拉的禁用原因（禁用时按「有无字段」分别说明） */
+function fieldPickerDisabledTitle(fieldCount: number, activeProject: string): string {
+  return fieldCount === 0 && activeProject !== ALL_PROJECTS
+    ? FIELD_PICKER_TITLE_NO_FIELDS
+    : FIELD_PICKER_TITLE_NO_PROJECT;
+}
+
+/** 字段值输入框占位文案（按字段类型） */
+function fieldValuePlaceholder(type: CustomFieldType): string {
+  if (type === 'number') return '输入数字';
+  if (type === 'date') return 'YYYY-MM-DD';
+  return '输入筛选文本';
+}
+
+/** 列表空态：尚未配置任何 AI 模型 */
+function NoToolsHint() {
+  return <>先到「模型」页添加 AI 模型，即可使用 AI 梳理 / 美化 / 分类等能力。</>;
+}
+
+/** 列表空态：AI 能力已可用 */
+function ToolsReadyHint() {
+  return <>也可使用上方 AI 梳理、美化、批量分类等能力。</>;
+}
+
+/** 取数阶段（主列表 / 搁置列表共用） */
+type FetchPhase = 'loading' | 'ready' | 'error';
+
+/** 主列表是否处于「失败但旧数据仍在位」的过期态 */
+function tasksAreStale(phase: FetchPhase, todoLen: number, doneLen: number): boolean {
+  return phase === 'error' && (todoLen > 0 || doneLen > 0);
+}
+
+/** 导入预览标题的类型名 */
+function importKindLabel(kind: 'csv' | 'json'): string {
+  return kind === 'json' ? 'JSON' : 'CSV';
+}
+
+/** 已裁决徽标的日期后缀：无裁决时间时返回空串（先取日子再拼，避免模板字符串嵌套） */
+function rulingAtSuffix(rulingAt: string | null | undefined): string {
+  if (!rulingAt) return '';
+  const day = rulingAt.slice(0, 10);
+  return `（${day}）`;
+}
+
+/** AI 智能关联按钮提示：单项目视图文案 */
+const AI_LINK_TITLE_SINGLE = 'AI 智能关联 — 让 AI 比对已完成未回写任务与仓库近期提交，给出候选后由你勾选确认（不自动落库）';
+/** AI 智能关联按钮提示：跨项目视图只能逐行操作 */
+const AI_LINK_TITLE_CROSS = '跨项目视图请逐行手动关联（点击任务行提交徽标进抽屉）';
+/** AI 智能关联按钮提示：AI 不可用时以单项目文案为底补原因，可用时用当前视图范围文案 */
+function aiLinkButtonTitle(scopeTitle: string, readiness: AiReadiness | null): string {
+  return aiBlocked(readiness)
+    ? aiBlockedTitle(readiness, 'AI 智能关联 — 比对已完成未回写任务与仓库近期提交，给出候选后由你勾选确认（不自动落库）')
+    : scopeTitle;
+}
+
+/** 集合内勾选：加入 */
+function withInSet(prev: Set<string>, key: string): Set<string> {
+  const next = new Set(prev);
+  next.add(key);
+  return next;
+}
+
+/** 集合内勾选：移除 */
+function withoutInSet(prev: Set<string>, key: string): Set<string> {
+  const next = new Set(prev);
+  next.delete(key);
+  return next;
+}
+
+/** T03621：AI 关联弹窗的范围/错误说明（平铺拼装，避免嵌套模板与嵌套三元） */
+function aiLinkScopeText(r: AiLinkResult): string {
+  if (!r.ok) return r.error ?? r.message ?? 'AI 智能关联暂不可用';
+  const base = `比对范围：${r.candidates?.tasks ?? 0} 条未回写任务 × ${r.candidates?.commits ?? 0} 个近期提交`;
+  const dropped = r.dropped ? ` · 已排除 ${r.dropped} 条不合格配对` : '';
+  return `${base}${dropped}`;
+}
+
+/** T03621：单条建议里的一个待勾选提交 */
+function AiLinkCommitRow({ taskId, commit, selected, onToggle }: {
+  readonly taskId: string;
+  readonly commit: AiLinkSuggestion['commits'][number];
+  readonly selected: boolean;
+  readonly onToggle: (key: string, checked: boolean) => void;
+}) {
+  const key = `${taskId}|${commit.sha}`;
+  return (
+    <label style={{ display: 'flex', alignItems: 'flex-start', gap: 6, padding: '3px 0', fontSize: 'var(--fs-xs)', cursor: 'pointer' }}>
+      <input type="checkbox" checked={selected} data-t03621="ai-pick"
+        onChange={(e) => onToggle(key, e.target.checked)} />
+      <span style={{ fontFamily: 'var(--font-mono, monospace)' }}>{commit.short}</span>
+      <span style={{ color: 'var(--text-secondary)', flex: 1 }}>{commit.subject}</span>
+      <span style={{ color: 'var(--text-muted)' }}>{commit.date.slice(0, 10)}</span>
+    </label>
+  );
+}
+
+/** 弹窗遮罩的「点空白关闭」承载：用原生 button（Enter/Space 与点按同效，不再是给容器挂鼠标事件），
+ *  tabIndex=-1 不进 Tab 序；需点按关闭的弹窗把面板放它上层（面板 position:relative + zIndex:1）。 */
+function ModalBackdrop({ label, disabled, onClose }: {
+  readonly label: string;
+  readonly disabled?: boolean;
+  readonly onClose: () => void;
+}) {
+  return (
+    <button type="button" className="tbtn-anim" tabIndex={-1} aria-label={label}
+      disabled={disabled}
+      onClick={onClose}
+      style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', padding: 0, border: 'none', background: 'transparent', cursor: 'default' }} />
+  );
+}
+
+/** T03621：AI 智能关联建议弹窗——逐提交勾选，确认后才写 task_git_links（source=manual）；取消不产生任何写入 */
+function AiLinkDialog({ result, sel, applying, onToggle, onClose, onConfirm }: {
+  readonly result: AiLinkResult;
+  readonly sel: Set<string>;
+  readonly applying: boolean;
+  readonly onToggle: (key: string, checked: boolean) => void;
+  readonly onClose: () => void;
+  readonly onConfirm: () => void;
+}) {
+  return (
+    <dialog open aria-label="AI 智能关联建议"
+      style={{ ...OVERLAY_MASK, position: 'fixed', zIndex: 60, margin: 0, padding: 0, border: 'none', width: '100%', height: '100%', maxWidth: 'none', maxHeight: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text)' }}>
+      <ModalBackdrop label="关闭 AI 智能关联建议（点按空白处）" disabled={applying} onClose={onClose} />
+      <div data-t03621="ai-panel" style={{ position: 'relative', zIndex: 1, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 10, boxShadow: '0 10px 28px rgba(0,0,0,.22)', width: 620, maxWidth: '94vw', maxHeight: '84vh', display: 'flex', flexDirection: 'column', padding: 14, color: 'var(--text)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+          <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600 }}>AI 智能关联建议</div>
+          <button type="button" onClick={onClose} disabled={applying}
+            title="关闭" aria-label="关闭 AI 智能关联建议"
+            style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: applying ? 'not-allowed' : 'pointer', padding: 2 }}>
+            <X size={14} />
+          </button>
+        </div>
+        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
+          {aiLinkScopeText(result)}
+        </div>
+        <div style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
+          {result.suggestions.length === 0 && (
+            <div data-t03621="ai-empty" style={{ padding: '16px 8px', fontSize: 'var(--fs-s)', color: 'var(--text-muted)', textAlign: 'center' }}>
+              {result.message ?? '没有可确认的建议——可改用「手动关联」逐条补录'}
+            </div>
+          )}
+          {result.suggestions.map((s) => (
+            <div key={s.taskId} data-t03621="ai-suggestion" style={{ border: '1px solid var(--border-strong)', borderRadius: 8, padding: 8, marginBottom: 8 }}>
+              <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600 }}>
+                {s.taskNo ?? '(无编号)'} · {s.taskTitle}
+                <span style={{ marginLeft: 8, fontWeight: 400, fontSize: 'var(--fs-xs)', color: 'var(--accent)' }}>置信度 {Math.round(s.confidence * 100)}%</span>
+              </div>
+              {s.reason && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', margin: '2px 0 6px' }}>{s.reason}</div>}
+              {s.commits.map((c) => (
+                <AiLinkCommitRow key={c.sha} taskId={s.taskId} commit={c} selected={sel.has(`${s.taskId}|${c.sha}`)} onToggle={onToggle} />
+              ))}
+            </div>
+          ))}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
+          <button type="button" onClick={onClose} disabled={applying}
+            style={{ fontSize: 'var(--fs-s)', padding: '6px 12px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: applying ? 'not-allowed' : 'pointer' }}>取消</button>
+          <button type="button" data-t03621="ai-confirm" disabled={applying || sel.size === 0} onClick={onConfirm}
+            style={{ fontSize: 'var(--fs-s)', padding: '6px 14px', border: 'none', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', cursor: applying || sel.size === 0 ? 'not-allowed' : 'pointer', opacity: applying || sel.size === 0 ? 0.5 : 1 }}>
+            {applying ? '关联中…' : `确认关联 ${sel.size} 个提交`}
+          </button>
+        </div>
+      </div>
+    </dialog>
+  );
+}
+
+/** 项目计数徽标（待办红 / 未验证蓝）——工具栏与下拉行共用同一外观 */
+const BADGE_TODO_STYLE: CSSProperties = {
+  flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px',
+  background: 'var(--danger-soft, rgba(220,38,38,.12))', color: 'var(--danger)',
+};
+const BADGE_UNV_STYLE: CSSProperties = {
+  flexShrink: 0, minWidth: 16, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px',
+  background: 'var(--accent-soft)', color: 'var(--accent)',
+};
+function ProjectBadges({ todo, unverified, allScope }: {
+  readonly todo: number;
+  readonly unverified: number;
+  readonly allScope?: boolean;
+}) {
+  const scope = allScope ? '全部项目' : '';
+  const sum = allScope ? '合计' : '';
+  return (
+    <>
+      <span title={`${scope}待办${sum} ${todo} 条`} style={BADGE_TODO_STYLE}>{todo}</span>
+      <span title={`${scope}未验证${sum} ${unverified} 条`} style={BADGE_UNV_STYLE}>{unverified}</span>
+    </>
+  );
+}
+
+/** 项目切换按钮上的徽标：全部项目视图取合计，具体项目取该项目计数（未选中时不出徽标） */
+function ProjectButtonBadges({ activeProject, curProj, allTodo, allUnv }: {
+  readonly activeProject: string;
+  readonly curProj: Project | undefined;
+  readonly allTodo: number;
+  readonly allUnv: number;
+}) {
+  if (activeProject === ALL_PROJECTS) return <ProjectBadges todo={allTodo} unverified={allUnv} allScope />;
+  if (!curProj) return null;
+  return <ProjectBadges todo={curProj.todo_count ?? 0} unverified={curProj.unverified_count ?? 0} />;
+}
+
+/** 导出下拉是否不可用：导出必须落到具体项目，全部项目/未选项目与导出在途都禁用 */
+function exportDisabled(busy: boolean, projectId: string): boolean {
+  return busy || !isSingleProjectScope(projectId);
+}
+
+/** 自定义字段筛选值编辑器：select 类型给选项下拉，其余给文本输入 */
+function FieldValueEditor({ field, value, onChange }: {
+  readonly field: CustomField;
+  readonly value: string;
+  readonly onChange: (v: string) => void;
+}) {
+  if (field.type === 'select') {
+    return (
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        data-t03232="field-value"
+        title="筛选值 — 选择要匹配的选项"
+        aria-label="自定义字段筛选值：选择要匹配的选项"
+        style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6 }}
+      >
+        <option value="">选择选项…</option>
+        {field.options.map((o) => <option key={o.id} value={o.id}>{o.archived ? `${o.label}（已停用）` : o.label}</option>)}
+      </select>
+    );
+  }
+  return (
+    <input
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      data-t03232="field-value"
+      placeholder={fieldValuePlaceholder(field.type)}
+      title="筛选值 — 文本按包含/等于匹配，数字与日期按大小比较；留空表示暂不筛选"
+      aria-label="自定义字段筛选值：填写筛选值"
+      style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, width: 120 }}
+    />
+  );
+}
+
+function TriCheckbox({ checked, indeterminate, onChange, title, label, style }: {
+  readonly checked: boolean;
+  readonly indeterminate: boolean;
+  readonly onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  readonly title: string;
+  readonly label: string;
+  readonly style?: React.CSSProperties;
+}) {
+  const ref = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = !checked && indeterminate;
+  }, [checked, indeterminate]);
+  return (
+    <input ref={ref} type="checkbox" checked={checked} onChange={onChange}
+      title={title} aria-label={label} style={style} />
+  );
+}
+
+/** 剥离 AI 外层的 ```markdown ``` 代码围栏：仅当围栏包裹整段文本时去除，保留内部 Markdown 内容，异常情况原样返回 */
+function stripCodeFence(text: string): string {
+  const m = /^\s*```(?:markdown|md)?\s*\n?([\s\S]*?)\n?```\s*$/.exec(text);
+  return m ? m[1] : text;
+}
+
+/** 为粘贴截图生成稳定唯一 id：时间戳 + 随机段，同一毫秒内多次粘贴也不冲突 */
+function newPastedImageId(): string {
+  return `paste-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** 逐个把图片文件读成 dataURL 后回调。提到组件外：读文件 → onload → setState 三层内联箭头会触发 S2004 */
+function readImageFiles(files: Iterable<File>, onImages: (url: string) => void): void {
+  for (const file of files) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') onImages(reader.result);
+    };
+    reader.readAsDataURL(file);
+  }
+}
+
+/** 从剪贴板读取图片；有图片时阻止默认粘贴并回调 dataURL，无图片则放行文本粘贴（纯函数，提到组件外避免闭包重创建）。
+ *  T05704：入参泛化到 HTMLElement——标题 input 与描述 textarea 共用同一条粘贴通道。 */
+function readClipboardImages(e: ClipboardEvent<HTMLElement>, onImages: (url: string) => void): boolean {
+  const files = Array.from(e.clipboardData.items)
+    .filter((i) => i.type.startsWith('image/'))
+    .map((i) => i.getAsFile())
+    .filter((f): f is File => f !== null);
+  if (files.length === 0) return false;
+  e.preventDefault();
+  readImageFiles(files, onImages);
+  return true;
+}
+
+/* PM-302 ③：优先级 → 颜色/文案的定义已收进 ui/priority.ts（看板、列表、矩阵、移动端共用同一映射）。
+   本地包装保留只为不动调用点；实现在单源文件里。 */
+const priorityBorderColor = priorityColor;
+const priorityLabel = priorityAriaLabel;
+
+export function TasksPage() {
+  // 新建任务表单字段：跨切换会话持久化，录入一半切页后可续写
+  const [newTitle, setNewTitle] = useSessionState('tasks.new.title', '');
+  const [wsPickForNew, setWsPickForNew] = useState<Project | null>(null); // T00771：新建项目后的工作空间绑定弹窗（可跳过）
+  const [pkDraft, setPkDraft] = useState(''); // T04133：弹窗内的产品标签草稿（回显 + 保存）
+  const [newPriority, setNewPriority] = useSessionState<string>('tasks.new.priority', 'normal');
+  const [newDescOpen, setNewDescOpen] = useSessionState('tasks.new.descOpen', false);
+  const [newDesc, setNewDesc] = useSessionState('tasks.new.desc', '');
+  const [newImages, setNewImages] = useSessionState<PastedImage[]>('tasks.new.images', []);
+  // T02201：项目列表取数交统一容错层（加载中/失败可见 + 重试，失败不缓存冒充正常数据）
+  const projectList = useProjectList();
+  const { projects } = projectList;
+  // T04133（PRD §3.1）：无字典表——已有产品标签候选由项目列表现算去重，供弹窗下拉选择
+  const productKeyOptions = useMemo(
+    () => Array.from(new Set(projects.map((p) => (p.product_key ?? '').trim()).filter(Boolean))).sort(),
+    [projects],
+  );
+  // 复用（复制）任务弹窗状态：reuseOpen 存待复制任务 id（null 关闭）；projectId 为选中的目标项目
+  const [reuseOpen, setReuseOpen] = useState<string | null>(null);
+  const reusePanelRef = useRef<HTMLDivElement>(null);
+  const [reuseProjectId, setReuseProjectId] = useState('');
+  const [reuseSearch, setReuseSearch] = useState('');
+  // 复用目标：project=复制到项目；prompt=打包为 JSON 资产复制到提示词页；req=打包为通用需求条目
+  const [reuseTarget, setReuseTarget] = useState<'project' | 'prompt' | 'req'>('project');
+  // 复制到提示词/通用需求时选中的目标分类；promptCats 为可选提示词分类、reqCats 为可选通用需求分类（均懒加载）
+  const [reuseCategoryId, setReuseCategoryId] = useState('');
+  const [promptCats, setPromptCats] = useState<PromptCategory[]>([]);
+  const [reqCats, setReqCats] = useState<ReqCategory[]>([]);
+  // 复用（创建副本）操作进行中：全局 busy store，切页不丢失，防止请求进行中重复提交
+  const reuseBusy = useBusy('tasks.reuse');
+  // 项目/模型为长期偏好，用 localStorage 持久化，切页与刷新后均保留；未选状态透传空串，不强制填充
+  const [activeProject, setActiveProject] = usePersistentState('tasks.activeProject', '');
+  // T00786：工作空间全文检索面板显隐（建议相对工作空间选择器就近放置）
+  const [wsSearchOpen, setWsSearchOpen] = useState(false);
+  // T03250：工作空间只读问答面板显隐（紧跟全文检索入口）
+  const [wsAskOpen, setWsAskOpen] = useState(false);
+  const [todo, setTodo] = useState<Task[]>([]);
+  const [done, setDone] = useState<Task[]>([]);
+  // T00719：搁置任务列表（页面最下方独立区块，与待办/已完成隔离；MCP 处理待办时自动忽略）
+  const [shelvedTasks, setShelvedTasks] = useState<Task[]>([]);
+  const [shelvedSort, setShelvedSort] = usePersistentState<SortKey>('shelvedSort', 'default'); // T01697：原为裸 useState（切页即丢）——升级持久化
+  // T01533：标题区按下选中守卫——manual 排序时行 draggable 会劫持鼠标拖拽致标题无法选择复制；
+  // 自标题按下起临时对该行禁用行拖拽（改从行内其他区域仍可拖动排序），松开指针即恢复。
+  const [titleSelId, setTitleSelId] = useState('');
+  // T00566：本地静默清空某任务 ai_state（已读）——不打断列表，不触发全表刷新
+  const setTasksStateRead = (id: string) => {
+    const clear = (arr: Task[]) => arr.map((x) => (x.id === id && x.ai_state ? { ...x, ai_state: '' } : x));
+    setTodo(clear); setDone(clear);
+  };
+  const [search, setSearch] = useSessionState<string>('tasks.search', ''); // T00560：命令面板跳转写入搜索词
+  const searchInputRef = useRef<HTMLInputElement>(null); // T02952：清空按钮点击后把光标还回搜索框
+  // T02949：派生单裁决面板态（预设选项由服务端单源拉取；提交后结果由服务端追加到详情末尾）
+  const [rulingTask, setRulingTask] = useState<Task | null>(null);
+  const [rulingOptions, setRulingOptions] = useState<string[]>([]);
+  const [rulingDraft, setRulingDraft] = useState('');
+  const [rulingBusy, setRulingBusy] = useState(false);
+  // T00836：命令面板点击任务后下发的「定位」意图——滚动到该行并高亮 + 展开记录，定位完成即消费清空
+  const [focusTaskId, setFocusTaskId] = useSessionState<string>('tasks.focusId', '');
+  const [focusTab, setFocusTab] = useSessionState<string>('tasks.focusTab', '');
+  // T00836 二轮：聚焦任务所属项目——任务可能属于非当前 activeProject 的项目，
+  // 若不下发此 id，切换列表后会因「目标行不在当前项目列表」而定位失败。
+  const [focusProjectId, setFocusProjectId] = useSessionState<string>('tasks.focusProjectId', '');
+  // T02206：定位意图的放弃时刻（0=无在途）。原一次性 DOM 检查会在首轮（列表尚未按新项目重载完、
+  // 目标行还不存在）就清键，高亮静默丢失；改为带截止时间的重试收口——列表每次变化都重认目标行，
+  // 到点仍未命中才清空并给一次明示提示（与 T02196 徽标通道同口径）。
+  const [focusDeadline, setFocusDeadline] = useState(0);
+  // T01562：真抽屉详情——当前打开抽屉的任务（按 task.id 作 key，切换任务即重挂载）；focusDrawerId 由 focusTaskByNo 写入
+  const [drawerTask, setDrawerTask] = useState<Task | null>(null);
+  // T01568：抽屉落位标签页——外部跳转（focusTaskByNo 传 'result' 等）写入 focusDrawerTab，开抽屉即落该页；
+  // 手动开抽屉不写（保持 null → 抽屉默认「描述」），两套入口互不污染。
+  const [drawerTab, setDrawerTab] = useState<TaskDetailTab | null>(null);
+  const [focusDrawerId, setFocusDrawerId] = useSessionState<string>('tasks.focusDrawerId', '');
+  const [focusDrawerTab, setFocusDrawerTab] = useSessionState<string>('tasks.focusDrawerTab', '');
+  // T02196：标题区「派生自」徽标点击定位——badgeLocate 承载待定位的父任务，locateFlashId 驱动高亮动画。
+  // 高亮用 state 加类而非 locateTaskRow 那套命令式改 style：定位期间列表会随任意状态重渲染，
+  // 内联样式会被 React 按 props 覆写回原值，动画一闪即没。
+  // id 为空表示只有编号可用（父任务不在当前已加载列表里）；retrieved=已发起编号检索；until 是该意图的放弃时刻。
+  const [badgeLocate, setBadgeLocate] = useState<{ taskNo: string; id: string; tab: ActiveTab; retrieved: boolean; until: number } | null>(null);
+  const [locateFlashId, setLocateFlashId] = useState('');
+  // T00757：列表 tab——待办/已完成/搁置三个列表标题并排为 tab，仅渲染激活 tab 的列表（会话级保持）
+  const [activeTab, setActiveTab] = useSessionState<ActiveTab>('tasks.activeTab', 'todo');
+  // 主列表分页：后端按页拉取 + 加载更多；hasMore=true 表示当前页刚好满页、可能还有更多
+  const PAGE_SIZE = 200;
+  const [hasMore, setHasMore] = useState(false);
+  // T03214（UX-02 ①）：页脚状态（剩余条数 / 已加载全部）——随每轮取数更新，拿不到服务端总数时保持 null 不猜数
+  const [pageStatus, setPageStatus] = useState<PaginationView | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [organizeToolId, setOrganizeToolId] = usePersistentState('tasks.organizeToolId', '');
+  // T02257：/aitools 接入 T02213 共享失败态层——此前首个 await 在 try 之外，
+  // /aitools 失败时 void loadTools() 不接拒绝（unhandled rejection），工具列表还静默为空，
+  // AI 按钮点开只提示「先添加模型」，把取数故障误导成未配置。
+  const toolsRes = useResource<AITool[]>(async () => {
+    const list = await api.get<AITool[]>('/aitools');
+    // T00534：统一以模型菜单配置为准——始终使用默认整理工具，不再由本页下拉选择
+    try {
+      const defaults = await api.get<{ organize: string | null; develop: string | null }>('/aitools/defaults');
+      const def = list.find((t) => t.id === defaults.organize) ?? list[0];
+      if (def) setOrganizeToolId(def.id);
+    } catch { /* 默认查询失败则保持空选 */ }
+    return list;
+  });
+  // 默认整理工具排最前，便于选择
+  const tools = useMemo(
+    () => [...(toolsRes.data ?? [])].sort((a, b) => Number(b.isDefaultOrganize) - Number(a.isDefaultOrganize)),
+    [toolsRes.data],
+  );
+  // T03176（D-14）：AI 可用性单源诊断（与后端 runtimeWithModel 同口径）——不可用时工具条 AI 按钮可见但禁用，
+  // 点击只回显具体原因；页面不隐藏入口，避免「先关掉再说」。
+  const readiness = useAiReadiness();
+  const aiDown = aiBlocked(readiness);
+  /** 前置提示统一口径：诊断有具体缺失项（未配置/全停用/未填模型/配置不符）时说原文，否则说调用方文案 */
+  const aiBlockedFlash = (fallback: string) => (aiDown && readiness ? `AI 暂不可用：${readiness.reason}` : fallback);
+
+  // 任务分类：分类列表 + 顶部筛选（会话级）+ 新建任务所选分类（会话级）
+  const [taskCats, setTaskCats] = useState<TaskCategory[]>([]);
+  const [catFilter, setCatFilter] = useSessionState('tasks.catFilter', '');
+  // T02283：主列表取数的显式状态。分页装载结构（待办/已完成/hasMore）保持不变，只把失败显式化，
+  // 形态与 T02213 的 ResourceHintView 同构（loading|ready|error + reload），可直接喂 ResourceHint。
+  const [tasksPhase, setTasksPhase] = useState<FetchPhase>('loading');
+  const [tasksError, setTasksError] = useState('');
+  // T02291：筛选命中的服务端总条数（走 `total=1` 通道；null=本会话还没成功取过数，页脚不猜数）
+  const [serverTotal, setServerTotal] = useState<number | null>(null);
+  // T02290：搁置列表此前是裸吞 catch——失败后 shelvedTasks 保持旧值/空数组，页面既无失败态也无重试入口，
+  // 「暂无搁置任务」空态会把取数故障冒充成「本来就没数据」。补一份与主列表同形的显式状态喂 ResourceHint。
+  const [shelvedPhase, setShelvedPhase] = useState<FetchPhase>('loading');
+  const [shelvedError, setShelvedError] = useState('');
+  // T00474：优先级筛选（urgent/high/normal/low，会话级保持；空=全部）
+  const [priorityFilter, setPriorityFilter] = useSessionState('tasks.priorityFilter', '');
+  // T03232（PM-203③）：自定义字段筛选/排序。字段定义挂项目，取值随项目切换重新拉取；
+  // 筛选走服务端（WHERE EXISTS），排序也走服务端（ORDER BY 字段值），分页前后口径一致。
+  const [projectFields, setProjectFields] = useState<CustomField[]>([]);
+  const [fieldFilterField, setFieldFilterField] = useSessionState('tasks.fieldFilterField', '');
+  const [fieldFilterOp, setFieldFilterOp] = useSessionState('tasks.fieldFilterOp', '');
+  const [fieldFilterValue, setFieldFilterValue] = useSessionState('tasks.fieldFilterValue', '');
+  // 形如 `<fieldId>|asc`；默认空=不按字段排序（保持后端既有排序）
+  const [fieldSort, setFieldSort] = usePersistentState('tasks.fieldSort', '');
+  const activeField = projectFields.find((f) => f.id === fieldFilterField);
+  const fieldsDisabled = !activeProject || activeProject === ALL_PROJECTS || projectFields.length === 0;
+  const fieldFilterNeedsValue = needsFieldValue(fieldFilterOp);
+  const onFieldFilterField = (id: string) => {
+    // 换字段时把算子重置成该类型的默认值（文本→包含、其余→等于），旧值清空——跨类型沿用旧算子会立刻变成无效参数
+    setFieldFilterField(id);
+    const f = projectFields.find((x) => x.id === id);
+    setFieldFilterOp(f ? defaultFieldOp(f.type) : '');
+    setFieldFilterValue('');
+  };
+  const clearFieldFilter = () => { setFieldFilterField(''); setFieldFilterOp(''); setFieldFilterValue(''); };
+  const [newCategory, setNewCategory] = useSessionState<string>('tasks.new.category', '');
+  // 智能分类：默认启用，根据标题智能匹配任务类型（应用于新建任务的自动分类）
+  const [smartCat, setSmartCat] = usePersistentState('tasks.smartCat', true);
+  // T03255：分类/优先级建议——新建表单一份、行内编辑同时只开一条；建议只展示，采纳才写表单/任务
+  const [newSuggest, setNewSuggest] = useState<TaskSuggestion | null>(null);
+  const [newSuggestBusy, setNewSuggestBusy] = useState(false);
+  const [rowSuggest, setRowSuggest] = useState<{ taskId: string; data: TaskSuggestion } | null>(null);
+  const [rowSuggestBusy, setRowSuggestBusy] = useState<string | null>(null);
+  // T03256（AI-203③）：总开关——关闭时建议入口整体隐藏（服务端同时拒绝生成，双端一致）
+  const [suggestEnabled, setSuggestEnabled] = useState(true);
+  // T03257（AI-203④）：台账里是否展示过建议——展示过就说明「启用过」，此后 AI 失效只禁用不隐藏
+  const [suggestEverShown, setSuggestEverShown] = useState(false);
+  const suggestEntry = suggestEntryState({ featureEnabled: suggestEnabled, everShown: suggestEverShown, readiness });
+  // 新建任务进行中：全局 busy store，切页不丢失，防止请求进行中切页后再点重复插入
+  const creating = useBusy('tasks.create');
+  // 「AI 美化」按任务隔离的进行中集合：不同任务并行互不干扰，动画只作用于触发任务
+  // 美化运行态/批量独占/标题草稿提升到模块级 store（T00396 路径2）：切页卸载不销毁，
+  // in-flight 请求完成后回调照常写 store，回切页面即见最新运行指示与待确认草稿
+  const beautifySnap = useSyncExternalStore(beautifyStore.subscribe, beautifyStore.getSnapshot);
+  const beautifyBusy = beautifySnap.busy;
+  // 批量美化独占标识：批量进行期间不与单条并行，避免相互覆盖
+  const batchBusy = beautifySnap.batchBusy;
+  // 批量智能分类进行中标识：驱动工具条「批量分类」按钮的忙碌态
+  // T00535：改会话级持久化——切页后回来按钮忙碌态不丢失
+  const [classifyBusy, setClassifyBusy] = useSessionState<boolean>('tasks.classifyBusy', false);
+  // T00552：classifyBusy 与模块级 store 同步——运行中保持显示，完成自动复位并提示
+  useEffect(() => {
+    if (classifyBusy && !classifyStore.busy) { setClassifyBusy(false); return; }
+    if (!classifyBusy) return;
+    const timer = globalThis.setInterval(() => {
+      if (!classifyStore.busy) {
+        setClassifyBusy(false);
+        // T02365：结论按「成功 / AI 无匹配 / 调用失败」分桶说清，失败时带上首条错误原文，
+        // 不再用一句「未能匹配」把配置故障和模型未选中混为一谈。
+        // T02307：熔断中止时改说「中止 + 额度/限流」，与「无合适分类」彻底分开。
+        flash(classifyResultMessage(classifyStore, taskCats.map((c) => c.name)));
+        void loadTasks(activeProject);
+      }
+    }, 1500);
+    return () => globalThis.clearInterval(timer);
+  }, [classifyBusy, activeProject, taskCats]);
+  // 进行中请求的取消控制器：美化在 beautifyStore.aborts，提示词优化在 optimizeStore.aborts
+  // （两者都是模块级，切页卸载后「取消」入口与在途请求照样在）
+  // 是否有美化类操作进行中（单条或批量）：驱动工具条「取消/批量美化」按钮
+  const anyBeautify = batchBusy || Object.values(beautifyBusy).some(Boolean);
+  // T03684（全菜单通查）：本页其余「用户敲进去的内容」草稿一律升到会话级，与 descDrafts 同口径——
+  // 此前它们是裸 useState：切一级菜单整页卸载 → 草稿清空，回来只剩空框（症状与工单标题一致）。
+  // 不升的三类刻意保留组件级：imgDrafts（值里是截图对象，非 JSON 安全，序列化会静默变形）、
+  // failDialog（弹窗态，切页时弹窗本就关掉）、wip/tzDrafts（看板设置浮层内即时提交，无跨页续写场景）。
+  const [drafts, setDrafts] = useSessionState<Record<string, string>>('tasks.organizeDrafts', {}); // taskId -> 待确认的梳理结果
+  // T00535 同口径：描述草稿是用户正在敲的内容，改会话级持久化——切页回来不再清空
+  const [descDrafts, setDescDrafts] = useSessionState<Record<string, string>>('tasks.descDrafts', {}); // taskId -> 描述编辑草稿
+  // T03684：「提示词优化」运行态提升到模块级 store（键域 `tasks:`，与提示词页/需求页互不抢占）。
+  // 此前 busy 标志、取消控制器、结果回填都挂在页面组件里，切一级菜单即整页卸载 →
+  // 呼吸态消失、取消无处可点、AI 回来后 setDescDrafts 打在已卸载组件上被丢弃。
+  // 现在：① busy 来自 store，回切页面继续显示「正在生成优化文案…」；
+  //      ② 结果先 park 在 store，页面回切由 useOptimizeStore 的 drain 落到描述草稿（等价当场回填）。
+  const optimizeSnap = useOptimizeStore(OPTIMIZE_SCOPE_TASKS, (taskId, result) => {
+    setDescDrafts((prev) => ({ ...prev, [taskId]: result.text }));
+    flash(`提示词优化完成（输入来源：${result.source}），可编辑后保存`);
+  });
+  const optimizingMap = useMemo(() => busyScope(optimizeSnap, OPTIMIZE_SCOPE_TASKS), [optimizeSnap]);
+  const titleDrafts = beautifySnap.drafts; // taskId -> 标题编辑草稿（美化结果/手动编辑共用，切页保留）
+  const [imgDrafts, setImgDrafts] = useState<Record<string, ImageDraft>>({}); // taskId -> 图片增删草稿
+  const [previewId, setPreviewId] = useState(''); // 当前放大预览的图片 id
+  // T05708：预览来源标记——大图跟随点击位置原位渲染（描述区 / 验证失败反馈窗各自一份挂载点，不同时双渲染）
+  const [previewSrc, setPreviewSrc] = useState<'desc' | 'failback'>('desc');
+  // T03214（UX-02 ③）：提示改走分级通道——info 2.5 秒、error ≥6 秒且可关闭/复制
+  const { notice, flash, dismiss: dismissNotice } = useNotice();
+  // 刚完成"复制"的任务 id，用于按钮短暂显示"已复制✓"反馈
+  const [copiedId, setCopiedId] = useState('');
+  // 描述 展开/收起 状态：descExpanded 记录已展开的 taskId，默认收起不展示摘要，点标题行箭头展开看完整描述
+  // T03684：展开轴同样是「看到哪儿」的会话状态，切页回来不该打回原形
+  const [descExpanded, setDescExpanded] = useSessionState<Record<string, boolean>>('tasks.descExpanded', {});
+  // T01384：描述动画可见态——收起时保留挂载以播放收起过渡，transitionEnd 后卸载（内容重，避免常驻渲染）
+  const [descVis, setDescVis] = useState<Record<string, boolean>>({});
+  // AI 梳理摘要 展开/收起：与描述展开同风格（lucide 蓝色箭头），默认收起
+  const [summaryExpanded, setSummaryExpanded] = useSessionState<Record<string, boolean>>('tasks.summaryExpanded', {});
+  // 处理结果 草稿/展开状态：resultDrafts 存在即进入编辑态（有值时可点击「编辑」重新编辑）
+  const [resultDrafts, setResultDrafts] = useSessionState<Record<string, string>>('tasks.resultDrafts', {});
+  // 处理结果 展开/收起：随任务行详情一起收起/展开，默认收起（有值也收起，点操作行图标展开）
+  const [resultOpen, setResultOpen] = useSessionState<Record<string, boolean>>('tasks.resultOpen', {});
+  // T00521 调整：验证失败反馈展开态（查看/修改窗口与处理结果同款，展示态聚焦【验证失败】段）
+  const [failbackOpen, setFailbackOpen] = useSessionState<Record<string, boolean>>('tasks.failbackOpen', {});
+
+  // T00610：验证失败反馈录入弹窗（文本 + 截图）与提交忙碌态
+  const [failDialog, setFailDialog] = useState<{ taskId: string; title: string; text: string; images: PastedImage[] } | null>(null);
+  /** 移除反馈弹窗内待上传截图（S2004：从 JSX 深层嵌套箭头下沉为组件级回调） */
+  const removeFailImage = (imgId: string) => setFailDialog((d) => (d ? { ...d, images: d.images.filter((x) => x.id !== imgId) } : d));
+  const [failBusy, setFailBusy] = useState(false);
+  // 验证失败反馈编辑草稿：存在即编辑态，保存写回 handle_result 全文
+  const [fbDrafts, setFbDrafts] = useSessionState<Record<string, string>>('tasks.fbDrafts', {});
+  // 「已完成」栏验证状态过滤：默认仅展示未验证，便于优先处理待核对的完成项；all=全部
+  // T03214（UX-02 ②）：此前是裸 useState——切到别的页再回来就回到默认值，与搜索/分类/优先级筛选不一致。
+  // 升级为会话级：切页返回保持，重开应用清空。
+  const [doneFilter, setDoneFilter] = useSessionState<'all' | 'unverified' | 'verified'>('tasks.doneFilter', 'unverified');
+  /** 八期 §3.1.1：Git 徽标显隐开关（列表工具条，会话级保持；现状全站无表头右键菜单，不另造该机制） */
+  const [gitOn, setGitOn] = useSessionState('tasks.git.badge', true);
+  // 待办/已完成区块排序：会话级偏好，默认保持后端顺序
+  const [todoSort, setTodoSort] = usePersistentState<'default' | 'timedesc' | 'timeasc' | 'pdesc' | 'pasc' | 'manual'>('tasks.todoSort', 'default'); // T01697：排序偏好持久化（重启保持）
+  const [doneSort, setDoneSort] = usePersistentState<'default' | 'timedesc' | 'timeasc' | 'pdesc' | 'pasc' | 'manual'>('tasks.doneSort', 'default'); // T01697
+  // T00456 / PRD UX-1：视图模式（列表/看板）会话级保持
+  const [viewMode, setViewMode] = useSessionState<'list' | 'board'>('tasks.viewMode', 'list');
+  // T03209（PM-101）：看板隐藏空列——会话级保持，切换页签/窗口期间保持
+  const [boardHideEmpty, setBoardHideEmpty] = useSessionState<boolean>('tasks.board.hideEmpty', false);
+  // T03209（PM-101）：WIP 上限输入草稿（按项目存放，提交成功后清理）
+  const [wipDrafts, setWipDrafts] = useState<Record<string, string>>({});
+  const [wipBusy, setWipBusy] = useState(false);
+  // T03268（PRD 4.2）：项目时区输入草稿（按项目存放，提交成功后清理）
+  const [tzDrafts, setTzDrafts] = useState<Record<string, string>>({});
+  const [tzBusy, setTzBusy] = useState(false);
+
+  // T00466：数据刷新时间戳——刷新后 updated_at 晚于该值的行闪烁一次（与提示词页 flush 动效统一）
+  const [refreshFlash, setRefreshFlash] = useState(0);
+  // T00489：按住行 200ms 才触发缩放（快速点击不缩放，点行内按钮不触发——消除按钮点击漂移感）
+  const [pressId, setPressId] = useState('');
+  // T00496：项目自绘下拉展开态（项目名后动态徽标：橙=待办数、黄=未验证数）
+  const [projOpen, setProjOpen] = useState(false);
+
+  // T00655：项目排序与置顶——排序方式会话级持久（下次进入恢复）；置顶经项目 sort_weight 持久到后端
+  const [projSortMode, setProjSortMode] = usePersistentState<ProjectSortMode>('tasks.projectSort', 'default'); // T01697
+  const [projSortOpen, setProjSortOpen] = useState(false);
+  const projSortRef = useRef<HTMLSpanElement | null>(null); // T00655：排序菜单外部点击收起
+  // T03623：工具栏「更多」折叠——导出项目 / 分类筛选 / 优先级筛选 / 自定义字段筛选与排序默认收起，点开为第二排
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreBtnRef = useRef<HTMLButtonElement | null>(null);
+  const morePanelRef = useRef<HTMLFieldSetElement | null>(null);
+  const sortedProjects = useMemo(() => sortProjects(projects, projSortMode), [projects, projSortMode]); // T00663：排序逻辑复用共享模块
+
+  /** T00655：置顶/取消置顶——置顶写入较大 sort_weight（默认序下排最前），取消归零 */
+  async function toggleProjectPin(pj: Project) {
+    try {
+      const nowPinned = await togglePinShared(pj); // T00663：置顶逻辑复用共享模块
+      flash(nowPinned ? `已置顶「${pj.name}」（默认排序下排最前）` : `已取消置顶「${pj.name}」`);
+      void loadProjects();
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    }
+  }
+  const projDropRef = useRef<HTMLDivElement | null>(null);
+  // T01584：上次「点击刷新项目计数」的时间戳——连点只按节流窗口拉一次，不打爆后端
+  const projCountsAtRef = useRef(0);
+  const pressTimer = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  const loadProjects = useCallback(async () => {
+    await refreshProjectList();
+    const list = getProjectListSnapshot();
+    if (list.length === 0) return;
+    // T03211（PM-105）：全部项目是显式视图，不参与「回退到首个项目」的失效纠正
+    if (activeProject === ALL_PROJECTS) return;
+    // 持久化的 activeProject 可能已失效（项目被删）：不在列表内则回退到首个有效项目并纠正持久化，避免反复踩空
+    if (!activeProject || !list.some((p) => p.id === activeProject)) {
+      setActiveProject(list[0].id);
+    }
+  }, [activeProject]);
+
+  /** T01584：展开项目下拉时按需刷新徽标计数（待办/未验证）。
+   *  既有刷新链路是「SSE 变更推送 + 10s 外部变更轮询」，两者都只保证最终一致——
+   *  用户点开下拉那一刻看到的仍可能是旧值（断线兜底期间、或别的窗口刚改完）。
+   *  这里把「点击」变成主动拉取：800ms 节流窗口内的连点不重复发请求（约束 3）。 */
+  const refreshProjCounts = useCallback(() => {
+    const now = Date.now();
+    if (now - projCountsAtRef.current < 800) return;
+    projCountsAtRef.current = now;
+    void loadProjects();
+  }, [loadProjects]);
+
+  /**
+   * 分页拉取任务。搜索/分类经后端过滤后再分页，保证分页下检索结果完整（而非只搜已加载页）；
+   * offset=0 且 replace=true 为重置拉取（切项目/搜索/分类/操作后刷新），否则为追加下一页。
+   */
+  const fetchTasks = useCallback(async (projectId: string, offset: number, replace: boolean) => {
+    if (!projectId) return;
+    const p = buildTaskListParams(projectId, offset, {
+      search, catFilter, priorityFilter, fieldFilterField, fieldFilterOp, fieldFilterValue, fieldSort,
+    });
+    p.set('limit', String(PAGE_SIZE));
+    // T02283：主列表拉取失败此前一路冒泡——`void loadTasks(activeProject)`（约 30 处调用点）不接拒绝，
+    // 断供时既刷出 unhandled rejection，界面又停在「暂无待办任务」空态冒充正常。
+    // 改为就地收下：失败只置 error 态，绝不覆盖上次成功数据（与 T02213 同口径）。
+    let list: Task[];
+    // T03214（UX-02 ①）：本轮信封里的服务端总数——hasMore 判据要用它，不能等 setState 后再读（异步）
+    let fetchedTotal: number | null = null;
+    try {
+      const pTotal = new URLSearchParams(p);
+      pTotal.set('total', '1');
+      // T02284 通道在旧安装包后端上不存在（实测装机 39877 带 total=1 仍回裸数组），
+      // 故按可空信封解析：拿不到 total 时页脚不显示总数，主列表不受影响。
+      const res = await api.get<Paged<Task> | Task[]>(`/tasks?${pTotal.toString()}`);
+      const page = Array.isArray(res) ? { items: res, total: null as number | null } : { items: res.items, total: res.total };
+      list = page.items;
+      fetchedTotal = page.total;
+      setServerTotal(page.total);
+      setTasksPhase('ready'); setTasksError('');
+    } catch (e) {
+      setTasksPhase('error');
+      setTasksError(e instanceof Error ? e.message : String(e));
+      return;
+    }
+    const nextTodo = list.filter((t) => t.status === 'todo');
+    const nextDone = list.filter((t) => t.status === 'done');
+    setTodo((prev) => (replace ? nextTodo : [...prev, ...nextTodo]));
+    setDone((prev) => (replace ? nextDone : [...prev, ...nextDone]));
+    // T03214（UX-02 ①）：满页只是「可能有下一页」；拿到服务端总数时以「已取回数 < 总数」为准，正好一页不再多点一次空页
+    const pageView = paginationStatus(fetchedTotal, offset + list.length, list.length === PAGE_SIZE);
+    setHasMore(pageView.canLoadMore);
+    setPageStatus(pageView);
+    // T01570：两套查看态共用同一份数据快照——整表刷新后把抽屉持有的任务对象换成新快照，
+    // 否则行内编辑保存 / MCP 回传后，已开着的抽屉仍是打开那一刻的旧对象（要关开才更新），
+    // 用户在旧文本上再保存就会覆盖掉刚写入的新内容（丢更新）。
+    // 编辑态不在这里跳过：抽屉自身 useEffect（editing 非空时不同步草稿）已保护草稿，
+    // 而取消编辑后要「展示最新」恰恰依赖新快照继续流入 task prop——跳过反而会卡在旧值（探针 S6c 实证）。
+    // 查找函数先落到具名常量：setDrawerTask 内只保留一层回调，避免多层内联箭头（S2004）
+    const findInSnapshot = (id: string) => findTaskInLists([nextTodo, nextDone], id);
+    setDrawerTask((cur) => newerDrawerTask(cur, findInSnapshot));
+    // T00719：搁置列表随同一套查询条件（关键词/分类/优先级）刷新；搁置量通常较少，直接全量拉取（无 offset）
+    try {
+      const ps = new URLSearchParams(p);
+      ps.set('shelved', '1');
+      ps.delete('offset');
+      const nextShelved = await api.get<Task[]>(`/tasks?${ps.toString()}`);
+      setShelvedTasks(nextShelved);
+      setShelvedPhase('ready');
+      setShelvedError('');
+      const findShelved = (id: string) => findTaskInLists([nextShelved], id);
+      setDrawerTask((cur) => newerDrawerTask(cur, findShelved));
+    } catch (e) {
+      // T02290：保留「搁置拉取失败不打断主列表」的既有取舍，只是不再无声——置 error 让搁置 tab 给出原因与重试，
+      // 旧数据仍在 shelvedTasks 里，由 ResourceHint 的 stale 语义标成「上次成功的数据，可能过期」。
+      setShelvedPhase('error');
+      setShelvedError(e instanceof Error ? e.message : String(e));
+    }
+  }, [search, catFilter, priorityFilter, fieldFilterField, fieldFilterOp, fieldFilterValue, fieldSort]);
+
+  const loadTasks = useCallback(async (projectId: string) => {
+    if (!projectId) return;
+    await fetchTasks(projectId, 0, true);
+    // T00466：刷新后打时间戳，updated_at 晚于该值的行播 flush 动画（与提示词页统一）
+    setRefreshFlash(Date.now());
+  }, [fetchTasks]);
+
+  /** 加载更多：从已加载总数偏移处追加下一页（待办与已完成列表的最新长度在依赖中保证闭包最新） */
+  const loadMore = useCallback(async () => {
+    if (!activeProject || loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    try {
+      await fetchTasks(activeProject, todo.length + done.length, false);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [activeProject, loadingMore, hasMore, todo.length, done.length, fetchTasks]);
+
+  // ===== T03215（PM-304）：可见列表派生上提 + 窗口化 =====
+  // 窗口化后滚动会驱动本组件重渲染；派生计算（过滤/排序/父子装配）必须留在组件级 useMemo 里，
+  // 否则每帧重跑一遍 5000 条的 filter+sort+O(n²) 装配，等于把省下来的渲染成本又还回去。
+  const kw = search.trim().toLowerCase();
+  const matches = useMemo(() => makeTaskMatcher(kw, catFilter), [kw, catFilter]);
+  const visibleTodo = useMemo(() => arrangeTaskTree(sortTasks(todo.filter(matches), todoSort)), [todo, matches, todoSort]);
+  const visibleDone = useMemo(() => arrangeTaskTree(sortTasks(done.filter(matches).filter((t) => matchVerified(t, doneFilter)), doneSort)), [done, matches, doneSort, doneFilter]);
+  const visibleShelved = useMemo(() => arrangeTaskTree(sortTasks(shelvedTasks.filter(matches), shelvedSort)), [shelvedTasks, matches, shelvedSort]);
+  // 行内拖拽重排需要整表 id 顺序：原实现让每个渲染行都重算一次整表 id（O(n²)），这里一次算好传下去
+  const todoIds = useMemo(() => visibleTodo.map((t) => t.id), [visibleTodo]);
+  const doneIds = useMemo(() => visibleDone.map((t) => t.id), [visibleDone]);
+  const shelvedIds = useMemo(() => visibleShelved.map((t) => t.id), [visibleShelved]);
+  // 一次只挂载一个 tab 的列表，故整块共用一个窗口实例（看板视图不参与窗口化）
+  const activeVisible = activeTab === 'done' ? visibleDone : activeTab === 'shelved' ? visibleShelved : visibleTodo;
+  const activeVisibleIds = activeTab === 'done' ? doneIds : activeTab === 'shelved' ? shelvedIds : todoIds;
+  // ===== 八期 §3.1：任务 ↔ Git 提交徽标 =====
+  // 摘要取数必须在组件级一次算好（本页唯一 SHA 集合 → 一次批量请求）：逐行请求等于让 200 行页面
+  // 触发 200 次 git 子进程，且窗口化滚动会反复回收行、造成同一提交被反复解析（§3.1.6 红线）。
+  const gitBadgeTasks = useMemo(
+    () => (viewMode === 'board' ? [...todo, ...done] : activeVisible),
+    [viewMode, todo, done, activeVisible],
+  );
+  const workspaceOfTask = useCallback(
+    (t: Task) => projects.find((p) => p.id === (t.project_id || activeProject))?.workspace_path ?? '',
+    [projects, activeProject],
+  );
+  const gitSummaries = useGitSummaries(gitBadgeTasks, gitOn, workspaceOfTask);
+  /** §3.1.5：未回写提示条只统计「本页已加载」范围（不新增全表扫描接口），与「仅未验证」过滤无关——
+   *  回写缺口是数据完整性问题，被筛选藏起来不等于不存在 */
+  const unlinkedDone = useMemo(
+    () => (gitOn ? done.filter((t) => (t.gitLinks?.length ?? 0) === 0) : []),
+    [gitOn, done],
+  );
+  const singleProjectForGit = isSingleProjectScope(activeProject);
+  // 「手动关联」是逐条补录队列：一次只弹一个任务的取数窗，补完一条推进下一条
+  const [gitLinkQueue, setGitLinkQueue] = useState<Task[]>([]);
+  const [gitLinkBusy, setGitLinkBusy] = useState(false);
+
+  /** 把本页未回写任务转成可直接交给外部 Agent 的回写指令（含 mtask_link_git_commit 调用样例） */
+  async function copyWriteBackInstruction() {
+    if (unlinkedDone.length === 0) { flash('本页没有未回写的已完成任务'); return; }
+    const sample = unlinkedDone.find((t) => t.task_no) ?? unlinkedDone[0];
+    const text = [
+      '请把以下已完成任务关联的 Git 提交 ID 回写到 MTask（MCP 工具 mtask_link_git_commit）：',
+      ...unlinkedDone.map((t) => `- ${t.task_no ?? '(无编号)'} | taskId=${t.id} | ${t.title}`),
+      '',
+      '调用样例：',
+      `mtask_link_git_commit { "taskNo": "${sample.task_no ?? ''}", "id": "${sample.id}", "commits": ["<40 位或 7~40 位 hex 提交 ID>"] }`,
+      '',
+      '说明：回写幂等（同任务同提交不重复建单）；提交需存在于该任务所属项目当前绑定的工作空间仓库中。',
+      '注意：已完成任务归档后会被物理删除，届时无法再补齐关联。',
+    ].join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      flash(`已复制 ${unlinkedDone.length} 条未回写任务的回写指令`);
+    } catch {
+      flash('复制失败，请手动选择复制', 'error');
+    }
+  }
+
+  /** §3.1.5「手动关联」：跨项目时不批量（工作空间各不相同），提示逐行操作 */
+  function startManualGitLink(startTask?: Task) {
+    if (!singleProjectForGit) { flash('跨项目视图请逐行操作：点击任务行的提交徽标进抽屉「Git」页手动关联'); return; }
+    const proj = projects.find((p) => p.id === activeProject);
+    if (!proj?.workspace_path) { flash('该项目未绑定工作空间，请先绑定仓库目录'); return; }
+    if (unlinkedDone.length === 0) { flash('本页没有未回写的已完成任务'); return; }
+    // T05556：点击某一条时只补录这一条（跳过其余），不点则按全量逐条补录
+    const queue = startTask ? unlinkedDone.filter((t) => t.id === startTask.id) : unlinkedDone;
+    setGitLinkQueue(queue);
+  }
+
+  /** T05556：从未回写队列里移除某条（点击「跳过」时调用），不影响其余条目 */
+  function skipUnlinkedTask(task: Task) {
+    const proj = projects.find((p) => p.id === activeProject);
+    if (!proj?.workspace_path) { flash('该项目未绑定工作空间，请先绑定仓库目录'); return; }
+    // 从当前队列（已打开弹窗时）或未回写列表（未打开时）移除该条
+    if (gitLinkQueue.length > 0) {
+      setGitLinkQueue((prev) => prev.filter((t) => t.id !== task.id));
+      flash(`已跳过 ${task.task_no ?? task.id}，可从提示条重新打开`);
+    }
+  }
+
+  async function confirmManualGitLink(projectId: string, shas: string[], repoSub: string, targetIds?: string[]) {
+    const head = gitLinkQueue[0];
+    if (!head) return;
+    // T05690：弹窗里勾了哪些任务就给哪些任务写关联；未传勾选集时维持原来的「只写队首」语义
+    const targets = targetIds && targetIds.length > 0
+      ? gitLinkQueue.filter((t) => targetIds.includes(t.id))
+      : [head];
+    if (targets.length === 0) return;
+    const handled = new Set(targets.map((t) => t.id));
+    setGitLinkBusy(true);
+    const failed: string[] = [];
+    for (const target of targets) {
+      for (const sha of shas) {
+        try {
+          await api.post(`/tasks/${target.id}/git/links`, repoSub ? { sha, repoSub } : { sha });
+        } catch (e) {
+          failed.push(`${target.task_no ?? target.id} ← ${sha.slice(0, 7)}：${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    }
+    setGitLinkBusy(false);
+    // T05078：把「本次写给谁」「还剩几条」一起说清；队列用函数式更新，避免异步期间被
+    // onClose 清空后旧闭包又把已清掉的队列写回来（那会让用户以为还有任务待补录）。
+    const remaining = gitLinkQueue.filter((t) => !handled.has(t.id)).length;
+    const tail = remaining > 0 ? `；还有 ${remaining} 条未回写，可继续补录` : '';
+    const who = targets.length === 1 ? (targets[0].task_no ?? targets[0].id) : `${targets.length} 个任务`;
+    if (failed.length) flash(`部分关联失败：${failed.join('；')}${tail}`, 'error');
+    else flash(`已为 ${who} 手动关联 ${shas.length} 个提交${repoSub ? `（仓库 ${repoSub}）` : ''}${tail}`);
+    const last = remaining === 0;
+    setGitLinkQueue((prev) => prev.filter((t) => !handled.has(t.id)));
+    if (last) {
+      // 整条补录队列收尾才重载列表：逐条重载会把同一页拉 N 次
+      gitSummaries.refresh();
+      void loadTasks(projectId);
+    }
+  }
+
+  // T03621：「AI 智能关联」建议——服务端已二次校验（sha 真在该仓库、confidence 阈值、一提交只归一单），
+  // 前端只负责勾选确认；任何情况下都不自动写 task_git_links。
+  const [aiLinkBusy, setAiLinkBusy] = useState(false);
+  const [aiLinkResult, setAiLinkResult] = useState<AiLinkResult | null>(null);
+  const [aiLinkSel, setAiLinkSel] = useState<Set<string>>(new Set());
+  const [aiLinkApplying, setAiLinkApplying] = useState(false);
+
+  async function startAiGitLink() {
+    if (!singleProjectForGit) { flash('跨项目视图请逐行操作：点击任务行的提交徽标进抽屉「Git」页手动关联'); return; }
+    const proj = projects.find((p) => p.id === activeProject);
+    if (!proj?.workspace_path) { flash('该项目未绑定工作空间，请先绑定仓库目录'); return; }
+    if (!organizeToolId) { flash(aiBlockedFlash('请先在「模型管理」页添加并选择整理工具')); return; }
+    if (unlinkedDone.length === 0) { flash('本页没有未回写的已完成任务'); return; }
+    setAiLinkBusy(true);
+    try {
+      const r = await api.post<AiLinkResult>('/git/ai-link-suggest', { projectId: activeProject, toolId: organizeToolId });
+      setAiLinkResult(r);
+      // 默认全选：模型只给有把握的配对，且结果还要过一次人工确认才落库
+      setAiLinkSel(new Set(r.suggestions.flatMap((s) => s.commits.map((c) => `${s.taskId}|${c.sha}`))));
+      if (!r.ok) flash(r.error ?? r.message ?? 'AI 智能关联失败', 'error');
+      else if (r.suggestions.length === 0) flash(r.message ?? 'AI 未能找到有把握的匹配');
+      else flash(`AI 给出 ${r.suggestions.length} 条建议（${r.suggestions.reduce((n, s) => n + s.commits.length, 0)} 个提交），勾选确认后才会写入`);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    } finally {
+      setAiLinkBusy(false);
+    }
+  }
+
+  async function applyAiGitLink() {
+    const r = aiLinkResult;
+    if (!r) return;
+    const picks = r.suggestions.flatMap((s) =>
+      s.commits.filter((c) => aiLinkSel.has(`${s.taskId}|${c.sha}`)).map((c) => ({ taskId: s.taskId, taskNo: s.taskNo, sha: c.sha })));
+    if (picks.length === 0) { flash('请至少勾选一个提交'); return; }
+    setAiLinkApplying(true);
+    const failed: string[] = [];
+    for (const p of picks) {
+      try { await api.post(`/tasks/${p.taskId}/git/links`, { sha: p.sha }); }
+      catch (e) { failed.push(`${p.taskNo ?? p.taskId} ← ${p.sha.slice(0, 7)}：${e instanceof Error ? e.message : String(e)}`); }
+    }
+    setAiLinkApplying(false);
+    if (failed.length) flash(`部分关联失败：${failed.join('；')}`, 'error');
+    else flash(`已关联 ${picks.length} 个提交（${new Set(picks.map((p) => p.taskId)).size} 条任务）`);
+    setAiLinkResult(null);
+    setAiLinkSel(new Set());
+    gitSummaries.refresh();
+    void loadTasks(activeProject);
+  }
+
+  // 搁置列表是全量拉取（不分页），触底续取只对带分页的待办/已完成生效，否则会在看不见的列表上白取一页
+  const listWin = useTaskListWindow(
+    viewMode === 'list' ? activeVisible.length : 0,
+    hasMore && viewMode === 'list' && activeTab !== 'shelved',
+    loadMore,
+    !loadingMore,
+  );
+  const revealedForRef = useRef('');
+  /** 目标行没渲染在 DOM 里（被窗口切掉）时按索引把它滚进窗口；同一目标只强制一次，避免定位与窗口互相打转 */
+  const revealTaskRow = useMemo(() => (id: string, taskNo = ''): boolean => {
+    const idx = id ? activeVisibleIds.indexOf(id) : activeVisible.findIndex((t) => t.task_no === taskNo);
+    const key = id || `no:${taskNo}`;
+    if (idx < 0 || revealedForRef.current === key) return false;
+    revealedForRef.current = key;
+    listWin.revealIndex(idx);
+    return true;
+  }, [activeVisibleIds, activeVisible, listWin.revealIndex]);
+  useEffect(() => {
+    // 换目标即解除「已强制入窗过一次」的锁，否则回到同一任务时不再滚动定位
+    if (!focusTaskId && revealedForRef.current) revealedForRef.current = '';
+  }, [focusTaskId]);
+
+  // T00496：项目下拉点击外部关闭
+  useEffect(() => {
+    if (!projOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (projDropRef.current && !projDropRef.current.contains(e.target as Node)) setProjOpen(false);
+      // T00655：排序菜单与项目下拉共用外部点击收起（保守：点击非排序区即收起）
+      if (projSortRef.current && !projSortRef.current.contains(e.target as Node)) setProjSortOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [projOpen]);
+
+  // T03623：「更多」第二排——点击外部或按 Esc 收起；触发按钮与面板本身不算外部
+  useEffect(() => {
+    if (!moreOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (moreBtnRef.current?.contains(t) || morePanelRef.current?.contains(t)) return;
+      setMoreOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMoreOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey); };
+  }, [moreOpen]);
+
+  // T00521 调整：验证结果选择面板（通过/失败合一入口）点击外部关闭
+  const [verifyMenuId, setVerifyMenuId] = useState('');
+  const [verifyMenuPos, setVerifyMenuPos] = useState<{ top: number; left: number } | null>(null);
+  const verifyMenuRef = useRef<HTMLSpanElement | null>(null);
+  // T01299：面板经 Portal 挂到 body（逃出 .cv-auto 的 paint containment）——外点收起需同时放行面板内点击，
+  // 否则 mousedown 命中 body 上的面板即被收起，菜单项 click 永远不会触发。
+  const verifyMenuPanelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!verifyMenuId) return;
+    const onDoc = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (verifyMenuRef.current?.contains(target)) return;
+      if (verifyMenuPanelRef.current?.contains(target)) return;
+      setVerifyMenuId('');
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [verifyMenuId]);
+
+  const loadCategories = useCallback(async () => {
+    // 分类下拉不因加载失败而阻塞任务页：失败时保持空列表，仅分类功能不可用
+    try {
+      setTaskCats(await api.get<TaskCategory[]>('/task-categories'));
+    } catch { /* 忽略，任务页照常使用 */ }
+  }, []);
+
+  /** SSE 变更后校验选中项是否仍存活：剔除已删除任务的选中态，size 不变时返回原引用避免重渲染。
+   *  提取为具名函数，避免在 openChangeStream 回调内层层嵌套箭头函数。 */
+  const pruneSelectedIds = useCallback((list: Task[]) => {
+    setSelectedIds((prev) => {
+      const alive = new Set(list.map((t) => t.id));
+      const next = new Set([...prev].filter((id) => alive.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, []);
+
+  // T02213：选中项有效性校验的失败态。此前取数异常被 `.catch(() => undefined)` 吞掉——
+  // 校验没跑成，选中集合里可能留着已被他人删除/归档的任务，后续批量操作就作用在用户看不见的行上。
+  const [pruneError, setPruneError] = useState('');
+  const validateSelected = useCallback(() => {
+    if (!activeProject) return;
+    // T03211：全部项目视图校验跨项目选中集；limit 取上限，避免把第 200 条之后的选中项误判为已删除
+    const q = scopeParams(activeProject);
+    q.set('archived', 'false');
+    q.set('limit', '500');
+    void api.get<Task[]>(`/tasks?${q.toString()}`)
+      .then((list) => { setPruneError(''); pruneSelectedIds(list); })
+      .catch((e) => setPruneError(e instanceof Error ? e.message : String(e)));
+  }, [activeProject, pruneSelectedIds]);
+
+  useEffect(() => { void loadProjects(); }, [loadProjects]);
+  // 初始/切项目加载；搜索与分类变化会重建 loadTasks（经 fetchTasks 依赖透传），此处防抖 300ms 后重置分页拉取，
+  // 避免搜索框逐击键都打后端
+  useEffect(() => {
+    if (!activeProject) return;
+    const t = setTimeout(() => void loadTasks(activeProject), 300);
+    return () => clearTimeout(t);
+  }, [activeProject, loadTasks]);
+  useEffect(() => { void loadCategories(); }, [loadCategories]);
+
+  // T03232（PM-203③）：项目字段随 activeProject 重取；失败不阻塞任务页——控件退化为「无字段」，列表照常
+  useEffect(() => {
+    if (!activeProject || activeProject === ALL_PROJECTS) { setProjectFields([]); return; }
+    let alive = true;
+    api.get<CustomField[]>(`/projects/${activeProject}/fields`)
+      .then((list) => { if (alive) setProjectFields(list); })
+      .catch(() => { if (alive) setProjectFields([]); });
+    return () => { alive = false; };
+  }, [activeProject]);
+
+  // T03232：切项目/字段被归档后持久化的字段 id 可能已失效——清掉，否则列表被筛成 0 行而控件看着「没筛」
+  useEffect(() => {
+    const ids = new Set(projectFields.map((f) => f.id));
+    if (fieldFilterField && !ids.has(fieldFilterField)) { setFieldFilterField(''); setFieldFilterOp(''); setFieldFilterValue(''); }
+    if (fieldSort && !ids.has(fieldSort.split('|')[0])) setFieldSort('');
+  }, [projectFields, fieldFilterField, fieldSort, setFieldFilterField, setFieldFilterOp, setFieldFilterValue, setFieldSort]);
+
+  // T00836：命令面板定位意图处理——若目标 tab 与当前不一致先切 tab（等该列表渲染后再定位）；
+  // 命中行则滚动居中 + 高亮 + 展开描述与处理结果（“显示当前记录信息”），定位完成即消费清空，避免重复触发
+  // M6-6.1：聚焦任务前的预处理（切项目 / 清过滤 / 切 tab）；返回 true 表示已执行动作、本轮定位中断
+  const runFocusPreCheck = (focusTaskId: string): boolean => {
+    // T00836 二轮：任务所属项目与当前 activeProject 不一致时，先切项目（会触发 loadTasks 重新加载该任务列表）
+    if (focusProjectId && activeProject !== focusProjectId) {
+      setActiveProject(focusProjectId);
+      setFocusProjectId('');
+      return true;
+    }
+    // T00836 二轮：分类/优先级/自定义字段过滤会把目标任务过滤出列表——定位前先清空，保证目标行在全量结果里可见
+    if (catFilter || priorityFilter || fieldFilterField) {
+      if (catFilter) setCatFilter('');
+      if (priorityFilter) setPriorityFilter('');
+      if (fieldFilterField) { setFieldFilterField(''); setFieldFilterOp(''); setFieldFilterValue(''); }
+      setFocusProjectId('__fetch_filter__');
+      return true;
+    }
+    if (focusTab && (focusTab === 'todo' || focusTab === 'done') && focusTab !== activeTab) {
+      setActiveTab(focusTab);
+      return true;
+    }
+    return false;
+  };
+
+  // M6-6.1：在已渲染列表中定位目标任务行并高亮。T02206：返回是否命中——未命中不再就地清键，
+  // 交由调用方按截止时间重试收口（跨项目跳转必然经历「换项目→重载列表→再渲染」，首轮检查基本都落空）。
+  const locateTaskRow = (focusTaskId: string): boolean => {
+    const el = document.querySelector(`[data-ttask-id="${focusTaskId}"]`);
+    // T03215（PM-304）：窗口化后「该行确实在结果集里但没渲染」成了常态——按索引把它强制入窗，
+    // nonce 变化会重跑本定位流程，下一轮即可命中；仍未命中才交给 8s 收口定时器明示失败。
+    if (!(el instanceof HTMLElement)) { revealTaskRow(focusTaskId); return false; }
+    try { el.scrollIntoView({ block: 'center' }); } catch { /* 忽略滚动异常 */ }
+    const prevOutline = el.style.outline;
+    const prevBg = el.style.background;
+    el.style.outline = '2px solid var(--accent)';
+    el.style.outlineOffset = '2px';
+    el.style.background = 'var(--accent-soft)';
+    setDescExpanded((p) => ({ ...p, [focusTaskId]: true }));
+    setResultOpen((p) => ({ ...p, [focusTaskId]: true }));
+    setFocusDeadline(0); // 命中即撤收口定时器，不让它在高亮窗口期内误清聚焦态
+    const restore = () => { el.style.outline = prevOutline; el.style.background = prevBg; setFocusTaskId(''); setFocusTab(''); };
+    globalThis.setTimeout(restore, 3000);
+    return true;
+  };
+
+  useEffect(() => {
+    if (!focusTaskId) {
+      // 无定位意图：撤掉收口定时器后直接返回（花括号显式成块，避免后续语句被误读为条件执行）
+      if (focusDeadline) { setFocusDeadline(0); }
+      return;
+    }
+    // 上一节清空过滤后列表重载完成、projectId 无实际目标，进入正式定位流程
+    if (focusProjectId === '__fetch_filter__') setFocusProjectId('');
+    if (runFocusPreCheck(focusTaskId)) return;
+    if (locateTaskRow(focusTaskId)) return;
+    // 目标行尚未渲染：保留定位意图（focusTaskId 不清），列表每次变化都会重跑本 effect 再认一次
+    if (!focusDeadline) setFocusDeadline(Date.now() + 8000);
+  }, [focusTaskId, todo, done, activeTab, activeProject, focusProjectId, catFilter, priorityFilter, fieldFilterField, focusDeadline, listWin.nonce, revealTaskRow]);
+
+  // T02206：到点收口。列表若一直不再变化，重试等不到下一次触发，故用定时器兜底放弃并**明示**一次
+  //（原实现在此处静默清键，用户只看到视图变了却不知定位到哪）。
+  useEffect(() => {
+    if (!focusTaskId || !focusDeadline) return;
+    const timer = globalThis.setTimeout(() => {
+      setFocusDeadline(0);
+      setFocusTaskId('');
+      setFocusTab('');
+      flash('定位目标行未出现在渲染结果中（可能被当前筛选条件筛掉，或在分页之外）');
+    }, Math.max(0, focusDeadline - Date.now()));
+    return () => clearTimeout(timer);
+  }, [focusTaskId, focusDeadline]);
+
+  /** T02196：按编号在「已渲染」的标题行里认目标——回落通道此时只有编号、没有 id */
+  const findRowElByNo = (no: string): HTMLElement | null => {
+    const label = `任务编号 ${no}`;
+    return [...document.querySelectorAll<HTMLElement>('[data-ttask-id]')]
+      .find((el) => el.querySelector(`[aria-label="${label}"]`) != null) ?? null;
+  };
+
+  // T02196：标题区「派生自」徽标点击的落地——目标行就在当前已加载列表里时，只做
+  // 「必要时切 tab + 滚动居中 + 短暂高亮」，不写搜索词、不清筛选、不动排序
+  // （任务原文约束「不得重置用户的其他筛选或排序条件」）。
+  // 列表里没有该行，或有但视图没呈现（分页之外、被当前筛选条件筛掉）时，才退回 focusTaskByNo
+  // 的编号检索通道，并先给出提示——让「视图被改变」始终是明示而非静默发生。
+  // 回落时定位意图不丢：检索是异步的（换项目→重载列表→渲染），故意图带截止时间留在 state 里，
+  // 列表每次变化都按编号再认一次目标行，命中后同样给 .locate-flash 高亮。
+  useEffect(() => {
+    if (!badgeLocate) return;
+    if (badgeLocate.id && badgeLocate.tab !== activeTab) { setActiveTab(badgeLocate.tab); return; }
+    const el = badgeLocate.id
+      ? document.querySelector<HTMLElement>(`[data-ttask-id="${badgeLocate.id}"]`)
+      : findRowElByNo(badgeLocate.taskNo);
+    if (el instanceof HTMLElement) {
+      const flashId = el.dataset.ttaskId ?? '';
+      setBadgeLocate(null);
+      try { el.scrollIntoView({ block: 'center' }); } catch { /* 忽略滚动异常 */ }
+      if (flashId) {
+        setLocateFlashId(flashId);
+        globalThis.setTimeout(() => setLocateFlashId((cur) => (cur === flashId ? '' : cur)), 1500);
+      }
+      return;
+    }
+    if (badgeLocate.retrieved) {
+      if (Date.now() > badgeLocate.until) setBadgeLocate(null); // 检索也没带来该行（编号不可达/被筛掉）即放弃，不让意图滞留
+      return;
+    }
+    // T03215（PM-304）：该行可能已在列表里但被窗口切掉——先按索引强制入窗，nonce 重跑后再认一次
+    if (revealTaskRow(badgeLocate.id, badgeLocate.taskNo)) return;
+    flash(`原任务 ${badgeLocate.taskNo} 不在当前列表（视图未呈现该行），已按编号检索定位`);
+    setBadgeLocate({ ...badgeLocate, id: '', retrieved: true, until: Date.now() + 8000 });
+    void focusTaskByNo(badgeLocate.taskNo);
+  }, [badgeLocate, activeTab, todo, done, shelvedTasks, listWin.nonce, revealTaskRow]);
+
+  /** T02196：「派生自 xxx」徽标点击——按编号在当前已加载列表里找父任务，命中即原地定位（零视图状态变更）。
+   *  派生单与原任务同项目是常态，故绝大多数点击走的是这条通道；只有列表里确实没有该行
+   *  （跨项目、分页之外、被当前筛选条件筛掉）才退回 focusTaskByNo 的编号检索定位。 */
+  const locateDerivedTask = (taskNo: string | null | undefined): void => {
+    const no = taskNo?.trim();
+    if (!no) return;
+    const hit = [...todo, ...done, ...shelvedTasks].find((x) => x.task_no === no);
+    let tab: ActiveTab = 'todo';
+    if (hit) {
+      if (shelvedTasks.includes(hit)) tab = 'shelved';
+      else if (done.includes(hit)) tab = 'done';
+    }
+    setBadgeLocate({ taskNo: no, id: hit?.id ?? '', tab: hit ? tab : activeTab, retrieved: false, until: Date.now() + 8000 });
+  };
+
+  // T01562：外部跳转（focusTaskByNo openDrawer=true）写入 focusDrawerId 后，自动唤起右侧真抽屉；
+  // 与行内展开（快速预览）并存，抽屉=完整操作台。解析到任务即唤起并清空会话键。
+  // 列表尚未就绪时保留会话键（外部跳转后任务数据晚于会话键到达，过早清空会导致抽屉不弹），
+  // 仅在「已加载到数据却找不到该任务」（已删/不可见）时清空，避免会话键长期滞留。
+  // T01568：focusDrawerTab 与 focusDrawerId 成对消费——决定抽屉落在哪个标签页（非法值回落 desc），
+  // 且无论命中与否都清空，防止残留的 tab 键影响下一次手动开抽屉。
+  useEffect(() => {
+    if (!focusDrawerId) return;
+    const t = [...todo, ...done, ...shelvedTasks].find((x) => x.id === focusDrawerId);
+    const tab: TaskDetailTab | null = resolveDrawerTab(focusDrawerTab);
+    if (t) {
+      setDrawerTask(t);
+      setDrawerTab(tab);
+      setFocusDrawerId('');
+      setFocusDrawerTab('');
+      return;
+    }
+    if (todo.length + done.length + shelvedTasks.length > 0) {
+      setFocusDrawerId('');
+      setFocusDrawerTab('');
+    }
+  }, [focusDrawerId, focusDrawerTab, todo, done, shelvedTasks]);
+
+  // T01568：外部跳转的「定位意图」事件——会话键只在本页挂载那一刻被 useSessionState 读取一次，
+  // 而 OS 通知/铃铛/就绪条常在用户已停在任务页时触发（不重新挂载），只写 sessionStorage 会「点了没反应」。
+  // 事件把同一份意图直写本页状态；未挂载时没有监听者，仍由会话键在挂载时接管，两条路径落点一致。
+  // 抽屉优先用事件携带的完整任务直接打开：列表此刻可能仍筛着上一条通知的编号，按列表查找会静默丢失本次跳转。
+  useEffect(() => {
+    const onFocusIntent = (e: Event) => {
+      const d = (e as CustomEvent<FocusTaskIntent | undefined>).detail;
+      if (!d?.taskNo) return;
+      setSearch(d.taskNo);
+      if (!d.id) return; // 解析失败：仅带编号搜索词落到任务页，由用户自行检索
+      setFocusTaskId(d.id);
+      if (d.projectId) setFocusProjectId(d.projectId);
+      if (d.tab) { setFocusTab(d.tab); setActiveTab(d.tab); }
+      if (d.drawerTab && d.task) {
+        setDrawerTask(d.task);
+        setDrawerTab(d.drawerTab);
+        // 本页已直接接管本次跳转：清掉刚写入的会话键，否则任务页下次挂载（切页/刷新）会再弹一次旧抽屉
+        clearSessionState('tasks.focusDrawerId');
+        clearSessionState('tasks.focusDrawerTab');
+      } else if (d.drawerTab) {
+        setFocusDrawerId(d.id);
+        setFocusDrawerTab(d.drawerTab);
+      }
+    };
+    globalThis.addEventListener('mtaskFocusTask', onFocusIntent);
+    return () => globalThis.removeEventListener('mtaskFocusTask', onFocusIntent);
+    // 订阅只需一次：回调内全部是 useState 的 setter（身份稳定）
+  }, []);
+
+  /**
+   * T01570：行内三块展开态 → 抽屉落位（减少两套查看态各自的困惑）。
+   * 用户在列表里点开哪一块，就说明他正在看那块内容，抽屉打开即落对应标签页；
+   * 优先级取「正在处理的内容」在上：处理结果（含未保存草稿）> AI 摘要 > 描述；
+   * 三块都没展开过则返回 null，抽屉保持自身默认「描述」页（T01562 原行为不变）。
+   * 注：验证失败反馈（failbackOpen）在抽屉里没有对应标签页，故不参与映射。
+   */
+  const drawerTabFromInline = (t: Task): TaskDetailTab | null => {
+    if (resultOpen[t.id] || resultDrafts[t.id] !== undefined) return 'result';
+    if (summaryExpanded[t.id]) return 'summary';
+    if (descExpanded[t.id]) return 'desc';
+    return null;
+  };
+
+  // T01568：行内按钮开抽屉的统一入口；T01570：tab 省略=按行内已展开区块推断，显式传 null=强制走默认「描述」。
+  // 外部跳转（通知/就绪条）走 focusDrawerId 会话键 / mtaskFocusTask 事件并显式指定落位，不受推断影响。
+  const openDetailDrawer = (t: Task, tab?: TaskDetailTab | null): void => {
+    setDrawerTab(tab === undefined ? drawerTabFromInline(t) : tab);
+    setDrawerTask(t);
+  };
+
+  /**
+   * T01570：抽屉保存后的定点同步——把本次改写的字段就地合并进待办/已完成/搁置列表与抽屉自身，
+   * 行内对应区块立刻显示新文本，不再依赖 loadTasks 整表重载才更新（重载仍由 SSE/轮询作兜底，二者幂等）。
+   * 行内未保存草稿（resultDrafts/descDrafts）不动：那是用户正敲的内容，不能被抽屉的保存覆盖。
+   */
+  const applyTaskPatch = (taskId: string, patch: TaskPatch): void => {
+    const splice = (list: Task[]): Task[] => list.map((t) => (t.id === taskId ? { ...t, ...patch } : t));
+    setTodo(splice);
+    setDone(splice);
+    setShelvedTasks(splice);
+    // T01700：抽屉镜像合并时把 updated_at 抬为本地写入时刻——比任何「PATCH 落库前发出」的在途列表快照都新，
+    // fetchTasks 的版本守卫（见下）据此跳过旧快照，杜绝「外部 PATCH→立即保存/回滚→被旧快照打回」的丢更新竞态。
+    // 列表行不抬时间戳：其自愈由轮询签名（updated_at 入 sig）触发整表重载兜底，无需在客户端伪造。
+    const stamp = new Date().toISOString();
+    setDrawerTask((cur) => (cur?.id === taskId ? { ...cur, ...patch, updated_at: stamp } : cur));
+  };
+
+  // T00433：MCP 回传 / 队列执行 / 其他窗口改任务状态时，前端无感知——轻量轮询对比签名，有变化才刷新。
+  // 保护条件：任何未保存草稿或 AI 操作进行中时跳过本轮，避免打断用户编辑（变化留待下一轮干净窗口）。
+  // T00457：批量操作——多选模式 + 选中任务集合（跨待办/已完成统一 id 集合）
+  const [multiSelect, setMultiSelect] = useState(false);
+  // T00446 / INT-6：CSV 导入预览状态
+  const [csvPreview, setCsvPreview] = useState<{ items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null; categoryName: string }>; errors: Array<{ row: number; message: string }> } | null>(null);
+  const [csvImportKind, setCsvImportKind] = useState<'csv' | 'json'>('csv'); // T00556：导入类型分流
+  // T03267（PM-402②）：CSV 来源识别与字段映射——改映射要按原文件重解析，故保留原始字节
+  const [csvMeta, setCsvMeta] = useState<{ source: 'github' | 'jira' | 'generic'; headers: string[]; mapping: Record<string, string> } | null>(null);
+  const [csvRaw, setCsvRaw] = useState<ArrayBuffer | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // T02213：选中集清空后撤掉校验失败提示——否则下次勾选会把上一次的失败原因原样带出来
+  useEffect(() => { if (selectedIds.size === 0) setPruneError(''); }, [selectedIds]);
+  // T01065-FR1.6：批量操作撤销快照栈（操作前旧值；栈顶=最近一次；归档类不入栈，归档页可自行恢复）
+  // T01065 后续：由「只留最近一次」改为最多 MAX_UNDO_STEPS 级的栈——连续多次批量操作可逐级回退，
+  // 也可以从步骤列表直接回到中间某一步（撤销该步及其之后的所有步）。
+  const [batchStack, setBatchStack] = useState<BatchSnapshot[]>([]);
+  const [batchReceipt, setBatchReceipt] = useState<BatchReceipt | null>(null);
+  const [batchOpBusy, setBatchOpBusy] = useState(false);
+  // T00446：任务列表拖拽排序（manual 排序模式下启用）
+  const [dragTaskId, setDragTaskId] = useState('');
+  const [overTaskId, setOverTaskId] = useState('');
+  const externalSigRef = useRef('');
+  useEffect(() => {
+    if (!activeProject) return;
+    const tick = async () => {
+      const editing = Object.keys(titleDrafts).length > 0 || Object.keys(descDrafts).length > 0
+        || Object.keys(resultDrafts).length > 0 || Object.keys(drafts).length > 0
+        || Object.keys(imgDrafts).length > 0
+        || anyBeautify || classifyBusy || Object.keys(optimizingMap).some(Boolean);
+      if (editing) return;
+      try {
+        // T03211：外部变更签名轮询同样支持全部项目视图
+        // M4-b：这里原先拉的是 `/tasks?limit=500` 的**整行列表**（实测命中 500 行 = 402,501B、
+        // 服务端单次 9–21ms），却只用来拼下面这六个标量。改为走 /tasks/change-sig：同一套过滤与排序，
+        // 服务端只取六列并把拼串折成 SHA256 回传。参数一字未动，所以签名的变化时机与旧实现完全一致；
+        // 命中变更后仍按原路径 loadTasks 整行重取（那才是真正需要列表数据的时候）。
+        const sigQ = scopeParams(activeProject);
+        sigQ.set('archived', 'false');
+        sigQ.set('limit', '500');
+        const { sig } = await api.get<{ sig: string; rows: number }>(`/tasks/change-sig?${sigQ.toString()}`);
+        if (sig === externalSigRef.current) return;
+        externalSigRef.current = sig;
+        await loadTasks(activeProject);
+      } catch { /* 后端瞬时不可达：忽略本轮 */ }
+    };
+    const id = setInterval(() => void tick(), 10000);
+    const onVisible = () => { if (document.visibilityState === 'visible') void tick(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { clearInterval(id); document.removeEventListener('visibilitychange', onVisible); };
+  }, [activeProject, loadTasks, titleDrafts, descDrafts, resultDrafts, drafts, imgDrafts, anyBeautify, classifyBusy, optimizingMap]);
+
+  // T00444：SSE 实时变更通知——MCP 回传/队列自动回写/其他窗口的写库变更即时推送刷新，
+  // 10s 轮询保留作断线兜底。React 渲染机制天然保护编辑态（行 key=id 稳定、受控草稿独立 state）
+  useEffect(() => {
+    if (!activeProject) return;
+    return api.openChangeStream((kind) => {
+      if (kind === 'tasks' || kind === 'queue' || kind === 'plans') {
+        void loadTasks(activeProject);
+        // T00657：项目下拉的待办/未验证计数随任务变化 → 实时刷新项目列表
+        void loadProjects();
+        // 评审 P2-1 修复：选中项有效性校验移出 setState updater（原嵌套异步 setState 为反模式）；
+        // 串行 SSE 通知下幂等：重复校验以 alive 集合为准，size 不变时返回原引用避免重渲染
+        if (selectedIds.size > 0) validateSelected();
+      }
+    });
+  }, [activeProject, loadTasks, selectedIds, validateSelected]);
+  // 工具下拉展开期间监听全局焦点移出：内部元素间切换时 relatedTarget 仍在容器内不收起，移出容器才收起。
+  // 挂在 document 上而非容器 div，可避免为挂 onBlur 而给非交互容器加 tabIndex/role
+
+  async function createProject() {
+    const name = await askInput({ title: '新项目名称', placeholder: '请输入项目名称' });
+    if (!name) return;
+    let created: Project | undefined;
+    try {
+      created = await api.post<Project>('/projects', { name });
+    } catch (e) {
+      // T02481：重名（含历史资产/归档区占用）后端会回 400，以前这里没有 catch，
+      // 点击后既不建项目也不提示，看起来像按钮没反应。与改名/删除保持一致，把原文提示出来。
+      return flash(e instanceof Error ? e.message : String(e), 'error');
+    }
+    setActiveProject('');
+    void loadProjects();
+    // T00771：新建项目后顺带弹出工作空间绑定（可跳过）——建立项目名与工作空间路径的绑定关系
+    if (created?.id) {
+      setPkDraft(created.product_key ?? ''); // T04133：弹窗回显当前产品标签
+      setWsPickForNew(created);
+    }
+  }
+
+  /** T00771：绑定工作空间到项目（PATCH + 本地状态同步，项目切换时下拉条自动联动回显） */
+  async function bindWorkspace(projectId: string, path: string) {
+    const updated = await api.patch<Project>(`/projects/${projectId}`, { workspacePath: path });
+    patchProject(projectId, { workspace_path: updated?.workspace_path ?? path });
+    flash(`已绑定工作空间：${path}`);
+  }
+
+  /** T04133（PRD MEM-101③ / MEM-501）：保存产品标签——PATCH 后同步本地项目列表，保证下拉/弹窗回显 */
+  async function saveProductKey(projectId: string, raw: string): Promise<void> {
+    try {
+      const updated = await api.patch<Project>(`/projects/${projectId}`, { productKey: raw });
+      const value = updated?.product_key ?? raw.trim().toLowerCase();
+      patchProject(projectId, { product_key: value });
+      setPkDraft(value);
+      flash(value ? `产品标签已设为 ${value}` : '已清空产品标签');
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    }
+  }
+
+  /** T04133：存量项目补绑入口（项目操作按钮组）——预填当前值实现回显，留空即清空绑定 */
+  async function editProductKey() {
+    if (!activeProject || activeProject === ALL_PROJECTS) return flash('请先选择具体项目');
+    const cur = projects.find((p) => p.id === activeProject);
+    const value = await askInput({
+      title: `设置「${cur?.name ?? ''}」的产品标签`,
+      placeholder: `留空＝未绑定产品；已有：${productKeyOptions.join(' / ') || '暂无'}`,
+      defaultValue: cur?.product_key ?? '',
+    });
+    if (value === null) return; // 取消；空串是有效的「清空绑定」
+    await saveProductKey(activeProject, value);
+  }
+
+  /** 修改当前项目名称：弹输入框预填当前名称，确认后 PATCH 更新并刷新列表。
+   *  项目 id 不变故不改 activeProject，仅由 loadProjects 反映到下拉框名称。 */
+  async function renameProject() {
+    if (!activeProject) return flash('请先选择要修改的项目');
+    const proj = projects.find((p) => p.id === activeProject);
+    if (!proj) return;
+    const name = await askInput({ title: '修改项目名称', placeholder: '请输入项目名称', defaultValue: proj.name });
+    if (!name || name.trim() === proj.name) return;
+    try {
+      await api.patch(`/projects/${proj.id}`, { name: name.trim() });
+      void loadProjects();
+      flash(`已修改项目名称为「${name.trim()}」`);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    }
+  }
+
+  /** 删除项目：风险操作。先弹确认框（说明不可恢复 + 任务将一并删除），确认后再删除。
+   *  删除成功后当前项目已被移除：清空 activeProject 使 loadProjects 自动回退到首个有效项目，避免挂到不存在的项目上。 */
+  async function deleteProject() {
+    if (!activeProject) return flash('请先选择要删除的项目');
+    const proj = projects.find((p) => p.id === activeProject);
+    if (!proj) return;
+    // 系统收件箱是移动端随手记默认归属，后端已禁止删除；前端提前拦截给出与后端一致的明确提示
+    if (proj.id === 'sys-inbox') return flash('系统收件箱项目不可删除');
+    const ok = await askConfirm(
+      `确定要删除项目「${proj.name}」吗？\n\n【风险提醒】\n该操作不可恢复，项目及其全部任务、截图将一并删除！\n建议先通过「任务 → 复用」将重要任务复制到其他项目再删除。`,
+    );
+    if (!ok) return;
+    try {
+      await api.del(`/projects/${proj.id}`);
+    } catch (e) {
+      return flash(e instanceof Error ? e.message : String(e), 'error');
+    }
+    setActiveProject('');
+    void loadProjects();
+    flash(`已删除项目「${proj.name}」`);
+  }
+
+  /** 拉取提示词分类供复用弹窗选择（懒加载：仅在需要展示时调用，失败不阻塞任务页） */
+  const loadPromptCats = useCallback(async () => {
+    try {
+      setPromptCats(await api.get<PromptCategory[]>('/prompt-categories'));
+    } catch { /* 提示词分类加载失败仅导致无法复制到提示词，不影响原有任务功能 */ }
+  }, []);
+
+  /** 拉取通用需求分类供复用弹窗选择（懒加载，打开弹窗时拉取；失败不阻塞任务页） */
+  const loadReqCats = useCallback(async () => {
+    try {
+      setReqCats(await api.get<ReqCategory[]>('/req-categories'));
+    } catch { /* 通用需求分类加载失败仅导致无法复制到通用需求 */ }
+  }, []);
+
+  /** 复用弹窗内新建提示词分类：建好后自动选中，便于把任务资产立即落入新分类 */
+  async function addPromptCat() {
+    const name = await askInput({ title: '新建提示词分类', placeholder: '请输入分类名称' });
+    if (!name) return;
+    try {
+      const created = await api.post<PromptCategory>('/prompt-categories', { name });
+      await loadPromptCats();
+      setReuseCategoryId(created.id);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    }
+  }
+
+  /** 复用弹窗内新建通用需求分类：建好后自动选中，便于把任务资产立即落入新分类 */
+  async function addReqCat() {
+    const name = await askInput({ title: '新建通用需求分类', placeholder: '请输入分类名称' });
+    if (!name) return;
+    try {
+      const created = await api.post<ReqCategory>('/req-categories', { name });
+      await loadReqCats();
+      setReuseCategoryId(created.id);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    }
+  }
+
+  async function createTask() {
+    if (!newTitle.trim() || !activeProject) return;
+    // T03211：新建任务必须落到具体项目——全部项目视图没有默认归属，先要求选项目
+    if (activeProject === ALL_PROJECTS) return flash('全部项目视图下请先选择具体项目再新建任务');
+    // 全程置 creating，按钮转圈禁用，避免智能分类等耗时步骤看起来"卡住"
+    setBusy('tasks.create', true);
+    try {
+      // 智能分类开启时：按标题自动匹配分类；未匹配/失败则回退用户手动选择的分类（不阻塞创建）
+      // T00473：AI 自动标注优先级——仅当用户未显式调整（默认 normal）时采用 AI 建议，用户可手动覆盖
+      const autoCat = smartCat ? await matchCategory(newTitle) : undefined;
+      const aiPriority = autoCat?.priority;
+      const finalPriority = newPriority === 'normal' && aiPriority ? aiPriority : newPriority;
+      const created = await api.post<Task>('/tasks', {
+        projectId: activeProject,
+        title: newTitle.trim(),
+        priority: finalPriority,
+        categoryId: (autoCat?.catId ?? newCategory) || undefined,
+        description: newDesc.trim() || undefined,
+      });
+      // 创建时粘贴的截图随后上传到新任务
+      for (const img of newImages) {
+        await api.post(`/tasks/${created.id}/images`, { data: img.url });
+      }
+      // T03209（PM-101）：新建即计入待办列头数
+      bumpProjectCounts(activeProject, 1, 0);
+      setNewTitle('');
+      setNewDesc('');
+      setNewImages([]);
+      setNewDescOpen(false);
+      // 提交成功后清空持久化的表单缓存，避免残留旧录入内容
+      clearSessionState('tasks.new.title');
+      clearSessionState('tasks.new.priority');
+      clearSessionState('tasks.new.desc');
+      clearSessionState('tasks.new.images');
+      clearSessionState('tasks.new.descOpen');
+      clearSessionState('tasks.new.category');
+      // T03214（UX-02③）：成功走短提示，行本身由列表重载呈现
+      // T04178：短提示进一步收口为固定文案——原先回显标题原文，长标题时提示条占满宽度、
+      // 视觉上像错误堆栈，用户误判为报错。成功提示严禁带任何任务原文（标题/描述/图片均不回显）。
+      flash('任务已创建', 'info');
+      void loadTasks(activeProject);
+    } catch (e) {
+      // T03214（UX-02③）：原先只有 finally，创建失败冒泡成未捕获 rejection——用户看不到任何反馈，输入框内容也留着像没反应
+      flash(`新建任务失败：${e instanceof Error ? e.message : String(e)}`, 'error');
+    } finally {
+      setBusy('tasks.create', false);
+    }
+  }
+
+  /** 行内切换任务分类：立即保存；null 表示回到未分类 */
+  async function setTaskCategory(task: Task, categoryId: string) {
+    try {
+      await api.patch(`/tasks/${task.id}`, { categoryId: categoryId || null });
+      void loadTasks(activeProject);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    }
+  }
+
+  /** 置顶/取消置顶：切换后重新拉取，置顶项紧随各自待办/已完成分组顶部；失败时静默，由列表重载兜底 */
+  async function togglePin(task: Task) {
+    try {
+      await api.patch(`/tasks/${task.id}`, { pinned: !task.pinned });
+      void loadTasks(activeProject);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    }
+  }
+
+  async function setStatus(task: Task, status: 'todo' | 'done') {
+    await api.patch(`/tasks/${task.id}`, { status });
+    // T03209：列头实时任务数——状态实际变化时才推进项目计数（重复点同一状态不计数）
+    if (task.status !== status) {
+      bumpProjectCounts(task.project_id, status === 'todo' ? 1 : -1, status === 'done' ? 1 : -1);
+    }
+    // 切换完成后自动收起展开区（描述+AI 摘要）：仅当处于展开态才触发更新，避免无关任务行无谓重渲染
+    setDescExpanded((prev) => (prev[task.id] ? { ...prev, [task.id]: false } : prev));
+    setSummaryExpanded((prev) => (prev[task.id] ? { ...prev, [task.id]: false } : prev));
+    void loadTasks(activeProject);
+  }
+
+  /** FR5 已完成任务：标记验证通过（T00521 调整：验证失败路径统一走 markVerifyFailed，由验证选择面板入口触发） */
+  async function toggleVerified(task: Task) {
+    await api.patch(`/tasks/${task.id}`, { verified: true });
+    // T00623：验证通过后收起该任务的「验证失败反馈」展开区（徽标随 verified 隐藏，展开区不应残留）
+    setFailbackOpen((p) => ({ ...p, [task.id]: false }));
+    setFbDrafts((prev) => {
+      const next = { ...prev };
+      delete next[task.id];
+      return next;
+    });
+    void loadTasks(activeProject);
+  }
+
+  /** T00521/T00610：手动标记验证失败——打开专属录入弹窗（支持截图上传/粘贴）→ 提交后回退待办 */
+  function markVerifyFailed(task: Task) {
+    setFailDialog({ taskId: task.id, title: task.title, text: '', images: [] });
+  }
+
+  /** T00610：提交验证失败反馈——文本追加【验证失败】段 + 截图逐张上传到任务（MCP 可读取识别） */
+  async function submitVerifyFailed() {
+    if (!failDialog) return;
+    const fb = failDialog.text.trim();
+    if (!fb && failDialog.images.length === 0) { flash('请填写失败原因或上传截图'); return; }
+    const task = [...todo, ...done].find((x) => x.id === failDialog.taskId);
+    if (!task) { setFailDialog(null); return; }
+    setFailBusy(true);
+    try {
+      const stamp = new Date().toISOString().slice(0, 10);
+      const tail = fb ? `\n\n【验证失败 ${stamp}】${fb}` : `\n\n【验证失败 ${stamp}】（附截图）`;
+      const merged = `${task.handle_result ?? ''}${tail}`.trim();
+      // T00531：服务端 PATCH 只认 camelCase handleResult
+      await api.patch(`/tasks/${task.id}`, { verified: false, status: 'todo', handleResult: merged });
+      // T00610：截图随反馈一并落库（复用任务图片通道，MCP/前端均可读取）
+      for (const img of failDialog.images) {
+        await api.post(`/tasks/${task.id}/images`, { data: img.url });
+      }
+      const imgNote = failDialog.images.length > 0 ? `（附 ${failDialog.images.length} 张截图）` : '';
+      flash(`已标记验证失败并回退待办${imgNote}`);
+      setFailDialog(null);
+      void loadTasks(activeProject);
+    } catch (e) {
+      flash(String((e as Error).message ?? e), 'error');
+    } finally {
+      setFailBusy(false);
+    }
+  }
+
+  /** FR1.3 修改优先级 */
+  async function setPriority(task: Task, priority: string) {
+    await api.patch(`/tasks/${task.id}`, { priority });
+    void loadTasks(activeProject);
+  }
+
+  async function archive(task: Task) {
+    await api.post('/archive', { taskIds: [task.id] });
+    void loadTasks(activeProject);
+  }
+
+  /** T00719：搁置 / 恢复——搁置后任务从待办/已完成列表隔离进搁置列表，恢复回到原列表 */
+  async function toggleShelve(task: Task) {
+    await api.post(`/tasks/${task.id}/shelve`, { shelved: !task.shelved });
+    flash(task.shelved ? '任务已恢复到原列表' : '任务已搁置——AI 处理待办时将自动忽略');
+    void loadTasks(activeProject);
+    void loadProjects();
+  }
+
+  /** T02949 方案 A：打开派生单裁决面板——候选按该单结论动态抽取（GET ruling-options 带任务 id），
+   *  拉取失败不阻断（仍可输入自定义结果） */
+  async function openRulingPanel(task: Task) {
+    setRulingTask(task);
+    setRulingDraft('');
+    try {
+      const r = await api.get<{ options: string[] }>(`/tasks/${task.id}/ruling-options`);
+      setRulingOptions(r.options ?? []);
+    } catch {
+      setRulingOptions([]);
+      flash('裁决候选拉取失败——可直接输入自定义裁决结果');
+    }
+  }
+
+  /** T02949：提交裁决——服务端把 ruling_state 翻「已裁决」并把结果**追加**到任务详情末尾（不覆盖），成功后刷新列表 */
+  async function submitRuling() {
+    if (!rulingTask || !rulingDraft.trim() || rulingBusy) return;
+    setRulingBusy(true);
+    try {
+      await api.post(`/tasks/${rulingTask.id}/ruling`, { result: rulingDraft.trim() });
+      flash(`裁决已提交：「${rulingTask.task_no ?? rulingTask.id}」→ 已裁决`);
+      setRulingTask(null);
+      setRulingDraft('');
+      void loadTasks(activeProject);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    } finally {
+      setRulingBusy(false);
+    }
+  }
+
+  /** 智能分类（静默）：按标题从候选分类匹配最贴切分类 id；未配工具/未填标题/失败均返回 undefined，不打断创建流程 */
+  async function matchCategory(title: string): Promise<{ catId: string; priority?: string } | undefined> {
+    if (!organizeToolId || !title.trim() || taskCats.length === 0) return undefined;
+    try {
+      const r = await api.post<{ ok: boolean; categoryId?: string | null; priority?: string | null; error?: string }>('/tasks/classify', {
+        title: title.trim(),
+        toolId: organizeToolId,
+        categories: taskCats.map((c) => ({ id: c.id, name: c.name })),
+      });
+      // T00473：返回 { catId, priority }——priority 为 AI 自动标注（urgent/high/normal/low 或 undefined）
+      return r.ok && r.categoryId ? { catId: r.categoryId, priority: r.priority ?? undefined } : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** T03256（AI-203②）：建议终态回传——失败静默（台账是统计旁路，不能挡住主流程） */
+  function reportSuggestion(s: TaskSuggestion | null | undefined, event: 'accepted' | 'dismissed' | 'timeout') {
+    if (!s?.suggestionId) return;
+    void api.post('/tasks/classify-suggest/feedback', { suggestionId: s.suggestionId, event }).catch(() => {});
+  }
+
+  // T03256/T03257：读取开关与已展示数——关闭时隐藏入口；展示过则 AI 失效时改为禁用展示
+  useEffect(() => {
+    let alive = true;
+    api.get<{ enabled?: boolean; shown?: number }>('/ai/suggestions/stats')
+      .then((r) => {
+        if (!alive) return;
+        if (typeof r.enabled === 'boolean') setSuggestEnabled(r.enabled);
+        if (typeof r.shown === 'number') setSuggestEverShown(r.shown > 0);
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [activeProject]);
+
+  // T03256：建议条超时自动收起并记 timeout——停留过久视为未采纳，避免 shown 永久悬挂
+  useEffect(() => {
+    if (!newSuggest?.suggestionId) return;
+    const timer = setTimeout(() => {
+      reportSuggestion(newSuggest, 'timeout');
+      setNewSuggest(null);
+    }, SUGGESTION_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [newSuggest]);
+  useEffect(() => {
+    if (!rowSuggest?.data.suggestionId) return;
+    const timer = setTimeout(() => {
+      reportSuggestion(rowSuggest.data, 'timeout');
+      setRowSuggest(null);
+    }, SUGGESTION_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [rowSuggest]);
+
+  /** 新建建议被新一次请求/编辑覆盖时，先按「不用」记账，避免旧 shown 悬挂 */
+  function dismissNewSuggestion(event: 'dismissed' | 'timeout' = 'dismissed') {
+    if (!newSuggest) return;
+    reportSuggestion(newSuggest, event);
+    setNewSuggest(null);
+  }
+
+  /** T03255（AI-203①）：获取「分类 + 优先级 + 一句理由」建议——只读，采纳前不写任务数据 */
+  async function requestSuggestion(input: { title: string; description?: string; projectId: string; taskId?: string }): Promise<TaskSuggestion | null> {
+    if (!organizeToolId) { flash(aiBlockedFlash('请先在「模型管理」页添加并选择整理工具')); return null; }
+    if (!input.title.trim()) { flash('先填写标题再获取建议'); return null; }
+    try {
+      const r = await api.post<{ ok: boolean; suggestion?: TaskSuggestion; suggestionId?: string; disabled?: boolean; error?: string }>('/tasks/classify-suggest', {
+        title: input.title.trim(),
+        description: input.description ?? '',
+        projectId: input.projectId,
+        taskId: input.taskId,
+        toolId: organizeToolId,
+        categories: taskCats.map((c) => ({ id: c.id, name: c.name })),
+      });
+      if (r.disabled) setSuggestEnabled(false);
+      if (!r.ok || !r.suggestion) { flash(r.error ?? '未能生成建议', 'error'); return null; }
+      return { ...r.suggestion, suggestionId: r.suggestionId };
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+      return null;
+    }
+  }
+
+  async function suggestForNew() {
+    if (newSuggestBusy) return;
+    setNewSuggestBusy(true);
+    // 覆盖前先把上一条结算为「不用」，对账时不会出现两条并行 shown
+    if (newSuggest) dismissNewSuggestion('dismissed');
+    try {
+      const s = await requestSuggestion({ title: newTitle, description: newDesc, projectId: activeProject });
+      if (s) setNewSuggest(s);
+    } finally {
+      setNewSuggestBusy(false);
+    }
+  }
+
+  /** 采纳新建建议：只填表单，创建仍由用户点「添加任务」触发 */
+  function adoptNewSuggestion() {
+    if (!newSuggest) return;
+    reportSuggestion(newSuggest, 'accepted');
+    setNewCategory(newSuggest.categoryId ?? '');
+    setNewPriority(newSuggest.priority);
+    setNewSuggest(null);
+    flash('已填入建议 — 确认无误后再点击添加任务');
+  }
+
+  async function suggestForTask(t: Task) {
+    if (rowSuggestBusy) return;
+    // 同时只开一条：切到别的任务时，旧的按「不用」结算
+    if (rowSuggest && rowSuggest.taskId !== t.id) {
+      reportSuggestion(rowSuggest.data, 'dismissed');
+      setRowSuggest(null);
+    }
+    setRowSuggestBusy(t.id);
+    try {
+      const s = await requestSuggestion({ title: t.title, description: t.description, projectId: t.project_id, taskId: t.id });
+      if (s) setRowSuggest({ taskId: t.id, data: s });
+    } finally {
+      setRowSuggestBusy(null);
+    }
+  }
+
+  /** 采纳行内建议：用户点「采纳」才写入该任务（分两次 PATCH，任一失败提示后保留建议条） */
+  async function adoptRowSuggestion(t: Task) {
+    if (!rowSuggest || rowSuggest.taskId !== t.id) return;
+    const s = rowSuggest.data;
+    try {
+      if ((t.priority ?? 'normal') !== s.priority) await setPriority(t, s.priority);
+      if ((t.category_id ?? '') !== (s.categoryId ?? '')) await setTaskCategory(t, s.categoryId ?? '');
+      reportSuggestion(s, 'accepted');
+      setRowSuggest(null);
+      flash('已采纳建议');
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    }
+  }
+
+  /** 行内建议「不用」：仅关闭建议条，任务数据不变 */
+  function dismissRowSuggestion() {
+    if (!rowSuggest) return;
+    reportSuggestion(rowSuggest.data, 'dismissed');
+    setRowSuggest(null);
+  }
+
+  /** 单条标题美化：调 AI 润色该任务标题，结果写入标题编辑草稿，用户确认后保存。
+   *  按任务隔离并发：不同任务各自独立进行，同一任务重复点击仅在批量中阻断；统一可经顶部「取消」中断。 */
+  async function beautify(task: Task) {
+    if (batchBusy) return flash('正在进行批量美化，请先在工具栏取消');
+    if (beautifyBusy[task.id]) return flash('该任务正在美化，请稍候');
+    if (!organizeToolId) return flash(aiBlockedFlash('请先在「模型管理」页添加并选择美化工具'));
+    if (!task.title.trim()) return flash('该任务无标题可美化');
+    const ac = new AbortController();
+    beautifyStore.aborts[task.id] = ac;
+    beautifyStore.setBusy(task.id);
+    try {
+      const result = await api.post<{ ok: boolean; content?: string; error?: string }>('/ai/beautify', {
+        toolId: organizeToolId, title: task.title,
+      }, ac.signal);
+      if (!result.ok) return flash(result.error ?? '美化失败');
+      if (!result.content?.trim()) return flash('AI 未返回美化标题');
+      // 进入标题编辑态，让用户确认后保存（复用 titleDrafts + saveTitle）；写模块级 store，切页后草稿仍保留
+      beautifyStore.setDraft(task.id, result.content.trim());
+      flash('美化完成，可编辑后保存');
+    } catch (e) {
+      // 用户主动取消时静默，不弹错误
+      if ((e as Error).name !== 'AbortError') flash(e instanceof Error ? e.message : String(e), 'error');
+    } finally {
+      beautifyStore.clearBusy(task.id);
+      delete beautifyStore.aborts[task.id];
+    }
+  }
+
+  /** 取消全部 AI 美化（单条 + 批量）：统一从工具栏入口调用，遍历各任务独立中止；已编辑草稿保留 */
+  function cancelBeautify() {
+    if (!anyBeautify) return;
+    beautifyStore.cancelAll();
+    flash('已取消美化');
+  }
+
+  /** T00597：AI 简化标题——依据任务详情高度总结（限 40 字），结果写入标题草稿待用户确认保存。
+   *  前置校验：任务须有详情内容（description 非空），否则友好提示不触发（避免无来源的语义丢失）。 */
+  async function simplify(task: Task) {
+    if (batchBusy) return flash('正在进行批量处理，请先在工具栏取消');
+    if (beautifyBusy[task.id]) return flash('该任务正在处理，请稍候');
+    if (!organizeToolId) return flash(aiBlockedFlash('请先在「模型管理」页添加并选择工具'));
+    if (!task.title.trim()) return flash('该任务无标题可简化');
+    if (!(task.description ?? '').trim()) {
+      return flash('AI 简化需依据任务详情总结标题——请先补充该任务的详情内容，避免语义丢失');
+    }
+    const ac = new AbortController();
+    beautifyStore.aborts[task.id] = ac;
+    beautifyStore.setBusy(task.id);
+    try {
+      const result = await api.post<{ ok: boolean; content?: string; error?: string }>('/ai/simplify', {
+        toolId: organizeToolId, title: task.title, description: task.description ?? '',
+      }, ac.signal);
+      if (!result.ok) return flash(result.error ?? '简化失败');
+      if (!result.content?.trim()) return flash('AI 未返回简化标题');
+      beautifyStore.setDraft(task.id, result.content.trim());
+      flash('已简化（限 40 字），可编辑后保存');
+    } catch (e) {
+      if ((e as Error).name !== 'AbortError') flash(e instanceof Error ? e.message : String(e), 'error');
+    } finally {
+      beautifyStore.clearBusy(task.id);
+      delete beautifyStore.aborts[task.id];
+    }
+  }
+
+  /** 批量美化项目全部待办标题：逐条调用，结果分别写入各标题编辑草稿供逐条确认。
+   *  批量独占：进行期间禁止新单条/新批量，避免各实例写草稿相互覆盖；统一经工具栏取消。 */
+  async function beautifyAll() {
+    if (anyBeautify) return flash('正在进行 AI 美化，请先在工具栏取消');
+    if (!organizeToolId) return flash(aiBlockedFlash('请先在「模型管理」页添加并选择美化工具'));
+    if (todo.length === 0) return flash('当前项目没有待办任务');
+    if (!(await askConfirm(`将对 ${todo.length} 个待办任务执行标题美化，确认？`))) return;
+    const ac = new AbortController();
+    beautifyStore.aborts['__batch__'] = ac;
+    beautifyStore.setBatchBusy(true);
+    try {
+      const tasks = [...todo];
+      const results = await Promise.all(tasks.map(async (t) => {
+        const r = await api.post<{ ok: boolean; content?: string; error?: string }>('/ai/beautify', {
+          toolId: organizeToolId, title: t.title,
+        }, ac.signal);
+        return { taskId: t.id, ok: r.ok, content: r.content };
+      }));
+      // 取消时 Promise.all 会随 signal 中断，进入 catch；正常完成才统计
+      const ok = results.filter((r) => r.ok && r.content?.trim());
+      const next: Record<string, string> = {};
+      for (const r of ok) next[r.taskId] = r.content!.trim();
+      beautifyStore.mergeDrafts(next);
+      flash(`美化完成 ${ok.length}/${tasks.length} 条，请逐条确认保存`);
+    } catch (e) {
+      if ((e as Error).name !== 'AbortError') flash(e instanceof Error ? e.message : String(e), 'error');
+    } finally {
+      beautifyStore.setBatchBusy(false);
+      delete beautifyStore.aborts['__batch__'];
+    }
+  }
+
+  /** 工具栏美化按钮统一入口：进行中点击=取消全部，否则批量美化（独立函数保持 JSX 简洁且避免表达式内 void） */
+  function handleBeautifyToggle() {
+    if (anyBeautify) {
+      cancelBeautify();
+      return;
+    }
+    beautifyAll();
+  }
+
+  /** T00450：创建子任务——挂到父任务下，渲染时缩进紧随父行 */
+  async function createSubTask(parent: Task) {
+    const title = await askInput({ title: `为「${parent.title}」创建子任务`, placeholder: '子任务标题' });
+    if (!title?.trim()) return;
+    try {
+      await api.post('/tasks', { projectId: parent.project_id, title: title.trim(), parentId: parent.id });
+      void loadTasks(activeProject);
+      flash('子任务已创建');
+    } catch (e) { flash(e instanceof Error ? e.message : String(e), 'error'); }
+  }
+
+  /** T00658：分区全选/全不选（半选态由 checked/indeterminate 双属性表达） */
+  function toggleSelectAll(items: Task[], on: boolean) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const t of items) { if (on) next.add(t.id); else next.delete(t.id); }
+      return next;
+    });
+  }
+
+  // ---------- T00457：批量操作（多选后批量改状态/分类/归档，单事务整体回滚） ----------
+
+  function dropTaskReorder(kind: 'todo' | 'done' | 'shelved', listIds: string[], targetId: string) {
+    if (!dragTaskId || dragTaskId === targetId) { setDragTaskId(''); setOverTaskId(''); return; }
+    const ids = [...listIds];
+    const from = ids.indexOf(dragTaskId);
+    const to = ids.indexOf(targetId);
+    if (from < 0 || to < 0) return;
+    ids.splice(to, 0, ids.splice(from, 1)[0]);
+    setDragTaskId(''); setOverTaskId('');
+    void api.post('/tasks/reorder', { orderedIds: ids }).then(() => {
+      flash('顺序已保存（手动排序模式下持久生效）');
+      void loadTasks(activeProject);
+    }).catch((e) => flash(String((e as Error).message ?? e), 'error'));
+  }
+
+  // ---------- T00446 / INT-6：CSV 任务导入（预览 → 确认） ----------
+
+  type CsvPreviewPayload = {
+    source?: 'github' | 'jira' | 'generic';
+    headers?: string[];
+    mapping?: Record<string, string>;
+    items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null; categoryName: string }>;
+    errors: Array<{ row: number; message: string }>;
+  };
+
+  /** 同一份 CSV 的预览可重复发起：人工改映射后按原字节重解析（不入库，预览本身幂等） */
+  async function previewCsv(buf: ArrayBuffer, mapping?: Record<string, string>) {
+    if (!activeProject || activeProject === ALL_PROJECTS) return;
+    const q = new URLSearchParams({ projectId: activeProject });
+    // 空串要保留：它表示「这一列不导入」，滤掉会让取消映射失效
+    if (mapping && Object.keys(mapping).length > 0) q.set('mapping', JSON.stringify(mapping));
+    const r = await api.postBinary<CsvPreviewPayload>(`/tasks/import-csv/preview?${q.toString()}`, buf);
+    setCsvPreview(r);
+    setCsvImportKind('csv');
+    setCsvMeta({ source: r.source ?? 'generic', headers: r.headers ?? [], mapping: r.mapping ?? {} });
+    if (r.errors.length > 0) flash(`CSV 解析：${r.items.length} 条可导入，${r.errors.length} 行有问题——修正后重新上传`);
+    else flash(`CSV 解析完成：${r.items.length} 条待确认导入`);
+  }
+
+  async function changeCsvMapping(field: string, header: string) {
+    if (!csvRaw || !csvMeta || !csvPreview) return;
+    if (batchOpBusy) return flash('上一批操作仍在进行中，请稍候');
+    if (field === 'title' && !header) return flash('标题列不能留空', 'error');
+    setBatchOpBusy(true);
+    try {
+      await previewCsv(csvRaw, { ...csvMeta.mapping, [field]: header });
+    } catch (e) { flash(String((e as Error).message ?? e), 'error'); } finally { setBatchOpBusy(false); }
+  }
+
+  async function onCsvFile(file: File) {
+    if (!activeProject) return flash('请先选择项目');
+    // T03211：导入需要落到具体项目
+    if (activeProject === ALL_PROJECTS) return flash('全部项目视图下请先选择具体项目再导入');
+    // T03214（UX-02 ⑤）：预览请求在途时挡掉再次选文件，避免两轮预览相互覆盖
+    if (batchOpBusy) return flash('上一批操作仍在进行中，请稍候');
+    setBatchOpBusy(true);
+    try {
+      // T00556 / PRD INT-6：按扩展名分流——.json 走 JSON 导入（Trello 导出/JSON 数组），其余走 CSV
+      const isJson = /\.json$/i.test(file.name);
+      if (isJson) {
+        const buf = await file.arrayBuffer();
+        const r = await api.postBinary<CsvPreviewPayload>(`/tasks/import-json/preview?projectId=${activeProject}`, buf);
+        setCsvPreview(r);
+        setCsvImportKind('json');
+        setCsvMeta(null);
+        setCsvRaw(null);
+        if (r.errors.length > 0) flash(`JSON 解析：${r.items.length} 条可导入，${r.errors.length} 条有问题——修正后重新上传`);
+        else flash(`JSON 解析完成：${r.items.length} 条待确认导入`);
+      } else {
+        // T03214 真机实测发现：该路由用 raw() 收体，JSON 上传会被全局 express.json 先解析成对象而恒 400——与 JSON 导入一致改发原始字节
+        const buf = await file.arrayBuffer();
+        setCsvRaw(buf);
+        await previewCsv(buf);
+      }
+    } catch (e) { flash(String((e as Error).message ?? e), 'error'); } finally { setBatchOpBusy(false); }
+  }
+
+  async function confirmCsvImport() {
+    if (!csvPreview || !activeProject) return;
+    // T03214（UX-02 ⑤）：确认导入是异步写库，忙时再点会把同一批预览重复入库
+    if (batchOpBusy) return flash('导入仍在进行中，请稍候');
+    const preview = csvPreview;
+    setBatchOpBusy(true);
+    try {
+      const path = csvImportKind === 'json' ? '/tasks/import-json/confirm' : '/tasks/import-csv/confirm';
+      const r = await api.post<{ ok: boolean; count: number }>(path, { projectId: activeProject, items: preview.items });
+      setCsvPreview(null);
+      void loadTasks(activeProject);
+      // T03214（UX-02 ④）：导入结果落常驻回执——成功/跳过/失败分列带原因，短提示消失后仍可回看
+      setBatchReceipt({ ...buildImportReceipt({ kind: csvImportKind, items: preview.items, errors: preview.errors, created: r.count }), at: new Date().toISOString() });
+      flash(`${csvImportKind === 'json' ? 'JSON' : 'CSV'} 导入完成：${r.count} 条任务已创建`, 'info');
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      setBatchReceipt({ ...buildImportFailureReceipt(csvImportKind, reason), at: new Date().toISOString() });
+      flash(reason, 'error');
+    } finally { setBatchOpBusy(false); }
+  }
+
+  async function batchApply(action: BatchAction, value?: string) {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return flash('请先勾选任务');
+    setBatchOpBusy(true);
+    try {
+      // T03211（PM-105）：服务端逐条回执——失败项带原因，前端常驻展示且保留其选中便于重试
+      const r = await api.post<{
+        ok: boolean; affected: number; failed?: number; skipped?: number;
+        results?: BatchResultItem[];
+      }>('/tasks/batch', { ids, action, value });
+      const results: BatchResultItem[] = r.results ?? ids.map((id) => ({ id, ok: true }));
+      const failedItems = batchFailedItems(results);
+      setBatchReceipt({ label: ACTION_LABEL[action], okCount: r.affected, failed: failedItems, at: new Date().toISOString() });
+      if (r.affected === 0) {
+        flash(batchNoopMessage(action));
+        setSelectedIds(new Set(failedItems.map((f) => f.id)));
+        void loadTasks(activeProject);
+        return;
+      }
+      flash(batchDoneMessage(r.affected, failedItems.length));
+      // T00623 同口径：批量验证通过后收起这些任务的「验证失败反馈」展开区（徽标与入口随 verified 隐藏）
+      if (action === 'verified' && value === 'true') {
+        setFailbackOpen((prev) => {
+          const next = { ...prev };
+          for (const id of ids) delete next[id];
+          return next;
+        });
+        setFbDrafts((prev) => {
+          const next = { ...prev };
+          for (const id of ids) delete next[id];
+          return next;
+        });
+      }
+      // T01065-FR1.6：批量操作撤销快照——操作前抓旧值（status/priority/category/color），
+      // 工具栏出现「撤销」按钮逐条还原；归档类不入栈（归档页可恢复）
+      // T01065 后续：改为入栈（最多 MAX_UNDO_STEPS 级），连续多次批量操作可逐级回退
+      if (action !== 'archive') {
+        const entries = buildUndoEntries(action, ids, results, [...todo, ...done, ...shelvedTasks]);
+        if (entries.length > 0) {
+          // 超出上限时丢最旧的一步：撤销栈是「最近操作的后悔药」，最旧的一步价值最低
+          const label = `${ACTION_LABEL[action]}${batchValueSuffix(action, value)}`;
+          setBatchStack((prev) => [...prev, { entries, label, at: new Date().toISOString() }].slice(-MAX_UNDO_STEPS));
+        }
+      }
+      // T03211：失败项保留选中，用户可修正/重试；全部成功则同既有行为清空选中
+      setSelectedIds(new Set(failedItems.map((f) => f.id)));
+      void loadTasks(activeProject);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    } finally { setBatchOpBusy(false); }
+  }
+
+  /** T01065-FR1.6：批量移动到项目——选中任务整体迁移（moveProject 已有，补批量入口） */
+  async function batchMoveTo(projectId: string) {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return flash('请先勾选任务');
+    const target = projects.find((p) => p.id === projectId);
+    if (!(await askConfirm(`将选中的 ${ids.length} 条任务移动到「${target?.name ?? projectId}」？`))) return;
+    setBatchOpBusy(true);
+    try {
+      await api.post('/tasks/move', { taskIds: ids, projectId });
+      flash(`批量移动完成：${ids.length} 条已迁移到「${target?.name ?? projectId}」`);
+      setSelectedIds(new Set());
+      void loadTasks(activeProject);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    } finally { setBatchOpBusy(false); }
+  }
+
+  /**
+   * T01065 后续：撤销 `steps` 步（默认 1 = 只撤最近一次）。
+   *
+   * 多步撤销必须**从新到旧**依次还原：后一步的旧值里可能包含前一步改动后的字段，
+   * 若按从旧到新回放，前一步的旧值会把后一步的还原结果再覆盖回去。
+   *
+   * @param steps 撤销步数（1~栈深）；越界自动夹到栈深
+   */
+  async function undoLastBatch(steps = 1) {
+    const depth = batchStack.length;
+    if (depth === 0 || batchOpBusy) return;
+    const n = Math.min(depth, Math.max(1, steps));
+    const undoing = batchStack.slice(depth - n); // 末尾 n 步，保持从旧到新
+    setBatchOpBusy(true);
+    try {
+      for (const snap of [...undoing].reverse()) {
+        for (const { id, patch } of snap.entries) {
+          await api.patch(`/tasks/${id}`, patch);
+        }
+      }
+      const labels = [...undoing].reverse().map((s) => s.label).join('、');
+      const restored = undoing.reduce((sum, s) => sum + s.entries.length, 0);
+      flash(n === 1 ? `已撤销上次批量操作（${restored} 条已还原：${labels}）` : `已撤销 ${n} 步批量操作（共 ${restored} 次还原：${labels}）`);
+      setBatchStack((prev) => prev.slice(0, depth - n));
+      void loadTasks(activeProject);
+    } catch (e) {
+      // 中途失败仍清空这 n 步：库里已是「部分还原」的中间态，再把快照留在栈上会诱使用户重复撤销，
+      // 产生更难解释的结果。已还原的部分保持现状，用户可据当前列表重新操作。
+      flash(`撤销失败：${e instanceof Error ? e.message : String(e)}（已还原的部分保持当前状态，可重试）`);
+      setBatchStack((prev) => prev.slice(0, depth - n));
+      void loadTasks(activeProject);
+    } finally { setBatchOpBusy(false); }
+  }
+
+  async function batchSetCategory() {
+    const cat = await askInput({ title: `为选中的 ${selectedIds.size} 个任务设置分类（输入分类名，留空=未分类）`, placeholder: '如：开发' });
+    if (cat === null) return;
+    const target = taskCats.find((c) => c.name.trim() === cat.trim());
+    if (cat.trim() && !target) return flash(`分类「${cat}」不存在，请先在「任务分类」中创建`);
+    await batchApply('category', target?.id ?? '');
+  }
+
+  /** 看板卡片：可拖拽流转状态（提取为具名函数，降低 JSX 内函数嵌套层级，渲染结果不变）。
+   *  T03222（PM-303④）：拖拽是 HTML5 专属交互、键盘无法触发，故同一动作补一份 Enter/Space 键盘等价——
+   *  卡片本身即状态切换控件（在待办列按回车=标记完成，在已完成列按回车=转回待办），不改观感。
+   *  S6819：卡片改用原生 <button>（draggable 对任意元素生效，拖拽链路不变），角色与键盘语义由元素本身承担。 */
+  function renderBoardCard(t: Task) {
+    const cat = taskCats.find((c) => c.id === t.category_id);
+    const target: 'todo' | 'done' = t.status === 'done' ? 'todo' : 'done';
+    // T03229（PM-202②）：卡面徽标之外的可访问名补充——卡片本身是按钮，
+    // 内层 span 的 aria-label 不参与按钮命名，故把阻塞读数并进卡片自身的 aria-label。
+    const blockedN = (t.blocked_by ?? []).length;
+    // 阻塞读数与动作文案先落成变量，避免模板字符串里再嵌模板字符串（S4624）
+    const blockedPart = blockedN > 0 ? `，被 ${blockedN} 条任务阻塞：${blockBadgeNames(t)}` : '';
+    const actionPart = t.status === 'done' ? '转回待办' : '标记为已完成';
+    return (
+      <button key={t.id} type="button"
+        draggable
+        onDragStart={() => setDragTaskId(t.id)}
+        onDragEnd={() => { setDragTaskId(''); setOverTaskId(''); }}
+        className={dragTaskId === t.id ? 'plan-dragging' : undefined}
+        aria-label={`${t.title}（${priorityLabel(t.priority)}）${blockedPart}— 回车或空格${actionPart}`}
+        onKeyDown={(e) => {
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          e.preventDefault();
+          void setStatus(t, target);
+        }}
+        /* 八期 §3.1.1 / 评审 #3：卡内只放纯文本徽标（不做链接与按钮），查看提交详情走「点击卡片 → 抽屉 Git 页」 */
+        onClick={() => { if (!dragTaskId) { openDetailDrawer(t, 'git'); } }}
+        style={{
+          border: '1px solid var(--border)', borderRadius: 6, padding: '6px 8px', background: 'var(--card-bg)', cursor: 'grab',
+          borderLeft: `3px solid ${priorityBorderColor(t.priority)}`,
+          // 重置原生按钮外观，观感与原 div 卡片一致
+          width: '100%', boxSizing: 'border-box', font: 'inherit', textAlign: 'left', color: 'inherit',
+        }}
+        title={`${t.title}（${priorityLabel(t.priority)}）——拖到另一列，或聚焦后按回车流转状态`}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{t.title}</span>
+          <GitBoardBadge task={t} summaries={gitSummaries} gitOn={gitOn} />
+        </div>
+        {blockedN > 0 && (
+          <div style={{ marginTop: 4 }}>{blockBadgeNode(t)}</div>
+        )}
+        {cat && (
+          <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginTop: 2 }}>{cat.name}</div>
+        )}
+      </button>
+    );
+  }
+
+  /** T03209（PM-101）：保存项目级 WIP 软上限——1~50 整数，即时生效；同值不重复提交 */
+  async function saveWipLimit(projectId: string, raw: string) {
+    if (!projectId) return;
+    const n = Number(raw.trim());
+    if (!Number.isInteger(n) || n < 1 || n > 50) { flash('WIP 上限须为 1~50 的整数'); return; }
+    const cur = getProjectListSnapshot().find((p) => p.id === projectId);
+    if ((cur?.wip_limit ?? 10) === n) {
+      setWipDrafts((prev) => { const next = { ...prev }; delete next[projectId]; return next; });
+      return;
+    }
+    setWipBusy(true);
+    try {
+      await api.patch(`/projects/${projectId}`, { wipLimit: n });
+      patchProject(projectId, { wip_limit: n });
+      setWipDrafts((prev) => { const next = { ...prev }; delete next[projectId]; return next; });
+      flash(`WIP 上限已设为 ${n}`);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    } finally { setWipBusy(false); }
+  }
+
+  /** T03268（PRD 4.2）：保存项目时区——空串＝跟随系统；非法 IANA 名本地先拦（服务端同法校验） */
+  async function saveProjectTz(projectId: string, raw: string) {
+    if (!projectId) return;
+    const tz = raw.trim();
+    const cur = getProjectListSnapshot().find((p) => p.id === projectId);
+    if ((cur?.timezone ?? '') === tz) {
+      setTzDrafts((prev) => { const next = { ...prev }; delete next[projectId]; return next; });
+      return;
+    }
+    if (tz && !isValidIanaTz(tz)) { flash(`时区非法：${tz}（需 IANA 时区名，如 Asia/Shanghai）`, 'error'); return; }
+    setTzBusy(true);
+    try {
+      await api.patch(`/projects/${projectId}`, { timezone: tz });
+      patchProject(projectId, { timezone: tz });
+      setTzDrafts((prev) => { const next = { ...prev }; delete next[projectId]; return next; });
+      flash(tz ? `项目时区已设为 ${tz}` : '项目时区已恢复为跟随系统');
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    } finally { setTzBusy(false); }
+  }
+
+  /** T00456 / PRD UX-1：看板视图——按状态分列（待办/已完成），卡片拖拽流转状态。
+   *  卡片为简化渲染（标题/优先级/分类/进度），编辑回列表视图；drop 到目标列即变更状态。 */
+  function renderBoard() {
+    // T00922：看板标题统计改取项目级全量计数（项目对象上的待办/已完成计数字段），首屏即显示该项目全部待办/已完成，
+    // 不再受分页已加载条目数影响（原 done.length 仅覆盖当前已加载页，需「加载更多」后才趋近真实值）
+    const curProj = projects.find((p) => p.id === activeProject);
+    // T03211：全部项目视图按各项目计数之和展示，口径与列表页页签一致
+    const aggTodoBoard = projects.reduce((s, p) => s + (p.todo_count ?? 0), 0);
+    const aggDoneBoard = projects.reduce((s, p) => s + (p.done_count ?? 0), 0);
+    const todoTotal = curProj?.todo_count ?? (activeProject === ALL_PROJECTS ? aggTodoBoard : todo.length);
+    const doneTotal = curProj?.done_count ?? (activeProject === ALL_PROJECTS ? aggDoneBoard : done.length);
+    // T03209（PM-101）：WIP 软上限只对具体项目生效——全部项目混合视图无单一项目口径，仅显示数量
+    const wipLimit = curProj?.wip_limit ?? 10;
+    const wipOver = curProj ? todoTotal - wipLimit : 0;
+    const totals: Record<'todo' | 'done', number> = { todo: todoTotal, done: doneTotal };
+    const allCols: Array<{ key: 'todo' | 'done'; label: string; items: Task[] }> = [
+      { key: 'todo', label: `待办（${todoTotal}）`, items: todo },
+      { key: 'done', label: `已完成（${doneTotal}）`, items: done },
+    ];
+    // 隐藏空列：拖拽进行中临时全显，避免空列被隐藏后无处落下（不阻断拖入）
+    const boardCols = boardHideEmpty && !dragTaskId ? allCols.filter((c) => totals[c.key] > 0) : allCols;
+    const onDropTo = (target: 'todo' | 'done') => {
+      if (!dragTaskId) return;
+      const t = [...todo, ...done].find((x) => x.id === dragTaskId);
+      if (!t) return;
+      if (t.status !== target) void setStatus(t, target);
+      setDragTaskId(''); setOverTaskId('');
+    };
+    const wipDraftVal = wipDrafts[curProj?.id ?? ''] ?? String(wipLimit);
+    const tzDraftVal = tzDrafts[curProj?.id ?? ''] ?? (curProj?.timezone ?? '');
+    return (
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, flexWrap: 'wrap', fontSize: 'var(--fs-s)' }}>
+          <button type="button" aria-pressed={boardHideEmpty} aria-label="隐藏空列"
+            title={boardHideEmpty ? '隐藏空列（已开启）— 点击显示全部列；会话内保持' : '隐藏空列（已关闭）— 点击隐藏任务数为 0 的列；会话内保持'}
+            onClick={() => setBoardHideEmpty((v) => !v)} className="tbtn-anim"
+            style={{ cursor: 'pointer', padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: boardHideEmpty ? 'var(--accent-soft)' : 'var(--card-bg)', color: boardHideEmpty ? 'var(--accent)' : 'var(--text-secondary)' }}>
+            隐藏空列
+          </button>
+          {curProj && (
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--text-secondary)' }}>
+              WIP 上限{' '}
+              <input type="number" min={1} max={50} step={1} value={wipDraftVal} disabled={wipBusy}
+                aria-label="项目 WIP 上限"
+                title="项目级 WIP 软上限（1~50，默认 10）——仅统计未完成卡片，超限只做橙色提示、不阻断拖入"
+                onChange={(e) => setWipDrafts((prev) => ({ ...prev, [curProj.id]: e.target.value }))}
+                onBlur={() => void saveWipLimit(curProj.id, wipDraftVal)}
+                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                style={{ width: 64, padding: '2px 6px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }} />
+            </label>
+          )}
+          {curProj && (
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--text-secondary)' }}>
+              时区{' '}
+              <input list="mtask-tz-options" value={tzDraftVal} disabled={tzBusy}
+                aria-label="项目时区"
+                placeholder="跟随系统"
+                title="项目时区（IANA 名，如 Asia/Shanghai；留空＝跟随系统时区）——报告与计划预测的业务日按此时区计算"
+                onChange={(e) => setTzDrafts((prev) => ({ ...prev, [curProj.id]: e.target.value }))}
+                onBlur={() => void saveProjectTz(curProj.id, tzDraftVal)}
+                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                style={{ width: 150, padding: '2px 6px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }} />
+              <datalist id="mtask-tz-options">{tzOptions().map((z) => <option key={z} value={z} />)}</datalist>
+              {!(curProj.timezone ?? '') && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>系统</span>}
+            </label>
+          )}
+          {wipOver > 0 && (
+            <output style={{ color: 'var(--warn)', fontWeight: 600 }}>超出建议上限 {wipOver}</output>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+          {boardCols.map((col) => (
+            <div key={col.key} /* 看板列：外层只承载列外观，拖放区落在列表容器（ul 自带 list 角色） */
+              style={{ flex: 1, minWidth: 280, background: 'var(--surface)', borderRadius: 8, padding: 10, minHeight: 200, border: overTaskId === col.key ? '2px dashed var(--accent)' : '1px solid var(--border-strong)', transition: 'border .15s ease' }}>
+              <h4 style={{ fontSize: 'var(--fs-m)', margin: '0 0 8px', color: col.key === 'todo' && wipOver > 0 ? 'var(--warn)' : 'var(--text-secondary)' }}>
+                {col.label}
+                {col.key === 'todo' && curProj && (
+                  <span style={{ marginLeft: 6, fontWeight: 400, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>WIP 建议 ≤ {wipLimit}</span>
+                )}
+              </h4>
+              <ul
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={() => onDropTo(col.key)}
+                aria-label={`${col.label}列，可拖放任务卡片`}
+                style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 6, minHeight: 160 }}>
+                {col.items.map((t) => renderBoardCard(t))}
+                {col.items.length === 0 && <li style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', textAlign: 'center', padding: 12 }}>拖任务卡片到此列</li>}
+              </ul>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // T01480：任务导出——md/xlsx/docx 三格式，单条与批量共用同一装配
+  const [exportMenu, setExportMenu] = useState<{ taskId: string; x: number; y: number } | null>(null);
+  const [exportBusy, setExportBusy] = useState(false);
+  async function exportTasks(ids: string[], fmt: 'md' | 'xlsx' | 'docx') {
+    setExportBusy(true);
+    try {
+      const { blob, filename } = await api.postDownload('/tasks/export', { taskIds: ids, format: fmt });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename; a.click();
+      URL.revokeObjectURL(url);
+      flash(`已导出 ${filename}`);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    } finally { setExportBusy(false); setExportMenu(null); }
+  }
+  const EXPORT_ITEMS: { fmt: 'docx' | 'md' | 'xlsx'; label: string; desc: string }[] = [
+    { fmt: 'docx', label: 'Word 文档', desc: '导出为 .docx' },
+    { fmt: 'md', label: 'Markdown', desc: '导出为 .md' },
+    { fmt: 'xlsx', label: 'Excel 表格', desc: '导出为 .xlsx' },
+  ];
+
+  /** T03267（PM-402④）：项目级导出——任务/计划 × Markdown/JSON，任务树与计划树由服务端单源装配 */
+  async function exportProject(scope: 'tasks' | 'plans', format: 'md' | 'json') {
+    if (!activeProject) return flash('请先选择项目');
+    if (activeProject === ALL_PROJECTS) return flash('全部项目视图下请先选择具体项目再导出');
+    setExportBusy(true);
+    try {
+      const { blob, filename } = await api.getDownload(`/projects/${encodeURIComponent(activeProject)}/export?scope=${scope}&format=${format}`);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename; a.click();
+      URL.revokeObjectURL(url);
+      flash(`已导出 ${filename}`);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    } finally { setExportBusy(false); }
+  }
+
+  /**
+   * T03211（PM-105）：批量操作回执——成功 n / 失败 m + 逐条失败原因。
+   * 与撤销条同级常驻（不挂在批量条上）：批量完成会清空/缩减选中，回执仍要可回看。
+   */
+  function renderBatchReceipt() {
+    if (!batchReceipt) return null;
+    const { label, okCount, failed } = batchReceipt;
+    // T03214（UX-02 ④）：跳过列（导入预览的问题行等）与失败列分列，各自带原因
+    const skipped = batchReceipt.skipped ?? [];
+    return (
+      <output aria-label="批量操作回执"
+        style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '6px 12px', margin: '8px 0', borderRadius: 8, background: 'var(--card-bg)', border: `1px solid ${failed.length > 0 || skipped.length > 0 ? 'var(--warn)' : 'var(--border-strong)'}`, fontSize: 'var(--fs-s)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <strong style={{ color: 'var(--text)' }}>{label}回执：成功 {okCount} 条</strong>
+          <span data-t03214="receipt-skipped" style={{ color: skipped.length > 0 ? 'var(--text-secondary)' : 'var(--text-muted)' }}>跳过 {skipped.length} 条</span>
+          <span style={{ color: failed.length > 0 ? 'var(--warn)' : 'var(--text-muted)' }}>失败 {failed.length} 条</span>
+          <button onClick={() => setBatchReceipt(null)} aria-label="关闭批量操作回执" title="关闭回执"
+            style={{ marginLeft: 'auto', cursor: 'pointer', padding: '2px 4px', display: 'inline-flex', alignItems: 'center', border: 'none', background: 'transparent', color: 'var(--text-secondary)' }}>
+            <X size={13} />
+          </button>
+        </div>
+        {skipped.length > 0 && (
+          <ul aria-label="操作跳过明细" data-t03214="skipped-list" style={{ margin: 0, paddingLeft: 18, color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {skipped.map((s, i) => (
+              <li key={`${s.ref}|${s.reason}|${i}`} style={{ wordBreak: 'break-all' }}>
+                <span style={{ color: 'var(--text)' }}>{s.ref}</span> — {s.reason}
+              </li>
+            ))}
+          </ul>
+        )}
+        {failed.length > 0 && (
+          <ul aria-label="批量操作失败明细" style={{ margin: 0, paddingLeft: 18, color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {failed.map((f) => (
+              <li key={f.id} style={{ wordBreak: 'break-all' }}>
+                <span style={{ color: 'var(--text)' }}>{f.title || f.id}</span> — {f.reason}
+              </li>
+            ))}
+          </ul>
+        )}
+      </output>
+    );
+  }
+
+  /**
+   * T01065 后续：多级撤销条（快照栈非空时常驻，与选中态无关）。
+   *
+   * 必须独立于批量条：批量操作完成即清空选中 → 批量条收起，若撤销挂在其中，
+   * 用户刚做完操作就找不到撤销入口（等于多级撤销白做）。
+   */
+  function renderUndoBar() {
+    const undoTop: BatchSnapshot | undefined = batchStack.at(-1);
+    if (!undoTop) return null;
+    // 多步提示先落成变量，避免在 title 模板里再嵌一层模板字符串（S4624）
+    const multiStepHint = batchStack.length > 1 ? `（共 ${batchStack.length} 步可逐级回退）` : '';
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '6px 12px', margin: '8px 0', borderRadius: 8, background: 'var(--accent-soft)', border: '1px solid var(--accent)', fontSize: 'var(--fs-s)' }}>
+        <button onClick={() => void undoLastBatch(1)} disabled={batchOpBusy} className="tbtn-anim"
+          title={`撤销最近一次批量操作 — ${undoTop.label}，${undoTop.entries.length} 条将还原为操作前的状态${multiStepHint}`}
+          aria-label={`撤销最近一次批量操作（${undoTop.entries.length} 条）`}
+          style={{ cursor: 'pointer', padding: '2px 8px', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-s)', border: '1px solid var(--accent)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--accent)' }}>
+          <RotateCcw size={13} /> 撤销批量（{undoTop.entries.length}）{batchStack.length > 1 ? ` · 共 ${batchStack.length} 步` : ''}
+        </button>
+        {batchStack.length > 1 && (
+          <select value="" disabled={batchOpBusy} aria-label="撤销多步批量操作"
+            title="撤销多步 — 选择要回退到的那一步，该步及其之后的全部批量操作都会被撤销"
+            onChange={(e) => { const n = Number(e.target.value); if (n > 0) void undoLastBatch(n); }}
+            style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+            <option value="">撤销多步…</option>
+            {batchStack.map((s, i) => {
+              const steps = batchStack.length - i; // 撤销第 i 步及其之后 → 共 steps 步
+              return <option key={`${s.at}-${i}`} value={steps}>撤销 {steps} 步：{s.label}（{s.entries.length} 条 · {s.at.slice(11, 16)}）</option>;
+            })}
+          </select>
+        )}
+        <button onClick={() => setBatchStack([])} disabled={batchOpBusy} title="清空撤销历史 — 丢弃全部快照（已发生的批量操作不会被撤销）" aria-label="清空撤销历史"
+          style={{ cursor: 'pointer', padding: '2px 4px', display: 'inline-flex', alignItems: 'center', border: 'none', background: 'transparent', color: 'var(--text-secondary)' }}>
+          <X size={13} />
+        </button>
+      </div>
+    );
+  }
+
+  /** 批量操作条：multiSelect 且有选中时浮出（样式与任务行一致） */
+  function renderBatchBar() {
+    if (!multiSelect || selectedIds.size === 0) return null;
+    return (
+      <div style={{ position: 'sticky', top: 0, zIndex: 50, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 12px', margin: '8px 0', borderRadius: 8, background: 'var(--card-bg)', border: '1px solid var(--accent)', boxShadow: '0 4px 12px rgba(0,0,0,.12)', fontSize: 'var(--fs-s)' }}>
+        <strong style={{ color: 'var(--accent)' }}>已选 {selectedIds.size} 条</strong>
+        {/* T02213：选中项有效性校验取数失败时如实提示——此刻选中集里可能留着已删除/归档的任务 */}
+        {pruneError && (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            <ResourceHint view={{ phase: 'error', error: pruneError, stale: false, reload: validateSelected }} label="选中项有效性" />
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>选中列表可能含已删除/归档的任务，执行批量操作前请先重试</span>
+          </span>
+        )}
+        {/* T00588：批量操作对齐计划页风格——纯图标 + 下拉相邻 + 悬浮提示。
+            T00704：批量条按钮**移除 task-op**（悬浮显隐依赖任务行 hover，批量条浮于列表上方无 hover 触发，
+            导致归档等按钮不可见、被误判「缺少」）——批量条出现即全部常显。 */}
+        <button onClick={() => void batchApply('status', 'done')} disabled={batchOpBusy} className="tbtn-anim"
+          title="批量完成 — 选中任务标记为已完成" aria-label="批量完成"
+          style={{ cursor: 'pointer', padding: '2px 4px', display: 'inline-flex', alignItems: 'center', color: 'var(--success, var(--text))' }}>
+          <Check size={14} />
+        </button>
+        <button onClick={() => void batchApply('status', 'todo')} disabled={batchOpBusy} className="tbtn-anim"
+          title="批量重开 — 选中任务退回待办" aria-label="批量重开"
+          style={{ cursor: 'pointer', padding: '2px 4px', display: 'inline-flex', alignItems: 'center' }}>
+          <RotateCcw size={14} />
+        </button>
+        {/* T02980：批量验收结果——只作用于已完成任务（待办自动跳过并提示）；
+            「验证失败」需逐条录入反馈，仍走单条验证面板，不做批量。 */}
+        <button onClick={() => void batchApply('verified', 'true')} disabled={batchOpBusy} className="tbtn-anim"
+          title="批量验证通过 — 选中任务中已完成的标记为已验证（未完成任务自动跳过）" aria-label="批量验证通过"
+          style={{ cursor: 'pointer', padding: '2px 4px', display: 'inline-flex', alignItems: 'center', color: 'var(--success, var(--text))' }}>
+          <CheckCheck size={14} />
+        </button>
+        <button onClick={() => void batchApply('verified', 'false')} disabled={batchOpBusy} className="tbtn-anim"
+          title="批量置为未验证 — 选中任务中已完成的退回未验证（未完成任务自动跳过）" aria-label="批量置为未验证"
+          style={{ cursor: 'pointer', padding: '2px 4px', display: 'inline-flex', alignItems: 'center', color: 'var(--text-muted)' }}>
+          <Circle size={14} />
+        </button>
+        <select value="" disabled={batchOpBusy} aria-label="批量设置优先级" title="批量设置优先级"
+          onChange={(e) => { const v = e.target.value; if (v) void batchApply('priority', v); }}
+          style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          <option value="">批量优先级…</option>
+          <option value="urgent">紧急</option>
+          <option value="high">高</option>
+          <option value="normal">普通</option>
+          <option value="low">低</option>
+        </select>
+        <select value="" disabled={batchOpBusy} aria-label="批量设置分类" title="批量设置分类"
+          onChange={(e) => { const v = e.target.value; if (v !== '') void batchApply('category', v === '__none__' ? '' : v); }}
+          style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          <option value="">批量分类…</option>
+          {taskCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          <option value="__none__">（清除分类）</option>
+        </select>
+        <span style={{ display: 'inline-flex', alignItems: 'center' }} title="批量字体颜色 — 选色后应用到全部选中任务">
+          <FontColorButton current="" onApply={(col) => { void batchApply('color', col); }} label="批量字体颜色" />
+        </span>
+        {/* T01480：批量导出——md/xlsx/docx 三格式 */}
+        <select value="" disabled={exportBusy} aria-label="批量导出任务" title="批量导出 — 选中任务导出为 Word / Markdown / Excel"
+          onChange={(e) => { const v = e.target.value as 'md' | 'xlsx' | 'docx' | ''; if (v) void exportTasks([...selectedIds], v); }}
+          style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          <option value="">批量导出…</option>
+          {EXPORT_ITEMS.map((it) => <option key={it.fmt} value={it.fmt}>{it.label}</option>)}
+        </select>
+        {/* T00704：批量归档——位于批量字体颜色之后（功能已存在，本次修复其可见性） */}
+        <button onClick={() => void batchApply('archive')} disabled={batchOpBusy} className="tbtn-anim"
+          title="批量归档 — 选中任务移入归档（可恢复）" aria-label="批量归档"
+          style={{ cursor: 'pointer', padding: '2px 4px', display: 'inline-flex', alignItems: 'center', color: 'var(--danger)' }}>
+          <Archive size={14} />
+        </button>
+        {/* T01065-FR1.6：批量移动到项目（moveProject 批量入口） */}
+        <select value="" disabled={batchOpBusy || projects.length === 0} aria-label="批量移动到项目" title="批量移动到项目 — 选中任务整体迁移到目标项目"
+          onChange={(e) => { const v = e.target.value; if (v) void batchMoveTo(v); }}
+          style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          <option value="">移动到项目…</option>
+          {projects.filter((p) => p.id !== 'sys-inbox' && p.id !== activeProject).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        {/* T01065 后续：撤销入口已移出批量条——见 renderUndoBar。
+            原因：批量操作完成后会清空选中（selectedIds → 空），批量条随之收起，
+            挂在批量条里的撤销按钮也就一并消失，等于「刚做完就撤不了」。 */}
+        <button onClick={() => setSelectedIds(new Set())} disabled={batchOpBusy} className="tbtn-anim"
+          title="取消选择" aria-label="取消选择"
+          style={{ cursor: 'pointer', padding: '2px 4px', marginLeft: 'auto', display: 'inline-flex', alignItems: 'center' }}>
+          <X size={14} />
+        </button>
+      </div>
+    );
+  }
+
+  /** 批量智能分类：一键对当前项目全部未分类任务（待办 + 已完成，T00432）做 AI 语义识别自动分到已有分类。
+   *  逐个复用 matchCategory 得到最贴切分类，命中即写回 category_id；无工具/无未分类任务/全失败都给明确反馈。 */
+  async function batchClassify() {
+    if (classifyBusy) return flash('正在批量分类中，请稍候');
+    if (!organizeToolId) return flash(aiBlockedFlash('请先在「模型管理」页添加并选择整理工具'));
+    // T02365：无候选分类时逐条请求会全部回 categoryId=null，最终被笼统说成「未能匹配」——
+    // 这里直接点名是分类没建/分类列表没加载成功，并顺手重拉一次
+    if (taskCats.length === 0) {
+      void loadCategories();
+      return flash('当前没有可用任务分类——请先在任务分类中新建分类，再执行批量分类');
+    }
+    // T00432：分类范围包含已完成任务——未分类的待办与已完成一并纳入
+    const target = [...todo, ...done].filter((t) => !t.category_id && t.title.trim());
+    if (target.length === 0) return flash('当前项目没有未分类的任务');
+    if (!(await askConfirm(`将对 ${target.length} 个未分类任务（含已完成）执行批量智能分类，确认？`))) return;
+    // T00552：循环移入模块级 runner——切页后继续执行，返回时自动同步状态（不再卡在运行中动画）
+    setClassifyBusy(true);
+    void runBatchClassifyModule(target.map((t) => ({ id: t.id, title: t.title, priority: t.priority })), organizeToolId, taskCats.map((c) => ({ id: c.id, name: c.name })));
+  }
+
+  /** 提示词优化：调 AI 把当前描述草稿改写为结构化提示词，结果写回草稿供确认后保存。
+   *  输入源判定：描述输入框为空时回退取用标题作为输入，并在反馈中标注本次来源。
+   *  按任务隔离并支持并行；同一任务再次点击视为「取消」。
+   *  T03684：运行态交给 optimizeStore（busy/取消控制器/结果都在模块级），本函数只负责入参与文案。 */
+  async function optimizeDesc(task: Task) {
+    if (optimizingMap[task.id]) return cancelOptimize(task.id);
+    if (!organizeToolId) return flash(aiBlockedFlash('请先在「模型管理」页添加并选择工具'));
+    // 描述输入框有草稿用草稿，否则用已保存的描述；原样透传，不增删内容
+    let text = descDrafts[task.id] ?? task.description ?? '';
+    // 仅当描述输入框为空时回退到标题，作为本次优化输入；否则标题只作辅助展示
+    const source = text.trim() ? '描述' : '标题';
+    if (!text.trim()) text = task.title;
+    if (!text.trim()) return flash('请先填写任务描述或标题再优化');
+    // 后端以 ok:false + error 返回业务失败（不抛异常），原文案优先于 store 的兜底文案
+    let serverError = '';
+    // T04121：给模型两条确定性归属事实（项目名/分类名），只贴合语境、不注入代码片段；
+    // 任务可能属于非当前打开的项目，故按 task.project_id 反查，缺失时才退回当前项目
+    const projectName = projects.find((p) => p.id === (task.project_id || activeProject))?.name ?? '';
+    const categoryName = taskCats.find((c) => c.id === task.category_id)?.name ?? '';
+    const r = await runOptimize(
+      `${OPTIMIZE_SCOPE_TASKS}${task.id}`,
+      (signal) => api.post<{ ok: boolean; content?: string; error?: string }>('/ai/optimize', {
+        toolId: organizeToolId, title: task.title, description: text, projectName, categoryName,
+      }, signal),
+      (result) => {
+        if (!result.ok) { serverError = result.error ?? '优化失败'; return null; }
+        // 大模型常把结果包在 ```markdown ... ``` 代码围栏里，写回草稿前剥离，避免落库/渲染时多出围栏
+        return { text: stripCodeFence(result.content ?? ''), source };
+      },
+    );
+    if (r.ok) return; // 成功文案由 drain 落地草稿时给出（切页期间完成也能看到）
+    if (serverError) flash(serverError);
+    else if (r.error && r.error !== '已取消优化') flash(r.error, 'error');
+  }
+
+  /** 取消指定任务的提示词优化：仅中止该任务，不影响其它并行优化 */
+  function cancelOptimize(taskId: string) {
+    if (!optimizeStore.cancel(`${OPTIMIZE_SCOPE_TASKS}${taskId}`)) return;
+    flash('已取消优化');
+  }
+
+  /** FR2.3 用户确认：把草稿回填为任务的 ai_summary */
+  async function saveDraft(task: Task) {
+    const content = drafts[task.id];
+    if (!content) return;
+    await api.patch(`/tasks/${task.id}`, { aiSummary: content });
+    setDrafts((prev) => {
+      const next = { ...prev };
+      delete next[task.id];
+      return next;
+    });
+    void loadTasks(activeProject);
+    flash('梳理结果已保存到任务');
+  }
+
+  /** FR1.3 标题编辑：展开/收起标题编辑态（有草稿视为编辑中）；草稿入 beautifyStore，切页保留 */
+  function toggleTitleEdit(task: Task) {
+    const prev = beautifyStore.getSnapshot().drafts[task.id];
+    beautifyStore.setDraft(task.id, prev === undefined ? task.title : undefined);
+  }
+
+  /** FR1.3 保存标题 */
+  async function saveTitle(task: Task) {
+    const content = titleDrafts[task.id];
+    if (content === undefined) return;
+    if (!content.trim()) return flash('标题不能为空');
+    try {
+      await api.patch(`/tasks/${task.id}`, { title: content.trim() });
+    } catch (e) {
+      return flash(e instanceof Error ? e.message : String(e), 'error');
+    }
+    beautifyStore.setDraft(task.id, undefined); // 保存成功即退出编辑态（清草稿）
+    void loadTasks(activeProject);
+    flash('任务标题已更新');
+  }
+
+  /** 复用任务到所选目标：项目=复制；提示词=打包为 JSON 资产写入提示词分类；需求=打包为通用需求条目 */
+  async function reuseTask() {
+    // 未选中目标任务或所选目标对应选择为空时直接返回，提前避免无效请求
+    if (!reuseOpen || (reuseTarget === 'project' ? !reuseProjectId : !reuseCategoryId)) return;
+    setBusy('tasks.reuse', true);
+    try {
+      if (reuseTarget === 'project') {
+        await api.post(`/tasks/${reuseOpen}/reuse`, { projectId: reuseProjectId });
+        const target = projects.find((p) => p.id === reuseProjectId)?.name ?? '';
+        flash(`已复用任务到「${target || '目标项目'}」`);
+      } else if (reuseTarget === 'prompt') {
+        await api.post(`/tasks/${reuseOpen}/to-prompt`, { categoryId: reuseCategoryId });
+        const cat = promptCats.find((c) => c.id === reuseCategoryId)?.name ?? '';
+        flash(`已复制任务到提示词「${cat || '该分类'}」`);
+      } else {
+        await api.post(`/tasks/${reuseOpen}/to-req`, { categoryId: reuseCategoryId });
+        const cat = reqCats.find((c) => c.id === reuseCategoryId)?.name ?? '';
+        flash(`已复制任务到通用需求「${cat || '该分类'}」`);
+      }
+      setReuseOpen(null);
+      setReuseProjectId('');
+      setReuseSearch('');
+      setReuseCategoryId('');
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    } finally {
+      setBusy('tasks.reuse', false);
+    }
+  }
+
+  /** 复制单张图片到剪贴板（渲染进程 fetch blob 后写入 ClipboardItem） */
+  async function copyImage(img: TaskImage) {
+    try {
+      const blob = await fetchImage(img.id);
+      await navigator.clipboard.write([new ClipboardItem({ [blob.type || 'image/png']: blob })]);
+      flash('图片已复制');
+    } catch {
+      flash('复制图片失败，请手动保存图片');
+    }
+  }
+
+  /** 复制任务内容（标题 + 描述，含 AI 摘要）；连同任务全部截图以富文本 <img> 写入，粘贴到富文本编辑器会带图。
+   *  clipboard API 写多类型受限时降级为仅复制纯文本。 */
+  async function copyTaskContent(t: Task) {
+    const parts = [`# ${t.title}`];
+    if (t.description) parts.push(t.description);
+    if (t.ai_summary) parts.push(`AI 梳理摘要：\n${t.ai_summary}`);
+    const text = parts.join('\n\n');
+    // 标题必有内容，但保留防御性判空，避免空字符串复制给出「已复制」误导
+    if (!text.trim()) return flash('无内容可复制');
+    const ok = () => {
+      setCopiedId(t.id);
+      // 1.8s 后复位「已复制」反馈：经独立函数按 id 比对，仅当仍展示本任务时才清空
+      setTimeout(() => clearCopiedIfMatching(t.id), 1800);
+      flash('任务内容已复制');
+    };
+    // 组装富文本 HTML（含任务截图 dataURL），便于在 Word/富文本编辑器粘贴时带上截图
+    const buildHtml = async (): Promise<string> => {
+      const esc = (s: string) => s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+      // 内联 dataURL 体积上限：累计超过即跳过剩余图片，避免 ClipboardItem 写入超限使整份复制降级为纯文本
+      const MAX_INLINED_BYTES = 12 * 1024 * 1024;
+      let html = `<h1>${esc(t.title)}</h1>`;
+      if (t.description) html += `<p>${esc(t.description).replaceAll('\n', '<br/>')}</p>`;
+      if (t.ai_summary) html += `<p><b>AI 梳理摘要：</b><br/>${esc(t.ai_summary).replaceAll('\n', '<br/>')}</p>`;
+      let inlinedBytes = 0;
+      for (const img of t.images) {
+        if (inlinedBytes >= MAX_INLINED_BYTES) break;   // 超限则放弃剩余截图，保持单次粘贴可行
+        try {
+          const dataUrl = await imageDataURL(img.id);
+          // 用图片元数据 size（若缺则按 dataURL 长度近似）累计，逼近剪贴板可承载的真实体积
+          inlinedBytes += img.size || Math.ceil((dataUrl.length * 3) / 4);
+          html += `<div><img src="${dataUrl}" style="max-width:100%"/></div>`;
+        } catch { /* 单图读取失败不阻塞整体复制 */ }
+      }
+      return html;
+    };
+    try {
+      if (t.images.length > 0) {
+        const html = await buildHtml();
+        await navigator.clipboard.write([new ClipboardItem({ 'text/plain': new Blob([text], { type: 'text/plain' }), 'text/html': new Blob([html], { type: 'text/html' }) })]);
+        ok();
+        return;
+      }
+      await navigator.clipboard.writeText(text);
+      ok();
+    } catch {
+      // 富文本/纯文本写入都可能因权限或浏览器策略失败：先补一次纯文本写入（无图路径的失败常属此类），
+      // 仍失败则给出用户可见的降级提示（不再走已废弃的同步复制命令）
+      try {
+        await navigator.clipboard.writeText(text);
+        ok();
+      } catch {
+        flash('复制失败：浏览器未授权访问剪贴板，请手动选中文本复制', 'error');
+      }
+    }
+  }
+
+  /** 「已复制」反馈复位：仅当当前展示的仍是该任务时才清空，避免覆盖用户随后复制的其他任务 */
+  function clearCopiedIfMatching(taskId: string) {
+    setCopiedId((cur) => (cur === taskId ? '' : cur));
+  }
+
+  /** FR1.3 描述编辑：展开/收起描述编辑区（收起时丢弃图片草稿） */
+  function toggleDescEdit(task: Task) {
+    setDescDrafts((prev) => {
+      const next = { ...prev };
+      if (next[task.id] === undefined) {
+        next[task.id] = task.description ?? '';
+      } else {
+        delete next[task.id];
+        setImgDrafts((p) => {
+          const n = { ...p };
+          delete n[task.id];
+          return n;
+        });
+      }
+      return next;
+    });
+  }
+
+  /** FR1.3 保存描述（含截图：新增的粘贴图上传、标记删除的图片移除） */
+  async function saveDesc(task: Task) {
+    const content = descDrafts[task.id];
+    if (content === undefined) return;
+    const imgDraft = imgDrafts[task.id];
+    try {
+      await api.patch(`/tasks/${task.id}`, { description: content });
+      if (imgDraft) {
+        for (const img of imgDraft.added) await api.post(`/tasks/${task.id}/images`, { data: img.url });
+        for (const id of imgDraft.removed) await api.del(`/images/${id}`);
+      }
+    } catch (e) {
+      return flash(e instanceof Error ? e.message : String(e), 'error');
+    }
+    setDescDrafts((prev) => {
+      const next = { ...prev };
+      delete next[task.id];
+      return next;
+    });
+    setImgDrafts((prev) => {
+      const next = { ...prev };
+      delete next[task.id];
+      return next;
+    });
+    void loadTasks(activeProject);
+    flash('任务描述已保存');
+  }
+
+  /** 保存处理结果：PATCH handleResult 落库后清空草稿退出编辑态。
+   *  支持空值保存（清空处理结果），故不判空；失败回显后端错误。 */
+  async function saveResult(task: Task) {
+    const content = resultDrafts[task.id];
+    if (content === undefined) return;
+    try {
+      await api.patch(`/tasks/${task.id}`, { handleResult: content });
+    } catch (e) {
+      return flash(e instanceof Error ? e.message : String(e), 'error');
+    }
+    setResultDrafts((prev) => {
+      const next = { ...prev };
+      delete next[task.id];
+      return next;
+    });
+    void loadTasks(activeProject);
+    flash('处理结果已保存');
+  }
+
+  /** 进入处理结果编辑态：草稿预填现有值，便于基于原内容修改 */
+  function startEditResult(task: Task) {
+    setResultDrafts((prev) => ({ ...prev, [task.id]: task.handle_result ?? '' }));
+  }
+
+  /** 编辑态：标记删除已有图片（保存后生效，替换 = 删除后重新粘贴） */
+  function markImageRemoved(taskId: string, imageId: string) {
+    setImgDrafts((prev) => {
+      const cur = prev[taskId] ?? { added: [], removed: [] };
+      if (cur.removed.includes(imageId)) return prev;
+      return { ...prev, [taskId]: { ...cur, removed: [...cur.removed, imageId] } };
+    });
+  }
+
+  /** 编辑态：把粘贴截图加入待上传草稿（入列时生成稳定 id，供列表 key 使用） */
+  function addPastedImage(taskId: string, url: string) {
+    setImgDrafts((prev) => {
+      const cur = prev[taskId] ?? { added: [], removed: [] };
+      return { ...prev, [taskId]: { ...cur, added: [...cur.added, { id: newPastedImageId(), url }] } };
+    });
+  }
+
+  /** 编辑态：移除尚未上传的粘贴截图（按稳定 id 而非下标定位，删除中间项不影响其余项身份） */
+  function removeAddedImage(taskId: string, pasteId: string) {
+    setImgDrafts((prev) => {
+      const cur = prev[taskId];
+      if (!cur) return prev;
+      return { ...prev, [taskId]: { ...cur, added: cur.added.filter((p) => p.id !== pasteId) } };
+    });
+  }
+
+  /** 新建任务区：把粘贴截图加入待上传列表 */
+  function addNewImage(url: string) {
+    setNewImages((prev) => [...prev, { id: newPastedImageId(), url }]);
+  }
+
+  /** 新建任务区：移除尚未上传的粘贴截图 */
+  function removeNewImage(pasteId: string) {
+    setNewImages((prev) => prev.filter((p) => p.id !== pasteId));
+  }
+
+  /** 紧凑时间：ISO → 'MM-DD HH:mm'，用于列表行内展示，减少同屏重复信息的视觉重量 */
+  const fmtShort = (iso: string) => (iso ? iso.slice(5, 16).replace('T', ' ') : '');
+
+  /** 任务行标题行：置顶/编号/徽标/标题（T00547：完成状态/验证按钮移至下方元信息行左侧，不独立占行） */
+  // T01057-FR1.2：失败一键重试——ai_state=failed 的任务回待办，retry_count+1，历史结果保留（handle_result 追加段）
+  const [retryingNo, setRetryingNo] = useState('');
+  async function handleRetryTask(taskNo: string) {
+    if (retryingNo) return;
+    if (!(await askConfirm(`重试任务 ${taskNo}？将回到待办并等待 AI 重新领取执行，历次处理结果保留。`))) return;
+    setRetryingNo(taskNo);
+    try {
+      await api.post(`/tasks/by-no/${taskNo}/retry`, {});
+      await loadTasks(activeProject);
+    } catch (e) {
+      flash(`重试失败：${e instanceof Error ? e.message : String(e)}`, 'error');
+    } finally {
+      setRetryingNo('');
+    }
+  }
+  function renderTaskTitleRow(t: Task, titleEditing: boolean) {
+    return (
+      <div data-ttask-id={t.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        {multiSelect && (
+          <input type="checkbox" checked={selectedIds.has(t.id)} aria-label={`选中任务 ${t.title}`}
+            onChange={(e) => setSelectedIds((prev) => { const n = new Set(prev); if (e.target.checked) { n.add(t.id); } else { n.delete(t.id); } return n; })}
+            style={{ cursor: 'pointer', flexShrink: 0 }} />
+        )}
+        {/* AI 回写待审核图标：标题带【AI回写待审核】前缀的任务展示（视觉基准对齐验证图标），
+            点击同时展开任务描述与处理结果，便于人工审核 AI 回写的修复建议 */}
+        {t.title.startsWith('【AI回写待审核】') && (
+          <button
+            onClick={() => {
+              setDescExpanded((p) => ({ ...p, [t.id]: true }));
+              setResultOpen((p) => ({ ...p, [t.id]: true }));
+              flash('已展开描述与处理结果，审核通过后请编辑标题移除「【AI回写待审核】」前缀');
+            }}
+            title="AI 回写待审核 — 点击展开该任务的描述与处理结果；审核通过后编辑标题移除前缀即可恢复正常展示"
+            aria-label="AI 回写待审核：展开描述与处理结果供人工审核"
+            className="verify-icon"
+            style={{ cursor: 'pointer', fontSize: 'var(--fs-2xl)', lineHeight: 1, border: 'none', background: 'transparent', color: 'var(--accent)' }}
+          >
+            <ScanSearch size={13} style={{ verticalAlign: '-2px' }} />
+          </button>
+        )}
+        {/* 置顶/取消置顶图标：置于标题最左侧 */}
+        <span className="task-op" style={{ display: 'inline-flex', alignItems: 'center' }}>
+          <PinToggle pinned={t.pinned} onToggle={() => void togglePin(t)} />
+        </span>
+        {/* T00566：AI 处理状态动画（编号前）——running 转圈 / failed 红色警示脉动 / unread 未读圆点呼吸 / 已读或无状态不渲染 */}
+        {t.ai_state === 'running' && (
+          <span title="AI 正在处理此任务" aria-label="AI 处理中" style={{ display: 'inline-flex', alignItems: 'center', color: 'var(--accent)' }}>
+            <Loader2 size={13} className="aispin" />
+          </span>
+        )}
+        {t.ai_state === 'failed' && !isVerificationPassed(t) && (
+          <span className="ai-failed-pulse" title="AI 处理中断/失败 — 可重新处理或查看处理结果" aria-label="AI 处理失败" style={{ display: 'inline-flex', alignItems: 'center', color: 'var(--danger)' }}>
+            <AlertTriangle size={13} />
+          </span>
+        )}
+        {/* T01057-FR1.2：失败一键重试——回待办等待 AI 重新领取，历次结果保留；重试过显示次数徽标
+            T03703：验证通过后重试入口与「重试×N」计数徽标一并收口（retry_count 数值不动，历史仍在处理结果里可查） */}
+        {t.ai_state === 'failed' && !isVerificationPassed(t) && (
+          <button
+            onClick={() => t.task_no && void handleRetryTask(t.task_no)}
+            disabled={retryingNo === t.task_no}
+            title={retryingNo === t.task_no ? '重试中…' : '重试 — 回到待办，等待 AI 重新领取执行（历次结果保留）'}
+            aria-label={`重试任务 ${t.task_no ?? ''}`}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 'var(--fs-xs)', padding: '1px 6px', borderRadius: 5, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text-secondary)', cursor: retryingNo === t.task_no ? 'wait' : 'pointer' }}
+          >
+            {retryingNo === t.task_no ? <Loader2 size={11} className="aispin" /> : <RotateCcw size={11} />} 重试
+          </button>
+        )}
+        {(t.retry_count ?? 0) > 0 && !isVerificationPassed(t) && (
+          <span title={`该任务已手动重试 ${t.retry_count} 次（历次结果见处理结果）`} aria-label={`已重试 ${t.retry_count} 次`} style={{ display: 'inline-flex', alignItems: 'center', fontSize: 'var(--fs-2xs)', padding: '0 5px', borderRadius: 4, background: 'var(--surface-2)', color: 'var(--text-muted)' }}>
+            重试×{t.retry_count}
+          </span>
+        )}
+        {t.ai_state === 'unread' && (
+          <span className="ai-unread-breathe" title="AI 处理完成 — 点击展开任务详情查看结果" aria-label="AI 处理完成未读" style={{ display: 'inline-flex', alignItems: 'center' }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent)', display: 'inline-block' }} />
+          </span>
+        )}
+        {/* 任务编号徽标：全局唯一，供 AI Agent 通过 MCP 按编号定位任务（titletip 说明可复制）。
+            S6819/S6847：双击复制是交互行为，改由原生 button 承载（外观按原 span 重置），不再给 span 挂事件 */}
+        {t.task_no && (
+          <button type="button"
+            title={`任务编号 ${t.task_no} — 供 MCP 按编号定位任务；双击复制`}
+            aria-label={`任务编号 ${t.task_no}：双击复制`}
+            onDoubleClick={() => void navigator.clipboard.writeText(t.task_no!).then(() => flash(`已复制任务编号 ${t.task_no}`))}
+            style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', background: 'var(--accent-soft)', padding: '0 5px', borderRadius: 4, lineHeight: '18px', whiteSpace: 'nowrap', cursor: 'default', userSelect: 'text', border: 'none', fontFamily: 'inherit' }}
+          >
+            {t.task_no}
+          </button>
+        )}
+        {/* T00502/T00521 调整：验证失败徽标——点击展开「验证失败反馈」窗口（聚焦失败段查看/修改）
+            T00623：验证通过（verified=true）后隐藏该标签——历史【验证失败】段仍在 handle_result（供追溯），但不再作为当前状态提示
+            T03703：判据从「!verified」收紧为「非验证通过（done+verified）」——退回待办但 verified 残留未清的任务
+                    按约束 5 仍属其他状态，不得移除标签；四处异常标签走同一谓词，避免各自漂移 */}
+        {t.handle_result?.includes('【验证失败') && !isVerificationPassed(t) && (
+          <button type="button" title="验证失败 — 点击查看/修改失败反馈" aria-label="验证失败"
+            onClick={() => setFailbackOpen((p) => ({ ...p, [t.id]: true }))}
+            style={{ fontSize: 'var(--fs-2xs)', color: 'var(--danger)', border: '1px solid var(--danger)', padding: '0 4px', borderRadius: 4, lineHeight: '16px', whiteSpace: 'nowrap', cursor: 'pointer', background: 'transparent', fontFamily: 'inherit' }}>
+            验证失败
+          </button>
+        )}
+        {/* T03229（PM-202②）：阻塞徽标——在途阻塞数与阻塞方点名见 blockBadgeNode */}
+        {blockBadgeNode(t)}
+        {/* T03231（PM-203②）：自定义字段值——前 3 个上徽标，完整清单在 aria-label/title */}
+        {fieldBadgesNode(t)}
+        {/* T00462/T00451：计划联动任务区分徽标——悬浮显示来源计划标题（反向引用）
+            T01037：来源计划是里程碑时徽标显示「里程碑」，不再一律显示「计划」（里程碑≠普通计划条目）
+            T02196：徽标改为可点击——跳「项目管理」并在计划 WBS 视图中定位/高亮来源节点（滚动到位由计划页完成） */}
+        {t.fromPlanTitle && (() => {
+          const isMs = t.fromPlanKind === 'milestone';
+          const noun = isMs ? '里程碑' : '计划';
+          return (
+            <button type="button" title={isMs
+              ? `里程碑联动任务 — 来源里程碑：${t.fromPlanTitle}；请先处理其下子任务，全部完成后由里程碑汇总状态。点击定位到该里程碑节点`
+              : `计划联动任务 — 来源计划：${t.fromPlanTitle}；完成状态与项目计划双向同步。点击定位到该计划节点`}
+              aria-label={isMs ? '里程碑联动任务：点击定位来源里程碑节点' : '计划联动任务：点击定位来源计划节点'}
+              onClick={() => {
+                if (!focusPlanNode(t.fromPlanId, t.project_id ?? '')) flash(`未取到${noun}节点标识，无法定位（来源${noun}：${t.fromPlanTitle}）`);
+              }}
+              style={{ fontSize: 'var(--fs-2xs)', color: isMs ? 'var(--accent)' : 'var(--text-muted)', border: `1px solid ${isMs ? 'var(--accent)' : 'var(--border-strong)'}`, padding: '0 4px', borderRadius: 4, lineHeight: '16px', whiteSpace: 'nowrap', cursor: 'pointer', background: 'transparent', fontFamily: 'inherit', fontWeight: isMs ? 600 : undefined }}>
+              {noun}
+            </button>
+          );
+        })()}
+        {/* T00577：派生单溯源徽标——AI 处理完成后结论自动整合回原任务
+            T02196：点击定位并高亮原任务（当前列表内命中则零视图变更，否则退回编号检索定位） */}
+        {t.derived_from && (
+          <button type="button" title={`派生自原任务 ${t.derived_from} — 处理完成后结论自动整合回原任务；点击定位并高亮该原任务`}
+            aria-label={`派生自 ${t.derived_from}：点击定位原任务`}
+            onClick={() => locateDerivedTask(t.derived_from)}
+            style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', lineHeight: '16px', flexShrink: 0, cursor: 'pointer', background: 'transparent', fontFamily: 'inherit' }}>
+            派生自 {t.derived_from}
+          </button>
+        )}
+        {/* T02949：派生单裁决徽标——待裁决（ accent 实底，点击弹裁决面板）/ 已裁决（灰底点名结果） */}
+        {t.derived_from && t.ruling_state === '待裁决' && (
+          <button type="button" className="tbtn-anim" onClick={() => void openRulingPanel(t)}
+            title="待裁决 — 点击打开裁决面板（预设选项或自定义结果）"
+            aria-label="待裁决：点击打开裁决面板"
+            style={{ fontSize: 'var(--fs-2xs)', color: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 4, padding: '0 4px', lineHeight: '16px', flexShrink: 0, cursor: 'pointer', background: 'var(--accent-soft)', fontFamily: 'inherit' }}>
+            待裁决
+          </button>
+        )}
+        {t.derived_from && t.ruling_state === '已裁决' && (
+          <span title={`已裁决：${t.ruling_result ?? ''}${rulingAtSuffix(t.ruling_at)}`}
+            style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', lineHeight: '16px', flexShrink: 0 }}>
+            已裁决
+          </span>
+        )}
+        {/* T02949 方案 A：不再给所有派生单挂手动挂牌入口——
+            是否待裁决由服务端按结论自动识别（TaskService.autoRuling），前端只负责展示与交互 */}
+        {/* T03211（PM-105）：全部项目视图下标注任务所属项目——跨项目多选时能辨认每条任务归属 */}
+        {activeProject === ALL_PROJECTS && (() => {
+          const pname = projects.find((p) => p.id === t.project_id)?.name;
+          return pname ? (
+            <span title={`所属项目：${pname}`} aria-label={`所属项目 ${pname}`}
+              style={{ flexShrink: 0, maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', background: 'var(--surface-2)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 5px', lineHeight: '16px' }}>
+              {pname}
+            </span>
+          ) : null;
+        })()}
+        {renderTaskTitle(t, titleEditing)}
+      </div>
+    );
+  }
+
+  /** 任务行元信息/操作行：优先级/分类/功能按钮组靠右，与记录时间同行。
+   *  标题行的按钮与下拉整体从标题行下移到此，标题占满整行更醒目，功能按钮也获得更多横向空间。 */
+  function renderTaskMetaRow(t: Task, titleEditing: boolean, descEditing: boolean) {
+    // 处理结果按钮文案/无障碍标签：未编辑→(已录入=修改，未录入=添加)、编辑中→取消；顺序 if 避免嵌套三元与否定条件
+    const resultBtnLbl = (() => {
+      if (resultDrafts[t.id] === undefined) {
+        return t.handle_result
+          ? { title: '修改处理结果 — 编辑该任务已录入的处理结果（取消可恢复原内容）', aria: '修改处理结果：编辑该任务已录入的处理结果' }
+          : { title: '添加处理结果 — 记录根因/解决方案等处理结论', aria: '添加处理结果：记录根因/解决方案等处理结论' };
+      }
+      return { title: '取消编辑处理结果 — 放弃未保存的修改', aria: '取消编辑处理结果：放弃未保存的修改' };
+    })();
+    // T05439：本行左侧是「切换任务完成状态」勾选框。原来整行 marginLeft:32 时，
+    // 勾选框 x ≈ 标题行任务编号 x（置顶图标 21 + gap 8 ≈ 29），两者几乎垂直对齐——
+    // 双击编号复制时鼠标稍下移就命中勾选框，误把任务标成完成。
+    // 整行贴到行首后勾选框与编号水平错开约 30px，误触消除；不影响右侧优先级/分类/按钮组。
+    // T05712：7 项低频功能归入「...」下拉。onClick / title / aria-label / disabled / 显隐口径
+    // 全部沿用迁移前各独立按钮的原值，只换承载容器；菜单为纯静态渲染，不依赖网络请求。
+    const moreItems: TaskMoreMenuItem[] = [
+      {
+        key: 'subtask', label: '创建子任务',
+        title: '创建子任务 — 在该任务下创建子任务（层级展示）',
+        ariaLabel: '创建子任务',
+        icon: <ListTodo size={14} />,
+        onClick: () => void createSubTask(t),
+      },
+      {
+        key: 'export', label: '文件导出',
+        title: '文件导出 — 将该任务导出为 Word / Markdown / Excel',
+        ariaLabel: `文件导出：${t.title}`,
+        icon: <Download size={14} />,
+        disabled: exportBusy,
+        onClick: (e) => { const r = (e.currentTarget as HTMLElement).getBoundingClientRect(); setExportMenu({ taskId: t.id, x: r.left, y: r.bottom + 4 }); },
+      },
+      {
+        key: 'font-color', label: '字体颜色',
+        title: '字体颜色 — 点击 A 应用当前颜色，点右侧箭头展开 16 色板',
+        ariaLabel: '字体颜色：点击应用当前颜色或展开颜色面板',
+        icon: <Palette size={14} />,
+        // 「字体颜色」是文本属性设置：下拉内嵌原色板入口，onApply 回调与迁移前逐字一致
+        trailing: <FontColorButton current={t.color ?? ''} onApply={(c) => { void api.patch(`/tasks/${t.id}`, { color: c }).then(() => { flash(c ? '字体颜色已应用' : '已恢复默认颜色'); void loadTasks(activeProject); }); }} />,
+      },
+      {
+        key: 'shelve', label: t.shelved ? '恢复' : '搁置',
+        title: t.shelved ? '恢复 — 将该任务恢复到待办/已完成列表' : '搁置 — 将该任务移入搁置列表（AI 处理待办时自动忽略）',
+        ariaLabel: t.shelved ? '恢复任务' : '搁置任务',
+        icon: t.shelved ? <RotateCcw size={14} /> : <CirclePause size={14} />,
+        onClick: () => void toggleShelve(t),
+      },
+      {
+        key: 'suggest', label: '分类建议',
+        // 迁移后仍保留原回归锚，既有 UI 门展开「...」后可按原选择器探测
+        dataAttrs: { 'data-t03255': 'row-trigger', 'data-t03257': suggestEntry },
+        title: suggestEntry === 'disabled'
+          ? aiBlockedTitle(readiness, '分类建议 — 按标题/描述与同项目历史给出分类、优先级和一句理由（不会自动保存）')
+          : '分类建议 — 按标题/描述与同项目历史给出分类、优先级和一句理由（不会自动保存）',
+        ariaLabel: '获取该任务的分类与优先级建议',
+        icon: rowSuggestBusy === t.id ? <Loader2 size={14} className="aispin" /> : <Sparkles size={14} />,
+        disabled: rowSuggestBusy === t.id || suggestEntry === 'disabled',
+        hidden: suggestEntry === 'hidden',
+        onClick: () => void suggestForTask(t),
+      },
+      {
+        key: 'result', label: resultBtnLbl.aria.split('：')[0],
+        title: resultBtnLbl.title,
+        ariaLabel: resultBtnLbl.aria,
+        icon: t.handle_result ? <ClipboardEdit size={14} /> : <ClipboardList size={14} />,
+        onClick: () => {
+          // 未在编辑中：展开编辑器并读取已保存值；否则取消并丢弃草稿，无已保存值则收起零占位
+          if (resultDrafts[t.id] === undefined) {
+            setResultOpen((p) => ({ ...p, [t.id]: true }));
+            startEditResult(t);
+          } else {
+            setResultDrafts((prev) => {
+              const next = { ...prev };
+              delete next[t.id];
+              return next;
+            });
+            if (!t.handle_result) setResultOpen((p) => ({ ...p, [t.id]: false }));
+          }
+        },
+      },
+      {
+        key: 'reuse', label: '复用此任务',
+        title: '复用此任务 — 将该任务复制到其他项目，或打包为资产复制到提示词/通用需求页',
+        ariaLabel: '复用此任务：将该任务复制到其他项目或资产页',
+        icon: <CopyPlus size={14} />,
+        onClick: () => { setReuseOpen(t.id); setReuseProjectId(''); setReuseSearch(''); setReuseCategoryId(''); void loadPromptCats(); void loadReqCats(); },
+      },
+    ];
+    return (
+      <div className="task-op task-toolbar" style={{ marginLeft: 0, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+        {/* T00547：完成状态/验证结果控件——与工具栏同行、靠左显示（marginRight auto 分隔左右两组）
+            T03700：验证结果紧贴 Git 徽标右侧（原在状态开关之后，距「切换任务完成状态」过近易误触）；
+            组内间距提到 12px，徽标隐藏（gitOn=false）时两者也保持 ≥12px 的间距 */}
+        <span style={{ marginRight: 'auto', display: 'inline-flex', alignItems: 'center', gap: 12 }}>
+          <button className="title-op" title="切换任务完成状态" aria-label="切换任务完成状态" onClick={() => void setStatus(t, t.status === 'todo' ? 'done' : 'todo')} style={{ cursor: 'pointer', fontSize: 'var(--fs-l)', lineHeight: 1 }}>
+            {t.status === 'todo' ? '☐' : '☑'}
+          </button>
+          {/* 八期 §3.1：提交关联徽标（状态开关之后）——简写/复制/外链/降级/未回写五行状态 */}
+          <GitBadge task={t} summaries={gitSummaries} gitOn={gitOn} onOpenGit={(task) => openDetailDrawer(task, 'git')} flash={flash} />
+          {t.status === 'done' && renderVerifyButton(t)}
+        </span>
+        {/* 优先级四级（T00495：与筛选/录入对齐）：置于 AI 梳理按钮之前，便于优先调整重要度 */}
+        <select
+          value={t.priority}
+          onChange={(e) => void setPriority(t, e.target.value)}
+          className="task-op"
+          aria-label="切换任务优先级"
+          style={{ fontSize: 'var(--fs-s)', padding: 2, border: '1px solid var(--border-strong)', borderRadius: 4, color: priorityColor(t.priority) }}
+        >
+          <option value="low">低</option>
+          <option value="normal">中</option>
+          <option value="high">高</option>
+          <option value="urgent">极高</option>
+        </select>
+        {/* 行内切换任务分类：'none' 仅作展示用不可选；空串回到未分类 */}
+        <select
+          value={t.category_id ?? ''}
+          onChange={(e) => void setTaskCategory(t, e.target.value)}
+          title="分类 — 切换该任务所属分类"
+          aria-label="切换任务分类"
+          className="task-op"
+          style={{ fontSize: 'var(--fs-s)', padding: 2, border: '1px solid var(--border-strong)', borderRadius: 4 }}
+        >
+          <option value="">未分类</option>
+          {taskCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        {/* 待办/已完成任务：AI 美化 + 重命名（编辑中保留保存/取消收尾）——高频，保留在主工具栏 */}
+        {renderTitleActions(t, titleEditing, true)}
+        <button
+          onClick={() => void copyTaskContent(t)}
+          title="复制 — 复制该任务标题、描述与 AI 摘要到剪贴板"
+          aria-label="复制：复制该任务内容到剪贴板"
+          className="task-op"
+          style={{ fontSize: 'var(--fs-s)', color: copiedId === t.id ? 'var(--success)' : undefined, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+        >
+          {copiedId === t.id ? <Check size={13} /> : <Copy size={13} />}
+        </button>
+        <button onClick={() => toggleDescEdit(t)} title={descEditing ? '收起描述 — 收起描述编辑区' : '描述 — 编辑该任务描述'} aria-label={descEditing ? '收起描述' : '编辑该任务描述'} className="task-op" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{descEditing ? <ChevronUp size={13} /> : <AlignLeft size={13} />}</button>
+        <button onClick={() => void archive(t)} title="归档 — 将该任务移入归档" aria-label="归档：将该任务移入归档" className="task-op" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Archive size={13} /></button>
+        {/* T05712：7 项低频功能不再直接显示，统一收进「...」下拉；
+            原按钮的回调/参数/禁用/显隐全部原样迁移至 moreItems，主工具栏只留高频操作。 */}
+        <TaskMoreMenu items={moreItems} taskTitle={t.title} />
+        {/* 记录时间：与操作按钮同行的最右侧，紧凑格式，创建/编辑并排 */}
+        <span style={{ display: 'inline-flex', gap: 10 }}>
+          <span>{fmtShort(t.created_at)} 创建</span>
+          <span>{fmtShort(t.updated_at)} 编辑</span>
+        </span>
+      </div>
+    );
+  }
+
+  /** 已完成任务验证入口（合一）：单按钮展开动画选择面板——✓ 验证通过 / ✗ 验证失败（T00521 调整，用户 19:33 反馈）。
+   *  面板 fixed 定位 + 弹出动画；外点收起。
+   *  T01299：面板改经 Portal 挂 body——任务行 .cv-auto（content-visibility:auto，T01067）会使其成为
+   *  fixed 后代的包含块并按行裁剪（等价 contain:paint），fixed 视口坐标被错按行内坐标解析，
+   *  收起行（≈64px）时面板整体被裁掉不可见，展开详情后才「露出」，表现为严重错位。 */
+  function renderVerifyButton(t: Task) {
+    const open = verifyMenuId === t.id;
+    return (
+      <span ref={open ? verifyMenuRef : undefined} style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
+        <button
+          onClick={(e) => {
+            const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            // T00565：接近视口底部时向上弹出，避免最后一个任务处截断（面板约 110px 高）
+            const up = r.bottom + 130 > globalThis.innerHeight;
+            setVerifyMenuPos({ top: up ? Math.max(8, r.top - 114) : r.bottom + 4, left: r.left });
+            setVerifyMenuId(open ? '' : t.id);
+          }}
+          title="验证结果 — 选择验证通过或标记验证失败"
+          aria-label="验证结果" aria-haspopup="menu" aria-expanded={open}
+          key={t.verified ? 'v-ok' : 'v-no'}
+          className="verify-icon title-op" /* T00487：悬浮显示替代常显 */
+
+          style={{ cursor: 'pointer', fontSize: 'var(--fs-l)', lineHeight: 1, border: 'none', background: 'transparent', color: t.verified ? 'var(--success)' : 'var(--border-strong)', display: 'inline-flex', alignItems: 'center', gap: 2 }}
+        >
+          {t.verified ? '✓' : '○'}<ChevronDown size={10} />
+        </button>
+        {open && verifyMenuPos && createPortal(
+          <div ref={verifyMenuPanelRef} role="menu" aria-label="验证结果选择"
+            style={{ position: 'fixed', top: verifyMenuPos.top, left: verifyMenuPos.left, zIndex: 70, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 6px 16px rgba(0,0,0,.16)', padding: 4, display: 'flex', flexDirection: 'column', gap: 2, minWidth: 128, animation: 'verify-pop .18s ease' }}>
+            <button role="menuitem"
+              onClick={() => { setVerifyMenuId(''); void toggleVerified(t); }}
+              title="标记验证通过"
+              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 'var(--fs-s)', border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--success)' }}>
+              <Check size={14} /> 验证通过
+            </button>
+            <button role="menuitem"
+              onClick={() => { setVerifyMenuId(''); void api.patch(`/tasks/${t.id}`, { verified: false }).then(() => { flash('已置为未验证'); void loadTasks(activeProject); }); }}
+              title="置为未验证 — 保持在已完成列表，等待再次核对"
+              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 'var(--fs-s)', border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--text-muted)' }}>
+              ○ 未验证
+            </button>
+            <button role="menuitem"
+              onClick={() => { setVerifyMenuId(''); markVerifyFailed(t); }}
+              title="标记验证失败 — 录入失败反馈，任务将回退到待办列表"
+              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 'var(--fs-s)', border: 'none', borderRadius: 4, cursor: 'pointer', background: 'transparent', color: 'var(--danger)' }}>
+              <X size={14} /> 验证失败
+            </button>
+          </div>,
+          document.body,
+        )}
+      </span>
+    );
+  }
+
+  /** M6-6.1：描述展开/收起图标（自 renderTaskTitle 提取） */
+  function renderDescToggleButton(t: Task, toggleDesc: () => void) {
+    return (
+      <button
+        onClick={toggleDesc}
+        title={descExpanded[t.id] ? '收起 — 收起任务描述' : '展开 — 展开查看完整任务描述'}
+        aria-label={descExpanded[t.id] ? '收起：收起任务描述' : '展开：展开查看完整任务描述'}
+        className="task-op"
+        style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+      >
+        {descExpanded[t.id] ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+      </button>
+    );
+  }
+
+  /** M6-6.1：处理结果展开图标（自 renderTaskTitle 提取；unread 时顺路消除未读） */
+  function renderResultToggleButton(t: Task) {
+    return (
+      <button
+        onClick={() => { setResultOpen((p) => ({ ...p, [t.id]: !p[t.id] })); if (t.ai_state === 'unread') { void api.patch(`/tasks/${t.id}`, { aiState: '' }).then(() => setTasksStateRead(t.id)); } }}
+        title={resultOpen[t.id] ? '收起处理结果 — 收起该任务的处理结果' : '展开处理结果 — 展开查看该任务的处理结果'}
+        aria-label={resultOpen[t.id] ? '收起处理结果：收起该任务的处理结果' : '展开处理结果：展开查看该任务的处理结果'}
+        className="task-op"
+        style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+      >
+        {resultOpen[t.id] ? <ChevronUp size={13} /> : <ClipboardList size={13} />}
+      </button>
+    );
+  }
+
+  /** M6-6.1：验证失败反馈图标（自 renderTaskTitle 提取；verified=true 后隐藏） */
+  function renderFailbackToggleButton(t: Task) {
+    return (
+      <button
+        onClick={() => setFailbackOpen((p) => ({ ...p, [t.id]: !p[t.id] }))}
+        title="验证失败反馈 — 展开查看/修改该任务的验证失败反馈"
+        aria-label="验证失败反馈：展开查看或修改"
+        className="task-op"
+        style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: 'var(--danger)' }}
+      >
+        {failbackOpen[t.id] ? <ChevronUp size={13} /> : <AlertTriangle size={13} />}
+      </button>
+    );
+  }
+
+  /** M6-6.1：展示态标题按钮（自 renderTaskTitle 提取——三重三元与 cursor 判定是复杂度大头） */
+  function renderTitleDisplayButton(t: Task, descToggleable: boolean, toggleDesc: () => void, markTitleRead: () => void) {
+    const unreadDone = t.status === 'done' && !t.handle_result && t.ai_state === 'unread';
+    // M6-6.4：title 提示文案判定改为平铺分支（消除嵌套三元 S3358）
+    const descTitle = descExpanded[t.id] ? '收起 — 再次点击收起任务描述' : '展开 — 点击查看完整任务描述';
+    let titleAttr: string | undefined;
+    if (descToggleable) titleAttr = descTitle;
+    else if (unreadDone) titleAttr = '点击消除未读状态';
+    return (
+      // T00918：已完成且无处理结果反馈的任务，其标题行常无「描述/处理结果」展开入口可点，
+      // 未读红点无处置除；故点击标题本身即视为「已查看」，清除该任务未读状态（仅覆盖此场景，不影响已填反馈任务）
+      // T01384：有描述时点击标题即展开/收起描述（键盘 Enter/Space 同效），aria-expanded 同步可展开状态
+      // S6819/S6845：改回原生 <button>（角色与键盘激活由元素本身承担，不再给 span 挂 role/tabIndex）；
+      //   `row-title-btn` 类在 App.tsx 里被排除在全局 button:hover 倾斜规则外，悬浮时不位移、便于选中复制，
+      //   userSelect 仍显式放开；点标题展开/键盘操作语义不变。
+      <button
+        type="button"
+        className="row-title-btn"
+        onClick={(e) => {
+          const sel = globalThis.getSelection();
+          if (sel && !sel.isCollapsed && e.currentTarget.contains(sel.anchorNode)) return; // 正在框选复制，不触发折叠
+          if (descToggleable) { toggleDesc(); } else { markTitleRead(); }
+        }}
+        onMouseDown={() => setTitleSelId(t.id)}
+        aria-expanded={descToggleable ? descExpanded[t.id] ?? false : undefined}
+        aria-controls={descToggleable ? `task-desc-${t.id}` : undefined}
+        title={titleAttr}
+        style={{ flex: 1, background: 'none', border: 'none', padding: 0, font: 'inherit', textAlign: 'left', textDecoration: t.status === 'done' ? 'line-through' : 'none', color: t.color || 'var(--text)', cursor: descToggleable || unreadDone ? 'pointer' : 'default', userSelect: 'text', WebkitUserSelect: 'text' }}
+      >
+        {t.title}
+      </button>
+    );
+  }
+
+  /** 标题区：编辑态输入框 / 展示态文本 + 描述展开按钮（M6-6.1：图标组拆分至上方三个助手） */
+  function renderTaskTitle(t: Task, titleEditing: boolean) {
+    const markTitleRead = () => { if (t.status === 'done' && !t.handle_result && t.ai_state === 'unread') { void api.patch(`/tasks/${t.id}`, { aiState: '' }).then(() => setTasksStateRead(t.id)); } };
+    // T03666：行内输入件带行标识，读屏时能分清改的是哪条任务（同名输入件光靠 placeholder 无法区分）
+    const titleEditLabel = t.task_no ? `编辑任务标题（${t.task_no}）` : '编辑任务标题';
+    // T01384：点标题切换描述展开/收起（与箭头按钮同口径）；markTitleRead 顺路执行
+    const descToggleable = Boolean(t.description) && !titleEditing;
+    const toggleDesc = () => {
+      setDescExpanded((p) => ({ ...p, [t.id]: !p[t.id] }));
+      setDescVis((p) => ({ ...p, [t.id]: true }));
+      if (t.ai_state === 'unread') { void api.patch(`/tasks/${t.id}`, { aiState: '' }).then(() => setTasksStateRead(t.id)); }
+      markTitleRead();
+    };
+    return (
+      <>
+        {titleEditing ? (
+          <input
+            value={titleDrafts[t.id]}
+            onChange={(e) => beautifyStore.setDraft(t.id, e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && void saveTitle(t)}
+            placeholder="任务标题"
+            aria-label={titleEditLabel}
+            autoFocus
+            style={{ flex: 1, padding: '4px 6px', border: '1px solid var(--accent)', borderRadius: 4, fontSize: 'var(--fs-m)', boxSizing: 'border-box' }}
+          />
+        ) : (
+          renderTitleDisplayButton(t, descToggleable, toggleDesc, markTitleRead)
+        )}
+        {/* 展开/收起按钮紧跟标题：有描述才显示，点击展开完整描述（默认收起不展示摘要，保持简洁）——T01384 与标题点击同口径 */}
+        {t.description && renderDescToggleButton(t, toggleDesc)}
+        {/* 处理结果展开图标：紧随任务详情（描述）展开图标之后，作为第二个交互图标。
+            有已录入结果才显示；仅切换 resultOpen 的查看态（不进入编辑），与描述展开相互独立，
+            两个面板可分别展开/收起，也可同时展开/收起。收起态用上箭头以区分展开态 */}
+        {t.handle_result && renderResultToggleButton(t)}
+        {/* T00531 布局调整：验证失败反馈按钮移至「展开处理结果」图标后方（标题行）——点击展开反馈窗口
+            T00623：验证通过（verified=true）后同样隐藏该入口（与失败徽标一致，避免残留入口）
+            T03703：与失败徽标共用 isVerificationPassed 谓词 */}
+        {t.handle_result?.includes('【验证失败') && !isVerificationPassed(t) && renderFailbackToggleButton(t)}
+      </>
+    );
+  }
+
+  /** 标题操作：保存编辑中的标题 / AI 美化 + 重命名切换。
+   *  待办与已完成任务均展示重命名；编辑中保留保存/取消以收尾美化或改名结果。 */
+  function renderTitleActions(t: Task, titleEditing: boolean, includeRename = true) {
+    return (
+      <>
+        {titleEditing ? (
+          <button onClick={() => void saveTitle(t)} disabled={!titleDrafts[t.id]?.trim()} title="保存 — 保存修改后的任务标题" aria-label="保存：保存修改后的任务标题" className="task-op" style={{ fontSize: 'var(--fs-s)', color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Save size={13} /></button>
+        ) : (
+          <>
+            {renderBeautifyButton(t)}
+            {/* T00597：AI 简化置于 AI 美化图标之后 */}
+            {renderSimplifyButton(t)}
+          </>
+        )}
+        {includeRename && <button onClick={() => toggleTitleEdit(t)} title={titleEditing ? '取消 — 取消重命名' : '改名 — 重命名该任务标题'} aria-label={titleEditing ? '取消重命名' : '重命名该任务标题'} className="task-op" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{titleEditing ? <X size={13} /> : <SquarePen size={13} />}</button>}
+        {/* T01562：真抽屉——右侧滑入完整操作台（描述/结果/摘要/时间线/关联计划），与行内展开互补 */}
+        <button onClick={() => openDetailDrawer(t)} title="展开详情抽屉 — 在右侧抽屉中查看并编辑任务完整详情" aria-label="展开详情抽屉 — 在右侧抽屉中查看并编辑任务完整详情" className="task-op" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><PanelRightOpen size={13} /></button>
+      </>
+    );
+  }
+
+  /** AI 美化单条按钮：进行中高亮呼吸，批量独占期间禁用，提示文案区分状态 */
+  function renderBeautifyButton(t: Task) {
+    const busy = beautifyBusy[t.id];
+    return (
+      <button
+        onClick={() => void beautify(t)}
+        disabled={batchBusy && !busy}
+        title={busy ? 'AI 美化进行中，请在工具栏点击「取消」' : 'AI 美化 — 润色该任务标题，使其语义更清晰表达更规范'}
+        aria-label={busy ? 'AI 美化进行中' : 'AI 美化：润色该任务标题'}
+        className={`task-op${busy ? ' task-breathe' : ''}`}
+        style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', background: busy ? 'var(--accent)' : 'transparent', color: busy ? 'var(--accent-text)' : 'var(--text)', opacity: batchBusy && !busy ? 0.4 : 1 }}
+      >
+        <Sparkles size={13} />
+      </button>
+    );
+  }
+
+  /** T00597：AI 简化单条按钮——置于 AI 美化之后；图标 Minimize2（收缩）与美化的 Sparkles 区分度高。
+   *  简化会压缩语义（限 40 字），必须依据任务详情内容，无详情时友好提示不触发。 */
+  function renderSimplifyButton(t: Task) {
+    const busy = beautifyBusy[t.id];
+    const hasDesc = Boolean((t.description ?? '').trim());
+    let simplifyTitle: string;
+    if (busy) simplifyTitle = 'AI 处理进行中，请在工具栏点击「取消」';
+    else if (hasDesc) simplifyTitle = 'AI 简化 — 依据任务详情高度总结为简洁标题（限 40 字，细节会精简）';
+    else simplifyTitle = 'AI 简化不可用 — 该任务暂无详情内容，请先补充详情后再简化（避免语义丢失）';
+    return (
+      <button
+        onClick={() => void simplify(t)}
+        disabled={(batchBusy && !busy) || busy}
+        title={simplifyTitle}
+        aria-label={busy ? 'AI 处理进行中' : 'AI 简化：依据任务详情总结为简洁标题'}
+        className={`task-op${busy ? ' task-breathe' : ''}`}
+        style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', background: busy ? 'var(--accent)' : 'transparent', color: busy ? 'var(--accent-text)' : 'var(--text)', opacity: (!hasDesc || (batchBusy && !busy)) ? 0.45 : 1 }}
+      >
+        <Minimize2 size={13} />
+      </button>
+    );
+  }
+
+  /** 描述展开区（查看态）：Markdown 正文在上、截图缩略图紧随其后显示在同一容器内，
+   *  二者共同构成"描述区"；未展开/编辑时不展示，避免截图独立浮在标题栏 */
+  function renderTaskDescView(t: Task) {
+    return (
+      <div style={{ marginLeft: 32, marginTop: 6 }}>
+        {t.description && (
+          // MarkdownContent 提供「渲染/源码」切换，样式与提示词管理页一致；
+          // 外层不再设高度/滚动限制，避免渲染视图被截断而出现差异（滚动由组件内部处理）
+          <MarkdownContent
+            content={t.description}
+            showCopy
+          />
+        )}
+        {t.images.length > 0 && (
+          <div style={{ marginTop: t.description ? 8 : 0, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {t.images.map((img) => (
+              <div key={img.id} style={{ position: 'relative', display: 'inline-block' }}>
+                {/* 截图缩略图用原生 button 包裹 img（S6819/S6842）：原生可交互元素自带键盘激活，无需 role/tabIndex */}
+                <button
+                  type="button"
+                  title="放大预览 — 点击放大或收起截图"
+                  aria-label="任务截图：点击放大预览"
+                  onClick={() => { setPreviewId(previewId === img.id ? '' : img.id); setPreviewSrc('desc'); }}
+                  style={{ padding: 0, background: 'none', border: 'none', cursor: 'pointer', display: 'block', lineHeight: 0 }}
+                >
+                <img
+                  src={imageUrl(img.id)}
+                  alt="任务截图"
+                  style={{
+                    height: 64,
+                    borderRadius: 4,
+                    display: 'block',
+                    border: previewId === img.id ? '2px solid var(--accent)' : '1px solid var(--border)',
+                  }}
+                />
+                </button>
+                {/* 独立复制按钮：不干扰点击放大预览 */}
+                <button
+                  onClick={() => void copyImage(img)}
+                  title="复制图片 — 复制该截图到剪贴板"
+                  aria-label="复制图片：复制该截图到剪贴板"
+                  className="task-op"
+                  style={{ position: 'absolute', right: -6, bottom: -6, fontSize: 'var(--fs-s)', lineHeight: '16px', padding: '0 4px', display: 'inline-flex', alignItems: 'center', background: 'var(--surface-2)' }}
+                >
+                  <Copy size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  /** 大图预览：点击缩略图后展示，附复制入口；T05708 支持 flushLeft——反馈窗内原位渲染时不叠加卡片级 32 缩进 */
+  function renderTaskPreview(t: Task, opts?: { flushLeft?: boolean }) {
+    return (
+      <div style={{ marginLeft: opts?.flushLeft ? 0 : 32, marginTop: 6 }}>
+        <img
+          src={imageUrl(previewId)}
+          alt="任务截图预览"
+          style={{ maxWidth: '100%', maxHeight: 480, border: '1px solid var(--border-strong)', borderRadius: 6 }}
+        />
+        <div style={{ marginTop: 4 }}>
+          <button onClick={() => void copyImage(t.images.find((i) => i.id === previewId)!)} title="复制图片 — 复制该截图到剪贴板" aria-label="复制图片：复制该截图到剪贴板" className="task-op" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px' }}><Copy size={13} />复制图片</button>
+        </div>
+      </div>
+    );
+  }
+
+  /** 描述编辑区：已有/新增截图草稿 + 描述输入框 + 保存/优化/取消 */
+  function renderTaskDescEditor(t: Task, descDraft: string) {
+    const imgDraft = imgDrafts[t.id] ?? { added: [], removed: [] };
+    const kept = t.images.filter((i) => !imgDraft.removed.includes(i.id));
+    const descEditLabel = t.task_no ? `编辑任务描述（${t.task_no}）` : '编辑任务描述';
+    return (
+      <div style={{ marginLeft: 32, marginTop: 6 }}>
+        {(kept.length > 0 || imgDraft.added.length > 0) && (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+            {kept.map((img) => (
+              <div key={img.id} style={{ position: 'relative' }}>
+                <img src={imageUrl(img.id)} alt="任务截图" style={{ height: 64, borderRadius: 4, border: '1px solid var(--border)' }} />
+                <button
+                  onClick={() => markImageRemoved(t.id, img.id)}
+                  title="删除截图"
+                  aria-label="删除该截图"
+                  style={{ position: 'absolute', top: -6, right: -6, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 'var(--fs-2xs)', lineHeight: '16px', padding: '0 4px', cursor: 'pointer' }}
+                ><X size={10} aria-hidden /></button>
+              </div>
+            ))}
+            {imgDraft.added.map((p) => (
+              <div key={p.id} style={{ position: 'relative' }}>
+                <img src={p.url} alt="待上传截图" style={{ height: 64, borderRadius: 4, border: '1px dashed var(--accent)' }} />
+                <button
+                  onClick={() => removeAddedImage(t.id, p.id)}
+                  title="移除截图"
+                  aria-label="移除该待上传截图"
+                  style={{ position: 'absolute', top: -6, right: -6, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 'var(--fs-2xs)', lineHeight: '16px', padding: '0 4px', cursor: 'pointer' }}
+                ><X size={10} aria-hidden /></button>
+              </div>
+            ))}
+          </div>
+        )}
+        <textarea
+          value={descDraft}
+          onChange={(e) => setDescDrafts((prev) => ({ ...prev, [t.id]: e.target.value }))}
+          onPaste={(e) => readClipboardImages(e, (url) => addPastedImage(t.id, url))}
+          rows={3}
+          placeholder="任务描述（支持 Markdown 风格纯文本，可在框内 Ctrl+V 粘贴截图）"
+          aria-label={descEditLabel}
+          style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', boxSizing: 'border-box' }}
+        />
+        <div style={{ marginTop: 4, display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button onClick={() => void saveDesc(t)} title="保存描述 — 保存修改后的任务描述" aria-label="保存描述：保存修改后的任务描述" style={{ fontSize: 'var(--fs-s)', color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Save size={13} /></button>
+          <button onClick={() => void optimizeDesc(t)} title={optimizingMap[t.id] ? '取消 — 停止当前提示词优化' : '提示词优化 — 用选中工具把描述改写为结构化提示词'} aria-label={optimizingMap[t.id] ? '取消提示词优化' : '提示词优化：用选中工具优化描述草稿'} className={optimizingMap[t.id] ? 'task-breathe' : undefined} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', background: optimizingMap[t.id] ? 'var(--accent)' : 'transparent', color: optimizingMap[t.id] ? 'var(--accent-text)' : 'var(--text)' }}><Wand2 size={13} /></button>
+          <button onClick={() => toggleDescEdit(t)} title="取消 — 收起描述编辑区，放弃未保存的修改" aria-label="取消：收起描述编辑区" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><X size={13} /></button>
+          {optimizingMap[t.id] && <span className="task-breathe" style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)' }}>正在生成优化文案…</span>}
+        </div>
+      </div>
+    );
+  }
+
+  /** AI 梳理摘要区：展开/收起查看（与描述展开同风格，默认收起） */
+  function renderTaskSummary(t: Task) {
+    return (
+      <div style={{ marginLeft: 32, marginTop: 4 }}>
+        <button
+          onClick={() => setSummaryExpanded((p) => ({ ...p, [t.id]: !p[t.id] }))}
+          title={summaryExpanded[t.id] ? '收起摘要 — 收起 AI 梳理摘要' : '展开摘要 — 展开查看 AI 梳理摘要'}
+          aria-label={summaryExpanded[t.id] ? '收起：收起 AI 梳理摘要' : '展开：展开查看 AI 梳理摘要'}
+          style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 0', cursor: 'pointer' }}
+        >
+          {summaryExpanded[t.id] ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          AI 梳理摘要
+        </button>
+        {summaryExpanded[t.id] && (
+          <pre style={{ margin: '4px 0 0', padding: 8, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 'var(--fs-s)', whiteSpace: 'pre-wrap' }}>
+            {t.ai_summary}
+          </pre>
+        )}
+      </div>
+    );
+  }
+
+  /** 处理结果展开区：随任务行详情收起/展开（resultOpen 控制），展示态 Markdown + 编辑图标，
+   *  编辑态 textarea + 纯图标保存/取消（悬浮提示）。由 MCP（mtask_update_task_result）同步的
+   *  根因/解决方案直接落 handle_result，此处可人工改。 */
+  function renderTaskResult(t: Task) {
+    // 展开区仅在用户点开处理结果图标（或处于编辑态）时渲染，收起时零占位
+    if (!resultOpen[t.id] && resultDrafts[t.id] === undefined) return null;
+    const editing = resultDrafts[t.id] !== undefined;
+    const resultEditLabel = t.task_no ? `编辑处理结果（${t.task_no}）` : '编辑处理结果';
+    return (
+      <div style={{ marginLeft: 32, marginTop: 4, border: '1px solid var(--border)', borderRadius: 6 }}>
+        {/* 标题栏：左「处理结果」，右编辑/关闭图标（纯图标 + 悬浮提示） */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 6px', background: 'var(--surface)', borderBottom: '1px solid var(--border)', borderTopLeftRadius: 6, borderTopRightRadius: 6 }}>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>处理结果</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            {!editing && (
+              <button
+                onClick={() => startEditResult(t)}
+                title="编辑处理结果 — 修改该任务的处理结果"
+                aria-label="编辑处理结果：修改该任务的处理结果"
+                className="task-op"
+                style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+              >
+                <ClipboardEdit size={12} />
+              </button>
+            )}
+            <button
+              onClick={() => {
+                // 收起时同步丢弃未保存草稿：若有已完成录入则展示区回读已保存值 = 恢复原录入，无则收起为零占位
+                setResultOpen((p) => ({ ...p, [t.id]: false }));
+                setResultDrafts((prev) => {
+                  const next = { ...prev };
+                  delete next[t.id];
+                  return next;
+                });
+              }}
+              title="收起处理结果 — 收起该任务的处理结果（未保存修改将丢弃并恢复已保存录入）"
+              aria-label="收起处理结果：收起该任务的处理结果"
+              className="task-op"
+              style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+            >
+              <ChevronUp size={12} />
+            </button>
+          </span>
+        </div>
+        {editing ? (
+          <div style={{ padding: 6 }}>
+            <textarea
+              value={resultDrafts[t.id]}
+              onChange={(e) => setResultDrafts((prev) => ({ ...prev, [t.id]: e.target.value }))}
+              rows={6}
+              placeholder="处理结果：记录根因分析、解决方案或结论（支持 Markdown）"
+              aria-label={resultEditLabel}
+              style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', boxSizing: 'border-box' }}
+            />
+            <div style={{ marginTop: 4, display: 'flex', gap: 4, alignItems: 'center' }}>
+              {/* T00796 二轮：处理结果正文同样接入 AI 美化（AI 回写的根因/方案常口语化），
+                  结果回填草稿，仍需点保存才落库 */}
+              <AiPolishButton
+                value={resultDrafts[t.id] ?? ''}
+                onPolished={(text) => setResultDrafts((prev) => ({ ...prev, [t.id]: text }))}
+                toolId={organizeToolId}
+                flash={flash}
+                title="AI 美化 — 润色这份处理结果（保留根因/方案全部事实要素，仅规范表达），结果回填后请核对再保存"
+              />
+              <button
+                onClick={() => void saveResult(t)}
+                title="保存处理结果 — 保存修改后的处理结果"
+                aria-label="保存处理结果：保存修改后的处理结果"
+                className="task-op"
+                style={{ fontSize: 'var(--fs-s)', color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+              >
+                <Save size={13} />
+              </button>
+              <button
+                onClick={() => {
+                  // 放弃未保存修改：清草稿退出编辑态；若曾有已保存录入则留在展开态显示原值（恢复），否则收起空态
+                  setResultDrafts((prev) => {
+                    const next = { ...prev };
+                    delete next[t.id];
+                    return next;
+                  });
+                  if (!t.handle_result) setResultOpen((p) => ({ ...p, [t.id]: false }));
+                }}
+                title="放弃修改 — 放弃未保存的修改并恢复之前已保存的处理结果"
+                aria-label="放弃修改：放弃未保存的修改并恢复之前已保存的处理结果"
+                className="task-op"
+                style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+              >
+                <X size={13} />
+              </button>
+            </div>
+          </div>
+        ) : (
+          // 有值展示 Markdown；无值且展开（理论上按钮点击即进入编辑，此处为收起按钮单独状态兜底）
+          <div style={{ padding: 6 }}>
+            {t.handle_result ? (
+              <MarkdownContent
+                content={t.handle_result}
+                showCopy
+              />
+            ) : (
+              <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>暂无处理结果</span>
+            )}
+          </div>
+        )}
+        {/* T01072-FR1.9：结果历史 diff 与回滚（handle_result 被覆盖前留档；无历史时组件自身返回 null）。
+            T01607：渲染条件不再要求「当前有正文」——回滚到空正文那一版后仍需保留再滚回来的入口。 */}
+        {!editing && t.task_no && (
+          <ResultDiffPanel
+            taskNo={t.task_no}
+            current={t.handle_result ?? ''}
+            onRollback={() => { void loadTasks(activeProject); }}
+          />
+        )}
+      </div>
+    );
+  }
+
+  /** T00521 调整：从 handle_result 提取【验证失败 …】反馈段（支持多段，段止于下一个【开头行） */
+  function getFailbackText(t: Task): string {
+    const out: string[] = [];
+    let cap = false;
+    for (const ln of (t.handle_result ?? '').split('\n')) {
+      if (ln.includes('【验证失败')) { cap = true; out.push(ln); continue; }
+      if (cap) {
+        if (ln.trim().startsWith('【')) break; // 下一段标记开始，失败反馈段结束
+        out.push(ln);
+      }
+    }
+    return out.join('\n').trim();
+  }
+
+  /** 保存验证失败反馈编辑（草稿为 handle_result 全文，写回全文——失败段与处理结果同窗维护） */
+  async function saveFailback(task: Task) {
+    const content = fbDrafts[task.id];
+    if (content === undefined) return;
+    try {
+      await api.patch(`/tasks/${task.id}`, { handleResult: content });
+    } catch (e) {
+      return flash(e instanceof Error ? e.message : String(e), 'error');
+    }
+    setFbDrafts((prev) => {
+      const next = { ...prev };
+      delete next[task.id];
+      return next;
+    });
+    void loadTasks(activeProject);
+    flash('验证失败反馈已保存');
+  }
+
+  /** T00521 调整：验证失败反馈展开区——与处理结果同款交互窗口（展示态聚焦失败反馈段，编辑态全文可改写回） */
+  function renderTaskFailback(t: Task) {
+    if (!failbackOpen[t.id] && fbDrafts[t.id] === undefined) return null; // 收起零占位
+    const editing = fbDrafts[t.id] !== undefined;
+    const fbText = getFailbackText(t);
+    const fbEditLabel = t.task_no ? `编辑处理结果全文（${t.task_no}）` : '编辑处理结果全文';
+    return (
+      // T01385：修「窗口边缘过窄/内容截断」——右侧留出与左缩进对称的边距、min-width:0 允许收缩、
+      // 内容区 overflowX:auto + overflowWrap:anywhere，长代码块/长 URL 横向滚动而非溢出截断
+      <div style={{ marginLeft: 32, marginRight: 8, marginTop: 4, border: '1px solid var(--danger)', borderRadius: 6, minWidth: 0, overflow: 'hidden', boxSizing: 'border-box' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 6px', background: 'var(--surface)', borderBottom: '1px solid var(--border)', borderTopLeftRadius: 6, borderTopRightRadius: 6 }}>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>验证失败反馈</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            {!editing && (
+              <button
+                onClick={() => setFbDrafts((prev) => ({ ...prev, [t.id]: t.handle_result ?? '' }))}
+                title="编辑反馈 — 修改该任务的处理结果全文（含验证失败反馈）"
+                aria-label="编辑验证失败反馈：修改处理结果全文"
+                className="task-op"
+                style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+              >
+                <ClipboardEdit size={12} />
+              </button>
+            )}
+            <button
+              onClick={() => {
+                setFailbackOpen((p) => ({ ...p, [t.id]: false }));
+                setFbDrafts((prev) => {
+                  const next = { ...prev };
+                  delete next[t.id];
+                  return next;
+                });
+              }}
+              title="收起验证失败反馈 — 未保存修改将丢弃"
+              aria-label="收起验证失败反馈"
+              className="task-op"
+              style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+            >
+              <ChevronUp size={12} />
+            </button>
+          </span>
+        </div>
+        {editing ? (
+          <div style={{ padding: 6, overflowX: 'auto' }}>
+            <textarea
+              value={fbDrafts[t.id]}
+              onChange={(e) => setFbDrafts((prev) => ({ ...prev, [t.id]: e.target.value }))}
+              rows={6}
+              placeholder="处理结果全文（含【验证失败】反馈段，支持 Markdown）"
+              aria-label={fbEditLabel}
+              style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', boxSizing: 'border-box' }}
+            />
+            <div style={{ marginTop: 4, display: 'flex', gap: 4, alignItems: 'center' }}>
+              {/* T00796 二轮补：反馈「修改」入口同样要有 AI 美化（与录入弹窗/处理结果/通用需求同一组件），
+                  结果只回填草稿，仍需点保存落库 */}
+              <AiPolishButton
+                value={fbDrafts[t.id] ?? ''}
+                onPolished={(text) => setFbDrafts((prev) => ({ ...prev, [t.id]: text }))}
+                toolId={organizeToolId}
+                flash={flash}
+                title="AI 美化 — 润色这份验证失败反馈（保留现象/环境/期望等全部事实要素，仅规范表达），结果回填后请核对再保存"
+              />
+              <button
+                onClick={() => void saveFailback(t)}
+                title="保存 — 保存修改后的处理结果（含验证失败反馈）"
+                aria-label="保存验证失败反馈"
+                className="task-op"
+                style={{ fontSize: 'var(--fs-s)', color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+              >
+                <Save size={13} />
+              </button>
+              <button
+                onClick={() => setFbDrafts((prev) => {
+                  const next = { ...prev };
+                  delete next[t.id];
+                  return next;
+                })}
+                title="放弃修改 — 恢复已保存内容"
+                aria-label="放弃修改：恢复已保存内容"
+                className="task-op"
+                style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+              >
+                <X size={13} />
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ padding: 6, overflowX: 'auto', overflowWrap: 'anywhere' }}>
+            {fbText ? (
+              <MarkdownContent content={fbText} showCopy />
+            ) : (
+              <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>未找到验证失败反馈段</span>
+            )}
+            {/* T00610：反馈窗口内直接查看随反馈提交的截图（点击放大） */}
+            {t.images.length > 0 && (
+              <div style={{ marginTop: 8, borderTop: '1px solid var(--border)', paddingTop: 6 }}>
+                <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 4 }}>反馈截图（{t.images.length}）— 点击放大；AI 可经 MCP 读取识别</div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {t.images.map((img) => (
+                    <button key={img.id} type="button"
+                      onClick={() => { setPreviewId(previewId === img.id ? '' : img.id); setPreviewSrc('failback'); }}
+                      title="放大预览该反馈截图 — 再次点击收起" aria-label="放大预览反馈截图"
+                      style={{ padding: 0, background: 'none', border: previewId === img.id ? '2px solid var(--accent)' : '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', lineHeight: 0 }}>
+                      <img src={imageUrl(img.id)} alt="反馈截图" style={{ height: 64, borderRadius: 3, display: 'block' }} />
+                    </button>
+                  ))}
+                </div>
+                {/* T05708：大图跟随反馈窗原位渲染（原实现只在描述板块挂载且要求描述展开，描述收起时点击缩略图无反应） */}
+                {previewId && previewSrc === 'failback' && t.images.some((i) => i.id === previewId) && renderTaskPreview(t, { flushLeft: true })}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+  function renderTaskDraft(t: Task, draft: string) {
+    const draftEditLabel = t.task_no ? `编辑梳理草稿（${t.task_no}）` : '编辑梳理草稿';
+    return (
+      <div style={{ marginLeft: 32, marginTop: 6 }}>
+        <textarea
+          value={draft}
+          onChange={(e) => setDrafts((prev) => ({ ...prev, [t.id]: e.target.value }))}
+          rows={8}
+          aria-label={draftEditLabel}
+          style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', fontFamily: 'monospace', boxSizing: 'border-box' }}
+        />
+        <div style={{ marginTop: 4, display: 'flex', gap: 8 }}>
+          <button onClick={() => void saveDraft(t)} title="保存到任务 — 将梳理结果回填为任务摘要" aria-label="保存到任务" style={{ fontSize: 'var(--fs-s)', color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', gap: 4 }}><Check size={13} />保存到任务</button>
+          <button onClick={() => setDrafts((prev) => {
+            const next = { ...prev };
+            delete next[t.id];
+            return next;
+          })} title="放弃 — 丢弃本次梳理草稿" aria-label="放弃梳理草稿" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><X size={13} /></button>
+        </div>
+      </div>
+    );
+  }
+
+  /** 渲染单个任务行。
+   *  注意：必须用普通函数调用（renderTaskItem(t)）而非组件，否则定义在渲染函数内会每次重渲染都生成新组件类型，
+   *  导致整个任务项（含描述/梳理 textarea）反复卸载重建、光标焦点丢失。普通函数把 JSX 内联进父组件树，按位置复用 DOM，焦点稳定。
+   *  同理，行内各区块也拆为普通渲染函数调用，保持单函数复杂度可控。 */
+
+  /** M6-6.1：任务行 className 预计算（避免 JSX 内联嵌套三元） */
+  function buildTaskItemClass(t: Task, titleEditing: boolean, descEditing: boolean, dragCls: string): string {
+    const editing = titleEditing || descEditing ? ' task-editing' : '';
+    const flush = refreshFlash && t.updated_at && Date.parse(t.updated_at) >= refreshFlash ? ' flush' : '';
+    const press = pressId === t.id ? ' item-pressing' : '';
+    // T02196：徽标定位成功反馈——目标行短暂高亮（动画定义在全局样式 .locate-flash）
+    const locate = locateFlashId === t.id ? ' locate-flash' : '';
+    return `task-item cv-auto${editing}${dragCls}${flush}${press}${locate}${drawerTask?.id === t.id ? ' task-drawer-open' : ''}`;
+  }
+
+  /** M6-6.1：任务行 style 预计算（避免 JSX 内联三元） */
+  function buildTaskItemStyle(t: Task, sortMode: SortKey): React.CSSProperties {
+    return {
+      borderBottom: '1px solid var(--surface-2)', padding: '6px 0', marginLeft: t.parent_id ? 28 : 0,
+      borderLeft: t.parent_id ? '2px solid var(--border-strong)' : undefined,
+      paddingLeft: t.parent_id ? 10 : undefined,
+      cursor: sortMode === 'manual' ? 'grab' : undefined,
+    };
+  }
+
+  /** M6-6.1：描述板块（grid 展开动画 + 时间线/预览，仅展开态渲染重内容） */
+  function renderDescSection(t: Task): React.ReactNode {
+    // M6-6.4：aria-label 拼接提取为独立变量（消除嵌套模板字符串 S4624）
+    const descAriaLabel = t.task_no ? `任务描述（${t.task_no}）` : '任务描述';
+    return (
+      <section
+        id={`task-desc-${t.id}`}
+        aria-label={descAriaLabel}
+        onTransitionEnd={(e) => { if (e.target === e.currentTarget && e.propertyName === 'grid-template-rows' && !descExpanded[t.id]) setDescVis((p) => { const n = { ...p }; delete n[t.id]; return n; }); }}
+        style={{ display: 'grid', gridTemplateRows: descExpanded[t.id] ? '1fr' : '0fr', opacity: descExpanded[t.id] ? 1 : 0, transition: 'grid-template-rows 240ms ease-in-out, opacity 200ms ease-in-out', overflow: 'hidden' }}
+      >
+        <div style={{ minHeight: 0, overflow: 'hidden' }}>
+          {descExpanded[t.id] && renderTaskDescView(t)}
+          {descExpanded[t.id] && <TaskEventTimeline taskId={t.id} />}
+          {previewId && previewSrc === 'desc' && descExpanded[t.id] && t.images.some((i) => i.id === previewId) && renderTaskPreview(t)}
+        </div>
+      </section>
+    );
+  }
+
+  function renderTaskItem(t: Task, kind: 'todo' | 'done' | 'shelved', listIds: string[]) {
+    const draft = drafts[t.id];
+    const descDraft = descDrafts[t.id];
+    const descEditing = descDraft !== undefined;
+    const titleEditing = titleDrafts[t.id] !== undefined;
+    // T00719：shelved 列表拖拽重排沿用 manual 排序链路（dropTaskReorder 按列表 id 序写 user_sort）
+    let sortMode: SortKey;
+    if (kind === 'todo') sortMode = todoSort;
+    else if (kind === 'shelved') sortMode = shelvedSort;
+    else sortMode = doneSort;
+    let dragCls = '';
+    if (overTaskId === t.id) dragCls = ' plan-over';
+    else if (dragTaskId === t.id) dragCls = ' plan-dragging';
+    return (
+      <li
+        className={buildTaskItemClass(t, titleEditing, descEditing, dragCls)}
+        onPointerDown={(e) => {
+          // T00489：交互元素上按下不触发行缩放；非交互区按住 200ms 才缩放（快速点击不缩放）
+          // T01533：标题已是原生 button，纳入排除（选区守卫见 renderTitleDisplayButton）
+          if ((e.target as HTMLElement).closest('button, input, select, a, textarea, label, [role="button"]')) return;
+          pressTimer.current[t.id] = globalThis.setTimeout(() => setPressId(t.id), 200);
+        }}
+        onPointerUp={() => { clearTimeout(pressTimer.current[t.id]); if (pressId) { setPressId(''); } setTitleSelId(''); }}
+        onPointerLeave={() => { clearTimeout(pressTimer.current[t.id]); if (pressId === t.id) { setPressId(''); } setTitleSelId(''); }}
+        draggable={sortMode === 'manual' && titleSelId !== t.id}
+        onDragStart={() => setDragTaskId(t.id)}
+        onDragEnd={() => { setDragTaskId(''); setOverTaskId(''); }}
+        onDragOver={(e) => { e.preventDefault(); if (t.id !== dragTaskId) setOverTaskId(t.id); }}
+        onDrop={(e) => { e.preventDefault(); dropTaskReorder(kind, listIds, t.id); }}
+        style={buildTaskItemStyle(t, sortMode)}
+      >
+        {renderTaskTitleRow(t, titleEditing)}
+        {/* 元信息/操作行：优先级/分类/功能按钮 + 记录时间，全部靠右同行 */}
+        {renderTaskMetaRow(t, titleEditing, descEditing)}
+        {/* T03255：该行建议条——仅当前请求的任务显示，采纳/不采纳后消失 */}
+        {rowSuggest?.taskId === t.id && renderSuggestionStrip(rowSuggest.data, 'row', () => void adoptRowSuggestion(t), dismissRowSuggestion)}
+        {/* 描述板块：T01384 grid-rows 0fr→1fr 过渡；重内容仅展开态渲染 */}
+        {!descEditing && (t.description || t.images.length > 0) && (descExpanded[t.id] || descVis[t.id]) && renderDescSection(t)}
+        {descEditing && renderTaskDescEditor(t, descDraft)}
+        {t.ai_summary && !draft && renderTaskSummary(t)}
+        {draft && renderTaskDraft(t, draft)}
+        {renderTaskResult(t)}
+        {renderTaskFailback(t)}
+      </li>
+    );
+  }
+
+  /** 工具条 AI 美化按钮：进行中变为「取消」，否则批量美化全部待办 */
+  function renderBeautifyToolbarButton() {
+    // 提示文案平铺成 if/else（取消 > AI 不可用 > 正常），消除嵌套三元（S3358）
+    let titleAttr: string;
+    if (anyBeautify) titleAttr = '取消 — 停止当前批量美化';
+    else if (aiDown) titleAttr = aiBlockedTitle(readiness, 'AI 美化全部待办 — 批量润色所有待办任务标题');
+    else titleAttr = 'AI 美化全部待办 — 批量润色所有待办任务标题';
+    return (
+      <>
+        <button
+          onClick={handleBeautifyToggle}
+          disabled={!anyBeautify && (todo.length === 0 || aiDown)}
+          title={titleAttr}
+          aria-label={anyBeautify ? '取消批量美化' : 'AI 美化全部待办'}
+          className={anyBeautify ? 'task-breathe' : 'op-hidden'} // T00759：默认隐藏悬浮显示；批量进行中保持可见
+          style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, background: anyBeautify ? 'var(--accent)' : 'transparent', color: anyBeautify ? 'var(--accent-text)' : 'var(--text)' }}
+        >
+          <Wand2 size={13} />
+          {anyBeautify ? '取消' : todo.length}
+        </button>
+        {/* 工具条整体连贯进度提示：单条/批量美化进行中展示（优化进行中文案在各任务描述区展示），完成/取消后清空 */}
+        {anyBeautify && <output className="flash-toast" style={{ top: 48 }}><span className="task-breathe" style={{ color: 'var(--accent)' }}>{batchBusy ? '正在批量美化标题…' : '正在美化标题…'}</span></output>}
+      </>
+    );
+  }
+
+  /** 项目操作按钮组：新建/改名/删除当前项目（提取以降低工具条函数复杂度，渲染不变） */
+  function renderProjectActionButtons() {
+    return (
+      <>
+        <button
+          onClick={() => void createProject()}
+          title="新项目 — 新建一个任务项目"
+          aria-label="新项目：新建一个任务项目"
+          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}
+        >
+          <FolderPlus size={13} />
+        </button>
+        {/* 修改当前项目名称：轻量操作，弹输入框预填当前名称；置于删除按钮前，与删除同属「当前项目」操作区 */}
+        <button
+          onClick={() => void renameProject()}
+          disabled={!activeProject}
+          title="修改项目名称 — 重命名当前选中项目"
+          aria-label="修改项目名称：重命名当前选中项目"
+          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: activeProject ? 'pointer' : 'not-allowed', opacity: activeProject ? 1 : 0.5 }}
+        >
+          <SquarePen size={13} />
+        </button>
+        {/* T04133（PRD MEM-101③）：存量项目补绑产品标签——预填当前值，留空即清空 */}
+        <button
+          onClick={() => void editProductKey()}
+          disabled={!activeProject}
+          title="产品标签 — 设置当前项目所属产品（留空＝未绑定）"
+          aria-label="设置产品标签：补绑当前项目所属产品"
+          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: activeProject ? 'pointer' : 'not-allowed', opacity: activeProject ? 1 : 0.5 }}
+        >
+          <Tags size={13} />
+        </button>
+        {/* 删除当前项目：风险操作，点击后弹确认框，确认才执行；危险色标示 */}
+        <button
+          onClick={() => void deleteProject()}
+          disabled={!activeProject}
+          title="删除项目 — 删除当前选中项目及其全部任务（不可恢复，需二次确认）"
+          aria-label="删除项目：删除当前选中项目及其全部任务"
+          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', color: 'var(--danger)', background: 'transparent', border: '1px solid var(--danger)', borderRadius: 6, cursor: activeProject ? 'pointer' : 'not-allowed', opacity: activeProject ? 1 : 0.5 }}
+        >
+          <Trash2 size={13} />
+        </button>
+      </>
+    );
+  }
+
+  /** 一键批量分类按钮（提取以降低工具条函数复杂度，渲染不变） */
+  function renderClassifyButton() {
+    // T01618：数量显示对齐「AI 美化全部待办」范式——本按钮作用域是未分类任务（含已完成），展示其条数
+    const unclassified = [...todo, ...done].filter((t) => !t.category_id).length;
+    // 提示文案平铺成 if/else（进行中 > AI 不可用 > 正常），消除嵌套三元（S3358）
+    let titleAttr: string;
+    if (classifyBusy) titleAttr = '批量分类进行中…';
+    else if (aiDown) titleAttr = aiBlockedTitle(readiness, 'AI 批量分类 — 对未分类任务（含已完成）智能识别自动分到已有分类');
+    else titleAttr = 'AI 批量分类 — 对未分类任务（含已完成）智能识别自动分到已有分类';
+    return (
+      <button
+        onClick={() => void batchClassify()}
+        disabled={classifyBusy || aiDown || (todo.length === 0 && done.length === 0)}
+        className={`tbtn-anim op-hidden${classifyBusy ? ' task-breathe' : ''}`} // T00759：默认隐藏悬浮显示；批量进行中保持可见
+        title={titleAttr}
+        aria-label={classifyBusy ? '批量分类进行中' : 'AI 批量分类：对未分类任务（含已完成）自动分类'}
+        style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, background: classifyBusy ? 'var(--accent)' : 'transparent', color: classifyBusy ? 'var(--accent-text)' : 'var(--text)' }}
+      >
+        {classifyBusy ? <Loader2 size={13} className="aispin" /> : <Tags size={13} />}
+        {!classifyBusy && unclassified > 0 ? unclassified : ''}
+      </button>
+    );
+  }
+
+  /** T00456 / PRD UX-1：视图切换（列表/看板）。纯布局分组，两个按钮各带无障碍名称，
+   *  故不在容器上声明 role="group"（S6819），渲染不变。 */
+  function renderViewToggle() {
+    return (
+      <span className={`op-host${viewMode === 'board' ? '' : ' op-hidden'}`} style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }}>
+        <button className="tbtn-anim" onClick={() => setViewMode('list')} aria-label="列表视图" style={{ padding: '5px 9px', border: 'none', cursor: 'pointer', display: 'inline-flex', background: viewMode === 'list' ? 'var(--accent)' : 'transparent', color: viewMode === 'list' ? 'var(--accent-text)' : 'var(--text)' }} title="列表视图"><ListTodo size={13} /></button>
+        <button className="tbtn-anim" onClick={() => setViewMode('board')} aria-label="看板视图" style={{ padding: '5px 9px', border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', display: 'inline-flex', background: viewMode === 'board' ? 'var(--accent)' : 'transparent', color: viewMode === 'board' ? 'var(--accent-text)' : 'var(--text)' }} title="看板视图 — 按状态分列，拖拽卡片流转状态"><LayoutGrid size={13} /></button>
+      </span>
+    );
+  }
+
+  /** 多选模式切换按钮（提取以降低工具条函数复杂度，渲染不变） */
+  function renderMultiSelectButton() {
+    return (
+      <button
+        onClick={() => { setMultiSelect((v) => !v); setSelectedIds(new Set()); }}
+        className={`tbtn-anim${multiSelect ? '' : ' op-hidden'}`} // T00759：默认隐藏悬浮显示；多选模式下保持可见（退出入口）
+        style={{ fontSize: 'var(--fs-s)', padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', border: '1px solid var(--border-strong)', background: multiSelect ? 'var(--accent)' : 'transparent', color: multiSelect ? 'var(--accent-text)' : 'var(--text)' }}
+        title={multiSelect ? '退出多选模式' : '多选模式 — 勾选任务后批量改状态/分类/归档'}
+        aria-label={multiSelect ? '退出多选模式' : '进入多选模式'}
+      >
+        {multiSelect ? <Check size={13} /> : <ListChecks size={13} />}
+      </button>
+    );
+  }
+
+  /**
+   * T00797：一键收起/展开的作用域与判定（单一来源，避免按钮 onClick 与图标两次各算一遍而漂移）。
+   * 覆盖待办 / 已完成 / 搁置三个列表 —— 三者共用同一套折叠状态；展开时只对有内容的分组展开
+   * （处理结果要有 handle_result、验证失败反馈要满足与失败徽标同条件）。
+   */
+  function foldScope() {
+    const all = [...todo, ...done, ...shelvedTasks];
+    return {
+      ids: all.map((t) => t.id),
+      resultIds: all.filter((t) => t.handle_result).map((t) => t.id),
+      failbackIds: all.filter((t) => t.handle_result?.includes('【验证失败') && !isVerificationPassed(t)).map((t) => t.id),
+    };
+  }
+
+  /** 是否存在任一展开中的任务详情分组（描述 / AI 摘要 / 处理结果 / 验证失败反馈） */
+  function anyFoldOpen() {
+    return foldScope().ids.some((id) => descExpanded[id] || summaryExpanded[id] || resultOpen[id] || failbackOpen[id]);
+  }
+
+  /** 工作空间只读问答入口——禁用原因按「未绑定 > 未选项目 > AI 不可用 > 正常」平铺 */
+  function renderWsAskButton() {
+    const proj = activeProject && activeProject !== ALL_PROJECTS ? projects.find((p) => p.id === activeProject) : undefined;
+    const noWs = !!proj && !proj.workspace_path;
+    const off = !activeProject || aiDown || noWs;
+    // 提示原因按「未绑定 > 未选项目 > AI 不可用 > 正常」平铺成 if/else，消除嵌套三元与取反条件（S3358/S7735）
+    let reason: string;
+    if (activeProject && noWs) reason = '该项目尚未绑定工作空间 — 先在工作空间下拉条里绑定仓库目录再提问';
+    else if (activeProject && aiDown) reason = aiBlockedTitle(readiness, '工作空间只读问答 — 依据代码片段作答并给出 file:line 引用（只读）');
+    else if (activeProject) reason = '工作空间只读问答 — 依据代码片段作答并给出可跳转的 file:line 引用（只读，不改任何文件）';
+    else reason = '请先选择项目再就工作空间提问';
+    return (
+      <button
+        onClick={() => {
+          if (activeProject === ALL_PROJECTS) { flash('全部项目视图下请先选择具体项目再提问'); return; }
+          setWsAskOpen(true);
+        }}
+        className="op-hidden tbtn-anim"
+        disabled={off}
+        data-t03250="ask-entry"
+        title={`${reason}（默认隐藏，悬浮工具栏显示）`}
+        aria-label="工作空间只读问答"
+        style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', color: 'var(--text-muted)', border: 'none', borderRadius: 6, cursor: off ? 'not-allowed' : 'pointer' }}
+      >
+        <MessageSquareText size={13} style={{ flexShrink: 0 }} />
+      </button>
+    );
+  }
+
+  /** 「更多」面板：导出与筛选（折叠入口在工具条尾部，展开时独占一行） */
+  function renderMorePanel() {
+    return (
+<fieldset ref={morePanelRef} data-t03623="more-panel" aria-label="更多功能：导出与筛选"
+        /* order:9 + flexBasis:100%：仍排在 DOM 中「更多」按钮之后（键盘顺序不变），视觉上独占工具条最后一行 */
+        style={{ order: 9, flexBasis: '100%', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', margin: 0, minWidth: 0, padding: '8px 10px', border: '1px solid var(--border-strong)', borderRadius: 8, background: 'var(--surface)' }}>
+        {/* T03267（PM-402）：项目级导出——任务/计划 × Markdown/JSON；全部项目视图下不可用（导出必须落到具体项目） */}
+        <select value="" disabled={exportDisabled(exportBusy, activeProject)}
+          data-t03267="project-export" aria-label="导出项目任务或计划"
+          title={exportProjectTitle(activeProject)}
+          onChange={(e) => {
+            const v = e.target.value;
+            if (v === 'tasks:md') void exportProject('tasks', 'md');
+            else if (v === 'tasks:json') void exportProject('tasks', 'json');
+            else if (v === 'plans:md') void exportProject('plans', 'md');
+            else if (v === 'plans:json') void exportProject('plans', 'json');
+            e.target.value = '';
+          }}
+          style={{ fontSize: 'var(--fs-s)', padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', opacity: exportDisabled(exportBusy, activeProject) ? 0.55 : 1 }}>
+          <option value="">{exportBusy ? '导出中…' : '导出项目…'}</option>
+          <option value="tasks:md">任务 Markdown</option>
+          <option value="tasks:json">任务 JSON</option>
+          <option value="plans:md">计划 Markdown</option>
+          <option value="plans:json">计划 JSON</option>
+        </select>
+        <select
+          value={catFilter}
+          onChange={(e) => setCatFilter(e.target.value)}
+          title="分类筛选 — 按任务分类筛选列表"
+          aria-label="分类筛选：按任务分类筛选列表"
+          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6 }}
+        >
+          <option value="">全部分类</option>
+          <option value="none">未分类</option>
+          {taskCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        <select
+          value={priorityFilter}
+          onChange={(e) => setPriorityFilter(e.target.value)}
+          title="优先级筛选 — 按任务优先级筛选列表"
+          aria-label="优先级筛选：按任务优先级筛选列表"
+          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6 }}
+        >
+          <option value="">全部优先级</option>
+          <option value="urgent">极高</option>
+          <option value="high">高</option>
+          <option value="normal">普通</option>
+          <option value="low">低</option>
+        </select>
+        {/* T03232（PM-203③）：自定义字段筛选/排序——由服务端在整表上执行（EXISTS / ORDER BY），
+            不是「先取一页再本地筛」，所以翻页后的结果集与顺序都与第一页一致。
+            字段挂项目：全部项目视图或项目尚无字段时禁用，并把原因写进 title。 */}
+        <select
+          value={fieldFilterField}
+          onChange={(e) => onFieldFilterField(e.target.value)}
+          disabled={fieldsDisabled}
+          data-t03232="field-filter"
+          title={fieldsDisabled ? fieldPickerDisabledTitle(projectFields.length, activeProject) : FIELD_FILTER_TITLE_READY}
+          aria-label="自定义字段筛选：选择要筛选的自定义字段"
+          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, opacity: fieldsDisabled ? 0.55 : 1, cursor: fieldsDisabled ? 'not-allowed' : 'pointer' }}
+        >
+          <option value="">自定义字段筛选</option>
+          {projectFields.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+        </select>
+        {activeField && (
+          <>
+            <select
+              value={fieldFilterOp}
+              onChange={(e) => setFieldFilterOp(e.target.value)}
+              data-t03232="field-op"
+              title="筛选条件 — 按字段类型可选的比较方式"
+              aria-label="自定义字段筛选条件：选择比较方式"
+              style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6 }}
+            >
+              {FIELD_FILTER_OPS[activeField.type].map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+            {fieldFilterNeedsValue && <FieldValueEditor field={activeField} value={fieldFilterValue} onChange={setFieldFilterValue} />}
+            <button
+              type="button"
+              onClick={clearFieldFilter}
+              data-t03232="field-clear"
+              title="清除自定义字段筛选 — 回到未按字段筛选的列表"
+              aria-label="清除自定义字段筛选"
+              style={{ fontSize: 'var(--fs-s)', padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)' }}
+            >
+              <X size={12} /><span>清除字段筛选</span>
+            </button>
+          </>
+        )}
+        <select
+          value={fieldSort}
+          onChange={(e) => setFieldSort(e.target.value)}
+          disabled={fieldsDisabled}
+          data-t03232="field-sort"
+          title={fieldsDisabled ? fieldPickerDisabledTitle(projectFields.length, activeProject) : FIELD_SORT_TITLE_READY}
+          aria-label="自定义字段排序：按自定义字段排序列表"
+          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, opacity: fieldsDisabled ? 0.55 : 1, cursor: fieldsDisabled ? 'not-allowed' : 'pointer' }}
+        >
+          <option value="">自定义字段排序</option>
+          {projectFields.map((f) => (
+            <Fragment key={f.id}>
+              <option value={`${f.id}|asc`}>{`按「${f.name}」升序`}</option>
+              <option value={`${f.id}|desc`}>{`按「${f.name}」降序`}</option>
+            </Fragment>
+          ))}
+        </select>
+      </fieldset>
+    );
+  }
+
+  /** 顶部工具条：项目切换、工具选择、批量美化、分类筛选、搜索（T00522 修正：顶层补 op-host 宿主，筛选/搜索默认隐藏悬浮显示才生效） */
+  function renderToolbar() {
+    // T03211：全部项目视图的合计徽标（各项目计数之和）；具体项目视图仍用单项目计数
+    const allTodo = projects.reduce((s, p) => s + (p.todo_count ?? 0), 0);
+    const allUnv = projects.reduce((s, p) => s + (p.unverified_count ?? 0), 0);
+    const curProj = projects.find((p) => p.id === activeProject);
+    // T03623：第二排收起后筛选态不可见——按钮上用计数徽标提示「当前有几项筛选在生效」
+    const moreActiveCount = [catFilter !== '', priorityFilter !== '', fieldFilterField !== '', fieldSort !== ''].filter(Boolean).length;
+    return (
+      <div className="op-host" style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        {/* T02167 二轮：宿主组改可换行——窄窗（≤430px）时行内容纳不下整组（项目条+工作空间+图标钮），
+            原 nowrap 会把压缩全部转嫁给 minWidth:0 的项目条（它当时是唯一可压缩项），实测 380px 宽
+            按钮被压到 40px、两枚统计徽标越出按钮边框 29px。改换行后由换行让位，项目条保住 min-content。 */}
+        <span className="op-host" style={{ display: 'inline-flex', gap: 8, alignItems: 'center', minWidth: 0, flexWrap: 'wrap' }}>
+        <div ref={projDropRef} style={{ position: 'relative', display: 'inline-flex' }}>
+          <button onClick={() => { setProjOpen((o) => { if (!o) { refreshProjCounts(); } return !o; }); }} aria-haspopup="listbox" aria-expanded={projOpen}
+            title="切换项目 — 项目名后徽标：红=待办数、黄=未验证数（悬浮查看详情）"
+            aria-label="切换项目"
+            /* T04544：右内边距 8→30——为叠加在控件右缘的复制按钮让位（按钮绝对定位，不参与 flex 压缩，
+               故只需让开箭头，T02167 的「名称省略、徽标不越界」min-content 口径不变） */
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 30px 6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)', cursor: 'pointer', maxWidth: 220 }}>
+            {/* T02167：项目名改为可收缩的单行省略项（与 WorkspaceSelect 同口径）。
+                原来是裸文本节点——CJK 无空格可断，min-content 只有 1 字宽，工具条变窄时按钮被压到
+                比内容还小，右侧统计徽标溢出边框。徽标与箭头一律 flexShrink:0，只让名称让步。
+                二轮：按钮/容器不再 minWidth:0——它会让弹性压缩把按钮压到低于「徽标+箭头」的
+                min-content（约 88px），徽标照样越出边框；去掉后 min-width:auto 以 min-content 兜底。 */}
+            <span style={{ flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {activeProjectLabel(activeProject, projects)}
+            </span>
+            <ProjectButtonBadges activeProject={activeProject} curProj={curProj} allTodo={allTodo} allUnv={allUnv} />
+            <ChevronDown size={12} style={{ flexShrink: 0 }} />
+          </button>
+          {/* T04544：项目名复制按钮——HTML 不允许按钮套按钮（同 T02146 口径），故作为触发按钮的兄弟节点
+              绝对定位叠在控件右缘，视觉上仍在「下拉条内部右侧」；点击只复制，不会顺带展开下拉。
+              复制内容取当前显示的标签，与框内所见一致。 */}
+          <CopyButton getText={() => activeProjectLabel(activeProject, projects)} title="复制项目名称" ariaLabel="复制项目名称" size={12}
+            style={{ position: 'absolute', right: 4, top: '50%', transform: 'translateY(-50%)', background: 'transparent', border: 'none', color: 'var(--text-muted)' }} />
+          {projOpen && (
+            // T02167 二轮：右缘预算 24px→48px——面板左缩进约 26px，原「100vw−24px」公式按 0 缩进
+            // 推算，380px 窗口下面板右缘越出窗口 2px；预留 48px 后右缘恒留 ~22px 余量
+            <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', zIndex: 30, minWidth: 220, maxWidth: 'min(360px, calc(100vw - 48px))', overflowX: 'hidden' }}>
+              {/* T02201：面板顶部显式承载加载/失败态——取数失败时点开项目切换不再是一片空白，且带重试入口 */}
+              {projectList.phase !== 'ready' && (
+                <div style={{ padding: '6px 10px', borderBottom: '1px solid var(--border)' }}><ProjectListHint view={projectList} /></div>
+              )}
+              {/* T03211（PM-105）：全部项目混合视图——跨项目任务集，可在同一多选集内跨项目勾选后批量操作 */}
+              <button type="button" className="card-btn" aria-pressed={activeProject === ALL_PROJECTS} aria-label="全部项目"
+                onClick={() => { setActiveProject(ALL_PROJECTS); setProjOpen(false); }}
+                title={`全部项目 — 跨项目混合视图（待办合计 ${allTodo} 条，未验证合计 ${allUnv} 条）；可跨项目多选后批量操作`}
+                style={{ display: 'flex', width: '100%', boxSizing: 'border-box', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 'var(--fs-s)', background: activeProject === ALL_PROJECTS ? ROW_BG_SELECTED : ROW_BG_IDLE, color: 'var(--text)', border: 'none', cursor: 'pointer', borderBottom: '1px solid var(--border)' }}>
+                <span style={{ flex: 1, minWidth: 0, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>全部项目</span>
+                <ProjectBadges todo={allTodo} unverified={allUnv} allScope />
+              </button>
+              {sortedProjects.map((p) => (
+                // T02146：行容器拆成「置顶按钮 + 行按钮」两个原生 button 兄弟——HTML 不允许按钮套按钮；
+                // 拆开后行按钮是原生控件（键盘 Enter/Space 由浏览器提供），置顶按钮也无需 stopPropagation 阻断冒泡。
+                <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', background: p.id === activeProject ? ROW_BG_SELECTED : ROW_BG_IDLE }}>
+                  {/* T00655：置顶图标——位于项目名称之前，点击切换置顶（已置顶=实心 accent + 弹入动画） */}
+                  <button
+                    type="button"
+                    onClick={() => void toggleProjectPin(p)}
+                    title={isProjectPinned(p) ? `已置顶「${p.name}」— 点击取消置顶` : `置顶「${p.name}」— 点击后在默认排序下排最前`}
+                    aria-label={isProjectPinned(p) ? `取消置顶 ${p.name}` : `置顶 ${p.name}`}
+                    className={isProjectPinned(p) ? 'pin-pop tbtn-anim' : 'tbtn-anim'}
+                    style={{ display: 'inline-flex', alignItems: 'center', flexShrink: 0, color: isProjectPinned(p) ? 'var(--accent)' : 'var(--text-muted)', cursor: 'pointer', border: 'none', background: 'transparent', padding: 0 }}
+                  >
+                    <Pin size={12} style={{ transform: isProjectPinned(p) ? 'rotate(-45deg)' : 'none', transition: 'transform .18s ease, color .18s ease', fill: isProjectPinned(p) ? 'currentColor' : 'none' }} />
+                  </button>
+                  {/* T02167：flex:1 不足以收缩——裸 flex 项 min-width:auto 会卡在 nowrap 文本的
+                      min-content（整行名称宽）上，长名把右侧徽标顶出面板边框；minWidth:0 才真正让名称省略 */}
+                  <button type="button" className="card-btn" aria-pressed={p.id === activeProject} aria-label={`切换到项目 ${p.name}`}
+                    onClick={() => { setActiveProject(p.id); setProjOpen(false); }}
+                    title={`${p.name}：待办 ${p.todo_count ?? 0} 条，未验证 ${p.unverified_count ?? 0} 条`}
+                    style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-s)', background: 'transparent', color: 'var(--text)', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left' }}>
+                    <span style={{ flex: 1, minWidth: 0, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
+                    <ProjectBadges todo={p.todo_count ?? 0} unverified={p.unverified_count ?? 0} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        {/* T00771：工作空间下拉条——紧接「项目」下拉条之后（无框样式）；绑定项目上下文根路径，切换项目自动联动回显 */}
+        <WorkspaceSelect
+          project={projects.find((p) => p.id === activeProject) ?? null}
+          onBind={(path) => {
+            if (!activeProject) { flash('请先选择要绑定工作空间的项目'); return Promise.resolve(); }
+            if (activeProject === ALL_PROJECTS) { flash('全部项目视图下请先选择具体项目再绑定工作空间'); return Promise.resolve(); }
+            return bindWorkspace(activeProject, path);
+          }}
+          flash={flash}
+        />
+        {/* T00786：工作空间全文检索入口——语义紧跟工作空间，键入关键词全文检索并展示 partial 提示 */}
+        <button
+          onClick={() => {
+            if (activeProject === ALL_PROJECTS) { flash('全部项目视图下请先选择具体项目再检索工作空间'); return; }
+            setWsSearchOpen(true);
+          }}
+          className="op-hidden tbtn-anim"
+          disabled={!activeProject}
+          title={wsSearchTitle(activeProject)}
+          aria-label="工作空间全文检索"
+          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', color: 'var(--text-muted)', border: 'none', borderRadius: 6, cursor: activeProject ? 'pointer' : 'not-allowed' }}
+        >
+          <ScanSearch size={13} style={{ flexShrink: 0 }} />
+        </button>
+        {/* T03250：工作空间只读问答入口——紧跟全文检索；T03251 起「未绑定工作空间」也置灰并给原因 */}
+                {renderWsAskButton()}
+        {/* T00655：项目排序图标——位于项目选择框之后、新建项目图标之前（悬浮/点击交互动画由 tbtn-anim 提供） */}
+        <span ref={projSortRef} style={{ position: 'relative', display: 'inline-flex' }}>
+          <button
+            onClick={() => setProjSortOpen((v) => !v)}
+            className="op-hidden tbtn-anim"
+            title={`项目排序 — 当前：${PROJ_SORT_LABEL(projSortMode)}（默认隐藏，悬浮工具栏显示）`}
+            aria-label="项目排序" aria-haspopup="menu" aria-expanded={projSortOpen}
+            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', ...(projSortOpen ? TOGGLE_STYLE_ACTIVE : TOGGLE_STYLE_IDLE), border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}
+          >
+            <ArrowUpDown size={13} />
+          </button>
+          {projSortOpen && (
+            <div role="menu" aria-label="项目排序方式"
+              style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', zIndex: 40, minWidth: 200, padding: 4 }}>
+              {PROJ_SORT_OPTIONS.map((o) => (
+                <button key={o.key} role="menuitemradio" aria-checked={projSortMode === o.key}
+                  onClick={() => { setProjSortMode(o.key); setProjSortOpen(false); }}
+                  title={o.hint}
+                  style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '6px 8px', fontSize: 'var(--fs-s)', textAlign: 'left', border: 'none', borderRadius: 4, cursor: 'pointer', background: projSortMode === o.key ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)' }}>
+                  <span style={{ width: 14, display: 'inline-flex', flexShrink: 0 }}>{projSortMode === o.key ? <Check size={12} style={{ color: 'var(--accent)' }} /> : null}</span>
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </span>
+        <span className="op-hidden" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+        {renderProjectActionButtons()}
+        </span>
+        </span>
+        {renderBeautifyToolbarButton()}
+        {renderClassifyButton()}
+        {/* T02257：AI 工具列表取数失败时在工具条给出可见失败态与重试入口（此前静默为空） */}
+        <ResourceHint view={toolsRes} label="AI 工具列表" />
+        {/* T03176（D-14）：AI 不可用时工具条给一次原因 + 「去模型管理」，AI 按钮保留可见但禁用 */}
+        {aiDown && readiness && <AiUnavailableHint r={readiness} compact />}
+        {renderViewToggle()}
+        {renderMultiSelectButton()}
+        {/* T00481/T00720/T00728：全部收起/展开——描述、AI 摘要、处理结果三组折叠状态联动，覆盖待办+已完成全部列表；
+            T00728：收起为高频操作优先——有展开内容时点击一律收起，全部收起后点击才展开；
+            T00728 二轮（用户反馈）：按钮去掉中文名字，仅保留图标简化显示（语义由 title/aria 承载） */}
+        <button className="tbtn-anim op-hidden" onClick={() => {
+          const { ids, resultIds, failbackIds } = foldScope();
+          if (anyFoldOpen()) {
+            // 收起（高频优先）：验证失败反馈的未保存草稿一并丢弃——与单个反馈窗口「收起（未保存修改将丢弃）」
+            // 同语义，否则草稿存在时反馈窗口仍会渲染，收起就"没生效"
+            setDescExpanded({}); setSummaryExpanded({}); setResultOpen({}); setFailbackOpen({});
+            setFbDrafts({});
+          } else {
+            // 展开：处理结果仅对有内容的任务展开、验证失败反馈仅对有失败反馈的任务展开
+            // （无对应内容时展开会渲染出空块）
+            const v = Object.fromEntries(ids.map((id) => [id, true]));
+            setDescExpanded(v); setSummaryExpanded(v);
+            setResultOpen(Object.fromEntries(resultIds.map((id) => [id, true])));
+            setFailbackOpen(Object.fromEntries(failbackIds.map((id) => [id, true])));
+          }
+        }} title="一键收起或展开全部任务的描述、AI 摘要、处理结果与验证失败反馈（收起为高频操作优先）" aria-label="一键收起或展开全部任务详情"
+          style={{ fontSize: 'var(--fs-s)', padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)' }}>
+          {/* 图标指示下一步动作：有展开内容 → 将收起（折叠图标）；全部收起 → 将展开（展开图标） */}
+          {anyFoldOpen() ? <FoldVertical size={13} /> : <UnfoldVertical size={13} />}
+        </button>
+        {/* T02283：主列表断供时给出原因与重试入口；失败态下不再渲染「暂无待办任务」空态。
+            T03203（U01 回归）：资源提示含「重试」按钮，必须与折叠按钮同级——放进按钮内会形成 button 嵌套（validateDOMNesting）。 */}
+        <ResourceHint
+          view={{ phase: tasksPhase, error: tasksError, stale: tasksAreStale(tasksPhase, todo.length, done.length), reload: () => void loadTasks(activeProject) }}
+          label="任务列表"
+        />
+        <label className="task-op" title={batchOpBusy ? IMPORT_TITLE_BUSY : IMPORT_TITLE_READY}
+          aria-disabled={batchOpBusy || undefined}
+          style={{ fontSize: 'var(--fs-s)', padding: '5px 8px', borderRadius: 6, cursor: batchOpBusy ? 'not-allowed' : 'pointer', border: '1px solid var(--border-strong)', display: 'inline-block', opacity: batchOpBusy ? 0.55 : 1 }}>
+          <span>导入数据</span>
+          {/* T00556：扩展为 CSV/JSON 双格式导入（Trello 导出 / JSON 数组） */}
+          {/* T03214（UX-02 ⑤）：预览/写库在途时禁用文件框——键盘 Tab + Enter 也走不到重复选文件 */}
+          <input type="file" accept=".csv,.json" style={FILE_INPUT_SR_ONLY} data-t03214="import-file-input" disabled={batchOpBusy}
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) { void onCsvFile(f); } e.target.value = ''; }} />
+        </label>
+        {/* 八期 §3.1.1：Git 徽标显隐开关（会话级）——关闭时列表/看板行内徽标整体不渲染，也不再发起摘要批量请求；
+            T03645：与其它低频入口同级改为「默认隐藏、悬浮工具栏显示」 */}
+        <button type="button" data-t03343="git-toggle" aria-pressed={gitOn} aria-label="显示 Git 提交徽标"
+          title={gitOn ? GIT_TOGGLE_TITLE_ON : GIT_TOGGLE_TITLE_OFF}
+          onClick={() => setGitOn((v) => !v)} className="op-hidden tbtn-anim"
+          style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', fontSize: 'var(--fs-s)', ...(gitOn ? GIT_TOGGLE_ACTIVE : GIT_TOGGLE_IDLE) }}>
+          <GitBranch size={13} />Git
+        </button>
+        {/* T02952：搜索框 + 框内左侧清空按钮（有内容才显示；悬浮倾斜 5°~10° 由 .ws-clear-btn 提供；点击清空且光标留框内）
+            T03645 试过两条让位方案，都被逐档实测否掉，故搜索框尺寸保持原样：
+            ① 把 [搜索框][更多] 包成一个尾组——组是原子的，行宽不足时整组一起下沉，「更多」反而脱离首排
+               （T03623 UI-06 实测组宽 224 换行到第二排）；
+            ② 给搜索框加 width:150/minWidth:96/flexShrink:1 让它先让位——逐档实测（t03645 门 UI-13c/13d）
+               出厂尺寸下 1440→1180 全程「更多」都留在首排，把搜索框再撑宽 76px（258px、禁止压缩）到 1240px 档仍留在首排，
+               说明首排本有富余，这套让位样式不承重，属于多余的复杂度。
+            T04592：移除搜索框 span 的 marginLeft:'auto'——它把 [搜索框][更多] 顶到工具条最右端、窄窗时换行下沉，
+            与 Git 徽标/一键收起拉开大段空白；改为随流左对齐紧凑排列，控件间距由容器 gap 统一收口。
+            搜索框 flex:1 1 120px：基准宽 120 保证行宽不足时仍排首行不换行（flex-wrap 按基准宽判定换行，
+            单纯 flexShrink/minWidth:0 拦不住），富余时增长到 maxWidth:220 封顶；input width:100%/minWidth:0 跟随伸缩。 */}
+        <span style={{ position: 'relative', display: 'inline-flex', flex: '1 1 120px', minWidth: 0, maxWidth: 220 }}>
+          <input
+            ref={searchInputRef}
+            className="op-hidden"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="搜索标题/描述/编号…" data-page-search
+            aria-label="搜索任务（标题/描述/编号）"
+            style={{ width: '100%', minWidth: 0, padding: '6px 8px 6px 26px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)' }}
+          />
+          {search && (
+            <button
+              type="button"
+              className="op-hidden tbtn-anim ws-clear-btn"
+              onClick={() => { setSearch(''); searchInputRef.current?.focus(); }}
+              title="清空搜索内容 — 点击清空搜索框，光标保留在框内"
+              aria-label="清空搜索内容"
+              style={{ position: 'absolute', left: 4, top: '50%', transform: 'translateY(-50%)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0, border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}
+            >
+              <X size={12} />
+            </button>
+          )}
+        </span>
+        {/* T03623：不常用功能收进「更多」——导出项目/分类筛选/优先级筛选/自定义字段筛选与排序移到第二排，
+            按钮常驻可见（折叠入口不能只靠悬浮发现），展开态高亮，生效筛选数以徽标提示。
+            T03645：整组移到搜索框右侧（DOM 与视觉同序），工具条尾部固定为 [搜索框] [更多]。 */}
+        <button type="button" ref={moreBtnRef} onClick={() => setMoreOpen((v) => !v)}
+          className="tbtn-anim" data-t03623="more-trigger"
+          aria-haspopup="true" aria-expanded={moreOpen} aria-label="更多：导出与筛选"
+          title={moreOpen ? MORE_TITLE_OPEN : moreTitleCollapsed(moreActiveCount)}
+          style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', padding: '5px 7px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', fontSize: 'var(--fs-s)', ...(moreOpen ? TOGGLE_STYLE_ACTIVE : TOGGLE_STYLE_IDLE) }}>
+          <MoreHorizontal size={14} />
+          {moreActiveCount > 0 && (
+            <span data-t03623="more-badge" title={`${moreActiveCount} 项筛选生效`}
+              style={{ position: 'absolute', top: -2, right: -2, minWidth: 12, height: 12, padding: '0 2px', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-2xs)', lineHeight: '12px', textAlign: 'center' }}>{moreActiveCount}</span>
+          )}
+        </button>
+                {moreOpen && renderMorePanel()}
+        <NoticeToast notice={notice} onDismiss={dismissNotice} />
+      </div>
+    );
+  }
+
+  /** T03255（AI-203①）：建议条——新建与行内共用同一视觉；只展示，采纳动作由调用方决定 */
+  function renderSuggestionStrip(s: TaskSuggestion, scope: 'create' | 'row', onAdopt: () => void, onDismiss: () => void) {
+    return (
+      <output data-t03255={scope === 'create' ? 'create-suggest' : 'row-suggest'}
+        style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', margin: '4px 0 8px', padding: '6px 8px', border: '1px dashed var(--accent)', borderRadius: 6, background: 'var(--accent-soft)', fontSize: 'var(--fs-s)' }}>
+        <Sparkles size={13} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+        <strong>{s.categoryName ?? '未分类'}</strong>
+        <span style={{ color: priorityColor(s.priority) }}>{priorityBadgeLabel(s.priority)}</span>
+        <span title={`参考了同项目 ${s.historyCount} 条近期任务`} style={{ color: 'var(--text-muted)', flex: '1 1 200px', minWidth: 0 }}>{s.reason}</span>
+        <button onClick={onAdopt} title="采纳建议 — 填入分类与优先级（不会自动保存任务）" aria-label="采纳建议"
+          style={{ fontSize: 'var(--fs-s)', padding: '2px 8px', cursor: 'pointer' }}>采纳</button>
+        <button onClick={onDismiss} title="不用 — 关闭本条建议，任务数据不变" aria-label="不采纳建议"
+          style={{ fontSize: 'var(--fs-s)', padding: '2px 8px', cursor: 'pointer' }}>不用</button>
+      </output>
+    );
+  }
+
+  /** 新建任务表单行 + 可选的描述/截图粘贴区 */
+  function renderNewTaskForm() {
+    return (
+      <>
+        <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap', rowGap: 8 }}>
+          <input
+            value={newTitle}
+            onChange={(e) => { setNewTitle(e.target.value); dismissNewSuggestion(); }}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !creating) void createTask(); }}
+            // T05704：标题输入框直接粘贴图片——自动展开描述/截图区并落草稿，无需先点「描述/截图」按钮
+            onPaste={(e) => {
+              if (!readClipboardImages(e, addNewImage)) return;
+              setNewDescOpen(true);
+              flash('已粘贴截图，创建任务时会自动上传（可继续在描述框补充文字）');
+            }}
+            placeholder="输入任务标题，回车创建（可直接 Ctrl+V 粘贴截图）"
+            aria-label="新建任务标题"
+            // T02277：min-width 给到 80 而非 0——0 时本项可缩到零，行内永不触发换行，
+            // 容器 flexWrap 兜底形同虚设（极窄窗口下输入框塌成一条）；80 让 ≤340px 时按钮换行回视口
+            style={{ flex: 1, minWidth: 80, padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6 }}
+          />
+          <span className="op-hidden" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+          <select value={newPriority} onChange={(e) => setNewPriority(e.target.value)} title="优先级" aria-label="新建任务优先级" style={{ padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6 }}>
+            <option value="low">低</option>
+            <option value="normal">中</option>
+            <option value="high">高</option>
+            <option value="urgent">极高</option>
+          </select>
+          <select value={newCategory} onChange={(e) => setNewCategory(e.target.value)} title="分类" aria-label="新建任务分类选择" style={{ padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6 }}>
+            <option value="">未分类</option>
+            {taskCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          {/* T00758：智能分类由「勾选框+中文」改为无中文动画图标按钮——开启=Sparkles 高亮呼吸动画，关闭=Sparkle 灰显静态；
+              语义由 title/aria-pressed 承载 */}
+          <button
+            onClick={() => setSmartCat(!smartCat)}
+            aria-pressed={smartCat}
+            title={smartCat ? '智能分类（已开启）— 新建任务按标题智能匹配分类，点击关闭' : '智能分类（已关闭）— 点击开启新建任务的标题智能分类'}
+            aria-label={smartCat ? '智能分类：已开启，点击关闭' : '智能分类：已关闭，点击开启'}
+            style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', border: 'none', background: 'transparent', cursor: 'pointer', color: smartCat ? 'var(--accent)' : 'var(--text-muted)' }}
+          >
+            {smartCat ? <Sparkles size={13} className="task-breathe" /> : <Sparkle size={13} />}
+          </button>
+          {/* T03255（AI-203①）：主动获取分类/优先级建议与理由——只展示，采纳才填表单；
+              T03256 关闭时隐藏；T03257 未启用隐藏、配置失效禁用并给原因（D-14） */}
+          {suggestEntry !== 'hidden' && (
+            <button
+              onClick={() => void suggestForNew()}
+              disabled={newSuggestBusy || suggestEntry === 'disabled'}
+              data-t03255="create-trigger"
+              data-t03257={suggestEntry}
+              title={suggestEntry === 'disabled'
+                ? aiBlockedTitle(readiness, '分类建议 — 按标题/描述与同项目历史给出分类、优先级和一句理由（不会自动保存）')
+                : '分类建议 — 按标题/描述与同项目历史给出分类、优先级和一句理由（不会自动保存）'}
+              aria-label="获取分类与优先级建议"
+              style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: newSuggestBusy || suggestEntry === 'disabled' ? 'var(--text-muted)' : 'var(--text)' }}
+            >
+              {newSuggestBusy ? <Loader2 size={13} className="aispin" /> : <Sparkles size={13} />}
+            </button>
+          )}
+          <button onClick={() => setNewDescOpen(!newDescOpen)} title="描述/截图 — 展开或收起描述与截图上传区" aria-label={newDescOpen ? '收起描述与截图编辑区' : '展开描述与截图编辑区'} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{newDescOpen ? <ChevronUp size={13} /> : <ImagePlus size={13} />}</button>
+          </span>
+          <button className="tbtn-anim" onClick={() => void createTask()} disabled={creating} title={creating ? '添加中 — 正在智能分类并保存任务' : '添加任务 — 创建新任务并保存到当前项目'} aria-label={creating ? '添加中：正在智能分类并保存任务' : '添加任务：创建新任务并保存到当前项目'} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 4px', color: creating ? 'var(--text-muted)' : 'var(--text)' }}>
+            {creating ? <Loader2 size={13} className="aispin" /> : <Plus size={13} />}
+          </button>
+        </div>
+        {newSuggest && renderSuggestionStrip(newSuggest, 'create', adoptNewSuggestion, () => dismissNewSuggestion())}
+        {/* 创建时可选的描述 + 截图粘贴区 */}
+        {newDescOpen && (
+          <div style={{ marginBottom: 16, marginLeft: 8 }}>
+            {newImages.length > 0 && (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+                {newImages.map((img) => (
+                  <div key={img.id} style={{ position: 'relative' }}>
+                    <img src={img.url} alt="待上传截图" style={{ height: 64, borderRadius: 4, border: '1px dashed var(--accent)' }} />
+                    <button
+                      onClick={() => removeNewImage(img.id)}
+                      title="移除截图 — 移除本次粘贴的待上传截图"
+                      aria-label="移除截图"
+                      style={{ position: 'absolute', top: -6, right: -6, fontSize: 'var(--fs-2xs)', lineHeight: '16px', padding: '0 4px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}
+                    ><X size={11} /></button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <textarea
+              value={newDesc}
+              onChange={(e) => { setNewDesc(e.target.value); dismissNewSuggestion(); }}
+              onPaste={(e) => readClipboardImages(e, addNewImage)}
+              rows={2}
+              placeholder="任务描述（可在框内 Ctrl+V 粘贴截图）"
+              aria-label="新建任务描述"
+              style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', boxSizing: 'border-box' }}
+            />
+          </div>
+        )}
+      </>
+    );
+  }
+
+  /** 任务列表区块（FR1.4 检索 + 排序 + 验证状态过滤） */
+  function renderTaskLists() {
+    const batchBar = renderBatchBar();
+    // T00446 / INT-6：CSV 导入预览确认块
+    const csvBlock = csvPreview && (
+      <div style={{ border: '1px solid var(--accent)', borderRadius: 8, padding: 12, margin: '8px 0', background: 'var(--card-bg)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <strong style={{ fontSize: 'var(--fs-m)' }}>{csvImportKind === 'json' ? 'JSON' : 'CSV'} 导入预览</strong>
+          {csvMeta && (
+            <span data-t03267="source" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+              来源：{CSV_SOURCE_LABEL[csvMeta.source]}
+            </span>
+          )}
+          <span style={{ fontSize: 'var(--fs-s)', color: 'var(--success)' }}>可导入 {csvPreview.items.length} 条</span>
+          {csvPreview.errors.length > 0 && <span style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)' }}>问题 {csvPreview.errors.length} 行</span>}
+          <span style={{ flex: 1 }} />
+          <button onClick={() => { setCsvPreview(null); setCsvMeta(null); setCsvRaw(null); }} className="task-op" style={{ cursor: 'pointer', padding: '3px 8px' }}>取消</button>
+          <button onClick={() => void confirmCsvImport()} disabled={batchOpBusy || csvPreview.items.length === 0}
+            style={{ padding: '4px 12px', borderRadius: 6, cursor: 'pointer', border: 'none', background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-s)' }}>
+            确认导入
+          </button>
+        </div>
+        {/* T03267（PM-402②）：字段映射可人工调整——改一项即按原文件重解析，标题列必选 */}
+        {csvMeta && (
+          <div data-t03267="mapping" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+            <span>字段映射：</span>
+            {CSV_MAP_FIELDS.map((f) => (
+              <label key={f.field} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                {f.label}{f.required ? ' *' : ''}
+                <select value={csvMeta.mapping[f.field] ?? ''} disabled={batchOpBusy}
+                  data-t03267={`map-${f.field}`} aria-label={`映射${f.label}列`}
+                  onChange={(e) => void changeCsvMapping(f.field, e.target.value)}
+                  style={{ padding: '2px 4px', fontSize: 'var(--fs-xs)', border: '1px solid var(--border-strong)', borderRadius: 4 }}>
+                  <option value="">{f.required ? '（必选）' : '未映射'}</option>
+                  {csvMeta.headers.map((h, i) => <option key={`${h}-${i}`} value={h}>{h}</option>)}
+                </select>
+              </label>
+            ))}
+          </div>
+        )}
+        {csvPreview.errors.length > 0 && (
+          <div style={{ marginBottom: 8, fontSize: 'var(--fs-xs)', color: 'var(--danger)', maxHeight: 80, overflowY: 'auto' }}>
+            {csvPreview.errors.map((e) => <div key={`${e.row}-${e.message}`}>第 {e.row} 行：{e.message}</div>)}
+          </div>
+        )}
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-s)' }}>
+          <thead><tr>{['标题', '描述', '优先级', '状态', '分类'].map((h) => <th key={h} style={{ padding: '4px 6px', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', textAlign: 'left', borderBottom: '1px solid var(--border-strong)' }}>{h}</th>)}</tr></thead>
+          <tbody>
+            {csvPreview.items.map((it) => (
+              <tr key={`${it.title}|${it.description}|${it.priority}|${it.status}|${it.categoryId ?? ''}`}>
+                <td style={{ padding: '4px 6px' }}>{it.title}</td>
+                <td style={{ padding: '4px 6px', color: 'var(--text-muted)', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.description}</td>
+                <td style={{ padding: '4px 6px' }}>{it.priority}</td>
+                <td style={{ padding: '4px 6px' }}>{it.status}</td>
+                <td style={{ padding: '4px 6px' }}>{it.categoryName || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+    // T03215（PM-304）：过滤/排序/父子装配（matches、sortTasks、arrangeTaskTree）与三份可见列表
+    // 已上移到组件级 useMemo（见 listWin 所在块）——窗口化后滚动会重渲染本组件，
+    // 这些派生计算若仍留在渲染体内，每帧都要重跑 filter+sort+O(n²) 装配，虚拟滚动就白做了。
+    // T00922：tab 标题已完成/待办统计改取项目级全量计数——原列表长度仅覆盖当前已加载页，
+    // 首屏需「加载更多」后才趋近真实总量；改用项目级全量计数字段后首屏即显示全量。未验证数保持原语义（已完成中未验证）
+    const curProj = projects.find((p) => p.id === activeProject);
+    // T03211：全部项目视图没有单项目对象——用各项目计数之和，仍保持「首屏即全量」口径
+    const aggTodo = projects.reduce((s, p) => s + (p.todo_count ?? 0), 0);
+    const aggDone = projects.reduce((s, p) => s + (p.done_count ?? 0), 0);
+    const aggUnv = projects.reduce((s, p) => s + (p.unverified_count ?? 0), 0);
+    const aggregate = activeProject === ALL_PROJECTS;
+    const todoTotal = curProj?.todo_count ?? (aggregate ? aggTodo : todo.length);
+    const doneTotal = curProj?.done_count ?? (aggregate ? aggDone : done.length);
+    // T05076：未验证数改取**项目级全量**计数，与项目下拉徽标（服务端 `done AND verified=0`）同源。
+    // 修复前用 `done.filter(!verified)`——那是本页已加载的一页（PAGE_SIZE=200）内的数量，
+    // 项目已完成超过一页、或未验证项排在页外时会算成 0，于是出现「下拉 5 / 页签 0」。
+    const unverifiedTotal = curProj?.unverified_count
+      ?? (aggregate ? aggUnv : done.filter((t) => !t.verified).length);
+    return (
+      <>
+        {batchBar}
+        {/* T01065 后续：多级撤销条——独立于批量条常驻（批量操作后选中被清空，批量条会收起） */}
+        {renderUndoBar()}
+        {/* T03211：批量回执——成功/失败计数与逐条原因，常驻到手动关闭 */}
+        {renderBatchReceipt()}
+        {/* T01480：导出格式选择菜单（fixed 覆盖层，点外关闭） */}
+        {exportMenu && (
+          <div style={{ position: 'fixed', inset: 0, zIndex: 1300 }}>
+            {/* M6-6.3：遮罩即原生 button（S6848/S1082——div onClick 触发规则），菜单为兄弟层置于其上，无需阻断冒泡 */}
+            <button type="button" aria-label="关闭导出菜单" onClick={() => setExportMenu(null)}
+              style={{ position: 'absolute', inset: 0, background: 'transparent', border: 'none', cursor: 'default' }} />
+            <div style={{ position: 'absolute', left: Math.min(exportMenu.x, globalThis.innerWidth - 190), top: Math.min(exportMenu.y, globalThis.innerHeight - 150), background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 8, boxShadow: '0 6px 18px rgba(0,0,0,.18)', padding: 4, minWidth: 170 }}>
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', padding: '4px 8px' }}>导出为…</div>
+              {EXPORT_ITEMS.map((it) => (
+                <button key={it.fmt} onClick={() => void exportTasks([exportMenu.taskId], it.fmt)} disabled={exportBusy}
+                  className="export-anim"
+                  title={`文件导出 - ${it.desc}`}
+                  style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 8, padding: '7px 10px', fontSize: 'var(--fs-m)', border: 'none', background: 'transparent', color: 'var(--text)', cursor: exportBusy ? 'wait' : 'pointer', textAlign: 'left', borderRadius: 6 }}>
+                  <Download size={14} style={{ color: 'var(--accent)' }} /> {it.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {csvBlock}
+        {viewMode === 'board' && renderBoard()}
+        {viewMode === 'board' && <div style={{ height: 8 }} />}
+        {viewMode === 'list' && (<>
+        {/* T00757：待办/已完成/搁置 三个标题并排为 tab——激活项加粗+下方横线，未激活常规字重；仅渲染激活 tab 的列表 */}
+        {/* T03620：排序/筛选控件迁到 tab 行右侧同行展示——只渲染当前 tab 自己的控件，默认隐藏、悬浮 tab 行淡入
+            （沿用 .op-hidden 口径；tab 按钮常驻可见且排在控件之前，满足 T03162 键盘可达规范） */}
+        <div className="op-host" data-t03620="tabbar" style={{ display: 'flex', gap: 4, alignItems: 'center', borderBottom: '1px solid var(--border-strong)', marginBottom: 8 }}>
+          {([['todo', `待办（${visibleTodo.length}/${todoTotal}）`],
+             ['done', `已完成（${visibleDone.length}/${doneTotal}，未验证 ${unverifiedTotal}）`],
+             ['shelved', `搁置（${visibleShelved.length}）`]] as const).map(([key, label]) => (
+            <button key={key} onClick={() => setActiveTab(key)} aria-pressed={activeTab === key}
+              title={`${label} — 点击切换到该列表`}
+              style={{ fontSize: 'var(--fs-l)', padding: '6px 12px', border: 'none', background: 'transparent', cursor: 'pointer',
+                fontWeight: activeTab === key ? 700 : 400,
+                color: activeTab === key ? 'var(--text)' : 'var(--text-muted)',
+                borderBottom: activeTab === key ? '2px solid var(--accent)' : '2px solid transparent' }}>
+              {label}
+            </button>
+          ))}
+          <span className="op-hidden" data-t03620="tab-controls" style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            {activeTab === 'todo' && (
+              <select
+                data-t03620="todo-sort"
+                value={todoSort}
+                onChange={(e) => setTodoSort(e.target.value as SortKey)}
+                title="待办排序 — 按修改时间或优先级排序"
+                aria-label="待办排序：按修改时间或优先级排序"
+                style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4 }}
+              >
+                {sortOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            )}
+            {activeTab === 'done' && (<>
+              <select
+                data-t03620="done-sort"
+                value={doneSort}
+                onChange={(e) => setDoneSort(e.target.value as SortKey)}
+                title="已完成排序 — 按修改时间或优先级排序"
+                aria-label="已完成排序：按修改时间或优先级排序"
+                style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4 }}
+              >
+                {sortOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+              <select
+                data-t03620="done-filter"
+                value={doneFilter}
+                onChange={(e) => setDoneFilter(e.target.value as 'all' | 'unverified' | 'verified')}
+                title="验证状态过滤 — 筛选已完成任务的验证状态显示范围"
+                aria-label="验证状态过滤：筛选已完成任务的验证状态显示范围"
+                style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4 }}
+              >
+                <option value="unverified">仅未验证</option>
+                <option value="verified">仅已验证</option>
+                <option value="all">全部</option>
+              </select>
+            </>)}
+            {activeTab === 'shelved' && (
+              <select
+                data-t03620="shelved-sort"
+                value={shelvedSort}
+                onChange={(e) => setShelvedSort(e.target.value as SortKey)}
+                title="搁置排序 — 按修改时间或优先级排序"
+                aria-label="搁置排序：按修改时间或优先级排序"
+                style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4 }}
+              >
+                {sortOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            )}
+          </span>
+        </div>
+        {activeTab === 'todo' && (<>
+        {/* T03620：排序已上移到 tab 行，此处只保留多选全选 */}
+        {multiSelect && (
+          <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
+            <TriCheckbox
+              checked={visibleTodo.length > 0 && visibleTodo.every((t) => selectedIds.has(t.id))}
+              indeterminate={visibleTodo.some((t) => selectedIds.has(t.id))}
+              onChange={(e) => toggleSelectAll(visibleTodo, e.target.checked)}
+              title="全选/全不选待办列表" label="全选待办任务"
+              style={{ cursor: 'pointer' }} />
+          </div>
+        )}
+        {/* T03215（PM-304）：窗口化渲染——只渲染视口±overscan 行，其余用 ul 上下内边距占位撑出等总高的滚动区间 */}
+        <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom }}>{visibleTodo.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'todo', todoIds)}</Fragment>)}</ul>
+        {/* T02283：取数失败时不渲染空态——「暂无待办任务」会把后端故障说成没活干（项目列表失败导致
+            连 activeProject 都拿不到时同理） */}
+        {visibleTodo.length === 0 && !multiSelect && tasksPhase !== 'error' && projectList.phase !== 'error' && (
+          <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--fs-s)', border: '1px dashed var(--border-strong)', borderRadius: 8, margin: '8px 0', lineHeight: 1.8 }}>
+            当前项目暂无待办任务——在上方输入框输入标题回车即可创建；{' '}
+            {tools.length === 0 ? <NoToolsHint /> : <ToolsReadyHint />}
+          </div>
+        )}
+        </>)}
+
+        {activeTab === 'done' && (<>
+        {/* 八期 §3.1.5（Q8'）：未回写补齐提示条——只统计本页已加载范围，翻页后计数随之更新 */}
+        {gitOn && unlinkedDone.length > 0 && (
+          <output data-t03360="unlinked-bar" style={{ display: 'block', margin: '8px 0', padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--surface)', fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
+            {/* 第一行：计数 + 三个操作按钮（复制回写指令 / 手动关联全部 / AI 智能关联） */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span>本页已加载 {done.length} 条已完成任务中，{unlinkedDone.length} 条未回写提交 ID</span>
+              {/* T03621：三按钮统一为「无文字、无过渡动画」的图标按钮——语义交给 title/aria-label（悬浮可见） */}
+              <button type="button" data-t03360="copy-instruction" data-t03621="copy"
+                onClick={() => void copyWriteBackInstruction()}
+                title="复制回写指令 — 生成可直接交给外部 AI Agent 的 mtask_link_git_commit 指令文本" aria-label="复制回写指令：生成外部 Agent 可用的回写文本"
+                style={iconOnlyBtn}>
+                <Copy size={13} />
+              </button>
+              <button type="button" data-t03360="manual-link" data-t03621="manual" disabled={gitLinkBusy}
+                onClick={() => startManualGitLink()}
+                title={singleProjectForGit ? MANUAL_LINK_TITLE_SINGLE : MANUAL_LINK_TITLE_CROSS}
+                aria-label="手动关联：逐条打开提交选取弹窗补录关联"
+                style={{ ...iconOnlyBtn, cursor: gitLinkBusy ? 'not-allowed' : 'pointer', opacity: gitLinkBusy ? 0.6 : 1 }}>
+                <GitBranch size={13} />
+              </button>
+              <button type="button" data-t03621="ai" disabled={aiLinkBusy || gitLinkBusy}
+                onClick={() => void startAiGitLink()}
+                title={aiLinkButtonTitle(singleProjectForGit ? AI_LINK_TITLE_SINGLE : AI_LINK_TITLE_CROSS, readiness)}
+                aria-label="AI 智能关联：比对已完成未回写任务与仓库提交，给出候选供确认"
+                style={{ ...iconOnlyBtn, color: 'var(--accent)', borderColor: 'var(--accent)', cursor: aiLinkBusy || gitLinkBusy ? 'not-allowed' : 'pointer', opacity: aiLinkBusy || gitLinkBusy ? 0.6 : 1 }}>
+                {aiLinkBusy ? <Loader2 size={13} className="aispin" /> : <Sparkles size={13} />}
+              </button>
+              <span style={{ color: 'var(--text-muted)' }}>已完成任务归档删除后无法补齐</span>
+            </div>
+          </output>
+        )}
+        {/* T03620：已完成排序 + 验证状态过滤已上移到 tab 行，此处只保留多选全选 */}
+        {multiSelect && (
+          <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
+            <TriCheckbox
+              checked={visibleDone.length > 0 && visibleDone.every((t) => selectedIds.has(t.id))}
+              indeterminate={visibleDone.some((t) => selectedIds.has(t.id))}
+              onChange={(e) => toggleSelectAll(visibleDone, e.target.checked)}
+              title="全选/全不选已完成列表" label="全选已完成任务"
+              style={{ cursor: 'pointer' }} />
+          </div>
+        )}
+        <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom }}>{visibleDone.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'done', doneIds)}</Fragment>)}</ul>
+        {visibleDone.length === 0 && tasksPhase !== 'error' && (
+          <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>暂无已完成任务——完成任务后在此集中查看与验证。</div>
+        )}
+        </>)}
+
+        {/* T00719：搁置任务列表——页面最下方独立区块，与待办/已完成隔离（MCP 处理待办时自动忽略搁置任务）；
+            工具条与查询条件对齐待办/已完成（多选全选 + 排序 + 同一套关键词/分类/优先级过滤） */}
+        {activeTab === 'shelved' && (<>
+        {/* T03620：搁置排序已上移到 tab 行，此处只保留多选全选 */}
+        {multiSelect && (
+          <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
+            <TriCheckbox
+              checked={visibleShelved.length > 0 && visibleShelved.every((t) => selectedIds.has(t.id))}
+              indeterminate={visibleShelved.some((t) => selectedIds.has(t.id))}
+              onChange={(e) => toggleSelectAll(visibleShelved, e.target.checked)}
+              title="全选/全不选搁置列表" label="全选搁置任务"
+              style={{ cursor: 'pointer' }} />
+          </div>
+        )}
+        {/* T02290：搁置列表取数失败此前无任何出口——挂共享失败态层，给出原因/重试，并在旧数据在位时标「可能过期」 */}
+        <div style={{ margin: '4px 0' }}>
+          <ResourceHint
+            view={{ phase: shelvedPhase, error: shelvedError, stale: tasksAreStale(shelvedPhase, visibleShelved.length, 0), reload: () => void loadTasks(activeProject) }}
+            label="搁置列表"
+          />
+        </div>
+        <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom }}>{visibleShelved.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'shelved', shelvedIds)}</Fragment>)}</ul>
+        {visibleShelved.length === 0 && shelvedPhase !== 'error' && (
+          <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>暂无搁置任务——点击任务行的「搁置」按钮（归档按钮前）可把任务移到这里，AI 处理待办时自动忽略。</div>
+        )}
+        </>)}
+        </>)}
+      </>
+    );
+  }
+
+  /** 分页加载更多：当前页满页时追加下一页；hasMore=false 表示已到底 */
+  function renderLoadMore() {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 10, margin: '12px 0' }}>
+        {serverTotal != null && (
+          <span data-t02291="task-total" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>共 {serverTotal} 条</span>
+        )}
+        {hasMore && (
+        <button
+          onClick={() => void loadMore()}
+          disabled={loadingMore}
+          title={loadingMore ? '加载中 — 正在拉取更多任务' : '加载更多 — 拉取下一页任务'}
+          aria-label={loadingMore ? '加载更多：正在拉取更多任务' : '加载更多：拉取下一页任务'}
+          style={{ padding: '6px 16px', fontSize: 'var(--fs-s)', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'var(--surface-2)' }}
+        >
+          {loadingMore ? '加载中…' : '加载更多'}
+        </button>
+        )}
+        {/* T03214（UX-02 ①）：剩余条数常驻告知；取完即消失并换成「已加载全部」，与「共 N 条」区分本页/全量 */}
+        {pageStatus?.remaining != null && pageStatus.remaining > 0 && (
+          <span data-t03214="task-remaining" style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>剩余 {pageStatus.remaining} 条</span>
+        )}
+        {pageStatus?.allLoaded && (
+          <output data-t03214="all-loaded" style={{ fontSize: 'var(--fs-s)', color: 'var(--success)' }}>已加载全部</output>
+        )}
+        {/* 八期 §3.1.6：单页唯一提交超过上限时服务端截断，此处与「剩余条数」同语言如实告知（不静默少展） */}
+        {gitTruncatedNote(gitSummaries) && (
+          <output data-t03343="git-truncated" style={{ fontSize: 'var(--fs-s)', color: 'var(--warn)' }}>{gitTruncatedNote(gitSummaries)}</output>
+        )}
+      </div>
+    );
+  }
+
+  /** 复用弹窗目标切换按钮组（提取以降低弹窗函数复杂度，渲染不变） */
+  function renderReuseTargetButtons() {
+    return (
+      <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+        <button
+          onClick={() => setReuseTarget('project')}
+          title="复制到项目 — 将任务原样复制到其他项目"
+          aria-label="复制到项目：将任务原样复制到其他项目"
+          style={{ padding: '4px 12px', borderRadius: 6, fontSize: 'var(--fs-s)', cursor: 'pointer', border: '1px solid var(--border-strong)', background: reuseTarget === 'project' ? 'var(--accent)' : 'transparent', color: reuseTarget === 'project' ? 'var(--accent-text)' : 'var(--text)' }}
+        >复制到项目</button>
+        <button
+          onClick={() => setReuseTarget('prompt')}
+          title="复制到提示词 — 将任务打包为 JSON 资产存入提示词页分类"
+          aria-label="复制到提示词：将任务打包为 JSON 资产存入提示词页分类"
+          style={{ padding: '4px 12px', borderRadius: 6, fontSize: 'var(--fs-s)', cursor: 'pointer', border: '1px solid var(--border-strong)', background: reuseTarget === 'prompt' ? 'var(--accent)' : 'transparent', color: reuseTarget === 'prompt' ? 'var(--accent-text)' : 'var(--text)' }}
+        >复制到提示词</button>
+        <button
+          onClick={() => setReuseTarget('req')}
+          title="复制到通用需求 — 将任务打包为通用需求条目存入需求页分类"
+          aria-label="复制到通用需求：将任务打包为通用需求条目存入需求页分类"
+          style={{ padding: '4px 12px', borderRadius: 6, fontSize: 'var(--fs-s)', cursor: 'pointer', border: '1px solid var(--border-strong)', background: reuseTarget === 'req' ? 'var(--accent)' : 'transparent', color: reuseTarget === 'req' ? 'var(--accent-text)' : 'var(--text)' }}
+        >复制到通用需求</button>
+      </div>
+    );
+  }
+
+  /** 复用目标=项目：搜索框 + 项目列表（提取以降低弹窗函数复杂度，渲染不变） */
+  function renderReuseProjectPicker() {
+    const matched = projects.filter((p) => p.name.toLowerCase().includes(reuseSearch.trim().toLowerCase()));
+    return (
+      <>
+        <input
+          autoFocus
+          value={reuseSearch}
+          onChange={(e) => setReuseSearch(e.target.value)}
+          placeholder="搜索项目…"
+          aria-label="搜索项目"
+          style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-l)', boxSizing: 'border-box' }}
+        />
+        <div style={{ marginTop: 8, maxHeight: 260, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {matched.map((p) => (
+            <button key={p.id} onClick={() => setReuseProjectId(p.id)}
+              style={{ textAlign: 'left', padding: '6px 8px', borderRadius: 6, cursor: 'pointer', background: reuseProjectId === p.id ? 'var(--accent)' : 'transparent', color: reuseProjectId === p.id ? 'var(--accent-text)' : 'var(--text)' }}>
+              {p.name}
+            </button>
+          ))}
+          {matched.length === 0 && (
+            <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>无匹配项目</div>
+          )}
+        </div>
+      </>
+    );
+  }
+
+  /** 复用目标=通用需求：说明 + 分类选择 + 新建分类（提取以降低弹窗函数复杂度，渲染不变） */
+  function renderReuseReqPicker() {
+    return (
+      <>
+        <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 8 }}>
+          将任务打包为通用需求条目，存入所选需求分类（标题沿用任务名，内容含描述与 AI 摘要）。
+        </div>
+        {reqCats.length === 0 ? (
+          <p style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginBottom: 8 }}>暂无可用的通用需求分类，请先新建。</p>
+        ) : (
+          <select
+            autoFocus
+            value={reuseCategoryId}
+            onChange={(e) => setReuseCategoryId(e.target.value)}
+            aria-label="选择通用需求分类"
+            style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-l)' }}
+          >
+            <option value="">请选择分类</option>
+            {reqCats.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.reqCount ?? 0}）</option>)}
+          </select>
+        )}
+        <button onClick={() => void addReqCat()} title="新建分类 — 在通用需求页新建一个分类用于存放任务资产"
+          aria-label="新建分类：在通用需求页新建一个分类用于存放任务资产"
+          style={{ marginTop: 8, fontSize: 'var(--fs-s)', color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
+          <Plus size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} /> 新建分类
+        </button>
+      </>
+    );
+  }
+
+  /** 复用目标=提示词：说明 + 分类选择 + 新建分类（提取以降低弹窗函数复杂度，渲染不变） */
+  function renderReusePromptPicker() {
+    return (
+      <>
+        <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 8 }}>
+          将任务打包为 JSON 资产，存入所选提示词分类（标题沿用任务名，内容含描述与 AI 摘要）。
+        </div>
+        {promptCats.length === 0 ? (
+          <p style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginBottom: 8 }}>暂无可用的提示词分类，请先新建。</p>
+        ) : (
+          <select
+            autoFocus
+            value={reuseCategoryId}
+            onChange={(e) => setReuseCategoryId(e.target.value)}
+            aria-label="选择提示词分类"
+            style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-l)' }}
+          >
+            <option value="">请选择分类</option>
+            {promptCats.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.promptCount ?? 0}）</option>)}
+          </select>
+        )}
+        <button onClick={() => void addPromptCat()} title="新建分类 — 在提示词页新建一个分类用于存放任务资产"
+          aria-label="新建分类：在提示词页新建一个分类用于存放任务资产"
+          style={{ marginTop: 8, fontSize: 'var(--fs-s)', color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
+          <Plus size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} /> 新建分类
+        </button>
+      </>
+    );
+  }
+
+  /** 复用弹窗底部：取消 + 提交（按目标切换文案与禁用条件；用 if/else 避免嵌套三元，行为不变） */
+  function renderReuseFooter() {
+    const disabled = (reuseTarget === 'project' ? !reuseProjectId : !reuseCategoryId) || reuseBusy;
+    let label: string;
+    if (reuseTarget === 'project') label = reuseBusy ? '复用中…' : '复用';
+    else if (reuseBusy) label = '复制中…';
+    else if (reuseTarget === 'req') label = '复制到通用需求';
+    else label = '复制到提示词';
+    return (
+      <div style={{ marginTop: 14, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <button className="ghost" onClick={() => setReuseOpen(null)} style={{ padding: '6px 14px' }}>取消</button>
+        <button onClick={() => void reuseTask()} disabled={disabled} style={{ padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)' }}>
+          {label}
+        </button>
+      </div>
+    );
+  }
+
+  /** 复用任务弹窗：项目=复制到其他项目；提示词=打包为 JSON 资产存入提示词分类 */
+  function renderReuseDialog() {
+    return (
+      // 遮罩点击/Escape 关闭由组件层 document 委托处理（S6847/S6819）：
+      // 容器为纯布局 div，不挂交互 handler 也不声明 dialog role
+      <div
+        style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
+      >
+        <div ref={reusePanelRef} style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 8, padding: 16, width: 380, maxWidth: '90vw', boxShadow: '0 10px 30px rgba(0,0,0,.2)' }}>
+          <div style={{ fontSize: 'var(--fs-l)', marginBottom: 10 }}>复用任务</div>
+          {renderReuseTargetButtons()}
+          {reuseTarget === 'project' && renderReuseProjectPicker()}
+          {reuseTarget === 'req' && renderReuseReqPicker()}
+          {reuseTarget === 'prompt' && renderReusePromptPicker()}
+          {renderReuseFooter()}
+        </div>
+      </div>
+    );
+  }
+
+  // T03215（PM-304）：sortOptions / SortKey / sortTasks 上提为 ../utils/taskListQuery 的模块级导出——
+  // 可见列表要用 useMemo 缓存，缓存依赖的函数标识必须稳定，留在渲染体里每帧都是新函数。
+
+  /**
+   * T02949：派生单裁决面板——Trae/WorkBuddy 气泡选项样式（候选胶囊按钮 + 自定义输入）；
+   * 候选由服务端按该单结论动态抽取（T02949 方案 A），不是固定四枚；
+   * 提交由服务端把结果追加到任务详情末尾（不覆盖），本面板只负责收集与展示。
+   */
+  function renderRulingDialog() {
+    if (!rulingTask) return null;
+    const closeRuling = () => { setRulingTask(null); setRulingDraft(''); };
+    const canSubmit = Boolean(rulingDraft.trim()) && !rulingBusy;
+    return (
+      <dialog open aria-label="裁决派生单"
+        style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', zIndex: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: 0, padding: 0, border: 'none', width: '100%', height: '100%', maxWidth: 'none', maxHeight: 'none', color: 'var(--text)' }}>
+        <ModalBackdrop label="关闭裁决面板（点按空白处）" onClose={closeRuling} />
+        <div style={{ position: 'relative', zIndex: 1, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 10, boxShadow: '0 10px 28px rgba(0,0,0,.22)', width: 380, maxWidth: '92vw', padding: 14, color: 'var(--text)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600 }}>裁决派生单 {rulingTask.task_no ?? rulingTask.id}</div>
+            <button type="button" className="tbtn-anim" onClick={closeRuling} aria-label="关闭裁决面板"
+              style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: 2 }}>
+              <X size={14} />
+            </button>
+          </div>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 10 }}>{rulingTask.title}</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+            {rulingOptions.map((o) => (
+              <button key={o} type="button" className="tbtn-anim" disabled={rulingBusy}
+                onClick={() => setRulingDraft(o)}
+                style={{ fontSize: 'var(--fs-s)', padding: '5px 10px', borderRadius: 999, cursor: rulingBusy ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
+                  border: `1px solid ${rulingDraft === o ? 'var(--accent)' : 'var(--border-strong)'}`,
+                  background: rulingDraft === o ? 'var(--accent-soft)' : 'transparent',
+                  color: rulingDraft === o ? 'var(--accent)' : 'var(--text)' }}>
+                {o}
+              </button>
+            ))}
+          </div>
+          {rulingOptions.length === 0 && (
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 8 }}>本条结论未抽到候选选项，可直接输入裁决结果</div>
+          )}
+          <textarea value={rulingDraft} onChange={(e) => setRulingDraft(e.target.value)} rows={3}
+            placeholder="自定义裁决结果（或点选上方候选选项）" aria-label="裁决结果"
+            style={{ width: '100%', boxSizing: 'border-box', fontSize: 'var(--fs-s)', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--input-bg, transparent)', color: 'var(--text)', resize: 'vertical' }} />
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
+            <button type="button" onClick={closeRuling}
+              style={{ fontSize: 'var(--fs-s)', padding: '6px 12px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer' }}>取消</button>
+            <button type="button" className="tbtn-anim" disabled={!canSubmit} onClick={() => void submitRuling()}
+              style={{ fontSize: 'var(--fs-s)', padding: '6px 14px', border: 'none', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', cursor: canSubmit ? 'pointer' : 'not-allowed', opacity: canSubmit ? 1 : 0.5 }}>
+              {rulingBusy ? '提交中…' : '提交裁决'}
+            </button>
+          </div>
+        </div>
+      </dialog>
+    );
+  }
+
+  /** 追加一张截图到验证失败反馈（弹窗已关闭则原样返回）；回调提到具名函数，避免粘贴/选文件链路里再嵌一层内联箭头 */
+  function appendFailImage(url: string): void {
+    setFailDialog((d) => (d ? { ...d, images: [...d.images, { id: newPastedImageId(), url }] } : d));
+  }
+
+  /** T00610：验证失败反馈录入弹窗——支持截图（粘贴/选择文件），截图随反馈落库供 MCP 读取识别 */
+  function renderFailDialog() {
+    if (!failDialog) return null;
+    return (
+      <dialog open aria-label="验证失败反馈"
+        style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: 0, padding: 0, border: 'none', width: '100%', height: '100%', maxWidth: 'none', maxHeight: 'none', color: 'var(--text)' }}>
+        {/* 点按遮罩空白处关闭由原生 button 承载（Esc 仍由弹窗自身的关闭按钮/键盘通路覆盖） */}
+        <ModalBackdrop label="关闭验证失败反馈弹窗（点按空白处）" disabled={failBusy} onClose={() => setFailDialog(null)} />
+        <div style={{ position: 'relative', zIndex: 1, background: 'var(--card-bg)', borderRadius: 8, width: 'min(560px, 94vw)', maxHeight: '86vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 30px rgba(0,0,0,.18)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600 }}>
+            <AlertTriangle size={14} style={{ color: 'var(--danger)' }} /> 验证失败反馈{' '}
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontWeight: 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 300 }}>{failDialog.title}</span>
+            <span style={{ flex: 1 }} />
+            <button onClick={() => setFailDialog(null)} disabled={failBusy} title="关闭" aria-label="关闭验证失败反馈弹窗"
+              style={{ display: 'inline-flex', alignItems: 'center', cursor: failBusy ? 'default' : 'pointer', background: 'transparent', border: 'none', color: 'var(--text)', fontSize: 'var(--fs-l)' }}>×</button>
+          </div>
+          <div style={{ padding: 14, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10, fontSize: 'var(--fs-s)' }}>
+            <div style={{ color: 'var(--text-muted)' }}>
+              请描述验证失败的原因（可粘贴或选择截图辅助说明）；提交后任务将回退待办，截图可由 AI 通过 MCP 读取识别。
+            </div>
+            {/* T05706：border-box + 左右对称 padding —— 旧版 width:100% 叠加 8px padding 与 1px border
+                实际宽度超出父容器 18px，右侧与弹窗边缘重叠并裁字；现在两侧留白相等且随弹窗自适应 */}
+            <textarea
+              autoFocus
+              value={failDialog.text}
+              onChange={(e) => setFailDialog((d) => (d ? { ...d, text: e.target.value } : d))}
+              onPaste={(e) => readClipboardImages(e, appendFailImage)}
+              placeholder="请描述验证失败的原因…（可直接 Ctrl+V 粘贴截图）"
+              aria-label="验证失败反馈内容"
+              rows={5}
+              style={{ width: '100%', minWidth: 0, maxWidth: '100%', boxSizing: 'border-box', padding: 8, borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)', resize: 'vertical' }}
+            />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <label className="tbtn-anim" title="选择截图文件（可多选）"
+                style={{ cursor: failBusy ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border-strong)', fontSize: 'var(--fs-s)', color: 'var(--text)' }}>
+                <ImagePlus size={13} /> 选择截图{' '}
+                <input type="file" accept="image/*" multiple style={FILE_INPUT_SR_ONLY}
+                  onChange={(e) => {
+                    readImageFiles(Array.from(e.target.files ?? []), appendFailImage);
+                    e.target.value = '';
+                  }} />
+              </label>
+              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>已附 {failDialog.images.length} 张截图</span>
+              <span style={{ flex: 1 }} />
+              {/* T00796 二轮：改用公共 AiPolishButton（与处理结果/通用需求同一组件），
+                  仅作用于反馈正文，回填输入框后仍需用户确认提交 */}
+              <AiPolishButton
+                value={failDialog.text}
+                onPolished={(t) => setFailDialog((d) => (d ? { ...d, text: t } : d))}
+                toolId={organizeToolId}
+                disabled={failBusy}
+                flash={flash}
+                title="AI 美化 — 润色这段失败反馈（保留全部事实要素，仅规范表达），结果回填后请核对再提交"
+              />
+            </div>
+            {failDialog.images.length > 0 && (
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {failDialog.images.map((img) => (
+                  <span key={img.id} style={{ position: 'relative', display: 'inline-flex' }}>
+                    <img src={img.url} alt="待上传截图预览" style={{ height: 64, borderRadius: 4, border: '1px solid var(--border)' }} />
+                    <button onClick={() => removeFailImage(img.id)}
+                      title="移除该截图" aria-label="移除该截图"
+                      style={{ position: 'absolute', top: -6, right: -6, width: 16, height: 16, borderRadius: '50%', border: 'none', background: 'var(--danger)', color: '#fff', fontSize: 'var(--fs-xs)', lineHeight: '16px', cursor: 'pointer', padding: 0 }}>×</button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', padding: '10px 14px', borderTop: '1px solid var(--border)' }}>
+            <button onClick={() => setFailDialog(null)} disabled={failBusy} className="tbtn-anim"
+              style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>取消</button>
+            <button onClick={() => void submitVerifyFailed()} disabled={failBusy} className="tbtn-anim"
+              title="提交反馈并回退待办" aria-label="提交验证失败反馈"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: failBusy ? 'default' : 'pointer', border: 'none', background: 'var(--danger)', color: '#fff', fontSize: 'var(--fs-s)' }}>
+              {failBusy ? <><Loader2 size={12} className="aispin" />提交中…</> : '提交并回退待办'}
+            </button>
+          </div>
+        </div>
+      </dialog>
+    );
+  }
+
+  /** T00771：新建项目后的工作空间绑定弹窗——内嵌同款选择面板（历史/新建/打开本地文件夹），可跳过 */
+  function renderWsPickDialog() {
+    if (!wsPickForNew) return null;
+    return (
+      <dialog open
+        aria-label="绑定工作空间"
+        style={{ position: 'fixed', inset: 0, zIndex: 900, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: '18vh' }}>
+        <div
+          style={{ width: 300, background: 'var(--card-bg)', color: 'var(--text)', border: '1px solid var(--border-strong)', borderRadius: 10, boxShadow: '0 12px 40px rgba(0,0,0,.25)', padding: 12 }}>
+          <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600, marginBottom: 2 }}>为「{wsPickForNew.name}」选择工作空间</div>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 8 }}>工作空间是项目的上下文根路径，AI 功能将以此路径加载上下文；可跳过稍后在任务菜单绑定。</div>
+          <div style={{ position: 'relative' }}>
+            <WorkspaceSelect
+              variant="bare"
+              project={wsPickForNew}
+              onBind={async (path) => {
+                await bindWorkspace(wsPickForNew.id, path);
+                // T04133：绑定工作空间时一并保存产品标签草稿，避免输入随弹窗关闭丢失
+                if (pkDraft.trim().toLowerCase() !== (wsPickForNew.product_key ?? '')) await saveProductKey(wsPickForNew.id, pkDraft);
+                setWsPickForNew(null);
+              }}
+              flash={flash}
+            />
+          </div>
+          {/* T04133（PRD MEM-101③ / MEM-501）：产品标签栏——下拉选已有或输入新建，保存后回显 */}
+          <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border-strong)' }}>
+            <label htmlFor="new-project-product-key" style={{ display: 'block', fontSize: 'var(--fs-s)', marginBottom: 4 }}>产品标签（可选，留空＝未绑定产品）</label>
+            <input
+              id="new-project-product-key"
+              list="product-key-options"
+              value={pkDraft}
+              onChange={(e) => setPkDraft(e.target.value)}
+              placeholder="如：wiki / mtask"
+              aria-label="产品标签"
+              style={{ width: '100%', boxSizing: 'border-box', fontSize: 'var(--fs-s)', padding: '4px 6px', background: 'var(--card-bg)', color: 'var(--text)', border: '1px solid var(--border-strong)', borderRadius: 6 }}
+            />
+            <datalist id="product-key-options">
+              {productKeyOptions.map((k) => <option key={k} value={k} />)}
+            </datalist>
+            <button onClick={() => void saveProductKey(wsPickForNew.id, pkDraft)}
+              style={{ marginTop: 6, width: '100%', fontSize: 'var(--fs-s)', padding: '5px 0', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer' }}>
+              <Save size={12} style={{ verticalAlign: -2, marginRight: 4 }} />保存产品标签
+            </button>
+          </div>
+          <button onClick={() => setWsPickForNew(null)}
+            style={{ marginTop: 8, width: '100%', fontSize: 'var(--fs-s)', padding: '5px 0', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}>
+            跳过，稍后绑定
+          </button>
+        </div>
+      </dialog>
+    );
+  }
+
+  /** 八期 §3.1.5：未回写「手动关联」逐条补录队列——一次只弹一个任务的取数窗，确认即写入 task_git_links(source='manual') */
+  function renderManualGitLinkQueue() {
+    if (gitLinkQueue.length === 0) return null;
+    const head = gitLinkQueue[0];
+    // T05078：目标可见（targetLabel）+ 目标切换即重挂载（key=head.id）。
+    // 修复前弹窗不显示目标、队列推进时组件不卸载且勾选保留，用户再点一次「确认选择」
+    // 就把同一批提交写进了下一个任务（T05064 实测 T00004/T00005 同拿一个 SHA）。
+    return (
+      <GitTreePickerModal
+        key={head.id}
+        targetLabel={`${head.task_no ?? head.id} · ${head.title}`}
+        targetQueue={gitLinkQueue.length}
+        // T05690：把整条补录队列交给弹窗勾选，确认时按勾选集一并关联
+        targetTasks={gitLinkQueue.map((t) => ({ id: t.id, label: `${t.task_no ?? t.id} · ${t.title}` }))}
+        projects={projects.filter((p) => p.id === activeProject)}
+        activeProjectId={activeProject}
+        selectedByProject={{}}
+        onConfirm={(projectId, shas, repoSub, targetIds) => void confirmManualGitLink(projectId, shas, repoSub, targetIds)}
+        onClose={() => {
+          const left = gitLinkQueue.length - 1;
+          setGitLinkQueue([]);
+          if (left > 0) flash(`已中止批量补录（剩余 ${left} 条未处理），可在提示条重新开始`);
+          gitSummaries.refresh();
+          void loadTasks(activeProject);
+        }}
+      />
+    );
+  }
+
+  return (
+    <section>
+      {/* 验证状态图标切换弹出的局部动画（key 重挂载时播放）；任务行悬停显隐操作区与背景灰显 */}
+      <style>{`
+        @keyframes verify-pop {
+          0% { transform: scale(0.3); opacity: 0; }
+          60% { transform: scale(1.4); }
+          100% { transform: scale(1); opacity: 1; }
+        }
+        .verify-icon { animation: verify-pop 0.35s ease; }
+        @keyframes aispin { to { transform: rotate(360deg); } }
+        .aispin { animation: aispin 0.8s linear infinite; display: inline-block; }
+        /* T00466：与提示词页 arena-row 特效统一——边框、刷新 flush、点击微缩放 */
+        .task-item { border: 1px solid var(--border); border-radius: 8px; margin: 6px 0; transition: background-color 0.15s ease, transform .12s ease; }
+        .task-item:hover { background: var(--surface-2); }
+        .task-item.item-pressing { transform: scale(.985); } /* T00489：仅按住行（非交互区 200ms）时缩放 */
+        /* T00521 调整：验证结果选择面板弹出动画（缩放+下移淡入，与 toast-in 同族节奏） */
+        @keyframes verify-pop { from { opacity: 0; transform: translateY(-6px) scale(.92); } to { opacity: 1; transform: none; } }
+        @keyframes taskflush { 0% { background: var(--accent-soft); } 100% { background: transparent; } }
+        /* T00655：项目置顶图标状态切换弹入动画（未置顶 → 已置顶） */
+        @keyframes pin-pop { 0% { transform: scale(.6) rotate(-45deg); opacity: .5; } 60% { transform: scale(1.25) rotate(-45deg); } 100% { transform: scale(1) rotate(-45deg); opacity: 1; } }
+        .pin-pop { animation: pin-pop .28s ease-out; }
+        .task-item.flush { animation: taskflush 1.4s ease; }
+        /* T00467：工具栏图标按钮 hover 动画（开源 lucide 图标 + 缩放旋转反馈） */
+        .tbtn-anim svg { transition: transform .18s ease; }
+        .tbtn-anim:hover svg { transform: scale(1.2) rotate(8deg); }
+        .tbtn-anim:active svg { transform: scale(.88); }
+        /* T00474：筛选条件悬浮展示——默认淡化降权重，工具栏悬浮/键盘聚焦时完全显示 */
+        /* T00487：悬浮显示替代灰显——默认完全隐藏（占位不抖动），宿主悬浮/键盘聚焦时 200ms 平滑显示 */
+        .task-item .title-op { opacity: 0; visibility: hidden; transition: opacity .15s ease, visibility 0s linear .15s; }
+        /* T01562：抽屉打开时保持该行操作区显形——关闭抽屉后焦点要归还给触发按钮，
+           而 visibility:hidden 的元素无法接收 focus()，否则键盘用户关闭后焦点掉回 body */
+        .task-item:hover .title-op, .task-item:focus-within .title-op, .task-item.task-drawer-open .title-op { opacity: 1; visibility: visible; transition: opacity .15s ease, visibility 0s; }
+        .task-op {
+          opacity: 0;
+          visibility: hidden;
+          transition: opacity 0.15s ease, visibility 0s linear 0.15s;
+        }
+        .task-item:hover .task-op,
+        .task-item:focus-within .task-op,
+        .task-item.task-drawer-open .task-op,
+        .task-item.task-editing .task-op {
+          opacity: 1;
+          visibility: visible;
+          transition: opacity 0.15s ease, visibility 0s;
+        }
+        /* T00591：任务标题下方工具栏默认自动收起（高度折叠使标题更紧凑），鼠标悬浮任务标题/行后平滑展开 */
+        .task-toolbar {
+          max-height: 0;
+          margin-top: 0;
+          overflow: hidden;
+          transition: max-height 0.18s ease, margin-top 0.18s ease;
+        }
+        .task-item:hover .task-toolbar,
+        .task-item:focus-within .task-toolbar,
+        .task-item.task-drawer-open .task-toolbar,
+        .task-item.task-editing .task-toolbar {
+          max-height: 96px;
+          margin-top: 2px;
+        }
+        /* 请求进行中的呼吸反馈：缩放 + 外发光脉冲，与主题主色一致 */
+        .task-breathe { animation: task-breathe 1.3s ease-in-out infinite; }
+        @keyframes task-breathe {
+          0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.35); }
+          50% { transform: scale(1.06); box-shadow: 0 0 0 5px rgba(37, 99, 235, 0); }
+        }
+      `}</style>
+      {renderToolbar()}
+      {/* T00771：新建项目后的工作空间绑定弹窗——见 renderWsPickDialog */}
+      {renderWsPickDialog()}
+      {renderNewTaskForm()}
+      {renderTaskLists()}
+      {renderLoadMore()}
+      {reuseOpen && renderReuseDialog()}
+      {/* T00610：验证失败反馈录入弹窗——见 renderFailDialog */}
+      {renderFailDialog()}
+
+      {/* T00786：工作空间全文检索面板（挂载于页面级，随主 section 渲染；floating overlay 关闭即卸载） */}
+      {wsSearchOpen && (
+        <WorkspaceSearchPanel
+          project={projects.find((p) => p.id === activeProject) ?? null}
+          flash={flash}
+          onClose={() => setWsSearchOpen(false)}
+        />
+      )}
+
+      {/* T03250：工作空间只读问答面板（同一项目上下文；未绑定工作空间时面板内明示不可用） */}
+      {wsAskOpen && (
+        <WorkspaceAskPanel
+          project={projects.find((p) => p.id === activeProject) ?? null}
+          toolId={organizeToolId}
+          flash={flash}
+          onClose={() => setWsAskOpen(false)}
+        />
+      )}
+
+      {/* T01562：真抽屉详情——自包含操作台（描述/结果/摘要/时间线/关联计划），与行内展开并存；
+          按 task.id 作 key 重挂载，切换任务即重置编辑态（降低与逐行展开态的耦合回归风险）。
+          T01570：落位标签页由行内已展开区块推断（openDetailDrawer）/外部跳转显式指定；
+          保存后走 applyTaskPatch 定点同步，行内对应区块即时更新，不再整表重载。 */}
+      {drawerTask && (
+        <TaskDetailDrawer
+          key={drawerTask.id}
+          task={drawerTask}
+          projectId={activeProject}
+          initialTab={drawerTab ?? undefined}
+          onClose={() => { setDrawerTask(null); setDrawerTab(null); }}
+          onChanged={(patch) => applyTaskPatch(drawerTask.id, patch)}
+          projects={projects}
+          onBindWorkspace={bindWorkspace}
+          onGitLinksChanged={() => { gitSummaries.refresh(); void loadTasks(activeProject); }}
+          flash={flash}
+        />
+      )}
+
+      {/* 八期 §3.1.5：未回写「手动关联」逐条补录队列——见 renderManualGitLinkQueue */}
+      {renderManualGitLinkQueue()}
+
+      {/* T03621：AI 智能关联建议——逐提交勾选，确认后才写 task_git_links（source=manual）；取消不产生任何写入。
+          弹窗结构单源在 AiLinkDialog，此处只接状态与回调（不再内联重复一份）。 */}
+      {aiLinkResult && (
+        <AiLinkDialog result={aiLinkResult} sel={aiLinkSel} applying={aiLinkApplying}
+          onToggle={(key, checked) => setAiLinkSel((prev) => (checked ? withInSet(prev, key) : withoutInSet(prev, key)))}
+          onClose={() => { setAiLinkResult(null); setAiLinkSel(new Set()); }}
+          onConfirm={() => void applyAiGitLink()} />
+      )}
+
+      {/* T02949：派生单裁决面板——Trae/WorkBuddy 气泡选项样式（候选胶囊按钮 + 自定义输入）；
+          候选由服务端按该单结论动态抽取（T02949 方案 A），不是固定四枚；
+          提交由服务端把结果追加到任务详情末尾（不覆盖），本面板只负责收集与展示 */}
+      {/* T02949：派生单裁决面板——见 renderRulingDialog（具名函数承载，复杂度与主渲染体解耦） */}
+      {renderRulingDialog()}
+    </section>
+  );
+}

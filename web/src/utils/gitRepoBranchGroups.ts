@@ -108,7 +108,7 @@ export interface RepoBranchGroup {
 /** 取工作空间路径的最后一段目录名（用于区分同名项目）；空路径回空串 */
 function lastSegmentOf(workspacePath: string): string {
   const parts = workspacePath.replace(/[\\/]+$/, '').split(/[\\/]/);
-  return parts[parts.length - 1] ?? '';
+  return parts.at(-1) ?? '';
 }
 
 /**
@@ -194,7 +194,7 @@ export function buildRepoBranchGroups(inputs: RepoBranchInput[], activeProjectId
 export function inputsForActiveWorkspace(inputs: readonly RepoBranchInput[], activeProjectId: string): RepoBranchInput[] {
   const active = inputs.find((i) => i.projectId === activeProjectId);
   if (!active) return [...inputs];
-  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const norm = (p: string) => p.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase();
   const ws = norm(active.workspacePath ?? '');
   if (!ws) return inputs.filter((i) => i.projectId === activeProjectId);
   return inputs.filter((i) => norm(i.workspacePath ?? '') === ws);

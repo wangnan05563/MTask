@@ -1,0 +1,899 @@
+import { getDb } from '../db/connection';
+import { ConfigService } from './ConfigService';
+import { QueueService, type QueueJobRow } from './QueueService';
+import { TaskService, type TaskView } from './TaskService';
+import { parseReqIds } from './reqStatusSync'; // T02164：摘要上下文需要任务/计划两侧的需求挂接，复用同一 req_ids 解析口径
+import { logService } from './LogService';
+import { getAdapter } from '../adapters';
+import { resolvePrdContext, formatPrdContext, type PrdContext } from '../util/prdContext'; // T00763：任务关联 PRD → AI 上下文自动注入（util 独立避免循环依赖）；T04896：formatPrdContext 统一拼装（多文档 + 文档目录）
+import { WorkspaceService } from './WorkspaceService'; // T00777：工作空间检索增强
+import type { StreamResult, SubmitResult, PollResult, TokenUsage, JobResult } from '../adapters/types';
+import type { ToolConfig } from '../adapters';
+import { stripThinking } from '../util/thinking'; // T00814：思考块剥离上移共享
+import { isRateLimitError, sleepMs } from '../util/rateLimit'; // T03700：限流识别与退避等待单源
+import { recordUsage } from '../util/aiUsageRecord'; // T03296：写入单源下沉 util，直连适配器的卡可复用同一口径
+import { classifyItems, type BatchCategory, type BatchItem, type BatchPriority, type ClassifyItemsResult } from './classifyBatch'; // T03297：批量分类分批调用与结果合并
+import { buildOptimizePrompt } from './optimizePrompt'; // T04808：提示词构造单源（含「仅标题」分支）
+import { armTaskReady } from './taskArming'; // T05747：B0 异步失败/超时 → A 就绪池（纯 SQL 单源，避免与 Relay 循环依赖）
+
+/** 模型未配置时的统一提示，保持与产品语境一致的表达 */
+const MODEL_UNCONFIGURED = '所选模型未配置，请先在「模型管理」为该工具填写默认模型';
+
+/** 取运行时配置并校验模型已配置；未配置则抛错，由上层转成明确提示（避免静默 fallback 到硬编码模型） */
+function runtimeWithModel(toolId: string) {
+  const { type, config } = ConfigService.getRuntimeConfig(toolId);
+  if (!config.model) throw new Error(MODEL_UNCONFIGURED);
+  return { type, config };
+}
+
+/**
+ * 剥离优化结果里的“任务提示词”类文档级标题行。
+ * 这类标题一旦随结果回填为任务描述，后续发给 AI 执行时可能被误判为“提示词优化”任务，
+ * 因此这里做确定性兜底去除（双保险，不依赖模型是否遵守约束）。
+ */
+function stripPromptHeading(md: string): string {
+  return md
+    .split('\n')
+    .filter((line) => {
+      const m = /^\s*#{1,6}\s+(.*)$/.exec(line);
+      if (!m) return true; // 非标题行保留
+      const text = m[1].trim();
+      // 仅去掉“任务 / 描述”类文档标题（含“提示词”或“任务描述/标题”等元标记），
+      // 保留“目标 / 输入 / 约束”等作为正文结构的小节标题。
+      return !/^任务.*(提示词|描述|标题)/.test(text) && !/提示词优化/.test(text);
+    })
+    .join('\n')
+    .trim();
+}
+
+// T00814：stripThinking 已上移 `../util/thinking`（标题美化/简化与 PRD 问题清单解析共用同一口径）
+
+/**
+ * FR2 协助整理 与 FR4 队列分发的 AI 调用层。
+ * 梳理结果回填 ai_summary（用户确认后保存）；分发结果仅保存文本（待人工合并）。
+ */
+/** 组装单条任务整理用的描述文本：带工作空间检索增强片段（关联 PRD 文案由调用方注入，此处只拼检索片段）。
+ *  T02200：改异步——autoContext 的分片 memo 预扫描在片间让出事件循环，批量梳理期间只读接口不再被饿死。 */
+async function buildOrganizeDescription(
+  task: { title: string; description?: string | null; project_id: string },
+  project: { workspace_path: string | null } | undefined,
+): Promise<string> {
+  let description = task.description ?? '';
+  if (!project?.workspace_path) return description;
+  try {
+    const kws = WorkspaceService.extractKeywords(`${task.title} ${task.description ?? ''}`);
+    const ctx = await WorkspaceService.autoContext(task.project_id, kws);
+    if (ctx) description = `${description}\n\n【工作空间检索片段（自动检索）】\n${ctx}`.trim();
+  } catch { /* 无工作空间/读取失败：跳过注入 */ }
+  return description;
+}
+
+/** 单条任务整理：组装上下文 → 调适配器 → 回填 results（organize 的循环体，抽出降低外层复杂度） */
+async function organizeOne(
+  taskId: string,
+  deps: {
+    db: ReturnType<typeof getDb>;
+    adapter: ReturnType<typeof getAdapter>;
+    config: ReturnType<typeof runtimeWithModel>['config'];
+    toolId: string;
+    startedAt: number;
+    results: Record<string, string>;
+  },
+): Promise<void> {
+  const { db, adapter, config, toolId, startedAt, results } = deps;
+  const task = TaskService.getById(taskId);
+  if (!task) return;
+  const project = db.prepare('SELECT name, workspace_path FROM projects WHERE id = ?').get(task.project_id) as { name: string; workspace_path: string | null } | undefined;
+  // T00763：任务关联了 PRD（req_ids → prd_requirements.prd_id）时自动加载原文作为上下文注入
+  const prd = resolvePrdContext({ taskId });
+  // T00777：工作空间检索增强——按任务标题/描述关键词搜代码，top 片段拼入描述（预算内；失败不阻塞）
+  const description = await buildOrganizeDescription(task, project);
+  const result = await adapter.send(
+    {
+      taskId: task.id,
+      title: task.title,
+      description,
+      projectName: project?.name ?? '',
+      prdContext: formatPrdContext(prd),
+      workspacePath: project?.workspace_path || undefined, // T00771
+    },
+    config,
+  );
+  if (result.ok && result.content) results[taskId] = result.content;
+  recordUsage({ kind: 'organize', toolId, model: config.model, ok: result.ok, startedAt, contentChars: result.content?.length ?? 0, error: result.error, usage: result.usage });
+}
+
+/** T02164：摘要提示词的关联区块取数上限——长任务的时间线可达数百条事件，
+ *  全量塞进提示词会把任务正文挤出上下文窗口，取最近若干条已足够支撑「全面总结」。 */
+const SUMMARY_EVENT_LIMIT = 20;
+const SUMMARY_PLAN_LIMIT = 10;
+
+const SUMMARY_STATUS_LABEL: Record<string, string> = { todo: '待办', doing: '进行中', changed: '已变更', done: '已完成' };
+const SUMMARY_PRIORITY_LABEL: Record<string, string> = { urgent: '紧急', high: '高', normal: '普通', low: '低' };
+const SUMMARY_AI_STATE_LABEL: Record<string, string> = { running: '运行中', unread: '已回传待读', failed: '处理失败' };
+const SUMMARY_PLAN_KIND_LABEL: Record<string, string> = { normal: '普通计划', milestone: '里程碑', daily: '日常任务' };
+const SUMMARY_REQ_STATUS_LABEL: Record<string, string> = { todo: '待开始', doing: '进行中', done: '已完成', changed: '已变更' };
+const SUMMARY_EVENT_KIND_LABEL: Record<string, string> = { status: '状态变更', verified: '验证标记', ai_state: 'AI 状态', result: '结果回传' };
+
+/** ISO 时刻压成提示词里可读的 `YYYY-MM-DD HH:mm`（原样截取，模型只做转述、不参与时区换算） */
+function briefTime(iso: string | null | undefined): string {
+  if (!iso) return '（未知）';
+  return iso.slice(0, 16).replace('T', ' ');
+}
+
+/** 「基本信息」段：逐条确定性事实，避免模型从正文反推状态/归属 */
+function summaryFactsBlock(task: TaskView, projectName: string, categoryName: string | null): string {
+  const lines = [
+    `- 任务编号：${task.task_no ?? '（未编号）'}`,
+    `- 标题：${task.title}`,
+    `- 所属项目：${projectName}`,
+    `- 状态：${SUMMARY_STATUS_LABEL[task.status] ?? task.status}`,
+    `- 优先级：${SUMMARY_PRIORITY_LABEL[task.priority] ?? task.priority}`,
+    `- AI 处理状态：${SUMMARY_AI_STATE_LABEL[task.ai_state] ?? '未开始'}`,
+    `- 创建：${briefTime(task.created_at)}　最后更新：${briefTime(task.updated_at)}`,
+  ];
+  if (task.verified) lines.push('- 已完成且标记「已验证」');
+  if (task.archived) lines.push('- 已归档');
+  if (task.shelved) lines.push('- 已搁置');
+  if (categoryName) lines.push(`- 任务分类：${categoryName}`);
+  if (task.derived_from) lines.push(`- 派生自原任务：${task.derived_from}`);
+  if (task.history_at) lines.push(`- 已沉淀为历史资产：${briefTime(task.history_at)}`);
+  if (task.retry_count) lines.push(`- 失败重试次数：${task.retry_count}`);
+  if (task.images.length > 0) lines.push(`- 截图附件：${task.images.length} 张`);
+  return lines.join('\n');
+}
+
+/** 「任务正文」段：描述与处理结果是信息量最大的两块，原样带上不再二次摘要 */
+function summaryTextBlock(task: TaskView): string {
+  const parts: string[] = [];
+  const desc = task.description.trim();
+  if (desc) parts.push(`【任务描述】\n${desc}`);
+  const result = task.handle_result?.trim();
+  if (result) parts.push(`【处理结果】\n${result}`);
+  return parts.join('\n\n');
+}
+
+/** 关联需求行（id → 编号/标题/状态）；无 id 时不查库。占位符按 id 条数生成，值仍走绑定参数 */
+function summaryRequirementLines(db: ReturnType<typeof getDb>, reqIds: string[]): string[] {
+  if (reqIds.length === 0) return [];
+  const rows = db.prepare(
+    `SELECT req_no, title, status FROM prd_requirements
+      WHERE id IN (${reqIds.map(() => '?').join(',')}) ORDER BY sort_order`,
+  ).all(...reqIds) as Array<{ req_no: string; title: string; status: string }>;
+  return rows.map((r) => {
+    const status = SUMMARY_REQ_STATUS_LABEL[r.status] ?? r.status;
+    return `- 关联需求：${r.req_no} ${r.title}（状态 ${status}）`;
+  });
+}
+
+/** 「关联信息」段：linked_task_id 挂接的计划（含里程碑）+ 任务与计划两侧的需求矩阵行 */
+function summaryRelatedBlock(db: ReturnType<typeof getDb>, taskId: string, taskReqIds: string | null): string {
+  const plans = db.prepare(
+    `SELECT title, kind, status, progress, start_date, end_date, req_ids FROM plan_tasks
+      WHERE linked_task_id = ? AND archived = 0 ORDER BY start_date LIMIT ?`,
+  ).all(taskId, SUMMARY_PLAN_LIMIT) as
+    Array<{ title: string; kind: string; status: string; progress: number; start_date: string; end_date: string; req_ids: string | null }>;
+  const lines = plans.map((p) => {
+    const kind = SUMMARY_PLAN_KIND_LABEL[p.kind] ?? p.kind;
+    const status = SUMMARY_STATUS_LABEL[p.status] ?? p.status;
+    return `- 关联计划：${p.title}（${kind}，状态 ${status}，进度 ${p.progress}%，${p.start_date} ~ ${p.end_date}）`;
+  });
+  const reqIds = [...new Set([...parseReqIds(taskReqIds), ...plans.flatMap((p) => parseReqIds(p.req_ids))])];
+  lines.push(...summaryRequirementLines(db, reqIds));
+  return lines.join('\n');
+}
+
+/** 「历史状态」段：时间线事件（旧→新），单条 detail 截断防超长日志撑爆提示词 */
+function summaryHistoryBlock(db: ReturnType<typeof getDb>, taskId: string): string {
+  const events = db.prepare(
+    'SELECT kind, detail, created_at FROM task_events WHERE task_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?',
+  ).all(taskId, SUMMARY_EVENT_LIMIT) as Array<{ kind: string; detail: string | null; created_at: string }>;
+  events.reverse();
+  return events
+    .map((e) => {
+      const kind = SUMMARY_EVENT_KIND_LABEL[e.kind] ?? e.kind;
+      return `- ${briefTime(e.created_at)} ${kind}：${(e.detail ?? '').slice(0, 120)}`;
+    })
+    .join('\n');
+}
+
+/** 摘要提示词的全量上下文装配：基本信息 / 正文 / 关联 / 历史 / 关联 PRD 原文 */
+function buildSummaryUserPrompt(deps: {
+  readonly task: TaskView; readonly projectName: string; readonly categoryName: string | null;
+  readonly taskReqIds: string | null; readonly prd: PrdContext | null;
+  readonly db: ReturnType<typeof getDb>;
+}): string {
+  const { task, db } = deps;
+  const related = summaryRelatedBlock(db, task.id, deps.taskReqIds);
+  const history = summaryHistoryBlock(db, task.id);
+  const blocks = [
+    `【基本信息】\n${summaryFactsBlock(task, deps.projectName, deps.categoryName)}`,
+    summaryTextBlock(task),
+    related ? `【关联信息（计划 / 需求矩阵）】\n${related}` : '',
+    history ? `【历史状态（时间线，旧→新）】\n${history}` : '',
+  ];
+  const prd = deps.prd;
+  const prdBlock = prd ? formatPrdContext(prd) : undefined;
+  if (prdBlock) blocks.push(`【关联 PRD 原文】\n${prdBlock}`);
+  return blocks.filter((b) => b.trim().length > 0).join('\n\n');
+}
+
+const SUMMARY_SYSTEM = [
+  '你是 MTask 的任务摘要专家。给定一个待办任务的全量信息，输出一段覆盖该任务全部关键事实的全面总结摘要。',
+  '要求：',
+  '1. 覆盖以下维度，输入里没有的维度如实说明「未记录」，不得虚构：任务目标与背景、关键约束与要求、当前进展与已得结论、关联信息（项目/计划/需求/PRD）、历史状态变化要点、遗留事项与风险',
+  '2. 结论要可直接使用：写清「做到了什么、卡在哪、下一步是什么」，而不是复述原文',
+  '3. 使用 Markdown 分节组织，小节标题从具体内容开始，不要输出「任务摘要」这类文档级大标题',
+  '4. 不要输出任何「更新时间 / 生成时间」字段——时间标注由系统统一追加，模型写了反而是错的',
+  '5. 无论输入是繁体还是简体，输出必须统一使用简体中文（简体字），严禁繁体字',
+  '6. 只输出摘要正文，不要寒暄、不要解释你做了什么',
+].join('\n');
+
+/**
+ * M6-6.1：askJson 的每次尝试配置（原内联三元）。
+ * 重试降 temperature=0 提高结构化 JSON 命中率；maxTokens 覆盖两轮一致生效。
+ */
+function attemptConfig<T extends { maxTokens?: number; temperature?: number }>(base: T, attempt: number, maxTokens?: number): T {
+  const cfg = attempt === 1 ? base : { ...base, temperature: 0 };
+  return maxTokens == null ? cfg : { ...cfg, maxTokens };
+}
+
+/** M6-6.1：第二次尝试起改用精简提示词（T00707），压缩输出规模再试 */
+function attemptSystem(attempt: number, system: string, retrySystem?: string): string {
+  return attempt === 1 || !retrySystem ? system : retrySystem;
+}
+
+/** askJson 单次尝试的上下文：本轮不变量打包传递，避免逐参数穿透 */
+interface AskJsonAttemptCtx {
+  adapter: ReturnType<typeof getAdapter>;
+  user: string;
+  base: ToolConfig;
+  toolId: string;
+  /** 与工具配置同源（未配置时为空，recordUsage 按可选处理） */
+  model?: string;
+  cardKey?: string;
+  minMaxTokens?: number;
+  signal?: AbortSignal;
+}
+
+/** T02275：首轮输出预算——maxTokens 硬覆盖优先，否则按下限语义托底（minMaxTokens 与工具配置取大者） */
+function resolveOutputBudget(configMax: number | undefined, maxTokens?: number, minMaxTokens?: number): number | undefined {
+  if (maxTokens != null) return maxTokens;
+  if (minMaxTokens == null) return undefined;
+  return Math.max(configMax ?? 4096, minMaxTokens);
+}
+
+/** T02275：预算被模型拒收（错误直指 max_tokens）且高于下限值时可同轮回退重打 */
+function budgetRejected(res: JobResult, minMaxTokens?: number, budgetMax?: number): boolean {
+  if (res.ok || minMaxTokens == null || budgetMax == null) return false;
+  return budgetMax > minMaxTokens && /max_tokens|max_completion_tokens|too large|invalid/i.test(res.error ?? '');
+}
+
+/**
+ * 调一轮对话；预算被拒时**同轮内**回退到下限值重打一次，不占用「截断精简重试」轮次
+ * （先例 PrdGenService：只在错误确指预算时回退，其余照旧）。返回结果与最终生效预算。
+ */
+async function chatForAttempt(
+  ctx: AskJsonAttemptCtx,
+  sys: string,
+  attempt: number,
+  budgetMax: number | undefined,
+  startedAt: number,
+): Promise<{ res: JobResult; budgetMax: number | undefined }> {
+  const res = await ctx.adapter.chat(sys, ctx.user, attemptConfig(ctx.base, attempt, budgetMax), ctx.signal);
+  if (!budgetRejected(res, ctx.minMaxTokens, budgetMax)) return { res, budgetMax };
+  recordUsage({
+    kind: 'ask-json', toolId: ctx.toolId, model: ctx.model, ok: false, startedAt, contentChars: 0, cardKey: ctx.cardKey, usage: res.usage,
+    error: `预算 ${budgetMax} 被拒，回退 ${ctx.minMaxTokens} 重试：${res.error ?? ''}`,
+  });
+  const fallbackBudget = ctx.minMaxTokens;
+  const retried = await ctx.adapter.chat(sys, ctx.user, attemptConfig(ctx.base, attempt, fallbackBudget), ctx.signal);
+  return { res: retried, budgetMax: fallbackBudget };
+}
+
+/** T02314：第二轮优先用「首轮具体失败原因」定制的重试提示词；无首轮错误或无钩子时回退静态 retrySystem */
+function retrySystemFor(
+  attempt: number,
+  lastError: string,
+  retrySystem?: string,
+  fromError?: (lastError: string) => string,
+): string | undefined {
+  if (attempt === 2 && lastError && fromError) return fromError(lastError);
+  return retrySystem;
+}
+
+/**
+ * M6-6.1：累计**全部**尝试的用量（原 addUsage 闭包）——重试意味着真实多花了一次调用，
+ * 只记最后一次会让预算护栏系统性低估成本（护栏漏拦比误拦更危险）。
+ */
+function mergeUsage(prev: TokenUsage | undefined, cur?: TokenUsage): TokenUsage | undefined {
+  if (!cur) return prev;
+  if (!prev) return cur;
+  return {
+    promptTokens: prev.promptTokens + cur.promptTokens,
+    completionTokens: prev.completionTokens + cur.completionTokens,
+    totalTokens: prev.totalTokens + cur.totalTokens,
+  };
+}
+
+/** T02164：摘要工具取用口径——显式指定优先，否则回落「默认整理工具」；两者都没有时给出可执行的提示 */
+function resolveSummaryToolId(toolId?: string): string {
+  if (toolId) return toolId;
+  const fallback = ConfigService.getDefaults().organize;
+  if (fallback) return fallback;
+  throw new Error('未配置默认整理工具，请先在「模型管理」添加并选择一个整理工具');
+}
+
+export const AIService = {
+  /**
+   * FR2.1/2.2 单条或批量梳理：调用指定（默认整理）工具，产出结构化文本。
+   * 骨架阶段真实网络调用由适配器实现，本服务只负责组装上下文与回填。
+   */
+  async organize(taskIds: string[], toolId: string): Promise<Record<string, string>> {
+    const db = getDb();
+    const startedAt = Date.now();
+    const { type, config } = runtimeWithModel(toolId);
+    const adapter = getAdapter(type);
+    const results: Record<string, string> = {};
+    const deps = { db, adapter, config, toolId, startedAt, results };
+    for (const taskId of taskIds) {
+      await organizeOne(taskId, deps);
+    }
+    return results;
+  },
+
+  /**
+   * T02164：单条任务的「生成总结摘要」——汇总该任务的全量信息（基本信息/正文/关联计划与需求/
+   * 时间线事件/关联 PRD 原文）交模型做全面总结，成功后回填 ai_summary 并记录生成时刻。
+   * 与 organize 的分工：organize 面向「把描述改写成可执行提示词」，本方法面向「把已有信息收拢成结论」。
+   */
+  async summarizeTask(taskId: string, toolId?: string): Promise<TaskView> {
+    const task = TaskService.getById(taskId);
+    if (!task) throw new Error('任务不存在');
+    const db = getDb();
+    const meta = db.prepare(
+      `SELECT p.name AS project_name, c.name AS category_name, t.req_ids AS req_ids
+         FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+         LEFT JOIN task_categories c ON c.id = t.category_id
+        WHERE t.id = ?`,
+    ).get(taskId) as { project_name: string | null; category_name: string | null; req_ids: string | null } | undefined;
+    const tool = resolveSummaryToolId(toolId);
+    const { type, config } = runtimeWithModel(tool);
+    const adapter = getAdapter(type);
+    const user = buildSummaryUserPrompt({
+      task,
+      db,
+      projectName: meta?.project_name ?? '',
+      categoryName: meta?.category_name ?? null,
+      taskReqIds: meta?.req_ids ?? null,
+      prd: resolvePrdContext({ taskId }),
+    });
+    const startedAt = Date.now();
+    logService.log('INFO', 'ai', `[任务总结摘要] task=${task.task_no ?? taskId} tool=${tool} type=${type} model=${config.model ?? ''}`);
+    const result = await adapter.chat(SUMMARY_SYSTEM, user, config);
+    recordUsage({ kind: 'summary', toolId: tool, model: config.model, ok: result.ok, startedAt, contentChars: result.content?.length ?? 0, error: result.error, usage: result.usage });
+    const content = result.content?.trim();
+    if (!result.ok || !content) throw new Error(result.error ?? '模型未返回摘要内容，请稍后重试');
+    return TaskService.saveAiSummary(taskId, content);
+  },
+
+  /**
+   * 提示词优化：将任务的标题与描述改写为一则清晰、结构化的任务提示词。
+   * 使用通用单轮对话 chat，不经过 FR2 的固定整理指令。
+   * T04121：可选注入「所属项目 / 任务分类」两条确定性事实——只给归属语义，
+   * 故意不注入工作空间检索片段：本能力是纯文案改写（硬约束「不虚构不删改事实」），
+   * 代码片段会诱导模型把实现细节写成任务事实；且产物在下游梳理/分发时会再检索注入一次。
+   */
+  async optimizeText(
+    title: string,
+    description: string,
+    toolId: string,
+    scope?: { projectName?: string; categoryName?: string },
+  ): Promise<{ ok: boolean; content?: string; error?: string }> {
+    const { type, config } = runtimeWithModel(toolId);
+    const adapter = getAdapter(type);
+    // 记录 AI 使用日志（供日志菜单按 source=ai 筛选排错）：记录工具/模型/启始，便于对应用时与结果
+    const startedAt = Date.now();
+    logService.log('INFO', 'ai', `[提示词优化] tool=${toolId} type=${type} model=${config.model ?? ''}`);
+    // T04808：提示词构造抽到 optimizePrompt.ts —— 常规输入逐字保持原 7 条要求与 user 结构；
+    // description 为空且 title 非空时进入「仅标题」分支，标题作为唯一输入源并追加第 8 条要求。
+    const { system, user } = buildOptimizePrompt(title, description, scope);
+    const res = await adapter.chat(system, user, config);
+    // 兜底剥离文档级标题，确保回填为任务描述后不会被误判成提示词任务
+    if (res.ok && res.content) res.content = stripPromptHeading(res.content);
+    const cost = Date.now() - startedAt;
+    if (res.ok) logService.log('INFO', 'ai', `[提示词优化] 成功 耗时=${cost}ms`);
+    else logService.log('ERROR', 'ai', `[提示词优化] 失败 耗时=${cost}ms ${res.error ?? ''}`);
+    recordUsage({ kind: 'optimize', toolId, model: config.model, ok: res.ok, startedAt, contentChars: res.content?.length ?? 0, error: res.error, usage: res.usage });
+    return res;
+  },
+
+  /**
+   * 标题美化：将任务标题润色为一则语义清晰、表达规范、简洁得体的标题。
+   * 仅优化语言表达，保留原意与全部关键信息，不虚构不删改事实。
+   */
+  async beautifyTitle(title: string, toolId: string): Promise<{ ok: boolean; content?: string; error?: string }> {
+    const { type, config } = runtimeWithModel(toolId);
+    const adapter = getAdapter(type);
+    const startedAt = Date.now();
+    const system = [
+      '你是 MTask 的标题美化专家。给定一条任务标题，将其润色为一则语义清晰、表达规范、简洁得体的任务标题。',
+      '要求：',
+      '1. 保留原意与全部关键信息，不虚构、不删改事实。T00524：严禁语义丢失——模块名、功能点、操作对象、数量、限定条件等关键要素必须逐项保留，信息完整性优先于简洁',
+      // T00546：长标题防语义丢失三重约束——要素清单先行、长度下限保护、逐项自检
+      '2. 润色前先在内部逐一列出原标题的关键要素（模块/功能/对象/数量/条件/状态），润色后逐项自检：任一要素缺失即视为失败，必须补回重写',
+      '3. 长度保护：原标题超过 30 字时，输出长度不得低于原标题的 80%，只做表达规范化（错别字/语序/标点/用词），严禁压缩概括、合并要素或省略修饰限定；宁可几乎原样保留，不可丢失任何语义',
+      '4. 只输出润色后的标题文本（单行），不要任何解释、序号、引号或 Markdown 标记。长度以关键信息完整为准（信息多时可超过 60 字），严禁为凑简短而删减语义',
+      // 与 optimizeText 同口径锁定简体：标题可能来自繁体输入，需显式要求输出简体
+      '5. 输出统一使用简体中文（简体字），严禁任何繁体字',
+    ].join('\n');
+    const res = await adapter.chat(system, `【任务标题】${title}`, config);
+    // 先剥离思考过程（部分思考型模型会附带内心推理），再折叠空白为单行干净标题，
+    // 确保回填标题输入框时不会污染（双保险，不依赖模型是否遵守“只输出标题”约束）
+    if (res.ok && res.content) res.content = stripThinking(res.content).replaceAll(/\s+/g, ' ').trim();
+    recordUsage({ kind: 'beautify', toolId, model: config.model, ok: res.ok, startedAt, contentChars: res.content?.length ?? 0, error: res.error, usage: res.usage });
+    return res;
+  },
+
+  /**
+   * T00796：通用文本美化——把一段**口语化/随手记的正文**（验证失败反馈 / 处理结果 / 通用需求内容）
+   * 润色为表达规范、结构清晰、可直接归档复现的书面文本。
+   * 与 beautifyTitle 的差异：标题美化只处理单行标题并要求单行输出；这里处理多句正文，
+   * 必须保留全部事实要素（现象、复现步骤、环境、报错原文、期望结果），只做表达规范化。
+   *
+   * 输出预算按原文规模给足（润色输出与原文等长）：默认 4096 tokens 在长正文上会触顶截断，
+   * adapter.chat 会按 finish_reason=length 判失败（不会静默回填半截文本），但用户侧只看到「美化失败」，
+   * 故这里按字数预判给足预算，并对超长正文提前给出「建议分段」的可操作提示。
+   */
+  async polishText(text: string, toolId: string): Promise<{ ok: boolean; content?: string; error?: string }> {
+    // 一次润色的字符上限：超出后即使给足预算也极易触顶，直接引导分段，避免白调一次模型
+    const MAX_CHARS = 6000;
+    if (text.length > MAX_CHARS) {
+      return { ok: false, error: `正文较长（${text.length} 字符），单次润色建议不超过 ${MAX_CHARS} 字符 —— 请分段润色后再合并` };
+    }
+    const { type, config } = runtimeWithModel(toolId);
+    const adapter = getAdapter(type);
+    const startedAt = Date.now();
+    // 预算 = 原文字数 ×0.8（中文保守折算）+ 余量，取「用户配置 / 下限 4096 / 预算」的最大值，封顶 8192
+    const budget = Math.min(Math.max(config.maxTokens ?? 4096, 4096, Math.ceil(text.length * 0.8) + 512), 8192);
+    const polishConfig: ToolConfig = { ...config, maxTokens: budget, timeoutMs: Math.max(config.timeoutMs ?? 60_000, 120_000) };
+    const system = [
+      '你是 MTask 的文本润色专家。给定一段用户随手写的反馈/说明文本，将其润色为表达规范、结构清晰、便于他人复现与归档的书面文本。',
+      '要求：',
+      '1. 严禁语义丢失：现象、复现步骤、环境/版本、报错原文、期望结果等事实要素必须逐项保留，不得删改、不得虚构',
+      '2. 只做表达规范化：修正错别字、语序、标点、用词，必要时用短句分条陈述，不改叙事顺序之外的信息',
+      '3. 保留原文的 Markdown 结构与换行习惯（原文无 Markdown 标记时不要擅自加标题层级）',
+      '4. 输出统一使用简体中文（简体字），严禁任何繁体字',
+      '5. 只输出润色后的正文文本，不要「润色结果如下」这类前置说明、不要代码块包裹',
+    ].join('\n');
+    const res = await adapter.chat(system, `【原文】\n${text}`, polishConfig);
+    // 与标题美化同款双保险：剥离思考过程并去掉首尾空白，避免思考型模型的推理内容回填进输入框
+    if (res.ok && res.content) res.content = stripThinking(res.content).trim();
+    recordUsage({ kind: 'polish', toolId, model: config.model, ok: res.ok, startedAt, contentChars: res.content?.length ?? 0, error: res.error, usage: res.usage });
+    return res;
+  },
+
+  /**
+   * T00597：AI 简化标题——依据任务详情**高度总结**为简洁标题（限 40 字内）。
+   * 与 beautifyTitle 的差异：美化保留全部语义只做表达规范化；简化允许丢失细节，追求标题简洁。
+   * 前置要求：任务需有详情内容（description 非空）——语义来源，避免"无中生有"式丢失。
+   */
+  async simplifyTitle(title: string, description: string, toolId: string): Promise<{ ok: boolean; content?: string; error?: string }> {
+    const { type, config } = runtimeWithModel(toolId);
+    const adapter = getAdapter(type);
+    const startedAt = Date.now();
+    const system = [
+      '你是 MTask 的标题简化专家。给定一条任务标题与其详情内容，将其**高度总结**为一则简洁标题。',
+      '要求：',
+      '1. 以任务详情为核心语义来源，凝练出最核心的功能点/对象/结果，允许省略次要细节与修饰（与"美化"不同：简化有意压缩语义，追求简洁）',
+      '2. 标题长度**严格控制在 40 个字符以内**（含标点），超出即视为失败，必须进一步精简',
+      '3. 保持可读与专业：不虚构详情中不存在的事实，不使用"等"字堆砌，不做无意义缩写',
+      '4. 只输出简化后的标题文本（单行），不要任何解释、序号、引号或 Markdown 标记',
+      '5. 输出统一使用简体中文（简体字），严禁任何繁体字',
+    ].join('\n');
+    const res = await adapter.chat(system, `【任务标题】${title}\n\n【任务详情】${description}`, config);
+    if (res.ok && res.content) {
+      res.content = stripThinking(res.content).replaceAll(/\s+/g, ' ').trim();
+      // 双保险：模型未严格遵守 40 字约束时强制截断到 40 字（不截断则在半个词处收尾）
+      if (res.content.length > 40) res.content = res.content.slice(0, 40).trim();
+    }
+    recordUsage({ kind: 'simplify', toolId, model: config.model, ok: res.ok, startedAt, contentChars: res.content?.length ?? 0, error: res.error, usage: res.usage });
+    return res;
+  },
+
+  /**
+   * 通用单轮对话：供「AI 控制台」等自由问答场景使用（system + user 单条文本）。
+   * 不做固定整理指令，交由调用方构造 system 上下文。
+   */
+  async ask(
+    toolId: string,
+    system: string,
+    user: string,
+    timeoutMs?: number,
+    signal?: AbortSignal, // T00838：可选中止信号——控制台任务可被「停止」按钮中断
+    cardKey?: string, // T03243（AI-102④）：调用方显式归属卡片（通用 ask 通道无一对一 kind 映射）
+  ): Promise<{ ok: boolean; content?: string; error?: string }> {
+    const { type, config } = runtimeWithModel(toolId);
+    const adapter = getAdapter(type);
+    // 长耗时任务（如 AI 周报洞察生成）由调用方显式传入更大的超时，覆盖该工具的默认 timeoutMs，避免中途被掐断
+    const effective = timeoutMs == null ? config : { ...config, timeoutMs };
+    const startedAt = Date.now();
+    const res = await adapter.chat(system, user, effective, signal);
+    recordUsage({ kind: 'ask', toolId, model: config.model, ok: res.ok, startedAt, contentChars: res.content?.length ?? 0, error: res.error, cardKey, usage: res.usage });
+    return res;
+  },
+
+  /**
+   * T00723：要求 JSON 输出的 ask——把「解析是否成功」纳入调用成败判定与 ai_usage 记录，
+   * 并对失败（输出截断 / 内容为空 / JSON 解析失败）自动重试 1 次（重试降 temperature=0）。
+   * parse 抛错即视为本次输出无效。返回 { ok, data, error }；失败时 error 末尾注明已重试。
+   * 供 aiParsePrd / aiParseWbs 等结构化解析场景使用（普通对话仍走 ask）。
+   * T01289：额外带出全部尝试累计的 token 用量（适配器未回传则缺省），供监督器预算护栏计量。
+   * T02141：新增可选 `opts.signal`——外部中止时本轮立即收手，且不进入重试。
+   */
+  async askJson<T>(
+    toolId: string,
+    system: string,
+    user: string,
+    parse: (content: string) => T,
+    /** T01361（S107）：可选参数打包为对象——8 参超上限 7 */
+    opts?: {
+      /** T00707：重试时改用的「精简提示词」——首次输出被截断/解析失败时用它压缩输出规模再试 */
+      retrySystem?: string;
+      /**
+       * T02314：按**首轮具体失败原因**定制重试提示词——parse 抛错的 message 本身就是可执行的
+       * 修正指令（如「大纲缺少时间线页」「第 4 页单条 bullet 超出 42 字」），回喂给模型比
+       * 静态精简提示词（retrySystem）命中率高。提供时优先于 retrySystem；lastError 为空时回退到它。
+       */
+      retrySystemFromError?: (lastError: string) => string;
+      /** T01156：首轮输出预算上限（覆盖工具默认 max_tokens）——结构化解析输出较长时抬高以防截断触发精简重试丢数据 */
+      maxTokens?: number;
+      /**
+       * T02275：预算**下限**语义——`Math.max(工具 max_tokens, minMaxTokens)`。
+       * 与 maxTokens（硬覆盖）相反：工具在模型管理里配得更高时**不再被砍回**，调大才真正生效；
+       * 配得更低时托底到本值，避免长输出触顶截断。两者同时提供时 maxTokens 优先（保持旧调用方语义不变）。
+       */
+      minMaxTokens?: number;
+      /** T01275：首轮温度覆盖——监督决策要求 temperature=0 稳定复现，而工具默认温度偏高 */
+      temperature?: number;
+      timeoutMs?: number;
+      /**
+       * T02141：可选中止信号——SSE 客户端断开后不必等完整轮响应（适配器 abort 即回 `任务已停止`）。
+       * 与 T01289「超时不重试」同口径：abort 时**不触发重试**，否则「停止」会变成再等一轮、白烧一次配额。
+       */
+      signal?: AbortSignal;
+      /** T03296（G-2 覆盖率）：调用方显式归属卡片——通用 ask-json 通道无一对一 kind 映射 */
+      cardKey?: string;
+      /**
+       * T03700：限流退避（可选，未传保持旧行为）——首轮失败且错误为限流（HTTP 429 / rate limit）时，
+       * 不再「立即原样重试」（对限流注定再撞），先等待该毫秒数再进第二轮；外部中止则不等待不重试。
+       * 供 PRD 解析等长链路调用方按场景开启；监督决策等对时延敏感的通道不传即完全不变。
+       */
+      rateLimitBackoffMs?: number;
+    },
+  ): Promise<{ ok: boolean; data?: T; error?: string; retried?: boolean; usage?: TokenUsage }> {
+    const { timeoutMs, retrySystem, retrySystemFromError, maxTokens, minMaxTokens, temperature, signal, cardKey, rateLimitBackoffMs } = opts ?? {};
+    const { type, config } = runtimeWithModel(toolId);
+    const adapter = getAdapter(type);
+    const effective = timeoutMs == null ? config : { ...config, timeoutMs };
+    const base = temperature == null ? effective : { ...effective, temperature };
+    // T02275：下限语义在此收敛为一个具体选值——工具配得更高时保留更高值，更低时托底到 minMaxTokens。
+    let budgetMax = resolveOutputBudget(config.maxTokens, maxTokens, minMaxTokens);
+    const ctx: AskJsonAttemptCtx = { adapter, user, base, toolId, model: config.model, cardKey, minMaxTokens, signal };
+    const acc: { usage?: TokenUsage; lastError: string; attempts: number } = { lastError: '', attempts: 0 };
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      acc.attempts = attempt;
+      const startedAt = Date.now();
+      const sys = attemptSystem(attempt, system, retrySystemFor(attempt, acc.lastError, retrySystem, retrySystemFromError));
+      const { res, budgetMax: nextBudget } = await chatForAttempt(ctx, sys, attempt, budgetMax, startedAt);
+      budgetMax = nextBudget;
+      acc.usage = mergeUsage(acc.usage, res.usage);
+      if (!res.ok || !res.content) {
+        acc.lastError = res.error ?? 'AI 返回内容为空';
+        recordUsage({ kind: 'ask-json', toolId, model: config.model, ok: false, startedAt, contentChars: 0, error: acc.lastError, cardKey, usage: res.usage });
+        // T01289：超时不重试——本轮已耗尽整个超时窗口，再试一次只会把等待时间翻倍；
+        // 监督决策据此在 10s 内降级 ESCALATE（NFR-1），而不是 20s 后才降级。
+        // T02141：外部中止同理不重试——调用方已表示不要这一轮结果，重试等于白烧一次配额。
+        if (res.timedOut || signal?.aborted) break;
+        // T03700：限流退避——首轮撞 429 且调用方显式开启退避时，先等再重试（未开启保持旧的立即重试）
+        if (attempt === 1 && rateLimitBackoffMs != null && isRateLimitError(acc.lastError)) {
+          await sleepMs(rateLimitBackoffMs, signal);
+          if (signal?.aborted) break;
+        }
+        continue;
+      }
+      try {
+        const data = parse(res.content);
+        recordUsage({ kind: 'ask-json', toolId, model: config.model, ok: true, startedAt, contentChars: res.content.length, cardKey, usage: acc.usage });
+        return { ok: true, data, retried: attempt > 1, usage: acc.usage };
+      } catch (e) {
+        acc.lastError = e instanceof Error ? e.message : String(e);
+        recordUsage({
+          kind: 'ask-json', toolId, model: config.model, ok: false, startedAt, cardKey, usage: res.usage,
+          contentChars: res.content.length, error: `JSON 解析失败：${acc.lastError.slice(0, 200)}`,
+        });
+      }
+    }
+    return { ok: false, error: `${acc.lastError}${acc.attempts > 1 ? '（已自动重试 1 次）' : ''}`, usage: acc.usage };
+  },
+
+  /**
+   * 流式通用单轮对话：逐文本增量回调（供 AI 周报 SSE 实时透传），收敛后返回完整结果。
+   * 供 ReportService 在生成过程中将洞察内容逐步推送给前端控制台。
+   */
+  async askStream(
+    toolId: string,
+    system: string,
+    user: string,
+    onDelta: (text: string) => void,
+    timeoutMs?: number,
+    signal?: AbortSignal, // T00838：可选中止信号——周报生成可被「停止」按钮中断
+    cardKey?: string, // T03243（AI-102④）：通用 stream 通道显式归属卡片，回看时可按卡取实际值
+  ): Promise<StreamResult & { chars: number; durationMs: number }> {
+    const { type, config } = runtimeWithModel(toolId);
+    const adapter = getAdapter(type);
+    // 长耗时流式调用同样由调用方传入更大的超时，避免中途被掐断
+    const effective = timeoutMs == null ? config : { ...config, timeoutMs };
+    const startedAt = Date.now();
+    let chars = 0;
+    const wrapped = (text: string) => { chars += text.length; onDelta(text); };
+    const res = await adapter.chatStream(system, user, effective, wrapped, signal);
+    const durationMs = Date.now() - startedAt;
+    recordUsage({ kind: 'stream', toolId, model: config.model, ok: res.ok, startedAt, contentChars: chars, error: res.error, cardKey, usage: res.usage });
+    // 与 ai_usage 同一份实际值（流式增量子符数 / 墙钟耗时），供 AI-102② 偏差复算直接取用
+    return { ...res, chars, durationMs };
+  },
+
+  /**
+   * 智能分类：根据任务标题从候选分类中匹配最贴切的一项，返回其 id。
+   * 供「任务分类下拉」的默认启用智能分类功能使用；无合适分类返回 null。
+   */
+  async classifyCategory(
+    title: string,
+    categories: { id: string; name: string }[],
+    toolId: string,
+  ): Promise<{ ok: boolean; content?: string; categoryId?: string | null; priority?: BatchPriority | null; error?: string }> {
+    if (!categories.length) return { ok: true, categoryId: null };
+    const { type, config } = runtimeWithModel(toolId);
+    const adapter = getAdapter(type);
+    const startedAt = Date.now();
+    const system =
+      '你是任务智能分类助手。给定一个任务标题和一组候选分类名，选出与标题主题最贴切的一个分类名作为该任务的类型，并按紧急重要程度给出优先级标注（U=极高、H=高、N=普通、L=低）。只输出一行：分类名|优先级字母（如：开发|H），不加任何解释；若分类都不合适，只输出 NONE|N。';
+    const user = `候选分类：${categories.map((c) => c.name).join('、')}\n任务标题：${title}`;
+    const res = await adapter.chat(system, user, config);
+    if (!res.ok) { recordUsage({ kind: 'classify', toolId, model: config.model, ok: false, startedAt, contentChars: 0, error: res.error, usage: res.usage }); return { ok: false, error: res.error }; }
+    const raw = (res.content ?? '').trim();
+    // T00473：解析「分类名|优先级」；无 | 时兼容旧格式（仅分类名，优先级为 null 不写回）
+    const sep = raw.lastIndexOf('|');
+    const out = sep >= 0 ? raw.slice(0, sep).trim() : raw;
+    const PRIORITY_MAP: Record<string, BatchPriority> = { U: 'urgent', H: 'high', N: 'normal', L: 'low' };
+    const pLetter = sep >= 0 ? raw.slice(sep + 1).trim().toUpperCase() : '';
+    const priority = PRIORITY_MAP[pLetter] ?? null;
+    // 精确匹配优先；无精确命中时按「最长名称包含」兜底，避免分类名互为子串（如“开发/开发优化”）误配到较短分类
+    const hit =
+      categories.find((c) => c.name.trim() === out) ??
+      [...categories].sort((a, b) => b.name.length - a.name.length).find((c) => out.includes(c.name));
+    recordUsage({ kind: 'classify', toolId, model: config.model, ok: true, startedAt, contentChars: res.content?.length ?? 0, usage: res.usage });
+    return { ok: true, content: res.content, categoryId: hit ? hit.id : null, priority };
+  },
+
+  /**
+   * T03297：批量分类——按批切分、每批一次模型调用，结果按输入顺序合并。
+   * 分类口径与 `classifyCategory` 同一匹配函数；每次真实调用都记 ai_usage（kind=classify）。
+   */
+  async classifyCategoryBatch(
+    input: { items: BatchItem[]; categories: BatchCategory[]; batchSize?: unknown; concurrency?: unknown },
+    toolId: string,
+  ): Promise<ClassifyItemsResult> {
+    if (!input.categories.length) {
+      return {
+        ok: true,
+        results: input.items.map((it) => ({ id: String(it.id), ok: true, categoryId: null, priority: null })),
+        calls: 0, batches: 0, gated: false,
+      };
+    }
+    const { type, config } = runtimeWithModel(toolId);
+    const adapter = getAdapter(type);
+    return classifyItems({
+      ...input,
+      chat: async (system, user) => {
+        const startedAt = Date.now();
+        const res = await adapter.chat(system, user, config);
+        recordUsage({ kind: 'classify', toolId, model: config.model, ok: res.ok, startedAt, contentChars: res.content?.length ?? 0, error: res.error, usage: res.usage });
+        return res;
+      },
+    });
+  },
+
+  /**
+   * T03255（AI-203①⑤）：分类与优先级建议——标题 + 描述 + 同项目历史，输出分类、优先级与一句理由。
+   * 只读：不写 tasks 表；是否采纳由用户在前端确认（PRD「不得自动落库」）。
+   */
+  async suggestTaskClassification(
+    input: { title: string; description?: string; projectId?: string | null; taskId?: string | null; categories: { id: string; name: string }[] },
+    toolId: string,
+  ): Promise<{
+    ok: boolean;
+    suggestion?: { categoryId: string | null; categoryName: string | null; priority: BatchPriority; reason: string; historyCount: number };
+    error?: string;
+  }> {
+    const { type, config } = runtimeWithModel(toolId);
+    const adapter = getAdapter(type);
+    const startedAt = Date.now();
+    // 历史只作参考上下文：同项目最近 20 条（排除当前任务本身），用于贴合该项目既有的分类/优先级习惯
+    const history = input.projectId
+      ? (getDb().prepare(
+          `SELECT t.title, t.priority, c.name AS category_name
+             FROM tasks t LEFT JOIN task_categories c ON c.id = t.category_id
+            WHERE t.project_id = ? AND t.archived = 0 AND (? IS NULL OR t.id <> ?)
+            ORDER BY t.updated_at DESC LIMIT 20`,
+        ).all(input.projectId, input.taskId ?? null, input.taskId ?? null) as Array<{ title: string; priority: string; category_name: string | null }>)
+      : [];
+    const historyLines = history.map((h) => `- ${h.title}（${h.category_name ?? '未分类'}｜${h.priority}）`).join('\n');
+    const system =
+      '你是任务分类与优先级建议助手。根据任务标题、描述和同项目历史任务，选出最贴切的候选分类，按紧急重要程度给出优先级（U=极高、H=高、N=普通、L=低），并给一句不超过40字的中文理由。只输出一行：分类名|优先级字母|理由，不加任何解释；分类都不合适时分类名写 NONE。';
+    const user = [
+      input.categories.length ? `候选分类：${input.categories.map((c) => c.name).join('、')}` : '候选分类：（无，分类写 NONE）',
+      `任务标题：${input.title}`,
+      input.description?.trim() ? `任务描述：${input.description.trim().slice(0, 800)}` : '',
+      historyLines ? `同项目近期任务（参考其分类与优先级习惯）：\n${historyLines}` : '',
+    ].filter(Boolean).join('\n');
+    const res = await adapter.chat(system, user, config);
+    if (!res.ok) {
+      recordUsage({ kind: 'classify', toolId, model: config.model, ok: false, startedAt, contentChars: 0, error: res.error, usage: res.usage });
+      return { ok: false, error: res.error };
+    }
+    const raw = (res.content ?? '').trim();
+    recordUsage({ kind: 'classify', toolId, model: config.model, ok: true, startedAt, contentChars: raw.length, usage: res.usage });
+    // 理由里可能出现「|」，从第三个字段起整体归为理由
+    const parts = raw.split('|');
+    const nameOut = (parts[0] ?? '').trim();
+    const PRIORITY_MAP: Record<string, BatchPriority> = { U: 'urgent', H: 'high', N: 'normal', L: 'low' };
+    const priority = PRIORITY_MAP[(parts[1] ?? '').trim().toUpperCase()] ?? 'normal';
+    const reason = parts.slice(2).join('|').trim() || '模型未给出理由';
+    // 与 classifyCategory 同一匹配口径：精确优先，其次最长名称包含，避免分类名互为子串误配
+    const hit =
+      nameOut && nameOut.toUpperCase() !== 'NONE'
+        ? (input.categories.find((c) => c.name.trim() === nameOut) ??
+          [...input.categories].sort((a, b) => b.name.length - a.name.length).find((c) => nameOut.includes(c.name)))
+        : undefined;
+    return {
+      ok: true,
+      suggestion: { categoryId: hit?.id ?? null, categoryName: hit?.name ?? null, priority, reason, historyCount: history.length },
+    };
+  },
+
+  /** T00472：计划条目 AI 评估——输出简短评估（可行性/工期合理性/风险与建议），≤60 字 */
+  /** T00763：可选 prdContext——计划关联 PRD 时自动注入，评估依据可追溯至 PRD 条目 */
+  async evaluatePlan(
+    plan: { title: string; duration_days: number; progress: number; assignee?: string | null },
+    toolId: string,
+    prdContext?: string,
+  ): Promise<{ ok: boolean; evaluation?: string; error?: string }> {
+    const { type, config } = runtimeWithModel(toolId);
+    const adapter = getAdapter(type);
+    const startedAt = Date.now();
+    const system =
+      '你是项目计划评审助手。对给定的计划任务条目给出简短评估：工期是否合理、当前进度是否匹配、主要风险与一条建议。只输出评估正文，不超过60字，不加标题或编号。';
+    const prdSuffix = prdContext ? `\n\n【PRD 需求上下文（评估依据）】\n${prdContext}` : '';
+    const user = `任务：${plan.title}
+工期（工作日）：${plan.duration_days}
+进度：${plan.progress}%
+负责人：${plan.assignee || '未指派'}${prdSuffix}`;
+    const res = await adapter.chat(system, user, config);
+    if (!res.ok) { recordUsage({ kind: 'plan-evaluate', toolId, model: config.model, ok: false, startedAt, contentChars: 0, error: res.error, usage: res.usage }); return { ok: false, error: res.error }; }
+    recordUsage({ kind: 'plan-evaluate', toolId, model: config.model, ok: true, startedAt, contentChars: res.content?.length ?? 0, usage: res.usage });
+    return { ok: true, evaluation: (res.content ?? '').trim() };
+  },
+
+  /** 供 QueueService.sendAll 使用：将单个 Job 发送到其绑定的 AI 工具 */
+  buildSender() {
+    return async (job: QueueJobRow) => {
+      const db = getDb();
+      // 队列发送同样校验模型已配置，避免未配置工具静默失败（统一走 MODEL_UNCONFIGURED 提示）
+      const { type, config } = runtimeWithModel(job.tool_id);
+      const adapter = getAdapter(type);
+      const task = TaskService.getById(job.task_id);
+      if (!task) return { ok: false, error: '任务不存在' };
+      const project = db.prepare('SELECT name, workspace_path FROM projects WHERE id = ?').get(task.project_id) as { name: string; workspace_path: string | null } | undefined;
+      // T00763：队列发送同样自动携带关联 PRD 上下文
+      const prd = resolvePrdContext({ taskId: task.id });
+      const context = {
+        taskId: task.id,
+        title: task.title,
+        description: task.description,
+        aiSummary: task.ai_summary ?? undefined,
+        projectName: project?.name ?? '',
+        prdContext: formatPrdContext(prd),
+        workspacePath: project?.workspace_path || undefined, // T00771
+      };
+      // 发送前固化上下文快照（FR4.4）
+      db.prepare('UPDATE queue_jobs SET request_payload = ? WHERE id = ?')
+        .run(QueueService.snapshotTaskContext(task, project?.name ?? ''), job.id);
+      const result = await adapter.send(context, config);
+      return { ok: result.ok, content: result.content, error: result.error };
+    };
+  },
+
+  /** 供 QueueService.submitAll 使用：异步提交单个 Job；同步工具自动回退 send（保证零回归） */
+  buildSubmitter() {
+    return async (job: QueueJobRow): Promise<SubmitResult> => {
+      const db = getDb();
+      const task = TaskService.getById(job.task_id);
+      if (!task) return { ok: false, error: '任务不存在' };
+      const project = db.prepare('SELECT name, workspace_path FROM projects WHERE id = ?').get(task.project_id) as { name: string; workspace_path: string | null } | undefined;
+      // T00763：异步提交同样自动携带关联 PRD 上下文
+      const prd = resolvePrdContext({ taskId: task.id });
+      const context = {
+        taskId: task.id,
+        title: task.title,
+        description: task.description,
+        aiSummary: task.ai_summary ?? undefined,
+        projectName: project?.name ?? '',
+        prdContext: formatPrdContext(prd),
+        workspacePath: project?.workspace_path || undefined, // T00771
+      };
+      // 与 buildSender 一致：提交前固化上下文快照，避免任务被改导致回执错位
+      db.prepare('UPDATE queue_jobs SET request_payload = ? WHERE id = ?')
+        .run(QueueService.snapshotTaskContext(task, project?.name ?? ''), job.id);
+      const { type, config } = runtimeWithModel(job.tool_id);
+      const adapter = getAdapter(type);
+      // 异步工具走 submit（受理后返回 ticket）；同步工具回退为一次 send 即时完成
+      if (typeof adapter.submit === 'function') return adapter.submit(context, config);
+      const r = await adapter.send(context, config);
+      return { ok: r.ok, content: r.content ?? undefined, error: r.error };
+    };
+  },
+
+  /** 供 QueueService.pollPending 使用：按回执标识轮询异步结果，并由各工具 timeoutMs 判定超时 */
+  buildPoller() {
+    return async (job: QueueJobRow, ticket: string): Promise<PollResult> => {
+      const { type, config } = runtimeWithModel(job.tool_id);
+      const adapter = getAdapter(type);
+      if (typeof adapter.poll !== 'function') {
+        return { status: 'timeout', error: '该工具不支持异步回执轮询' };
+      }
+      const submitted = job.submitted_at ? new Date(job.submitted_at).getTime() : Date.now();
+      const limit = config.timeoutMs ?? 60000;
+      const elapsed = Date.now() - submitted;
+      // 喂饱平台查询后：仅当仍 running 且已超时才降级为 timeout，避免短暂轮询被误判
+      let result = await adapter.poll(ticket, config);
+      if (result.status === 'success' && type === 'codebuddy-gateway') {        // T05747：B0 网关的结果只存在于 SSE 流，QueueService 的 autoComplete 只置 done 不写结论；
+        // 在这里把 Agent 最终 Markdown 落到 handle_result（再交由 pollPending 走既有 autoComplete）。
+        try {
+          const content = (result.content ?? '').trim();
+          const stamp = new Date().toISOString();
+          const body = content
+            ? `${content}\n\n---\n- 通道：codebuddy-gateway\n- 回执：\`${ticket}\`\n- 完成时间：${stamp}`
+            : `## B0 网关执行完成\n\n网关未返回文本结果。\n\n- 回执：\`${ticket}\`\n- 完成时间：${stamp}`;
+          TaskService.update(job.task_id, { handle_result: body });
+        } catch (e) {
+          logService.log('ERROR', 'ai', `B0 结果回写失败：task=${job.task_id.slice(0, 8)}，${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+      if (result.status === 'running' && elapsed > limit) {
+        result = { status: 'timeout', error: `等待结果超过 ${limit}ms，已超时` };
+      }
+      if (type === 'codebuddy-gateway' && (result.status === 'failed' || result.status === 'timeout')) {
+        // T05747：submit 已受理后的异步失败/超时，PushDispatcher 早已返回 running；
+        // 在这里把任务归位 A 就绪池（monitor_ready=1 + 清 ai_state），完成「B0 失败自动降级 A」。
+        // 只处理仍为 todo 且未归档的任务，避免把用户已手工完成/归档的任务重新拉回池子。
+        try {
+          const current = TaskService.getById(job.task_id);
+          if (current && current.status === 'todo' && !current.archived) {
+            armTaskReady(job.task_id, 'mcp');
+            const reason = result.error ?? 'B0 执行未成功';
+            logService.log('WARN', 'dispatch', JSON.stringify({
+              event: 'fallback', taskNo: current.task_no ?? current.id, channel: 'A', attempt: 2,
+              state: 'ready', from: 'B0', fallbackReason: reason, ticket,
+            }));
+            logService.log('WARN', 'ai', `B0 执行${result.status === 'timeout' ? '超时' : '失败'}，已回退 A 就绪池：task=${job.task_id.slice(0, 8)}，${reason}`);
+          }
+        } catch (e) {
+          logService.log('ERROR', 'ai', `B0 → A 回退失败：task=${job.task_id.slice(0, 8)}，${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+      return result;
+    };
+  },
+};

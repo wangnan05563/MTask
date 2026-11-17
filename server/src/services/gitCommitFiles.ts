@@ -182,7 +182,7 @@ export async function queryCommitFiles(req: CommitFilesRequest): Promise<CommitF
   if (!workspacePath) return { ...named, error: { kind: 'no-workspace', message: '未配置工作空间路径（请在项目管理中补配）' } };
 
   const repoSub = base.repoSub;
-  let repoPath = workspacePath;
+  let repoPath: string;
   try {
     repoPath = resolveRepoSubPath(workspacePath, repoSub);
   } catch (e) {

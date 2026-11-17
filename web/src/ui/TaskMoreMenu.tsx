@@ -45,12 +45,14 @@ interface Props {
   items: TaskMoreMenuItem[];
   /** 用于 aria-label 归属说明，避免多条同 label 按钮在辅助技术里无法区分 */
   taskTitle?: string;
+  /** 触发按钮悬浮提示；不同页面菜单项不同，默认用通用文案，避免写死任务页的 7 项功能 */
+  triggerTitle?: string;
 }
 
 const MENU_W = 196;
 const ROW_H = 34;
 
-export function TaskMoreMenu({ items, taskTitle }: Readonly<Props>) {
+export function TaskMoreMenu({ items, taskTitle, triggerTitle }: Readonly<Props>) {
   const visible = items.filter((it) => !it.hidden);
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
@@ -124,7 +126,7 @@ export function TaskMoreMenu({ items, taskTitle }: Readonly<Props>) {
         className="task-op"
         data-t05712="more-trigger"
         onClick={toggle}
-        title="更多操作 — 展开低频功能（创建子任务 / 文件导出 / 字体颜色 / 搁置 / 分类建议 / 修改处理结果 / 复用此任务）"
+        title={triggerTitle ?? '更多操作 — 展开低频功能'}
         aria-label={taskTitle ? `更多操作：${taskTitle}` : '更多操作'}
         aria-haspopup="menu"
         aria-expanded={open}

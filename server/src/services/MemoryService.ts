@@ -4,7 +4,7 @@ import { decideExtraction, type ExtractProjectState } from '../util/memoryExtrac
 import { checkAiReadiness } from './AiReadinessService';
 import { AIService } from './AIService'; // T04144：规则引擎的真实 askJson 通道
 import { ConfigService } from './ConfigService';
-import { EXTRACTION_SYSTEM_PROMPT, runRulesExtraction, type ExtractCandidate, type RulesOutput } from './MemoryRulesService';
+import { EXTRACTION_SYSTEM_PROMPT, runRulesExtraction, type RulesOutput } from './MemoryRulesService';
 import { v4 as uuid } from 'uuid';
 import { buildMemoryScopeWhere, type ActiveMemoryScope } from '../util/memoryScope';
 import { isMemoryType, type MemoryType } from '../util/memoryTypes';
@@ -58,7 +58,6 @@ function telemetry(taskId: string, stage: string, ok = true, error = ''): void {
  * 前置链（顺序即成本序）：幂等 → 项目级开关 → 产品绑定 → AI 就绪 → 同产品串行。
  */
 async function runExtract(taskId: string, resultText: string): Promise<void> {
-  const startedAt = Date.now();
   try {
     const db = getDb();
     const task = db.prepare('SELECT project_id, handle_result FROM tasks WHERE id = ?').get(taskId) as
@@ -118,7 +117,7 @@ async function runExtract(taskId: string, resultText: string): Promise<void> {
           );
           if (!ai.ok || !ai.data) return [];
           return (ai.data.memories ?? []).map((m, i) => ({
-            index: violations[i]?.index ?? -1, item: m as ExtractCandidate,
+            index: violations[i]?.index ?? -1, item: m,
           }));
         },
       });
@@ -200,7 +199,7 @@ export interface QueryMemoriesOptions {
 
 /** LIKE 参数转义：标签/关键字里的 % _ \ 不能当通配符，否则 '100%' 会误配全部 */
 function escapeLike(value: string): string {
-  return value.replace(/[\\%_]/g, (ch) => '\\' + ch);
+  return value.replaceAll(/[\\%_]/g, (ch) => '\\' + ch);
 }
 
 /**
@@ -277,7 +276,7 @@ export const MEMORY_CONTEXT_MAX_CHARS = 4000;
 
 /** 记忆内容进 XML 块前必须转义：否则内容里的 `</memory-context>` 可闭合块并伪装成指令（投毒面） */
 function escapeXml(value: string): string {
-  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
 
 export interface MemoryContextBlock {
@@ -354,7 +353,7 @@ export function similarMemories(
   if (terms.length) {
     try {
       // FTS5 外部内容表：按 rowid 与 memories 关联；MATCH 必须落在 memories_fts 上
-      const q = terms.map((t) => `"${t.replace(/"/g, '')}"*`).join(' OR ');
+      const q = terms.map((t) => `"${t.replaceAll('"', '')}"*`).join(' OR ');
       const rows = db.prepare(`${select} WHERE rowid IN (
           SELECT rowid FROM memories_fts WHERE memories_fts MATCH ?
         ) AND ${base} ORDER BY updated_at DESC LIMIT ?`)
@@ -363,7 +362,7 @@ export function similarMemories(
     } catch { /* FTS5 不可用/查询语法异常 → 回退 LIKE */ }
   }
   const like = `%${escapeLike(kw)}%`;
-  const rows = db.prepare(`${select} WHERE ${base} AND (title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\')
+  const rows = db.prepare(String.raw`${select} WHERE ${base} AND (title LIKE ? ESCAPE '\' OR content LIKE ? ESCAPE '\')
     ORDER BY updated_at DESC LIMIT ?`)
     .all(...where.params, ...tailParams, like, like, limit) as SimilarMemory[];
   return { source: 'like', rows };
@@ -686,7 +685,7 @@ export function buildMemoryGraph(scope: ActiveMemoryScope): MemoryGraph {
     if (members.length < 2 || members.length > GRAPH_TAG_FAN_MAX) continue;
     for (let i = 0; i < members.length; i++) {
       for (let j = i + 1; j < members.length; j++) {
-        const pair = [members[i], members[j]].sort().join('~');
+        const pair = [members[i], members[j]].sort((a, b) => a.localeCompare(b)).join('~');
         if (seenPair.has(pair)) continue;
         seenPair.add(pair);
         edges.push({ id: `e-tag-${pair}`, source: members[i], target: members[j], kind: 'tag', tag });

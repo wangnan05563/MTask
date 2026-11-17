@@ -231,10 +231,12 @@ async function consumeRunStream(ticket: string, config: ToolConfig, state: RunSt
     let ended = false;
 
     const dispatch = (): boolean => {
+      // SSE 的结束事件可能只有 `event: done` 而没有 data 行；必须在 dataLines 判空前处理，
+      // 否则会把结束事件误吞成普通 message，直到流关闭才判「未收到 completed」。
+      if (eventName === 'done') { ended = true; dataLines = []; return true; }
       if (!dataLines.length) { eventName = 'message'; return false; }
       const dataText = dataLines.join('\n');
       dataLines = [];
-      if (eventName === 'done') { ended = true; return true; }
       if (eventName === 'error') { finalize(state, 'failed', undefined, parseSseError(dataText)); ended = true; return true; }
       if (eventName === 'message' && applyRunEvent(state, dataText)) { ended = true; return true; }
       eventName = 'message';

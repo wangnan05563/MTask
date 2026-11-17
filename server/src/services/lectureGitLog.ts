@@ -157,7 +157,7 @@ export async function queryGitLog(req: GitLogRequest): Promise<GitLogResult> {
   // T04525：`repoSub` 决定「工作空间目录里的哪一个仓库」。越界与解析失败在这里收口成一句话，
   // 不回落根仓库——回落会把子仓库的提交读成「没有这些提交」，比报错更难查。
   const repoSub = (req.repoSub ?? '').trim();
-  let repoPath = workspacePath;
+  let repoPath: string;
   try {
     repoPath = resolveRepoSubPath(workspacePath, repoSub);
   } catch (e) {

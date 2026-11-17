@@ -438,6 +438,12 @@ export function PromptsPage() {
   // 记录高亮：保存/新增成功后对目标行打标记，flashAt 值变化触发行动画重放
   const [flashAt, setFlashAt] = useState<Record<string, number>>({});
   function dropReorder(targetId: string) {
+    // 复查：「全部收藏」/收藏筛选是跨分组或子集视图，服务端重排找不到对应行，必须在前端明确拒绝并提示。
+    if (isAllFav(activeCat) || viewScope === 'fav') {
+      setDragId(''); setOverId('');
+      flash(isAllFav(activeCat) ? '「全部收藏」是跨分组汇总视图，不支持拖拽排序；请先选择具体分类' : '收藏筛选视图不支持拖拽排序；请切回「全部显示」');
+      return;
+    }
     if (!dragId || dragId === targetId) { setDragId(''); setOverId(''); return; }
     const ids = sortedPrompts.map((x) => x.id); // T00494 修正：按显示顺序计算拖拽映射（此前用原始数组顺序，与界面所见不一致导致拖拽错乱）
     const from = ids.indexOf(dragId);
@@ -1097,7 +1103,7 @@ export function PromptsPage() {
               onPointerDown={startPressFor(p.id)}
               onPointerUp={endPressFor(p.id)}
               onPointerLeave={endPressRowFor(p.id)}
-              draggable={sortKey === 'manual'}
+              draggable={sortKey === 'manual' && viewScope !== 'fav' && !isAllFav(activeCat)} // 复查：收藏子集/全部收藏视图下禁用拖拽重排
               onDragStart={(e) => dragStartRow(p.id, e)}
               onDragEnd={dragEndRow}
               onDragOver={dragOverRowFor(p.id)}

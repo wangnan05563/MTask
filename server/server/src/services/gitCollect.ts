@@ -1,0 +1,2055 @@
+/**
+ * Git 只读采集引擎（六期 2.1 / PRD FR-1.1、FR-1.1a、FR-1.1b）。
+ *
+ * 三条红线在这里一次收口：
+ *  1. **只读**：子命令白名单 + 参数数组 execFile，禁 shell；位置参数与选项分开校验，
+ *     调用方无法传入 `--output=` 一类会写盘的选项（选项走本文件内的白名单表）。
+ *  2. **编码**：统一注入 `-c i18n.logOutputEncoding=utf-8`（中文 commit 不乱码）与
+ *     `-c core.quotepath=false`（中文路径不被转成 \xxX），只改本次调用，不碰用户 git 配置。
+ *  3. **行尾**：diff 固定带 `--ignore-cr-at-eol`，避免 Windows autocrlf 把未改行尾的文件整文件算进增量。
+ */
+import { execFile, spawn, type ExecFileException } from 'node:child_process';
+
+export const GIT_READONLY_SUBCOMMANDS = ['rev-parse', 'log', 'diff', 'show', 'remote', 'cat-file', 'for-each-ref'] as const;
+export type GitReadonlySubcommand = (typeof GIT_READONLY_SUBCOMMANDS)[number];
+
+export const GIT_TIMEOUT_MS = 30_000;
+export const GIT_MAX_BUFFER = 8 * 1024 * 1024;
+export const GIT_DIFF_TEXT_LIMIT = 2 * 1024 * 1024;
+/** 粘贴 patch 入口的字节上限（与讲稿流式端点 raw 30mb 同口径，FR-1.3） */
+export const LECTURE_PATCH_TEXT_LIMIT = 30 * 1024 * 1024;
+/** 空树 SHA-1：首个提交没有父提交时，用空树作为 diff 基线（只影响「首末 SHA」与时间窗的根提交情形） */
+export const GIT_EMPTY_TREE_SHA1 = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+
+/** 只对本次子进程生效的输出配置（顺序即 argv 前缀） */
+export const GIT_OUTPUT_CONFIG = [
+  '-c', 'i18n.logOutputEncoding=utf-8',
+  '-c', 'core.quotepath=false',
+] as const;
+
+/**
+ * T03345：`--format=` 取值里允许出现的字段/记录分隔符（U+001F / U+001E）。
+ *
+ * 值仍与原先逐字节一致，只是改用 fromCodePoint 拼出同一对字符，而不是在正则字面量里显式匹配控制字符
+ * （后者会被 S6324 判为缺陷；放行这两个分隔符是业务必需，不能删）。
+ */
+const FORMAT_FIELD_SEPARATORS = String.fromCodePoint(0x1f, 0x1e);
+
+/** 每个只读子命令允许的选项（白名单，防止调用方借选项写盘或改配置） */
+const ALLOWED_FLAGS: Record<GitReadonlySubcommand, RegExp[]> = {
+  // T04586：--abbrev-ref 只把 HEAD 解析成短分支名（纯输出格式，只读），供多仓库清单带当前分支
+  'rev-parse': [/^--is-inside-work-tree$/, /^--verify$/, /^--quiet$/, /^--abbrev-ref$/],
+  // T03302：Git 树取数需要 --all（全分支）、--skip/-n（懒加载分页）、--no-walk（只取点名提交）
+  // T03590：`--until` 与 `--since` 同形（日期窗口右端），字面量范围与左端一致
+  // T03345：批量摘要用 \x1f/\x1e 作字段/记录分隔符（主题里可能含空格与冒号，用 %x1f 拼串才不歧义），
+  // 故 `--format=` 的值域放行这两个控制字符——它们只来自本文件常量，调用方无从注入别的字符
+  // T03436 批次：`--raw`/`--numstat`/`-m`/`--first-parent`/`--ignore-cr-at-eol` 供 T03650 的
+  // 「N 个提交一次 git log 取文件统计」使用。全部是只读输出格式开关，不触碰工作树与索引；
+  // 与 diff 侧同名选项同形同义（diff 白名单里本来就有 --numstat/--ignore-cr-at-eol）。
+  log: [/^--oneline$/, /^--no-merges$/, new RegExp(String.raw`^--format=[%\w.:{}+\-/ ${FORMAT_FIELD_SEPARATORS}]+$`), /^-n\d{1,4}$/, /^--since=[\w:+\-. ]{1,64}$/, /^--until=[\w:+\-. ]{1,64}$/, /^--reverse$/, /^--all$/, /^--skip=\d{1,4}$/, /^--no-walk$/, /^--raw$/, /^--numstat$/, /^-m$/, /^--first-parent$/, /^--ignore-cr-at-eol$/],
+  diff: [/^--ignore-cr-at-eol$/, /^--stat$/, /^--numstat$/, /^--name-status$/, /^-U\d{1,3}$/],
+  show: [],
+  // T03390（八期 §4.1 白名单扩容，均为只读）：remote 只允许 get-url，写类子命令由位置参数首段拦下；
+  // cat-file 只允许 --batch（对象名走 stdin，不接受 --batch-command/--batch-all-objects/-e/-t 等形态）
+  remote: [],
+  'cat-file': [/^--batch$/],
+  // T04552：只为拿 refname 与指向对象（`%(*objectname)` 用于剥注解标签），无任何写/配置开关
+  'for-each-ref': [/^--format=[\w%().:*+-]+$/],
+};
+
+/**
+ * 位置参数首段白名单：只约束「子命令的子动作」形态（如 `git remote <get-url>`）。
+ * 未列出的子命令不受此表限制（原有 log/diff/show 的位置参数是版本号/路径）。
+ */
+const POSITIONAL_HEAD: Partial<Record<GitReadonlySubcommand, RegExp[]>> = {
+  remote: [/^get-url$/],
+  // cat-file 的对象名一律走 stdin，位置参数必须为空（空表 = 任何首段都拒绝）
+  'cat-file': [],
+  // T04552：三个命名空间前缀即全部合法位置参数，`--`/通配/单段 refs 一律拒绝
+  'for-each-ref': [/^refs\/(?:heads|remotes|tags)(?:\/[\w.-]+)*$/],
+};
+
+/**
+ * T03391（八期 §4.1）：`remote get-url` 在无 origin 远端时非零退出，
+ * 落到通用 `failed` 会让用户看到一行 git 原生报错而无从处置，单独归为 `no-remote`。
+ */
+const NO_REMOTE_RE = /no such remote|does not have a url configured|no remote (?:named|configured)/i;
+
+/** T04581：`git log <rev>` 在版本号不存在时的两种原生报错（bad revision / unknown revision） */
+const BAD_REVISION_RE = /bad revision|unknown revision/i;
+
+export type GitErrorKind = 'no-git' | 'not-a-repo' | 'no-remote' | 'bad-revision' | 'timeout' | 'too-large' | 'denied' | 'invalid-patch' | 'failed';
+
+export class GitCollectError extends Error {
+  readonly kind: GitErrorKind;
+
+  constructor(kind: GitErrorKind, message: string) {
+    super(message);
+    this.name = 'GitCollectError';
+    this.kind = kind;
+  }
+}
+
+export interface GitCollectOptions {
+  timeoutMs?: number;
+  maxBuffer?: number;
+  signal?: AbortSignal;
+}
+
+/**
+ * 「默认参数调用」判定：缓存与命令合流共用这一条口径。
+ * 带 signal 的请求其 abort 属于调用方自己；带自定义 timeout/maxBuffer 的请求其失败语义与默认不同
+ * （门里就靠它构造 timeout / too-large 降级）——两者都不能拿别处的结果冒充本次的结果。
+ */
+export function isCacheableGitCall(opts: GitCollectOptions): boolean {
+  return !opts.signal && opts.timeoutMs === undefined && opts.maxBuffer === undefined;
+}
+
+export interface GitRunResult {
+  stdout: string;
+  stderr: string;
+  /** 实际交给子进程的完整 argv（含本次注入的 -c），供取证与门断言 */
+  argv: string[];
+}
+
+function assertSubcommand(value: string): GitReadonlySubcommand {
+  if (!(GIT_READONLY_SUBCOMMANDS as readonly string[]).includes(value)) {
+    throw new GitCollectError('denied', `拒绝非白名单 Git 子命令「${value}」（只读集合：${GIT_READONLY_SUBCOMMANDS.join('/')}）`);
+  }
+  return value as GitReadonlySubcommand;
+}
+
+function assertFlag(subcommand: GitReadonlySubcommand, flag: string): string {
+  const allowed = ALLOWED_FLAGS[subcommand].some((re) => re.test(flag));
+  if (!allowed) throw new GitCollectError('denied', `拒绝 Git 选项「${flag}」（不在 ${subcommand} 的白名单内）`);
+  return flag;
+}
+
+function assertPositional(value: string): string {
+  // T03310：`--` 是 git 的选项/路径分隔符，尾随它可避免「形似版本号的分支名」被当成路径
+  if (value === '--') return value;
+  if (!value) throw new GitCollectError('denied', 'Git 位置参数不得为空');
+  if (value.startsWith('-')) throw new GitCollectError('denied', `拒绝以「-」开头的 Git 位置参数「${value}」（防选项注入）`);
+  if (/[\0\r\n]/.test(value)) throw new GitCollectError('denied', 'Git 位置参数含控制字符');
+  return value;
+}
+
+/** 组装并校验 argv：`git <输出配置> <子命令> <白名单选项> <位置参数…>` */
+export function buildGitArgv(subcommand: string, flags: string[], positional: string[]): string[] {
+  const cmd = assertSubcommand(subcommand);
+  const headRule = POSITIONAL_HEAD[cmd];
+  if (headRule && positional.length > 0 && !headRule.some((re) => re.test(positional[0]))) {
+    throw new GitCollectError(
+      'denied',
+      `拒绝「git ${cmd} ${positional[0]}」：${cmd} 的只读首段仅限 ${headRule.length ? headRule.map((r) => r.source).join('/') : '无位置参数'}`,
+    );
+  }
+  const safeFlags = flags.map((f) => assertFlag(cmd, f));
+  const safePos = positional.map(assertPositional);
+  return [...GIT_OUTPUT_CONFIG, cmd, ...safeFlags, ...safePos];
+}
+
+/** 分支/标签/commit/range 形状校验；`--` 与空白/控制字符一律拒绝（防参数注入） */
+export function assertSafeRevision(token: string): string {
+  if (!token || token.startsWith('-') || /[\s\0]/.test(token)) {
+    throw new GitCollectError('denied', `非法 Git 版本号「${token}」`);
+  }
+  if (!/^[\w./~^@{}:+-]+$/.test(token)) {
+    throw new GitCollectError('denied', `非法 Git 版本号字符「${token}」`);
+  }
+  return token;
+}
+
+/** 单版本号位置（base/head/首末 SHA）：不接受 `..`/`...` 区间写法 */
+export function assertSingleRevision(token: string): string {
+  const rev = assertSafeRevision(token);
+  if (rev.includes('..')) throw new GitCollectError('denied', `该区间形态要求单个版本号，不接受区间「${rev}」`);
+  return rev;
+}
+
+/** 纯日期形态（`--since`/`--until` 里需要补齐到当天零点/末刻，否则 git 按当天 12:00 解释） */
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** 时间窗起点：允许 ISO 日期与「14 days ago」类相对写法，但不含引号/分号等元字符 */
+export function assertSafeSince(value: string, what = '时间窗起点'): string {
+  const since = value.trim();
+  if (!since || since.length > 64) throw new GitCollectError('denied', `非法${what}「${value}」`);
+  if (!/^[\w:+\-. ]+$/.test(since)) throw new GitCollectError('denied', `非法${what}字符「${value}」`);
+  return since;
+}
+
+/** 仓库相对路径校验：禁止绝对路径、反斜杠与 `..` 段 */
+export function assertSafeRepoPath(rel: string): string {
+  if (!rel || rel.startsWith('/') || rel.startsWith('\\') || /^[A-Za-z]:/.test(rel) || rel.includes('\\')) {
+    throw new GitCollectError('denied', `非法仓库相对路径「${rel}」`);
+  }
+  if (rel.split('/').some((seg) => seg === '..' || seg === '')) {
+    throw new GitCollectError('denied', `非法仓库相对路径「${rel}」`);
+  }
+  return rel;
+}
+
+function stderrTextOf(e: ExecFileException): string {
+  if (typeof e.stderr === 'string') return e.stderr;
+  return e.stderr ? String(e.stderr) : '';
+}
+
+function classifyExecError(e: ExecFileException): GitCollectError {
+  const stderr = stderrTextOf(e);
+  const hay = `${stderr}\n${e.message ?? ''}`;
+  if (e.code === 'ENOENT') return new GitCollectError('no-git', '未找到 git 命令：请安装 Git，或改用「粘贴 patch」模式');
+  if (e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return new GitCollectError('too-large', 'Git 输出超过 maxBuffer，请收窄采集范围');
+  if (/not a git repository/i.test(hay)) return new GitCollectError('not-a-repo', `工作空间不是 Git 仓库：${(stderr || e.message).trim().slice(0, 200)}`);
+  // T03391：无 origin 远端时 `remote get-url` 非零退出，必须与通用 failed 区分（否则降级文案只剩 git 原生报错）
+  if (NO_REMOTE_RE.test(hay)) {
+    return new GitCollectError('no-remote', `该仓库未配置 origin 远端：${(stderr || e.message).trim().slice(0, 200)}`);
+  }
+  // T04581：分支/SHA 在当前仓库不存在（多仓库工作空间里该分支只在子仓库、或尚未 fetch）。
+  // 与通用 failed 区分：这不是「连不上服务」，而是「这个版本号在这个仓库里没有」，要给用户可处置的指引。
+  if (BAD_REVISION_RE.test(hay)) {
+    const m = /bad revision '([^']+)'/.exec(stderr) ?? /bad revision '([^']+)'/.exec(e.message ?? '');
+    const rev = m?.[1] ?? '';
+    return new GitCollectError('bad-revision', rev
+      ? `分支/版本「${rev}」在当前仓库不存在：它可能只在工作空间内的子仓库（用「多仓库选范围」按子仓库查询），或本地尚未 fetch（先 git fetch 再查）`
+      : `分支/版本在当前仓库不存在：可能只在子仓库（用「多仓库选范围」），或本地尚未 fetch`);
+  }
+  if (e.killed || e.signal === 'SIGTERM' || e.code === 'ETIMEDOUT') return new GitCollectError('timeout', 'Git 采集超时（30s），请收窄范围后重试');
+  return new GitCollectError('failed', `Git 采集失败：${(stderr || e.message).trim().slice(0, 300)}`);
+}
+
+/**
+ * M3（压测优化）：同命令合流——同一条正在执行的只读 git 命令只跑一次，后来者搭车。
+ *
+ * 一次 `git` 子进程在本机要付 0.3–1.5s 启动成本，压测里 git 专项（10 并发）P95 8,568.9ms 的主因
+ * 不是单条命令慢，而是十几个 git 同时拉起互相争 CPU/IO，还连带拖慢普通接口。
+ *
+ * 曾在此再加「进程级并发闸门（4 槽 FIFO，全量 / 只限 diff 正文两版）」，两轮同场 A/B 判负，故撤掉：
+ * 外部负载重的批次里重端点 P95 13,312→9,991ms 看似有收益，代价是轻端点被排在十秒级 diff 之后
+ * （`r_task_git` P99 1,589→2,641ms）；机器空闲的批次里只限 diff 也一样——重端点反而更差
+ * （P95 7,500→9,231ms）、轻端点照样变差（`g_git_summaries` P95 13.2→317ms）。同时在跑的 git 数
+ * 确实从均值 7.5 降到 1.4，但排队只是把等待转嫁成尾延迟，并没有减少单个请求的工作量，
+ * 所以限流不是这条路径的瓶颈解法；真正的解法是省掉重复取数（H1 缓存 + 这里的合流）。
+ *
+ * 合流不产生排队：joiner 搭的是同一趟车的剩余时间，且只有命令完全相同才有车可搭，
+ * 因此它只省掉重复 spawn，不引入新的等待路径。合流只覆盖默认参数的调用：带 signal 的请求
+ * 其 abort 属于调用方自己，不能让别的请求共享同一次执行后被一起打断；
+ * 带自定义 timeout/maxBuffer 的也不共享，避免语义漂移。
+ */
+const gitInflight = new Map<string, Promise<GitRunResult>>();
+
+/** 执行一条只读 Git 命令；所有错误统一转成带 kind 的 GitCollectError */
+export function runGitReadonly(
+  subcommand: string,
+  flags: string[],
+  positional: string[],
+  cwd: string,
+  opts: GitCollectOptions = {},
+): Promise<GitRunResult> {
+  const argv = buildGitArgv(subcommand, flags, positional);
+  const shareable = isCacheableGitCall(opts);
+  const key = shareable ? `${cwd}\u0000${argv.join('\u0000')}` : '';
+  if (shareable) {
+    const running = gitInflight.get(key);
+    if (running) return running;
+  }
+  const execOpts = {
+    cwd,
+    timeout: opts.timeoutMs ?? GIT_TIMEOUT_MS,
+    maxBuffer: opts.maxBuffer ?? GIT_MAX_BUFFER,
+    windowsHide: true,
+    encoding: 'utf8' as const,
+    ...(opts.signal ? { signal: opts.signal } : {}),
+  };
+  const run = new Promise<GitRunResult>((resolve, reject) => {
+    execFile('git', argv, execOpts, (err, stdout, stderr) => {
+      if (err) { reject(classifyExecError(err)); return; }
+      resolve({ stdout: String(stdout ?? ''), stderr: String(stderr ?? ''), argv });
+    });
+  });
+  if (shareable) {
+    gitInflight.set(key, run);
+    // 只在仍是这次执行登记的条目时清除：joiner 不该误删后来者的执行
+    const clear = () => {
+      if (gitInflight.get(key) === run) gitInflight.delete(key);
+    };
+    run.then(clear, clear);
+  }
+  return run;
+}
+
+export interface GitProbeResult {
+  /** 系统装了 git 且命令可执行 */
+  available: boolean;
+  /** 当前目录位于某个 git 工作树内 */
+  isRepo: boolean;
+  kind?: GitErrorKind;
+  detail?: string;
+}
+
+/** 可用性探测：`rev-parse --is-inside-work-tree`；未装 git 与「不是仓库」按 kind 区分 */
+export async function probeRepository(cwd: string, opts: GitCollectOptions = {}): Promise<GitProbeResult> {
+  try {
+    const r = await runGitReadonly('rev-parse', ['--is-inside-work-tree'], [], cwd, opts);
+    return { available: true, isRepo: r.stdout.trim() === 'true' };
+  } catch (e) {
+    if (!(e instanceof GitCollectError)) throw e;
+    if (e.kind === 'no-git') return { available: false, isRepo: false, kind: e.kind, detail: e.message };
+    if (e.kind === 'not-a-repo') return { available: true, isRepo: false, kind: e.kind, detail: e.message };
+    return { available: true, isRepo: false, kind: e.kind, detail: e.message };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 八期 §4.1–§4.2 扩展取数（全部只读，走同一 argv 校验通道）
+//   T03358 origin 远端 URL｜T03345 本页提交摘要批量解析｜T03346 提交文件清单
+//   T03367/T03378 cat-file --batch 批量取内容（单进程、stdin 驱动）
+// ---------------------------------------------------------------------------
+
+/**
+ * origin 远端原始 URL。返回原文（可能含 `user:token@`），
+ * 剥离凭据由消费方经 `util/gitRemote.stripUrlCredentials` 处理后再展示/打开（§3.1.3）。
+ */
+export async function collectRemoteUrl(cwd: string, opts: GitCollectOptions = {}): Promise<string> {
+  const r = await runGitReadonly('remote', [], ['get-url', 'origin'], cwd, opts);
+  const url = r.stdout.trim();
+  if (!url) throw new GitCollectError('no-remote', '该仓库未配置 origin 远端');
+  return url;
+}
+
+/** T04586：多仓库清单每项的基础 git 元数据（当前分支 / 最新提交 / origin URL）。 */
+export interface RepoBasicMeta {
+  branch: string;
+  commit: string;
+  remoteUrl: string;
+}
+
+/**
+ * T04586：读一个仓库的基础元数据，供递归仓库清单结构化返回。
+ * 空仓库（无提交）/ 无 origin 都不算失败：对应字段回空串，清单仍列出该仓库（约束 3/4）。
+ *  detached HEAD 时 --abbrev-ref 回 'HEAD'，归一为空串（无当前分支）。
+ */
+export async function collectRepoBasicMeta(cwd: string, opts: GitCollectOptions = {}): Promise<RepoBasicMeta> {
+  const read = async (flags: string[], positional: string[]): Promise<string> => {
+    try {
+      return (await runGitReadonly('rev-parse', flags, positional, cwd, opts)).stdout.trim();
+    } catch {
+      return '';
+    }
+  };
+  const [commit, rawBranch, remoteUrl] = await Promise.all([
+    read([], ['HEAD']),
+    read(['--abbrev-ref'], ['HEAD']),
+    collectRemoteUrl(cwd, opts).catch(() => ''),
+  ]);
+  return { commit, branch: rawBranch === 'HEAD' ? '' : rawBranch, remoteUrl };
+}
+
+export interface CommitSummaryRow {
+  sha: string;
+  shortSha: string;
+  author: string;
+  /** 作者时间（ISO 严格格式，`%aI`） */
+  date: string;
+  subject: string;
+  /** 指向该提交的分支/标签（`%D` 括号内拆分） */
+  refs: string[];
+  parents: string[];
+}
+
+const SUM_F = '\x1f';
+const SUM_R = '\x1e';
+const SUMMARY_FORMAT_FLAG = `--format=%H${SUM_F}%an${SUM_F}%aI${SUM_F}%s${SUM_F}%D${SUM_F}%P${SUM_R}`;
+
+function parseRefs(raw: string): string[] {
+  const inner = raw.trim().replace(/^\((.*)\)$/, '$1');
+  if (!inner) return [];
+  return inner.split(', ').map((s) => s.replace(/^HEAD -> /, '').trim()).filter(Boolean);
+}
+
+/** 解析单条摘要记录：`--format` 用 \x1f 分隔的六个字段；字段不足或 SHA 非 40 位十六进制时返回 null */
+function parseSummaryFields(line: string): CommitSummaryRow | null {
+  const f = line.split(SUM_F);
+  if (f.length < 6) return null;
+  const sha = f[0].trim();
+  if (!/^[0-9a-f]{40}$/.test(sha)) return null;
+  return {
+    sha,
+    shortSha: sha.slice(0, 7),
+    author: f[1],
+    date: f[2].trim(),
+    subject: f[3],
+    refs: parseRefs(f[4]),
+    parents: f[5].trim().split(/\s+/).filter(Boolean),
+  };
+}
+
+/** 解析 `collectCommitSummaries` 的 `--format` 原文（供单测直接断言，不依赖 git） */
+export function parseCommitSummaries(raw: string): CommitSummaryRow[] {
+  const out: CommitSummaryRow[] = [];
+  for (const chunk of raw.split(SUM_R)) {
+    const rec = parseSummaryFields(chunk.replace(/^\n/, '').split('\n', 1)[0]);
+    if (rec) out.push(rec);
+  }
+  return out;
+}
+
+export interface CommitSummariesResult {
+  commits: CommitSummaryRow[];
+  /** 不在当前仓库中的 SHA（换绑工作空间后的旧链接即落此处，§2「不静默失败」） */
+  missing: string[];
+  /** 本次真正走 git 取数的条数（缓存命中不计）——分页成本回填只认全取数的那几轮，见 collectSummaryPage */
+  fetched: number;
+}
+
+/**
+ * M3-b（#45 裁定）：按 SHA 的摘要缓存。
+ *
+ * 摘要里只有 `refs`（`%D` 的分支/标签装饰）会随仓库推进漂移，
+ * sha/shortSha/author/date/subject/parents 全部由提交对象本身决定、永不改变。
+ * 所以条目永久保留不可变字段，`refs` 过了 TTL 只在**后台**单飞刷新：
+ * 命中路径立刻返回（不让首屏/分页等一次 spawn），下一个访问点看到的才是新标签。
+ * 与 H2（Sonar 探测缓存）同一套「长 TTL + 过期后台刷新」形状。
+ */
+const SUMMARY_CACHE_MAX = 4000;
+/** 装饰名（分支/标签指向）的刷新周期：与路由层 60s 摘要缓存同口径，不引入新的时效概念 */
+export const SUMMARY_REFS_TTL_MS = 60_000;
+
+interface CachedSummary {
+  row: CommitSummaryRow;
+  /** 这份 refs 是什么时候取到的（不可变字段不受时效影响） */
+  refsAt: number;
+}
+
+const summaryCache = new Map<string, CachedSummary>();
+const summaryRefsInflight = new Map<string, Promise<void>>();
+
+const summaryKey = (cwd: string, sha: string) => `${cwd}|${sha}`;
+
+/** 缓存行对外一律给副本：调用方（路由序列化、门）改数组不该污染缓存 */
+function cloneSummary(row: CommitSummaryRow): CommitSummaryRow {
+  return { ...row, refs: [...row.refs], parents: [...row.parents] };
+}
+
+function isFullSha(token: string): boolean {
+  return /^[0-9a-f]{40}$/.test(token);
+}
+
+function readSummaryCache(cwd: string, sha: string): CommitSummaryRow | null {
+  const key = summaryKey(cwd, sha);
+  const hit = summaryCache.get(key);
+  if (!hit) return null;
+  // 命中即移到队尾（Map 迭代序即 LRU 序）
+  summaryCache.delete(key);
+  summaryCache.set(key, hit);
+  if (Date.now() - hit.refsAt > SUMMARY_REFS_TTL_MS) scheduleRefsRefresh(cwd, sha, key);
+  return cloneSummary(hit.row);
+}
+
+function writeSummaryCache(cwd: string, row: CommitSummaryRow): void {
+  const key = summaryKey(cwd, row.sha);
+  summaryCache.delete(key);
+  summaryCache.set(key, { row: cloneSummary(row), refsAt: Date.now() });
+  if (summaryCache.size > SUMMARY_CACHE_MAX) {
+    const oldest = summaryCache.keys().next().value;
+    if (oldest !== undefined) summaryCache.delete(oldest);
+  }
+}
+
+/**
+ * 过期装饰名的后台刷新：只改 `refs`，不重排缓存、不影响本次返回值。
+ * 失败就留着旧 refs（分支/标签装饰不是正确性数据），下一个 TTL 之后再试。
+ */
+function scheduleRefsRefresh(cwd: string, sha: string, key: string): void {
+  if (summaryRefsInflight.has(key)) return;
+  // 同键的下一次刷新只可能在 TTL 再次过期之后（那已是 60s 后），登记在此处无条件删除即可
+  const refreshing = fetchSummaries(cwd, [sha], {})
+    .then(({ commits }) => {
+      const fresh = commits.find((c) => c.sha === sha);
+      const hit = summaryCache.get(key);
+      if (fresh && hit && hit.row.sha === sha) {
+        hit.row.refs = fresh.refs;
+        hit.refsAt = Date.now();
+      }
+    })
+    .catch(() => { /* 后台刷新不打扰请求路径 */ })
+    .finally(() => { summaryRefsInflight.delete(key); });
+  summaryRefsInflight.set(key, refreshing);
+}
+
+/** 只读探测：该 SHA 是否已有摘要条目（不触发 LRU 提升，也不管装饰名是否过期） */
+export function peekSummaryCache(cwd: string, sha: string): boolean {
+  return summaryCache.has(summaryKey(cwd, sha));
+}
+
+/** 清空按 SHA 的摘要缓存（门与压测据此构造「冷」起点；生产路径不调用） */
+export function clearSummaryMetaCache(): void {
+  summaryCache.clear();
+}
+
+/** 摘要缓存条数（只用于门的「确实命中」判据） */
+export function summaryCacheSize(): number {
+  return summaryCache.size;
+}
+
+/**
+ * 一组 SHA 的摘要——每个 workspace 一次 `git log --no-walk`（§3.1.6，页内零逐行请求）。
+ *
+ * 任一 SHA 解析不了会让整条命令非零退出，因此失败时退化为逐个点名：
+ * 这样「工作空间换绑后旧 SHA 已不存在」能在 `missing` 里可见，而不是整页摘要消失。
+ */
+async function fetchSummaries(
+  cwd: string,
+  shas: string[],
+  opts: GitCollectOptions,
+): Promise<{ commits: CommitSummaryRow[]; missing: string[] }> {
+  try {
+    const r = await runGitReadonly('log', ['--no-walk', SUMMARY_FORMAT_FLAG], shas, cwd, opts);
+    return { commits: parseCommitSummaries(r.stdout), missing: [] };
+  } catch (e) {
+    if (!(e instanceof GitCollectError)) throw e;
+    if (['no-git', 'not-a-repo', 'timeout', 'too-large'].includes(e.kind)) throw e;
+    const commits: CommitSummaryRow[] = [];
+    const missing: string[] = [];
+    for (const sha of shas) {
+      try {
+        const one = await runGitReadonly('log', ['--no-walk', SUMMARY_FORMAT_FLAG], [sha], cwd, opts);
+        commits.push(...parseCommitSummaries(one.stdout));
+      } catch {
+        missing.push(sha);
+      }
+    }
+    return { commits, missing };
+  }
+}
+
+/**
+ * 摘要取数的唯一入口（缓存 + 取数）。
+ *
+ * 只有「全部是 40 位小写 SHA」才走缓存键：分支名/标签/短 SHA 的解析结果会随仓库推进漂移
+ * （刚新建的分支、刚 fetch 的对象名），拿缓存回复就是把它判成不存在。
+ * `--no-walk` 按命令行顺序出记录，所以缓存命中与本次取数按请求顺序合并后，
+ * 输出顺序与未加缓存时逐字节一致。
+ */
+export async function collectCommitSummaries(
+  cwd: string,
+  shas: string[],
+  opts: GitCollectOptions = {},
+): Promise<CommitSummariesResult> {
+  const uniq = [...new Set(shas)].map((s) => assertSingleRevision(s));
+  if (!uniq.length) return { commits: [], missing: [], fetched: 0 };
+  if (!isCacheableGitCall(opts) || !uniq.every(isFullSha)) {
+    const r = await fetchSummaries(cwd, uniq, opts);
+    return { ...r, fetched: uniq.length };
+  }
+  const bySha = new Map<string, CommitSummaryRow>();
+  const pending: string[] = [];
+  for (const sha of uniq) {
+    const hit = readSummaryCache(cwd, sha);
+    if (hit) bySha.set(sha, hit);
+    else pending.push(sha);
+  }
+  let missing: string[] = [];
+  if (pending.length) {
+    const res = await fetchSummaries(cwd, pending, opts);
+    for (const row of res.commits) {
+      bySha.set(row.sha, row);
+      writeSummaryCache(cwd, row);
+    }
+    missing = res.missing;
+  }
+  return {
+    commits: uniq.flatMap((sha) => {
+      const row = bySha.get(sha);
+      return row ? [row] : [];
+    }),
+    missing,
+    fetched: pending.length,
+  };
+}
+
+export type CommitFileStatus = 'A' | 'M' | 'D' | 'R' | 'T';
+
+export interface CommitFileEntry {
+  path: string;
+  /** 重命名前的路径（仅 status='R'） */
+  oldPath?: string;
+  status: CommitFileStatus;
+  /** 二进制文件为 null（git numstat 以「-」表示） */
+  additions: number | null;
+  deletions: number | null;
+  binary: boolean;
+}
+
+/**
+ * numstat 的重命名行路径是新形态 `old => new`（同目录）或 `pre{old => new}post`（有公共前后缀），
+ * 与 name-status 给的干净新路径对不上键。不接这一层的后果不是报错，而是重命名行的增删行数静默变 0
+ * ——清单看起来正常，数字却与 `git show --stat` 不一致（AC-9 对账项）。
+ */
+function renameTargets(rawPath: string): string[] {
+  if (!rawPath.includes(' => ')) return [rawPath];
+  const brace = /^(.*)\{([^}]*) => ([^}]*)\}(.*)$/.exec(rawPath);
+  if (brace) return [`${brace[1]}${brace[3]}${brace[4]}`];
+  const idx = rawPath.lastIndexOf(' => ');
+  return [rawPath.slice(idx + 4).trim()];
+}
+
+/** 解析 `diff --numstat` 行：`<add>\t<del>\t<path>`，二进制为 `-`/`-` */
+export function parseNumstat(raw: string): Map<string, { additions: number | null; deletions: number | null; binary: boolean }> {
+  const map = new Map<string, { additions: number | null; deletions: number | null; binary: boolean }>();
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    const parts = line.split('\t');
+    if (parts.length < 3) continue;
+    const [a, d, ...rest] = parts;
+    const path = rest.join('\t').trim();
+    if (!path) continue;
+    const val = {
+      additions: a === '-' ? null : Number(a) || 0,
+      deletions: d === '-' ? null : Number(d) || 0,
+      binary: a === '-' || d === '-',
+    };
+    for (const key of renameTargets(path)) map.set(key, val);
+  }
+  return map;
+}
+
+/** 解析 `diff --name-status` 行：`M<TAB>path` / `R100<TAB>old<TAB>new` */
+export function parseNameStatus(raw: string): { status: CommitFileStatus; path: string; oldPath?: string }[] {
+  const out: { status: CommitFileStatus; path: string; oldPath?: string }[] = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    const parts = line.split('\t');
+    if (parts.length < 2) continue;
+    const code = (parts[0] ?? '').replace(/\d+$/, '').toUpperCase();
+    const status: CommitFileStatus = code === 'A' || code === 'D' || code === 'R' || code === 'T' ? code as CommitFileStatus : 'M';
+    if (status === 'R') out.push({ status, oldPath: parts[1]?.trim(), path: parts[2]?.trim() ?? '' });
+    else out.push({ status, path: parts[1]?.trim() ?? '' });
+  }
+  return out.filter((e) => e.path);
+}
+
+/**
+ * 把「状态清单 + 行数表」拼成提交文件条目（单提交 `diff` 路径与 T03650 的批量 `log` 路径共用，
+ * 保证两条通道对重命名/二进制/同名去重的口径逐字节一致）。
+ */
+function assembleEntries(
+  entries: { status: CommitFileStatus; path: string; oldPath?: string }[],
+  stats: Map<string, { additions: number | null; deletions: number | null; binary: boolean }>,
+): CommitFileEntry[] {
+  const seen = new Set<string>();
+  const files: CommitFileEntry[] = [];
+  for (const e of entries) {
+    if (seen.has(e.path)) continue;
+    seen.add(e.path);
+    const s = stats.get(e.path) ?? stats.get(e.oldPath ?? '') ?? { additions: null, deletions: null, binary: false };
+    files.push({
+      path: e.path,
+      ...(e.oldPath ? { oldPath: e.oldPath } : {}),
+      status: e.status,
+      additions: s.additions,
+      deletions: s.deletions,
+      binary: s.binary,
+    });
+  }
+  return files;
+}
+
+/**
+ * 单个提交的变更文件清单（状态 + 增删行 + 二进制）。
+ *
+ * 首提交无父提交时以空树作基线（§3.2.1「初始提交」口径与讲稿侧一致）。
+ */
+export async function collectCommitFiles(
+  cwd: string,
+  sha: string,
+  parents: string[],
+  opts: GitCollectOptions = {},
+): Promise<CommitFileEntry[]> {
+  const head = assertSingleRevision(sha);
+  const base = parents.length ? assertSingleRevision(parents[0]) : GIT_EMPTY_TREE_SHA1;
+  const numArgs = [base, head, '--'];
+  const [numRaw, nameRaw] = await Promise.all([
+    runGitReadonly('diff', ['--numstat', '--ignore-cr-at-eol'], numArgs, cwd, opts).then((r) => r.stdout),
+    runGitReadonly('diff', ['--name-status', '--ignore-cr-at-eol'], numArgs, cwd, opts).then((r) => r.stdout),
+  ]);
+  return assembleEntries(parseNameStatus(nameRaw), parseNumstat(numRaw));
+}
+
+/** `--raw` 行形态：`:mode1 mode2 oldSha newSha STATUS<TAB>path[<TAB>newPath]`（重命名/复制有两个路径段） */
+const RAW_LINE_RE = /^:(\S+) (\S+) (\S+) (\S+) ([A-Z]\d*)\t(.*)$/;
+
+/**
+ * 把一行 `--raw` 折成与 `--name-status` 同形的条目。
+ * 状态归类沿用 parseNameStatus 的映射（A/D/R/T 原样，其余含 C 记为 M），两条通道才不会对口径分叉。
+ */
+function rawEntryOf(line: string): { status: CommitFileStatus; path: string; oldPath?: string } | null {
+  const m = RAW_LINE_RE.exec(line);
+  if (!m) return null;
+  const tail = m[6].split('\t').map((s) => s.trim());
+  const code = (m[5] ?? '').replace(/\d+$/, '').toUpperCase();
+  const status: CommitFileStatus = code === 'A' || code === 'D' || code === 'R' || code === 'T' ? code as CommitFileStatus : 'M';
+  if (status === 'R') return { status, oldPath: tail[0] ?? '', path: tail[1] ?? '' };
+  return { status, path: tail[0] ?? '' };
+}
+
+/**
+ * 解析一个提交在 `git log --raw --numstat` 下的 diff 正文。
+ *
+ * 两段同流输出，靠行首区分：`--raw` 行以 `:` 开头（状态与路径），其余非空行按 numstat 解析（增删行数）。
+ * 之所以用 raw 而不是 name-status：`--name-status` 与 `--numstat` 互斥（实测后者会被前者的输出格式覆盖，
+ * 只剩 `A<TAB>path`），而 `--raw` 与 `--numstat` 可以共存——这样一次进程就同时拿到状态与行数。
+ */
+export function parseCommitDiffBody(body: string): CommitFileEntry[] {
+  const entries: { status: CommitFileStatus; path: string; oldPath?: string }[] = [];
+  const numLines: string[] = [];
+  for (const line of body.split('\n')) {
+    if (!line.trim()) continue;
+    if (line.startsWith(':')) {
+      const e = rawEntryOf(line);
+      if (e) entries.push(e);
+    } else {
+      numLines.push(line);
+    }
+  }
+  return assembleEntries(entries, parseNumstat(numLines.join('\n')));
+}
+
+/**
+ * T03650：批量取多个提交的文件条目时用的 `--format`。
+ * 与 SUMMARY_FORMAT_FLAG 同一组字段，只把记录分隔符 \x1e 从**行尾挪到行首**——
+ * diff 正文总是跟在格式行之后，分隔符在行首才能把「字段行 + 正文」切成一整块，
+ * 否则父提交字段会和正文黏在一起。
+ */
+const BATCH_FILES_FORMAT_FLAG = `--format=${SUM_R}%H${SUM_F}%an${SUM_F}%aI${SUM_F}%s${SUM_F}%D${SUM_F}%P`;
+
+/** 批量取数的固定选项（供门断言 argv，也防止调用方漏掉某一个而静默改口径） */
+export const COMMIT_FILES_BATCH_FLAGS = ['--no-walk', '-m', '--first-parent', '--raw', '--numstat', '--ignore-cr-at-eol'];
+
+/** 解析一次批量 `git log` 的输出：`Map<sha, CommitFileEntry[]>`（正文为空 = 该提交确实没改动文件） */
+export function parseCommitFilesBatch(raw: string): Map<string, CommitFileEntry[]> {
+  const out = new Map<string, CommitFileEntry[]>();
+  for (const chunk of raw.split(SUM_R)) {
+    const nl = chunk.indexOf('\n');
+    if (nl < 0) continue;
+    const rec = parseSummaryFields(chunk.slice(0, nl));
+    if (!rec) continue;
+    out.set(rec.sha, parseCommitDiffBody(chunk.slice(nl + 1)));
+  }
+  return out;
+}
+
+/**
+ * N 个提交的文件清单收成**一次** `git log --no-walk -m --first-parent --raw --numstat`（T03650）。
+ *
+ * 三个开关各挡一个真实的口径坑（均在本机 git 上实测过）：
+ *  - 默认 `git log` 对**合并提交不输出任何 diff**，卡片统计会静默变 0；`-m` 才会按父提交出 diff。
+ *  - `-m` 对每个父提交各出一段（增删行数翻倍），`--first-parent` 把它压回「与第一父提交比」——
+ *    这正是单提交路径 `diff parents[0] sha` 与 `git show --stat` 的口径。
+ *  - 首提交（无父）由 git 自己按空树出全量 A 条目，与既有 `GIT_EMPTY_TREE_SHA1` 基线等价，无需特判。
+ *
+ * 命令整体失败时抛 GitCollectError 由调用方决定回退（不在此吞错），
+ * 因为「某个 SHA 不存在」与「缓冲区爆了/超时」的处置完全不同。
+ */
+export async function collectCommitFilesBatch(
+  cwd: string,
+  shas: string[],
+  opts: GitCollectOptions = {},
+): Promise<Map<string, CommitFileEntry[]>> {
+  const uniq = [...new Set(shas)].map((s) => assertSingleRevision(s));
+  if (!uniq.length) return new Map();
+  const r = await runGitReadonly('log', [...COMMIT_FILES_BATCH_FLAGS, BATCH_FILES_FORMAT_FLAG], uniq, cwd, opts);
+  return parseCommitFilesBatch(r.stdout);
+}
+
+export interface BatchObject {
+  /** 请求的对象规格（`<sha>` 或 `<sha>:<仓库相对路径>`） */
+  spec: string;
+  sha: string;
+  type: string;
+  size: number;
+  /** missing 时为 null */
+  content: Buffer | null;
+  missing: boolean;
+}
+
+/** cat-file --batch 的对象规格：纯 SHA 或 `SHA:仓库相对路径`（路径不得含 `..`/绝对路径/控制字符） */
+export function assertBatchObjectSpec(spec: string): string {
+  if (/[\0\r\n]/.test(spec)) throw new GitCollectError('denied', 'cat-file 对象规格含控制字符');
+  const m = /^([0-9a-f]{7,40}):(.+)$/.exec(spec);
+  if (m) {
+    assertSafeRepoPath(m[2]);
+    return spec;
+  }
+  if (!/^[0-9a-f]{7,40}$/.test(spec)) throw new GitCollectError('denied', `非法 cat-file 对象规格「${spec.slice(0, 80)}」`);
+  return spec;
+}
+
+/**
+ * 单进程批量取对象内容（§3.3.2 取数口径：不逐文件 spawn `git show`）。
+ * stdin 驱动、只读；`onObject` 逐个回调，便于边取边落盘而不把全量内容压在内存里。
+ */
+export function catFileBatch(
+  cwd: string,
+  specs: string[],
+  onObject: (o: BatchObject) => void,
+  opts: GitCollectOptions = {},
+): Promise<void> {
+  if (!specs.length) return Promise.resolve();
+  const safe = specs.map(assertBatchObjectSpec);
+  const argv = buildGitArgv('cat-file', ['--batch'], []);
+  return new Promise<void>((resolve, reject) => {
+    const child = spawn('git', argv, { cwd, windowsHide: true });
+    let buf = Buffer.alloc(0);
+    let stderr = '';
+    let settled = false;
+    // git 按 stdin 的写入顺序逐条输出，因此「第 n 条记录 ↔ 第 n 个请求规格」
+    let seq = 0;
+    const fail = (e: GitCollectError) => {
+      if (settled) return;
+      settled = true;
+      child.kill();
+      reject(e);
+    };
+    const timer = setTimeout(() => fail(new GitCollectError('timeout', 'Git 批量取内容超时（30s），请收窄导出范围')), opts.timeoutMs ?? GIT_TIMEOUT_MS);
+    if (opts.signal) {
+      if (opts.signal.aborted) { clearTimeout(timer); fail(new GitCollectError('timeout', '已中止')); }
+      else opts.signal.addEventListener('abort', () => { clearTimeout(timer); fail(new GitCollectError('timeout', '已中止')); }, { once: true });
+    }
+    const drain = () => {
+      for (;;) {
+        const nl = buf.indexOf(0x0a);
+        if (nl < 0) return;
+        const header = buf.subarray(0, nl).toString('utf8').trim();
+        if (!header) { buf = buf.subarray(nl + 1); continue; }
+        const parts = header.split(' ');
+        if (parts.length === 2 && parts[1] === 'missing') {
+          onObject({ spec: safe[seq++] ?? parts[0], sha: parts[0], type: 'missing', size: 0, content: null, missing: true });
+          buf = buf.subarray(nl + 1);
+          continue;
+        }
+        if (parts.length < 3 || !/^\d+$/.test(parts[2])) {
+          // 表头不合协议（例如非 blob 对象的报错行）：丢弃这一行继续，避免整批卡死
+          onObject({ spec: safe[seq++] ?? parts[0], sha: parts[0] ?? '', type: parts[1] ?? '', size: 0, content: null, missing: true });
+          buf = buf.subarray(nl + 1);
+          continue;
+        }
+        const size = Number(parts[2]);
+        const need = nl + 1 + size + 1;
+        if (buf.length < need) return; // 内容还没收全，等下一块
+        const content = buf.subarray(nl + 1, nl + 1 + size);
+        buf = buf.subarray(need);
+        onObject({ spec: safe[seq++] ?? parts[0], sha: parts[0], type: parts[1], size, content: Buffer.from(content), missing: false });
+      }
+    };
+    child.stdout.on('data', (c: Buffer) => {
+      buf = Buffer.concat([buf, c]);
+      if (buf.length > GIT_MAX_BUFFER * 64) { fail(new GitCollectError('too-large', 'Git 批量取内容超出缓冲上限，请分批导出')); return; }
+      drain();
+    });
+    child.stderr.on('data', (c: Buffer) => { stderr += c.toString('utf8'); });
+    child.on('error', (e: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
+      if (e.code === 'ENOENT') fail(new GitCollectError('no-git', '未找到 git 命令'));
+      else fail(new GitCollectError('failed', `Git 批量取内容失败：${e.message.slice(0, 200)}`));
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (settled) return;
+      if (code !== 0) {
+        if (/not a git repository/i.test(stderr)) fail(new GitCollectError('not-a-repo', '工作空间不是 Git 仓库'));
+        else fail(new GitCollectError('failed', `Git 批量取内容失败：${stderr.trim().slice(0, 200)}`));
+        return;
+      }
+      settled = true;
+      resolve();
+    });
+    child.stdin.on('error', () => { /* EPIPE：git 提前退出由 close/error 收口 */ });
+    child.stdin.write(`${safe.join('\n')}\n`);
+    child.stdin.end();
+  });
+}
+
+/** 把 cat-file 结果按请求规格对齐（missing 与非 blob 统一成 content:null） */
+export async function catFileBatchMap(cwd: string, specs: string[], opts: GitCollectOptions = {}): Promise<Map<string, BatchObject>> {
+  const ordered: BatchObject[] = [];
+  await catFileBatch(cwd, specs, (o) => ordered.push(o), opts);
+  const out = new Map<string, BatchObject>();
+  specs.forEach((spec, i) => {
+    const o = ordered[i];
+    out.set(spec, o && !o.missing ? { ...o, spec } : { spec, sha: /^([0-9a-f]{7,40})/.exec(spec)?.[1] ?? spec, type: 'missing', size: 0, content: null, missing: true });
+  });
+  return out;
+}
+
+export interface GitCommitEntry {
+  sha: string;
+  author: string;
+  /** 提交者（T03303：与 author 一起参与提交人过滤——一个过滤词命中任一字段即算命中） */
+  committer: string;
+  date: string;
+  subject: string;
+}
+
+const LOG_FORMAT = '--format=%H%x09%an%x09%cn%x09%aI%x09%s';
+
+function parseCommitLog(stdout: string): GitCommitEntry[] {
+  return stdout.split('\n').filter(Boolean).flatMap((line) => {
+    const [sha, author, committer, date, ...rest] = line.split('\t');
+    if (!sha || !author || !committer || !date) return [];
+    return [{ sha, author, committer, date, subject: rest.join('\t') }];
+  });
+}
+
+/**
+ * T03303：提交人过滤文本。
+ * 写法：`张三`（单值）｜`张三, 李四`（且：两个词都要命中，靠 author+committer 两字段互补）｜`张三 | 李四`（或）。
+ * 一个「词」命中 = 该提交的 author **或** committer 与它完全相同（去空白、忽略大小写）。
+ */
+export interface AuthorFilter {
+  /** 或关系的分组；组内每个词都必须命中（且关系） */
+  groups: string[][];
+  /** 归一后的回显文本（预检/日志用） */
+  normalized: string;
+}
+const MAX_AUTHOR_TERMS = 8;
+const MAX_AUTHOR_TERM_LEN = 64;
+
+export function parseAuthorFilter(raw: unknown): AuthorFilter | null {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== 'string') throw new GitCollectError('denied', '提交人过滤必须是字符串');
+  const text = raw.trim();
+  if (!text) return null;
+  const rawGroups = text.split(/[|｜]/).map((g) => g.split(/[,，＋+]/).map((t) => t.trim()));
+  if (rawGroups.some((g) => g.length === 0 || g.includes(''))) {
+    throw new GitCollectError('denied', `提交人过滤「${text}」含空段：请写成「张三」「张三, 李四」（且）或「张三 | 李四」（或）`);
+  }
+  const groups = rawGroups;
+  const terms = groups.flat();
+  if (terms.length > MAX_AUTHOR_TERMS) throw new GitCollectError('denied', `提交人过滤最多 ${MAX_AUTHOR_TERMS} 个词（当前 ${terms.length} 个）`);
+  for (const t of terms) {
+    if (t.length > MAX_AUTHOR_TERM_LEN) throw new GitCollectError('denied', `提交人「${t.slice(0, 12)}…」超过 ${MAX_AUTHOR_TERM_LEN} 字`);
+    if (/[\0\r\n]/.test(t)) throw new GitCollectError('denied', '提交人过滤含控制字符');
+  }
+  return { groups, normalized: groups.map((g) => g.join(', ')).join(' | ') };
+}
+
+const sameWho = (a: string, b: string): boolean => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/** 任一「或组」内全部词命中即保留（组内是且，组间是或） */
+export function commitMatchesAuthorFilter(
+  entry: Pick<GitCommitEntry, 'author' | 'committer'>,
+  filter: AuthorFilter,
+): boolean {
+  return filter.groups.some((group) => group.every((term) => sameWho(entry.author, term) || sameWho(entry.committer, term)));
+}
+
+/**
+ * 过滤只在 JS 侧做，不向 git 传 `--author/--committer`：git 对这两类选项是**且**关系
+ * （author 命中任一 --author，且 committer 命中任一 --committer），而本口径要的是「词命中 author 或 committer」，
+ * 预筛会把「author 不匹配但 committer 匹配」的提交提前丢掉（见 verify-t03303 I-04）。
+ */
+
+/** 提交清单（`git log --no-merges`）；解析失败的行原样丢弃，不阻断采集 */
+export async function collectCommitLog(
+  cwd: string,
+  range: string[],
+  opts: GitCollectOptions = {},
+  extraFlags: string[] = [],
+  authorFilter?: string | null,
+): Promise<GitCommitEntry[]> {
+  const revs = range.map(assertSafeRevision);
+  const filter = parseAuthorFilter(authorFilter);
+  const r = await runGitReadonly('log', ['--no-merges', LOG_FORMAT, ...extraFlags], [...revs, '--'], cwd, opts);
+  const entries = parseCommitLog(r.stdout);
+  return filter ? entries.filter((e) => commitMatchesAuthorFilter(e, filter)) : entries;
+}
+
+/**
+ * T03590：提交人候选——作者多选控件的选项源。
+ * 取最近 N 个提交的 author/committer 名去重，按出现次数降序（同名不同大小写按首次出现归一）；
+ * 与 `parseAuthorFilter` 的「精确匹配 author 或 committer」同口径，下拉里出现的名字一定能命中。
+ */
+export async function collectAuthorNames(
+  cwd: string,
+  opts: GitCollectOptions & { limit?: number } = {},
+): Promise<{ authors: string[]; scanned: number }> {
+  const limit = clampInt(opts.limit, 500, 1, 2000);
+  const r = await runGitReadonly('log', ['--format=%an%x09%cn', `-n${limit}`], ['--'], cwd, opts);
+  const counts = new Map<string, { name: string; count: number }>();
+  const lines = r.stdout.split('\n').filter(Boolean);
+  for (const line of lines) {
+    for (const raw of line.split('\t')) {
+      const name = raw.trim();
+      if (!name) continue;
+      const key = name.toLowerCase();
+      const hit = counts.get(key);
+      if (hit) hit.count += 1;
+      else counts.set(key, { name, count: 1 });
+    }
+  }
+  const authors = [...counts.values()]
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+    .map((e) => e.name);
+  return { authors, scanned: lines.length };
+}
+
+/** 增量统计原文（`diff --stat`，带行尾口径）；超 2MB 由调用方按 FR-1.4 截断并点名 */
+export async function collectDiffStat(cwd: string, range: string[], opts: GitCollectOptions = {}): Promise<string> {
+  const revs = range.map(assertSafeRevision);
+  const r = await runGitReadonly('diff', ['--stat', '--ignore-cr-at-eol'], [...revs, '--'], cwd, opts);
+  return r.stdout;
+}
+
+/** 增量正文（unified diff，`contextLines` 默认 3）；超 2MB 由调用方按 FR-1.4 截断并点名 */
+export async function collectDiff(cwd: string, range: string[], contextLines = 3, opts: GitCollectOptions = {}): Promise<string> {
+  if (!Number.isInteger(contextLines) || contextLines < 0 || contextLines > 100) {
+    throw new GitCollectError('denied', `非法上下文行数「${contextLines}」`);
+  }
+  const revs = range.map(assertSafeRevision);
+  const r = await runGitReadonly('diff', [`-U${contextLines}`, '--ignore-cr-at-eol'], [...revs, '--'], cwd, opts);
+  return r.stdout;
+}
+
+/** 读取某版本下的单文件内容（上下文展开用，仍属只读） */
+export async function collectFileAtRevision(
+  cwd: string,
+  revision: string,
+  relPath: string,
+  opts: GitCollectOptions = {},
+): Promise<string> {
+  const rev = assertSafeRevision(revision);
+  const rel = assertSafeRepoPath(relPath);
+  const r = await runGitReadonly('show', [], [`${rev}:${rel}`], cwd, opts);
+  return r.stdout;
+}
+
+/**
+ * T03310：把「这个引用到底存不存在」提前到拼 argv 前判。
+ * 不做这步时，写错的基线只会换来 git 的原生报错
+ * `fatal: ambiguous argument 'X..HEAD': unknown revision or path not in the working tree`，
+ * 用户分不清是分支名拼错、没 fetch、还是把标签名当成了分支。
+ */
+export async function assertResolvableCommitish(
+  cwd: string,
+  token: string,
+  role: string,
+  opts: GitCollectOptions = {},
+): Promise<string> {
+  const rev = assertSingleRevision(token);
+  try {
+    await runGitReadonly('rev-parse', ['--verify', '--quiet'], [`${rev}^{commit}`], cwd, opts);
+  } catch (e) {
+    if (!(e instanceof GitCollectError)) throw e;
+    if (e.kind === 'no-git' || e.kind === 'not-a-repo' || e.kind === 'timeout' || e.kind === 'too-large') throw e;
+    throw new GitCollectError(
+      'failed',
+      `${role}「${rev}」无法解析为提交：仓库里没有这个分支/标签/SHA。`
+      + '请核对分支大小写、远端分支是否要写成 origin/ 前缀、标签是否已 fetch（git branch -a / git tag -l 可查）。'
+      + `原始报错：${e.message.slice(0, 200)}`,
+    );
+  }
+  return rev;
+}
+
+export interface TruncatedText {
+  text: string;
+  truncated: boolean;
+  originalLength: number;
+}
+
+/**
+ * 把区间终点解析成具体 commit SHA。
+ *
+ * 锚点的 blob 复核需要一个「不随新提交漂移」的坐标：`HEAD`/分支名在下一次提交后就指向别的树，
+ * 按符号名取到的文件内容不再等于生成讲稿时看到的内容，FR-4.3 的时效声明就此失效。
+ */
+export async function resolveRevisionSha(
+  cwd: string,
+  revision: string,
+  opts: GitCollectOptions = {},
+): Promise<string> {
+  const rev = assertSingleRevision(`${revision}^{commit}`);
+  const r = await runGitReadonly('rev-parse', [], [rev], cwd, opts);
+  const sha = r.stdout.trim();
+  if (!/^[0-9a-f]{40}$/.test(sha)) {
+    throw new GitCollectError('failed', `无法把「${revision}」解析成 commit SHA：${sha.slice(0, 80)}`);
+  }
+  return sha;
+}
+
+/** 保头保尾截断（纪律同 prdContext.trimPrdContent），用于 diff 文本的 2MB 上限 */
+export function truncateDiffText(text: string, limit = GIT_DIFF_TEXT_LIMIT): TruncatedText {
+  if (text.length <= limit) return { text, truncated: false, originalLength: text.length };
+  const half = Math.floor(limit / 2);
+  return {
+    text: `${text.slice(0, half)}\n\n……（中段略去 ${text.length - limit} 字符，全文请收窄采集范围）……\n\n${text.slice(-half)}`,
+    truncated: true,
+    originalLength: text.length,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// FR-1.2 区间三形态 / FR-1.3 粘贴 patch 降级 / FR-1.4 硬边界与优先级截断
+// ---------------------------------------------------------------------------
+
+export type GitRangeShape = 'base-head' | 'first-last' | 'since' | 'commits';
+export type GitCollectionShape = GitRangeShape | 'patch';
+
+/** 调用方传入的区间描述；三形态各用其中两个字段 */
+export interface GitRangeInput {
+  shape: GitRangeShape;
+  /** base-head / first-last 的起点（分支、标签或 SHA） */
+  base?: string;
+  /** base-head / first-last 的终点；since 形态作为右端，缺省 HEAD */
+  head?: string;
+  /** since 形态的时间窗起点（ISO 日期或「14 days ago」） */
+  since?: string;
+  /** T03590：since 形态的可选时间窗右端（含）；缺省不设右界，行为与单 since 逐字节一致 */
+  until?: string;
+  /** T03303：提交人过滤（`甲`｜`甲, 乙` 且｜`甲 | 乙` 或），只筛提交清单，不改 diff 范围 */
+  authorFilter?: string;
+  /** T03302：`commits` 形态——Git 树里点选的提交 SHA（连续段自动并成区间，非连续按提交并集） */
+  commits?: string[];
+  /**
+   * T04576：`commits` 形态来自工作空间目录内的哪个仓库（相对 POSIX 路径；空/缺省 = 项目根仓库）。
+   * 采集 cwd 由调用方按此解析——子仓库的 SHA 在根仓库里不存在，按根口径采会整批判 missing。
+   */
+  repoSub?: string;
+}
+
+export interface ResolvedGitRange {
+  shape: GitRangeShape;
+  label: string;
+  /** diff 基线（根提交情形为空树 SHA） */
+  base: string;
+  head: string;
+  diffPositional: string[];
+  logPositional: string[];
+  logFlags: string[];
+  /** 时间窗内没有提交（不是错误，按空集合返回） */
+  empty: boolean;
+}
+
+export interface GitHunk {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  /** hunk 头之后的行，行首保留 diff 前缀（空格/加号/减号） */
+  lines: string[];
+}
+
+export interface GitFileChange {
+  /** 新路径；删除文件取旧路径 */
+  path: string;
+  oldPath?: string;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+  hunks: GitHunk[];
+  /** 该文件原始 unified diff 段（含 `diff --git` 头），供预算裁剪与回放 */
+  raw: string;
+  textLength: number;
+}
+
+export interface GitDiffStats {
+  files: number;
+  additions: number;
+  deletions: number;
+  commits: number;
+}
+
+export interface DiffBudgetEntry {
+  path: string;
+  textLength: number;
+  changedLines: number;
+}
+
+export interface DiffBudgetResult {
+  kept: GitFileChange[];
+  dropped: DiffBudgetEntry[];
+  /** 单文件自身即超限、只能保头保尾截断的文件 */
+  partial: DiffBudgetEntry[];
+  usedLength: number;
+  limit: number;
+  truncated: boolean;
+}
+
+export interface GitCollection {
+  source: 'git' | 'patch';
+  range: { shape: GitCollectionShape; label: string; base: string; head: string };
+  files: GitFileChange[];
+  hunks: GitHunk[];
+  commits: GitCommitEntry[];
+  stats: GitDiffStats;
+  budget: Omit<DiffBudgetResult, 'kept'>;
+  warnings: string[];
+}
+
+export interface GitCollectionOptions extends GitCollectOptions {
+  contextLines?: number;
+  diffLimit?: number;
+  /** symbol 引用次数（FR-1.4 第三优先级因子；由 T02868 装配时提供） */
+  symbolRefs?: Record<string, number>;
+}
+
+const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+/** 安全敏感路径（FR-1.4 第二优先级因子）：按路径段命中 auth/crypto/sql/exec */
+const SECURITY_PATH = /(^|[/_.-])(auth|authn|authz|crypto|sql|exec)([/_.-]|$)/i;
+
+/** 讲稿上下文装配（T02868）复用同一安全路径口径，避免优先级因子两处漂移 */
+export function isSecurityPath(path: string): boolean {
+  return SECURITY_PATH.test(path);
+}
+const FILE_TRIM_MARKER = '\n\n……（该文件 diff 超出剩余预算，已保头保尾截断）……\n\n';
+
+/** `--- a/x` / `+++ b/x` / `Binary files a/x and b/y differ` 里的路径还原 */
+function decodeDiffPath(raw: string): string | null {
+  let p = raw.trim();
+  if (!p || p === '/dev/null') return null;
+  if (p.startsWith('"') && p.endsWith('"') && p.length >= 2) {
+    p = p.slice(1, -1).replaceAll(/\\(["\\])/g, '$1');
+  }
+  const m = /^[ab]\/(.*)$/.exec(p);
+  return m ? m[1] : p;
+}
+
+type OpenFile = Omit<GitFileChange, 'raw' | 'textLength'> & {
+  rawLines: string[];
+  /** `diff --git` 头的兜底路径：仅用来补 mode-only / 无 ---+++ 的段，不直接当作已解析路径 */
+  headerOld?: string;
+  headerNew?: string;
+};
+
+/** 逐行解析的流转状态：当前段、当前 hunk 与两侧已读行数（收进对象才能拆成模块级小函数） */
+interface DiffParseState {
+  files: GitFileChange[];
+  cur: OpenFile | null;
+  hunk: GitHunk | null;
+  oldSeen: number;
+  newSeen: number;
+}
+
+const DIFF_GIT_PATH_RE = /^a\/(.+?) b\/(.+)$/;
+const BINARY_FILES_RE = /^Binary files (.+) and (.+) differ$/;
+const RENAME_FROM_RE = /^rename from (.+)$/;
+const RENAME_TO_RE = /^rename to (.+)$/;
+
+/** 收尾当前段：去掉尾部空行、拼 raw；路径按「显式解析 → 段头兜底」优先取 */
+function flushOpenFile(st: DiffParseState): void {
+  const f = st.cur;
+  if (!f) return;
+  while (f.rawLines.length > 0 && f.rawLines.at(-1) === '') f.rawLines.pop();
+  const { rawLines, headerOld, headerNew, ...rest } = f;
+  const raw = rawLines.join('\n');
+  const path = rest.path || rest.oldPath || headerNew || headerOld || '';
+  if (path) st.files.push({ ...rest, path, raw, textLength: raw.length });
+  st.cur = null;
+}
+
+/** 开新段（先收尾上一段），hunk 与两侧计数一并归零 */
+function startFile(st: DiffParseState, firstLine: string): OpenFile {
+  flushOpenFile(st);
+  const f: OpenFile = { path: '', additions: 0, deletions: 0, binary: false, hunks: [], rawLines: [firstLine] };
+  st.cur = f;
+  st.hunk = null;
+  st.oldSeen = 0;
+  st.newSeen = 0;
+  return f;
+}
+
+/** `diff --git a/x b/x`：开段并记下两侧兜底路径 */
+function startDiffGitFile(st: DiffParseState, line: string): void {
+  const f = startFile(st, line);
+  const m = DIFF_GIT_PATH_RE.exec(line.slice('diff --git '.length));
+  if (!m) return;
+  const oldPath = decodeDiffPath(m[1]);
+  const newPath = decodeDiffPath(m[2]);
+  if (oldPath) f.headerOld = oldPath;
+  if (newPath) f.headerNew = newPath;
+}
+
+/** `--- a/x` / `+++ b/x` 路径行；命中返回 true */
+function applyUnifiedPathLine(f: OpenFile, line: string): boolean {
+  if (line.startsWith('--- ')) {
+    const p = decodeDiffPath(line.slice(4));
+    if (p) f.oldPath = p;
+    return true;
+  }
+  if (line.startsWith('+++ ')) {
+    const p = decodeDiffPath(line.slice(4));
+    if (p) f.path = p;
+    return true;
+  }
+  return false;
+}
+
+/** 二进制标记：`GIT binary patch` 与 `Binary files a/x and b/y differ`；命中返回 true */
+function applyBinaryMarker(f: OpenFile, line: string): boolean {
+  if (line === 'GIT binary patch') { f.binary = true; return true; }
+  const bin = BINARY_FILES_RE.exec(line);
+  if (!bin) return false;
+  f.binary = true;
+  const oldPath = decodeDiffPath(bin[1]);
+  const newPath = decodeDiffPath(bin[2]);
+  if (oldPath) f.oldPath = oldPath;
+  if (newPath) f.path = newPath;
+  return true;
+}
+
+/** `rename from/to` 行；命中返回 true */
+function applyRenameLine(f: OpenFile, line: string): boolean {
+  const from = RENAME_FROM_RE.exec(line);
+  if (from) { f.oldPath = from[1].trim(); return true; }
+  const to = RENAME_TO_RE.exec(line);
+  if (to) { f.path = to[1].trim(); return true; }
+  return false;
+}
+
+/** `@@ -a,b +c,d @@`：开 hunk 并把两侧已读行数归零；不是 hunk 头返回 false */
+function openHunk(st: DiffParseState, f: OpenFile, line: string): boolean {
+  const header = HUNK_HEADER.exec(line);
+  if (!header) return false;
+  const h: GitHunk = {
+    oldStart: Number(header[1]),
+    oldLines: header[2] === undefined ? 1 : Number(header[2]),
+    newStart: Number(header[3]),
+    newLines: header[4] === undefined ? 1 : Number(header[4]),
+    lines: [],
+  };
+  st.hunk = h;
+  f.hunks.push(h);
+  st.oldSeen = 0;
+  st.newSeen = 0;
+  return true;
+}
+
+/** hunk 内的增/删/上下文行：计数、收行，读满两侧行数即收 hunk（`\ No newline` 等标记不计数） */
+function consumeHunkLine(st: DiffParseState, f: OpenFile, line: string): void {
+  const h = st.hunk;
+  if (!h) return;
+  const lead = line.charAt(0);
+  if (lead === '+') { f.additions += 1; h.lines.push(line); st.newSeen += 1; }
+  else if (lead === '-') { f.deletions += 1; h.lines.push(line); st.oldSeen += 1; }
+  else if (lead === ' ') { h.lines.push(line); st.oldSeen += 1; st.newSeen += 1; }
+  else return;
+  if (st.oldSeen >= h.oldLines && st.newSeen >= h.newLines) st.hunk = null;
+}
+
+/** 单行分派：段头 → 路径/二进制/改名 → hunk 头 → hunk 内容 */
+function parseDiffLine(st: DiffParseState, line: string): void {
+  if (line.startsWith('diff --git ')) { startDiffGitFile(st, line); return; }
+  const open = st.cur;
+  // 兼容 `diff -u` / 去掉 `diff --git` 头的裸 patch：`---` 起新段
+  if (!st.hunk && open && open.path && line.startsWith('--- ')) {
+    applyUnifiedPathLine(startFile(st, line), line);
+    return;
+  }
+  const f = st.cur;
+  if (!f) {
+    if (line.startsWith('--- ')) applyUnifiedPathLine(startFile(st, line), line);
+    return;
+  }
+  f.rawLines.push(line);
+  if (applyBinaryMarker(f, line)) return;
+  if (!st.hunk && (applyRenameLine(f, line) || applyUnifiedPathLine(f, line))) return;
+  if (openHunk(st, f, line)) return;
+  consumeHunkLine(st, f, line);
+}
+
+/**
+ * 解析 unified diff（`git diff -U<n>` / 粘贴 patch 共用）。
+ * 只认 `diff --git` 分段与 `@@` hunk 头；hunk 内的 `---` 是删除行，不会被误当文件头。
+ */
+export function parseUnifiedDiff(text: string): GitFileChange[] {
+  const st: DiffParseState = { files: [], cur: null, hunk: null, oldSeen: 0, newSeen: 0 };
+  for (const line of text.replaceAll('\r\n', '\n').split('\n')) parseDiffLine(st, line);
+  flushOpenFile(st);
+  return st.files;
+}
+
+/** 单文件自身即超限时的保头保尾裁剪（长度严格不超过 limit） */
+function trimFileText(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  if (limit <= FILE_TRIM_MARKER.length) return text.slice(0, limit);
+  const half = Math.floor((limit - FILE_TRIM_MARKER.length) / 2);
+  const tail = limit - FILE_TRIM_MARKER.length - half;
+  return `${text.slice(0, half)}${FILE_TRIM_MARKER}${text.slice(-tail)}`;
+}
+
+/**
+ * FR-1.4 优先级截断：变更行数多者优先 → 安全敏感路径优先 → symbol 引用多者优先；
+ * 被丢弃 / 被截断的文件逐一点名，供预检（FR-7.1）与两条路选择（FR-7.2）展示。
+ */
+export function applyDiffBudget(
+  files: GitFileChange[],
+  limit = GIT_DIFF_TEXT_LIMIT,
+  symbolRefs: Record<string, number> = {},
+): DiffBudgetResult {
+  if (!Number.isInteger(limit) || limit <= 0) throw new GitCollectError('denied', `非法 diff 预算上限「${limit}」`);
+  const total = files.reduce((sum, f) => sum + f.textLength, 0);
+  const base = { dropped: [] as DiffBudgetEntry[], partial: [] as DiffBudgetEntry[], limit };
+  if (total <= limit) return { ...base, kept: files, usedLength: total, truncated: false };
+
+  const rank = (f: GitFileChange) => ({
+    changedLines: f.additions + f.deletions,
+    security: SECURITY_PATH.test(f.path) ? 1 : 0,
+    refs: symbolRefs[f.path] ?? 0,
+  });
+  const sorted = [...files].sort((a, b) => {
+    const ra = rank(a);
+    const rb = rank(b);
+    return rb.changedLines - ra.changedLines || rb.security - ra.security || rb.refs - ra.refs || a.path.localeCompare(b.path);
+  });
+
+  const keep = new Set<GitFileChange>();
+  const replace = new Map<GitFileChange, GitFileChange>();
+  const dropped: DiffBudgetEntry[] = [];
+  const partial: DiffBudgetEntry[] = [];
+  let used = 0;
+  for (const f of sorted) {
+    const entry = { path: f.path, textLength: f.textLength, changedLines: f.additions + f.deletions };
+    if (used + f.textLength <= limit) {
+      keep.add(f);
+      used += f.textLength;
+      continue;
+    }
+    if (used === 0) {
+      const text = trimFileText(f.raw, limit);
+      keep.add(f);
+      replace.set(f, { ...f, raw: text, textLength: text.length });
+      partial.push(entry);
+      used = text.length;
+      continue;
+    }
+    dropped.push(entry);
+  }
+  const kept = files.filter((f) => keep.has(f)).map((f) => replace.get(f) ?? f);
+  return { kept, dropped, partial, usedLength: used, limit, truncated: true };
+}
+
+function nameList(entries: DiffBudgetEntry[], max = 8): string {
+  const names = entries.slice(0, max).map((e) => e.path);
+  return entries.length > max ? `${names.join('、')} 等 ${entries.length} 个` : names.join('、');
+}
+
+function emptyStats(commits = 0): GitDiffStats {
+  return { files: 0, additions: 0, deletions: 0, commits };
+}
+
+function buildCollection(
+  raw: string,
+  commits: GitCommitEntry[],
+  range: GitCollection['range'],
+  source: GitCollection['source'],
+  opts: GitCollectionOptions,
+): GitCollection {
+  return finalizeCollection(parseUnifiedDiff(raw), commits, range, source, opts);
+}
+
+/** 预算 + 统计 + 告警收口（区间采集与「多选提交并集」共用，避免两套口径） */
+function finalizeCollection(
+  files: GitFileChange[],
+  commits: GitCommitEntry[],
+  range: GitCollection['range'],
+  source: GitCollection['source'],
+  opts: GitCollectionOptions,
+): GitCollection {
+  const budget = applyDiffBudget(files, opts.diffLimit ?? GIT_DIFF_TEXT_LIMIT, opts.symbolRefs);
+  const warnings: string[] = [];
+  const totalLength = files.reduce((sum, f) => sum + f.textLength, 0);
+  if (budget.truncated) {
+    warnings.push(`diff 文本 ${totalLength} 字符超过单仓上限 ${budget.limit}，已按优先级丢弃 ${budget.dropped.length} 个文件：${nameList(budget.dropped)}`);
+    if (budget.partial.length > 0) warnings.push(`单文件超出剩余预算，已保头保尾截断：${nameList(budget.partial)}`);
+  }
+  if (files.length === 0) warnings.push('区间内无文件变更');
+  return {
+    source,
+    range,
+    files: budget.kept,
+    hunks: budget.kept.flatMap((f) => f.hunks),
+    commits,
+    stats: {
+      files: files.length,
+      additions: files.reduce((sum, f) => sum + f.additions, 0),
+      deletions: files.reduce((sum, f) => sum + f.deletions, 0),
+      commits: commits.length,
+    },
+    budget: { dropped: budget.dropped, partial: budget.partial, usedLength: budget.usedLength, limit: budget.limit, truncated: budget.truncated },
+    warnings,
+  };
+}
+
+/** 取某提交的第一父提交（首末 SHA 形态需要「首」的前一站作为 diff 基线） */
+async function resolveFirstParent(cwd: string, revision: string, opts: GitCollectOptions): Promise<string | null> {
+  const r = await runGitReadonly('log', ['--format=%H%x09%P', '-n1'], [revision], cwd, opts);
+  const line = r.stdout.split('\n').find(Boolean);
+  if (!line) throw new GitCollectError('failed', `无法解析版本「${revision}」的提交信息`);
+  const [, parents = ''] = line.split('\t');
+  return parents.trim().split(' ').find(Boolean) ?? null;
+}
+
+/**
+ * T03590：时间窗归一成「窗口内最新/最旧提交」——有 until 时 diff 必须止于窗口最新提交，
+ * 否则会把右端之后的改动也算进来。窗口为空返回 null。
+ */
+async function resolveSinceWindow(
+  cwd: string,
+  flags: string[],
+  head: string,
+  opts: GitCollectOptions,
+): Promise<{ newest: SinceCommit; oldest: SinceCommit } | null> {
+  const r = await runGitReadonly('log', [...flags, '--format=%H%x09%P'], [head], cwd, opts);
+  const lines = r.stdout.split('\n').filter(Boolean);
+  const parse = (line: string): SinceCommit => {
+    const [sha, parents = ''] = line.split('\t');
+    return { sha, parent: parents.trim().split(' ').find(Boolean) ?? null };
+  };
+  const newest = lines[0];
+  const oldest = lines.at(-1);
+  if (!newest || !oldest) return null;
+  return { newest: parse(newest), oldest: parse(oldest) };
+}
+
+interface SinceCommit {
+  sha: string;
+  parent: string | null;
+}
+
+/** base-head：两端口径一致，diff 与 log 都用 `base..head` */
+async function resolveBaseHeadRange(
+  cwd: string,
+  input: GitRangeInput,
+  opts: GitCollectOptions,
+): Promise<ResolvedGitRange> {
+  if (!input.base) throw new GitCollectError('denied', 'base-head 形态需要 base（分支/标签/SHA）');
+  const base = await assertResolvableCommitish(cwd, input.base, '基线版本', opts);
+  const head = await assertResolvableCommitish(cwd, input.head ?? 'HEAD', '目标版本', opts);
+  return {
+    shape: 'base-head',
+    label: `${base}..${head}`,
+    base,
+    head,
+    diffPositional: [base, head],
+    logPositional: [`${base}..${head}`],
+    logFlags: [],
+    empty: false,
+  };
+}
+
+/** first-last：diff 基线取「首个提交的父」，根提交没有父则用空树 */
+async function resolveFirstLastRange(
+  cwd: string,
+  input: GitRangeInput,
+  opts: GitCollectOptions,
+): Promise<ResolvedGitRange> {
+  if (!input.base || !input.head) throw new GitCollectError('denied', '首末 SHA 形态需要两个版本号');
+  const first = await assertResolvableCommitish(cwd, input.base, '首个提交', opts);
+  const last = await assertResolvableCommitish(cwd, input.head, '末个提交', opts);
+  const parent = await resolveFirstParent(cwd, first, opts);
+  const base = parent ?? GIT_EMPTY_TREE_SHA1;
+  return {
+    shape: 'first-last',
+    label: `${first}..${last}`,
+    base,
+    head: last,
+    diffPositional: [base, last],
+    // 根提交没有父：整段历史到 last 即为「含首」的区间
+    logPositional: parent ? [`${base}..${last}`] : [last],
+    logFlags: [],
+    empty: false,
+  };
+}
+
+/** since：把时间窗换算成可 diff 的基线（T03590：有右端时终点钉成窗口最新提交） */
+async function resolveSinceRange(
+  cwd: string,
+  input: GitRangeInput,
+  opts: GitCollectOptions,
+): Promise<ResolvedGitRange> {
+  if (!input.since) throw new GitCollectError('denied', '时间窗形态需要 since 起点');
+  const sinceRaw = assertSafeSince(input.since);
+  const untilRaw = input.until ? assertSafeSince(input.until, '时间窗截止') : '';
+  // T03590：有右端时是「日期范围」语义——git 把纯日期当成当天 12:00（approxidate 默认），
+  // 不补齐会漏掉起始日上午 / 截止日下午的提交。单 since 保持原样，与改造前逐字节一致。
+  const since = untilRaw && DATE_ONLY_RE.test(sinceRaw) ? `${sinceRaw} 00:00:00` : sinceRaw;
+  const until = untilRaw && DATE_ONLY_RE.test(untilRaw) ? `${untilRaw} 23:59:59` : untilRaw;
+  const head = await assertResolvableCommitish(cwd, input.head ?? 'HEAD', '目标版本', opts);
+  const label = until ? `${since} ~ ${until}` : `自 ${since}`;
+  const logFlags = until ? [`--since=${since}`, `--until=${until}`] : [`--since=${since}`];
+  const win = await resolveSinceWindow(cwd, logFlags, head, opts);
+  if (!win) {
+    return { shape: 'since', label, base: '', head, diffPositional: [], logPositional: [], logFlags: [], empty: true };
+  }
+  const base = win.oldest.parent ?? GIT_EMPTY_TREE_SHA1;
+  // 无右端时终点仍是原来的 head 写法（分支名/HEAD），保证与 T03590 之前逐字节一致；
+  // 有右端才钉成窗口最新提交，避免 diff 越过 until
+  const end = until ? win.newest.sha : head;
+  return {
+    shape: 'since',
+    label,
+    base,
+    head: end,
+    diffPositional: [base, end],
+    // 位置参数留给原 head（分支/标签名），窗口筛选交给 logFlags
+    logPositional: [head],
+    logFlags,
+    empty: false,
+  };
+}
+
+/** 三形态归一：产出 diff 与 log 各自的位置参数，并把「时间窗/首末 SHA」换算成可 diff 的基线 */
+export async function resolveGitRange(
+  cwd: string,
+  input: GitRangeInput,
+  opts: GitCollectOptions = {},
+): Promise<ResolvedGitRange> {
+  switch (input.shape) {
+    case 'base-head':
+      return resolveBaseHeadRange(cwd, input, opts);
+    case 'first-last':
+      return resolveFirstLastRange(cwd, input, opts);
+    case 'since':
+      return resolveSinceRange(cwd, input, opts);
+    case 'commits':
+      // T03302：多选提交没有「一对版本号」的区间可言，走 collectCommitsUnion 的并集采集
+      throw new GitCollectError('denied', 'commits 形态不按版本号区间解析，请走 collectCommitsUnion');
+    default: {
+      const shape: never = input.shape;
+      throw new GitCollectError('denied', `未知区间形态「${String(shape)}」`);
+    }
+  }
+}
+
+/** 三形态统一采集入口：`{ files[], hunks[], commits[], stats }` + 预算截断结果 */
+export async function collectGitRange(
+  cwd: string,
+  input: GitRangeInput,
+  opts: GitCollectionOptions = {},
+): Promise<GitCollection> {
+  if (input.shape === 'commits') return collectCommitsUnion(cwd, input.commits ?? [], opts);
+  const resolved = await resolveGitRange(cwd, input, opts);
+  const range: GitCollection['range'] = { shape: resolved.shape, label: resolved.label, base: resolved.base, head: resolved.head };
+  if (resolved.empty) {
+    return {
+      source: 'git',
+      range,
+      files: [],
+      hunks: [],
+      commits: [],
+      stats: emptyStats(),
+      budget: { dropped: [], partial: [], usedLength: 0, limit: opts.diffLimit ?? GIT_DIFF_TEXT_LIMIT, truncated: false },
+      warnings: [`时间窗「${resolved.label}」内无提交：请放宽区间或改用其他形态`],
+    };
+  }
+  const commits = await collectCommitLog(cwd, resolved.logPositional, opts, resolved.logFlags, input.authorFilter);
+  const raw = await collectDiff(cwd, resolved.diffPositional, opts.contextLines ?? 3, opts);
+  return buildCollection(raw, commits, range, 'git', opts);
+}
+
+/** 无 git / 非仓库时的降级判定：卡片据此显式提示并切「粘贴 patch」 */
+export interface CollectionModeDecision {
+  mode: 'git' | 'patch';
+  probe: GitProbeResult;
+  reason?: string;
+}
+
+export async function resolveCollectionMode(cwd: string, opts: GitCollectOptions = {}): Promise<CollectionModeDecision> {
+  const probe = await probeRepository(cwd, opts);
+  if (probe.available && probe.isRepo) return { mode: 'git', probe };
+  let reason: string;
+  if (!probe.available) reason = '未找到 git 命令：请安装 Git，或改用「粘贴 patch」模式';
+  else if (probe.kind === 'not-a-repo') reason = '工作空间不是 Git 仓库：请初始化仓库，或改用「粘贴 patch」模式';
+  else reason = `Git 采集不可用（${probe.kind ?? 'unknown'}）：${probe.detail ?? ''} 请改用「粘贴 patch」模式`;
+  return { mode: 'patch', probe, reason };
+}
+
+/** 粘贴 patch：接受 unified diff 全文（上限同讲稿端点 raw 30mb），解析结果与 Git 采集同形 */
+export function collectPatchRange(
+  patchText: string,
+  opts: { diffLimit?: number; symbolRefs?: Record<string, number> } = {},
+): GitCollection {
+  const text = patchText.startsWith('\uFEFF') ? patchText.slice(1) : patchText;
+  if (Buffer.byteLength(text, 'utf8') > LECTURE_PATCH_TEXT_LIMIT) {
+    throw new GitCollectError('too-large', `粘贴 patch 超过 ${LECTURE_PATCH_TEXT_LIMIT / (1024 * 1024)}MB 上限，请分次评审或收窄范围`);
+  }
+  if (!text.trim()) throw new GitCollectError('invalid-patch', '粘贴内容为空：请粘贴 git diff 输出的 unified diff 全文');
+  if (!/^diff --git /m.test(text) && !/^--- .+\n\+\+\+ /m.test(text)) {
+    throw new GitCollectError('invalid-patch', '未识别到 unified diff：请粘贴 git diff 输出（应以 diff --git 开头）');
+  }
+  return buildCollection(text, [], { shape: 'patch', label: '粘贴 patch', base: '', head: '' }, 'patch', opts);
+}
+
+// ---------------------------------------------------------------------------
+// T03302：Git 树取数（IDEA 风格日志视图）+「多选提交」并集采集
+//
+// 弹窗要的是一条能懒加载、带分支/标签装饰、带 parents（画车道用）的提交清单，
+// 以及「用户点的不一定是连续段」时怎么把它变成 diff。口径统一成
+// **每个选中提交相对其第一父提交的增量之并集**（与 `git log -p`、IDEA 的显示一致），
+// 连续段自动并成一次区间 diff，省掉逐条 spawn。
+// ---------------------------------------------------------------------------
+
+/** Git 树一页最多多少条（再大 DOM 与 git 输出都不划算） */
+export const GIT_GRAPH_MAX_PAGE = 500;
+export const GIT_GRAPH_DEFAULT_PAGE = 100;
+/** 搜索态一次扫描的提交窗口上限：过滤在 JS 侧做，超窗要如实提示「只在最近 N 条里搜」 */
+export const GIT_GRAPH_SEARCH_SCAN = 1000;
+/** 一次评审最多点选多少个提交 */
+export const MAX_SELECTED_COMMITS = 200;
+
+export interface GitRefName {
+  type: 'branch' | 'remote' | 'tag';
+  name: string;
+}
+
+export interface GitGraphEntry {
+  sha: string;
+  /** 父提交 SHA（车道布局与并集基线都靠它；空数组 = 根提交） */
+  parents: string[];
+  refs: GitRefName[];
+  /** 该提交是否 HEAD 所指 */
+  head: boolean;
+  author: string;
+  committer: string;
+  date: string;
+  subject: string;
+}
+
+/** `%D` 只有装饰名；这里额外带 %cn，让并集采集能直接产出 GitCommitEntry */
+const GRAPH_FORMAT = '--format=%H%x09%P%x09%D%x09%an%x09%cn%x09%aI%x09%s';
+
+/**
+ * T04552：`%D` 只用来判断「这个提交是不是 HEAD 所指」。
+ *
+ * 旧实现按「名字里有没有斜杠」猜类型，把本地分支 `release/2.3` 标成 remote，前端只能靠
+ * 「削掉首段后是否真有其名」反推。类型改由 `collectRefTypes` 按真实 refname 前缀定性，
+ * 这里不再从装饰文本产出任何 ref。
+ */
+function decorateHasHead(raw: string): boolean {
+  return raw.split(',').some((token) => token.trim().startsWith('HEAD'));
+}
+
+/** for-each-ref 三列：完整 refname、指向对象、剥壳对象（注解标签剥壳后才落在提交上） */
+const REF_LIST_FORMAT = '--format=%(refname)%09%(objectname)%09%(*objectname)';
+
+/**
+ * T04552：把 `refs/heads|remotes|tags` 的真实类型按**指向的提交 SHA** 索引。
+ *
+ * 按 SHA 而不是按名字索引，是因为「同名但不同命名空间」正是这一单的病根：
+ * 本地 `release/2.3`（`refs/heads/`）与远端跟踪引用 `origin/release/2.3`（`refs/remotes/`）
+ * 同时存在时，两个 ref 必须各自保留、类型分别为 branch / remote；而一条**字面名叫 `origin/x`**
+ * 的本地分支（`refs/heads/origin/x`）也只能由前缀定性，名字本身绝不参与推断。
+ *
+ * 注解标签的 `%(objectname)` 是标签对象，`%(*objectname)` 才是它指向的对象；轻量标签剥壳列为空。
+ */
+export function parseRefNameList(stdout: string): Map<string, GitRefName[]> {
+  const bySha = new Map<string, GitRefName[]>();
+  for (const line of stdout.split('\n')) {
+    if (!line) continue;
+    const [refname, objectname = '', peeled = ''] = line.split('\t');
+    const sha = (peeled || objectname).trim().toLowerCase();
+    if (!/^[0-9a-f]{40}$/.test(sha)) continue;
+    let type: GitRefName['type'];
+    let name: string;
+    if (refname.startsWith('refs/heads/')) { type = 'branch'; name = refname.slice(11); }
+    else if (refname.startsWith('refs/remotes/')) { type = 'remote'; name = refname.slice(13); }
+    else if (refname.startsWith('refs/tags/')) { type = 'tag'; name = refname.slice(10); }
+    else continue;
+    if (!name) continue;
+    const list = bySha.get(sha);
+    if (list) list.push({ type, name });
+    else bySha.set(sha, [{ type, name }]);
+  }
+  return bySha;
+}
+
+/** 一次 `for-each-ref` 取齐三类引用；只扫这三个命名空间，refs/notes 之类不参与展示 */
+async function collectRefTypes(cwd: string, opts: GitCollectOptions): Promise<Map<string, GitRefName[]>> {
+  const r = await runGitReadonly('for-each-ref', [REF_LIST_FORMAT], ['refs/heads', 'refs/remotes', 'refs/tags'], cwd, opts);
+  return parseRefNameList(r.stdout);
+}
+
+/**
+ * T04883：独立的**全量引用清单**，不走 `git log --all` 的提交窗口。
+ *
+ * 旧实现在 `/git/log` 首页用 `collectGitGraph({ all: true, limit: GIT_GRAPH_MAX_PAGE })` 的
+ * 提交装饰聚合 refs：只有指向窗口内那几百条提交的引用才会出现。久未更新、或在子仓库里
+ * 单独存在的分支，其 tip 落在窗口之外，于是分组视图和起点分支候选都「查不到这条分支」。
+ * `for-each-ref` 一次取齐 heads/remotes/tags 三个命名空间，与提交窗口大小无关，也少跑一次全量 log。
+ */
+export async function collectAllRefNames(cwd: string, opts: GitCollectOptions = {}): Promise<GitRefName[]> {
+  const bySha = await collectRefTypes(cwd, opts);
+  const seen = new Set<string>();
+  const out: GitRefName[] = [];
+  for (const list of bySha.values()) {
+    for (const ref of list) {
+      const key = `${ref.type}:${ref.name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(ref);
+    }
+  }
+  // 与旧 `collectRefNames` 的展示顺序一致（类型 → 名称），避免分组/候选列表顺序抖动
+  return out.sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name));
+}
+
+function parseGraphLog(stdout: string): GitGraphEntry[] {
+  const out: GitGraphEntry[] = [];
+  for (const line of stdout.split('\n')) {
+    if (!line) continue;
+    const [sha, parents = '', decorate = '', author = '', committer = '', date = '', ...rest] = line.split('\t');
+    if (!/^[0-9a-f]{40}$/.test(sha) || !date) continue;
+    out.push({ sha, parents: parents.trim().split(' ').filter(Boolean), refs: [], head: decorateHasHead(decorate), author, committer, date, subject: rest.join('\t') });
+  }
+  return out;
+}
+
+export interface GitGraphQuery {
+  /** 起点版本（分支/标签/SHA），缺省 HEAD；`all=true` 时忽略 */
+  head?: string;
+  /** true = 全部分支（`--all`），此时 head 无意义 */
+  all?: boolean;
+  /** 懒加载偏移（0–9999） */
+  skip?: number;
+  /** 本页条数（1–500） */
+  limit?: number;
+  /** 关键词：在 JS 侧对小标题/SHA/作者做子串过滤，不向 git 传 --grep */
+  search?: string;
+}
+
+export interface GitGraphPage {
+  commits: GitGraphEntry[];
+  hasMore: boolean;
+  skip: number;
+  limit: number;
+  /** 本次实际扫描的提交数；搜索态下命中只来自这个窗口 */
+  scanned: number;
+  scanTruncated: boolean;
+}
+
+function clampInt(value: unknown, fallback: number, min: number, max: number): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(n)));
+}
+
+function matchesSearch(e: GitGraphEntry, needle: string): boolean {
+  return e.subject.toLowerCase().includes(needle) || e.sha.startsWith(needle)
+    || e.author.toLowerCase().includes(needle) || e.committer.toLowerCase().includes(needle);
+}
+
+/** Git 树取数一页：`git log --format=<graph> [--all | <head>] [--skip=n] -n<limit+1>`（多取一条判 hasMore） */
+export async function collectGitGraph(cwd: string, q: GitGraphQuery = {}, opts: GitCollectOptions = {}): Promise<GitGraphPage> {
+  const limit = clampInt(q.limit, GIT_GRAPH_DEFAULT_PAGE, 1, GIT_GRAPH_MAX_PAGE);
+  const skip = clampInt(q.skip, 0, 0, 9999);
+  const needle = (q.search ?? '').trim().toLowerCase();
+  const all = q.all === true;
+  const fetchCount = needle ? Math.min(GIT_GRAPH_SEARCH_SCAN, 9999) : Math.min(GIT_GRAPH_MAX_PAGE + 1, limit + 1);
+  const flags = [
+    GRAPH_FORMAT,
+    ...(all ? ['--all'] : []),
+    ...(needle ? [] : [`--skip=${skip}`]),
+    `-n${fetchCount}`,
+  ];
+  const positional = all ? ['--'] : [assertSafeRevision((q.head ?? '').trim() || 'HEAD'), '--'];
+  const r = await runGitReadonly('log', flags, positional, cwd, opts);
+  const refsBySha = await collectRefTypes(cwd, opts);
+  const allCommits = parseGraphLog(r.stdout);
+  for (const e of allCommits) e.refs = refsBySha.get(e.sha) ?? [];
+  if (needle) {
+    const hits = allCommits.filter((e) => matchesSearch(e, needle));
+    return {
+      commits: hits.slice(0, limit),
+      hasMore: hits.length > limit || allCommits.length >= fetchCount,
+      skip: 0,
+      limit,
+      scanned: allCommits.length,
+      scanTruncated: allCommits.length >= fetchCount,
+    };
+  }
+  return { commits: allCommits.slice(0, limit), hasMore: allCommits.length > limit, skip, limit, scanned: allCommits.length, scanTruncated: false };
+}
+
+/** 点选提交的合法性：只收 hex SHA（弹窗给的就是 40 位），拒绝分支名、`..`、以 `-` 开头的选项形状 */
+export function normalizeSelectedCommits(input: unknown): string[] {
+  if (!Array.isArray(input)) throw new GitCollectError('denied', '选中提交必须是 SHA 数组');
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of input) {
+    if (typeof raw !== 'string') throw new GitCollectError('denied', '选中提交必须是字符串 SHA');
+    const sha = raw.trim().toLowerCase();
+    if (!/^[0-9a-f]{7,40}$/.test(sha)) throw new GitCollectError('denied', `非法提交 SHA「${raw.slice(0, 40)}」（Git 树点选的应是十六进制 SHA）`);
+    if (seen.has(sha)) continue;
+    seen.add(sha);
+    out.push(sha);
+  }
+  if (out.length === 0) throw new GitCollectError('denied', '至少要在 Git 树里点选 1 个提交');
+  if (out.length > MAX_SELECTED_COMMITS) throw new GitCollectError('denied', `一次最多点选 ${MAX_SELECTED_COMMITS} 个提交（当前 ${out.length} 个），请收窄范围`);
+  return out;
+}
+
+/** 逐条复跑点名缺失的 SHA（整条 `--no-walk` 失败多半是「某个 SHA 已不在仓库里」） */
+async function collectCommitsOneByOne(
+  cwd: string,
+  shas: readonly string[],
+  bySha: Map<string, GitGraphEntry>,
+  opts: GitCollectOptions,
+): Promise<string[]> {
+  const missing: string[] = [];
+  for (const sha of shas) {
+    try {
+      const one = await runGitReadonly('log', ['--no-walk', GRAPH_FORMAT, '-n1'], [sha, '--'], cwd, opts);
+      const [entry] = parseGraphLog(one.stdout);
+      if (entry) bySha.set(entry.sha, entry);
+      else missing.push(sha);
+    } catch {
+      missing.push(sha);
+    }
+  }
+  return missing;
+}
+
+/** 缺失点名文案：最多列 5 个短 SHA，其余只给总数 */
+function missingCommitsMessage(missing: readonly string[]): string {
+  const head = missing.slice(0, 5).map((s) => s.slice(0, 7)).join('、');
+  const more = missing.length > 5 ? ` 等 ${missing.length} 个` : '';
+  return `选中的提交在仓库里不存在：${head}${more}。常见原因：分支被 rebase/force-push 丢弃，或提交属于工作空间内的子仓库但未按仓库分批选择；请在 Git 树里重新选择`;
+}
+
+/** 一次 `--no-walk` 拿齐选中提交的 parents 与元信息（逐条 spawn 按 200 选在 Windows 上就是几十秒） */
+export async function resolveCommitsInfo(cwd: string, shas: readonly string[], opts: GitCollectOptions = {}): Promise<Map<string, GitGraphEntry>> {
+  const bySha = new Map<string, GitGraphEntry>();
+  if (shas.length === 0) return bySha;
+  try {
+    const r = await runGitReadonly('log', ['--no-walk', GRAPH_FORMAT], [...shas, '--'], cwd, opts);
+    for (const e of parseGraphLog(r.stdout)) bySha.set(e.sha, e);
+    return bySha;
+  } catch (e) {
+    const kind = e instanceof GitCollectError ? e.kind : 'failed';
+    if (kind !== 'failed') throw e;
+    // 逐条复跑只为了点名，不参与正常路径
+    const missing = await collectCommitsOneByOne(cwd, shas, bySha, opts);
+    if (missing.length === 0) throw e;
+    throw new GitCollectError('failed', missingCommitsMessage(missing));
+  }
+}
+
+export interface CommitRun {
+  base: string;
+  head: string;
+  commits: GitGraphEntry[];
+}
+
+/**
+ * 把点选集合压成尽量少的连续段：仅当「段内每个提交只有单个父、且该父也被选中」时才并段。
+ * 合并提交永远只当段头——`第一父..merge` 才是它自己引入的增量，继续向上并就把旁支也算进来了。
+ */
+export function planCommitRuns(entries: readonly GitGraphEntry[]): CommitRun[] {
+  const sorted = [...entries].sort((a, b) => b.date.localeCompare(a.date) || b.sha.localeCompare(a.sha));
+  const bySha = new Map(sorted.map((e) => [e.sha, e]));
+  const used = new Set<string>();
+  const runs: CommitRun[] = [];
+  for (const start of sorted) {
+    if (used.has(start.sha)) continue;
+    used.add(start.sha);
+    const chain = [start];
+    let oldest = start;
+    while (oldest.parents.length === 1) {
+      const next = bySha.get(oldest.parents[0]);
+      if (!next || used.has(next.sha)) break;
+      used.add(next.sha);
+      chain.push(next);
+      oldest = next;
+    }
+    runs.push({ base: oldest.parents[0] ?? GIT_EMPTY_TREE_SHA1, head: start.sha, commits: chain });
+  }
+  return runs;
+}
+
+/** 两段 diff 里同一文件各出现一次时合成一块：hunk 顺排、增删行相加、raw 拼接 */
+function mergeChangesByPath(chunks: readonly GitFileChange[]): GitFileChange[] {
+  const order: string[] = [];
+  const byPath = new Map<string, GitFileChange>();
+  for (const c of chunks) {
+    const prev = byPath.get(c.path);
+    if (!prev) {
+      byPath.set(c.path, { ...c, hunks: [...c.hunks] });
+      order.push(c.path);
+      continue;
+    }
+    prev.hunks.push(...c.hunks);
+    prev.additions += c.additions;
+    prev.deletions += c.deletions;
+    prev.binary = prev.binary || c.binary;
+    if (c.oldPath && !prev.oldPath) prev.oldPath = c.oldPath;
+    prev.raw = `${prev.raw}\n${c.raw}`;
+    prev.textLength = prev.raw.length;
+  }
+  return order.map((p) => byPath.get(p)!);
+}
+
+/** 「多选提交」形态的采集：逐段 diff → 按路径合并 → 与区间采集共用同一份预算与统计口径 */
+export async function collectCommitsUnion(
+  cwd: string,
+  selected: readonly string[],
+  opts: GitCollectionOptions = {},
+): Promise<GitCollection> {
+  const shas = normalizeSelectedCommits(selected);
+  let info: Map<string, GitGraphEntry>;
+  try {
+    info = await resolveCommitsInfo(cwd, shas);
+  } catch {
+    // T05693：批量 --no-walk 整体失败多半是「个别 SHA 已被 rebase/force-push 丢弃」。
+    // 不再整批拒绝——逐条复跑点名，缺失项跳过、可用项照常采集（缺失名单进 warnings）。
+    // 降级路径才会逐条 spawn，常态仍走批量；resolveCommitsInfo 对外报错语义不变（gitCommitFiles 单条链路依赖它）。
+    info = new Map();
+    await collectCommitsOneByOne(cwd, shas, info, opts);
+  }
+  const entries: GitGraphEntry[] = [];
+  for (const s of shas) {
+    const full = info.has(s) ? s : [...info.keys()].find((k) => k.startsWith(s));
+    const entry = full ? info.get(full) : undefined;
+    if (entry) entries.push(entry);
+  }
+  let missingNote = '';
+  if (entries.length !== shas.length) {
+    const matched = new Set(entries.map((e) => e.sha));
+    const missing = shas.filter((s) => !matched.has(s) && ![...matched].some((full) => full.startsWith(s)));
+    // T05693：部分失效降级为 warning + 可用子集采集；全部失效才维持失败（避免空采集静默通过）。
+    if (entries.length === 0) {
+      // T05700：补充第二种成因——提交其实存在，只是来自工作空间内的子仓库而 range 未带 repoSub。
+      // 只改提示不动判定：T05693 的「部分失效降级 / 全部失效失败」链路逐字保留。
+      throw new GitCollectError('failed', `选中的提交在仓库里都不存在：${missing.slice(0, 5).map((s) => s.slice(0, 7)).join('、')}。常见原因：分支被 rebase/force-push 丢弃，或提交属于工作空间内的子仓库但未按仓库分批选择；请在 Git 树里重新选择`);
+    }
+    missingNote = `跳过 ${missing.length} 条仓库里已不存在的提交（可能被 rebase/force-push 丢弃）：${missing.slice(0, 5).map((s) => s.slice(0, 7)).join('、')}${missing.length > 5 ? ' 等' : ''}；其余 ${entries.length} 条照常采集`;
+  }
+  const runs = planCommitRuns(entries);
+  const chunks: GitFileChange[] = [];
+  for (const run of runs) {
+    const raw = await collectDiff(cwd, [run.base, run.head], opts.contextLines ?? 3, opts);
+    chunks.push(...parseUnifiedDiff(raw));
+  }
+  const commits = [...entries].sort((a, b) => a.date.localeCompare(b.date)).map((e): GitCommitEntry => ({
+    sha: e.sha, author: e.author, committer: e.committer, date: e.date, subject: e.subject,
+  }));
+  const newest = [...entries].sort((a, b) => b.date.localeCompare(a.date))[0];
+  const oldest = [...entries].sort((a, b) => a.date.localeCompare(b.date))[0];
+  const range: GitCollection['range'] = {
+    shape: 'commits',
+    // T05693：有失效项被跳过时，label 如实反映「实采/勾选」口径，不让用户误以为全采到了
+    label: missingNote ? `已选 ${entries.length}/${shas.length} 个提交（${runs.length} 段，失效项已跳过）` : `已选 ${shas.length} 个提交（${runs.length} 段）`,
+    base: oldest.parents[0] ?? GIT_EMPTY_TREE_SHA1,
+    head: newest.sha,
+  };
+  const collection = finalizeCollection(mergeChangesByPath(chunks), commits, range, 'git', opts);
+  if (missingNote) collection.warnings.unshift(missingNote);
+  const merges = entries.filter((e) => e.parents.length > 1);
+  if (merges.length > 0) {
+    collection.warnings.unshift(`选中 ${merges.length} 个合并提交（${merges.slice(0, 3).map((e) => e.sha.slice(0, 7)).join('、')}${merges.length > 3 ? ' 等' : ''}）：`
+      + '按第一父提交计增量，旁支自带但未点选的提交不计入');
+  }
+  if (runs.length > 1) {
+    collection.warnings.unshift(`非连续选择：${shas.length} 个提交合成 ${runs.length} 段，未点选的中间提交不计入增量`);
+  }
+  return collection;
+}

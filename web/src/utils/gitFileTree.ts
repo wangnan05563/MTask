@@ -118,7 +118,7 @@ export function buildFileTree(files: readonly FileLeaf[], rootPath = ''): FileDi
       }
       cur = next;
     }
-    const leafNode: FileLeaf = { ...leaf, name: segs[segs.length - 1], depth: segs.length - 1 };
+    const leafNode: FileLeaf = { ...leaf, name: segs.at(-1) ?? '', depth: segs.length - 1 };
     // 同一路径重复出现时保留第一次（调用方应先聚合；这里兜底，避免渲染出两行同路径）
     if (!cur.children.some((c) => c.kind === 'file' && c.path === leafNode.path)) cur.children.push(leafNode);
   }
@@ -414,7 +414,7 @@ export function windowSlice(
 export function ellipsisPath(path: string, max = 64): string {
   if (path.length <= max) return path;
   const segs = path.split('/');
-  const base = segs[segs.length - 1] ?? path;
+  const base = segs.at(-1) ?? path;
   const head = segs[0] ?? '';
   const keep = max - base.length - 4; // 4 = `…` 两侧的 `/`
   if (keep <= 1) return `…/${base}`.slice(0, max);

@@ -1,0 +1,776 @@
+/**
+ * T01273（PRD FR-2.1）：常驻监督器骨架——「AI 编排大脑」决策层的驱动入口。
+ *
+ * 复用 RecurringService 的 tick 驱动方式：由 server 周期调用 supervisorTick()，单例幂等——
+ * 无监督对象时空转返回，只走索引探测，不调 LLM、不开写事务，满足 NFR-1「空转单轮 < 50ms」。
+ *
+ * 职责边界：
+ * - 观测层停滞兜底并入本 tick（M1 已上线的 ExecSessionService.expireStaleSessions）；
+ * - 状态快照采集见 collectSnapshot()（T01274）；LLM 裁决见 decide()（T01275）；
+ *   护栏拍板见 SupervisorGuard.guard()（T01276，独立模块以避免与 decide() 循环依赖）；
+ * - 异常降级见 buildDegradedActions()（T01278 / NFR-3）：决策 LLM 不可用时把待人工关注的对象
+ *   统一升级为 ESCALATE 并打日志，避免「AI 不可用 → 本轮静默无动作 → 任务无人管」。
+ * - 就绪排水入口在 tick 内调用 TaskService.markMonitorReady()（T01280 / FR-3.1）：无未完成前置依赖的
+ *   待办置 monitor_ready=1，外部平台据此拉取；标记须先于空转判定执行（理由见 supervisorTick 注释）。
+ *
+ * 熔断语义（FR-4.5）：`supervisor.enabled=0`（默认）时**决策层**完全停摆，任务保持现状；
+ * 但观测层兜底不受开关影响——停滞标记是零风险的只读观测信号，一并停掉会让面板停在「假存活」。
+ *
+ * 审计落库见 SupervisorAudit.recordMonitorRun（T01285 / FR-4.6）：tick 在进入决策流程的轮次末
+ * 写一行 monitor_runs；本文件只负责把各阶段产出交给它，落库实现与摘要口径均在审计模块内。
+ * 审计的**存储侧配套**（T01311）见 SupervisorAudit.pruneMonitorRuns：按保留期清理旧行，由本文件
+ * 每轮 tick 调用（内部 1h 节流）；调度器句柄与 intervalMs 热重载同为本文件职责（T01311 / FR-2.1）。
+ */
+import { getDb } from '../db/connection';
+import { getSetting, setSetting } from './AppSettings';
+import { ExecSessionService } from './ExecSessionService';
+import { AIService } from './AIService';
+import { ConfigService } from './ConfigService';
+import { TaskService } from './TaskService'; // T01280：就绪待办标记（FR-3.1），TaskService 不反向依赖本模块，无循环
+import { guard, readEnabled, readGuardLimits, type GuardAction, type GuardResult } from './SupervisorGuard';
+import { applyActions, type ApplyOutcome } from './SupervisorExecutor'; // T01282：动作落地（FR-3.3~3.5）
+import { recordMonitorRun, listMonitorRuns, pruneMonitorRuns, readRetentionDays } from './SupervisorAudit'; // T01285：决策轮次审计落库（FR-4.6）；T01286 读出口（FR-5.2/5.3）；T01311：清理与保留期读出口
+import { parsePlanDeps, depsSatisfied } from '../util/planDeps'; // T01284：deps 判定统一实现（FR-3.7，与 TaskService 同口径）
+import type { TokenUsage } from '../adapters/types'; // T01289：决策用量的计量口径（适配器归一后的 usage）
+
+/** 监督 tick 默认周期 30s（FR-2.1） */
+const DEFAULT_INTERVAL_MS = 30_000;
+/** tick 周期配置键（FR-2.1） */
+const INTERVAL_KEY = 'supervisor.intervalMs';
+/** T05741：就绪排水与决策层解耦开关（默认 true）——关闭 supervisor.enabled 不再连带停掉 monitor_ready 标记 */
+const READY_MARK_KEY = 'supervisor.readyMarkEnabled';
+
+export interface SupervisorConfig {
+  /** 熔断开关：默认关闭，自动动作需用户显式开启（FR-4.5） */
+  enabled: boolean;
+  /** T05741：就绪排水开关（默认开启）；只控制 monitor_ready 标记，不影响决策层 */
+  readyMarkEnabled: boolean;
+  intervalMs: number;
+  /** T01311：审计保留天数（0 = 不清理），配置键 supervisor.auditRetentionDays */
+  auditRetentionDays: number;
+}
+
+/** 空转探测结果：只回答「有没有监督对象」，不拉明细（明细由 T01274 的快照采集负责） */
+export interface SupervisorProbe {
+  hasActiveSession: boolean;
+  hasStalledSession: boolean;
+  /** T01357：失败会话也需进入决策（只剩 failed 会话而无 running 任务时，tick 不能判空转静默） */
+  hasFailedSession: boolean;
+  hasRunningTask: boolean;
+  /** 任一为真即需进入决策流程 */
+  hasWork: boolean;
+}
+
+export interface SupervisorTickResult {
+  /** 本轮是否进入决策流程（false = 空转 / 熔断 / 上一轮未结束） */
+  ran: boolean;
+  reason: 'ok' | 'disabled' | 'idle' | 'busy';
+  /** 本轮新标记为 stalled 的会话数（观测层兜底产物） */
+  stalledMarked: number;
+  probe: SupervisorProbe;
+  /** 进入决策流程时采集的状态快照（T01274）；空转/熔断轮次为 undefined */
+  snapshot?: MonitorSnapshot;
+  /** 本轮 LLM 裁决结果（T01275）；未进入决策流程时为 undefined */
+  decision?: SupervisorDecision;
+  /** 本轮动作过护栏的拍板结果（T01276）；未进入决策流程时为 undefined */
+  guard?: GuardResult<SupervisorAction>;
+  /** T01278：本轮因决策 LLM 不可用而走异常降级——decision.actions 由 buildDegradedActions 生成而非 LLM 产出 */
+  degraded?: boolean;
+  /** T01280：本轮新标记就绪（monitor_ready=1）的待办数；T05741 起熔断轮次也可能 >0（仅排水模式） */
+  readyMarked?: number;
+  /** T01282：本轮护栏放行动作的落地结果（FR-3.3~3.5）；未进入决策流程时为 undefined，供 T01285 写 monitor_runs */
+  executed?: ApplyOutcome[];
+}
+
+/**
+ * T01286（FR-5.2 / §6.1）：监督器**运行态**视图——面板与 `mtask_supervisor_status` 共用。
+ *
+ * `lastTickAt` / `nextTickAt` 来自进程内计时的最近一次 tick：空转轮次不写审计，若只看
+ * `monitor_runs` 会误报「监督器从未运行」；故单独记内存态（进程重启后为 null，如实表示未知）。
+ * `lastActions` / `lastRunAt` / `lastModel` 取自审计（唯一权威留痕），降级轮次即兜底 ESCALATE。
+ */
+export interface SupervisorStatusView {
+  enabled: boolean;
+  /** T05741：就绪排水是否开启（enabled=false 时仍可能为 true） */
+  readyMarkEnabled: boolean;
+  intervalMs: number;
+  /** T01311：审计保留天数（0 = 不清理）——面板与 tick 周期同处展示，便于对照「节奏 vs 留痕」两项运行参数 */
+  auditRetentionDays: number;
+  /** 本进程最近一次 tick 时刻（含空转/熔断轮次）；未跑过为 null */
+  lastTickAt: string | null;
+  /** 预计下次 tick 时刻（lastTickAt + intervalMs）；未跑过 tick 时为 null */
+  nextTickAt: string | null;
+  tokenBudgetUsed: number;
+  /** 预算上限，0 = 不限 */
+  tokenBudget: number;
+  maxConcurrent: number;
+  maxRetry: number;
+  cooldownMs: number;
+  /** 活跃/停滞/失败会话（含关联任务简述），即 FR-5.1 面板的数据源口径（T01357：failed 纳入） */
+  activeSessions: SnapshotSession[];
+  /** 最近一次决策轮次时刻；无审计记录为 null */
+  lastRunAt: string | null;
+  /** 最近一次决策轮次采用的动作（降级轮次为系统兜底 ESCALATE） */
+  lastActions: SupervisorAction[];
+  /** 最近一次决策所用模型名 */
+  lastModel: string;
+}
+
+/** 快照规模上限：LLM 输入需可控（NFR-1「有动作时 LLM 调用 < 10s」），超出部分只计数不入快照 */
+const PENDING_LIMIT = 50;
+const FAILED_LIMIT = 50;
+
+/** 决策 LLM 超时（NFR-1：有动作时 LLM 调用 < 10s，超时由上层降级 ESCALATE） */
+const DECISION_TIMEOUT_MS = 10_000;
+/** 决策输出 token 上限（PRD §7：决策输出短小） */
+const DECISION_MAX_TOKENS = 2048;
+/** 决策温度（PRD §7：temperature=0 让同一快照的裁决稳定可复现） */
+const DECISION_TEMPERATURE = 0;
+/** 单轮动作数上限：白名单之外的刷屏式输出直接截断，防幻觉放大 */
+const ACTION_LIMIT = 20;
+/** 监督决策模型配置键（PRD §13：独立「监控专用」模型） */
+const TOOL_KEY = 'supervisor.toolId';
+
+/** 待办优先级排序权重（SQL CASE 与之一致，改这里需同步改 collectSnapshot 的 ORDER BY） */
+const PRIORITY_CASE = "CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 WHEN 'low' THEN 3 ELSE 9 END";
+
+/** 快照里的前置依赖项（源：plan_tasks.deps，T00499；T02090 起含 child 归属边） */
+export interface SnapshotDep {
+  planTaskId: string;
+  title: string;
+  /** T02090：child=结构性归属（里程碑父子），不阻塞排水；serial/parallel 语义同 FR-3.7 */
+  type: 'serial' | 'parallel' | 'child';
+  /** 前置计划是否已完成；计划行已不存在时按「已完成」处理，与 PlanService.readyTasks 同口径 */
+  done: boolean;
+}
+
+export interface SnapshotPending {
+  taskId: string;
+  taskNo: string | null;
+  title: string;
+  priority: string;
+  deps: SnapshotDep[];
+  /** 依赖满足（serial 前置均已完成；parallel/child 不阻塞；无 deps 视为就绪）——FR-3.1/3.7 排水判定输入 */
+  ready: boolean;
+}
+
+export interface SnapshotSession {
+  platform: string;
+  status: string;
+  progress: number;
+  /** 停滞标记（status='stalled' 的语义化别名，便于 LLM 直接消费） */
+  stale: boolean;
+  /** T01357：失败标记（status='failed' 的语义化别名）——平台已显式上报执行失败，
+   *  是 PRD §8「failed ──REDISPATCH──▶ active(换台)」的会话级触发前提 */
+  failed: boolean;
+  /** 会话关联任务（LLM 据 taskId 产出 RESUME/REDISPATCH 动作） */
+  tasks: Array<{ taskId: string; taskNo: string | null; title: string }>;
+}
+
+export interface SnapshotFailed {
+  taskId: string;
+  taskNo: string | null;
+  title: string;
+  /** 监督器重试计数（tasks.monitor_retry，FR-4.2） */
+  retryCount: number;
+}
+
+export interface SnapshotBudget {
+  /** 已用 token：由 T01289 起从决策 LLM 回传的 usage 真实累加进 `supervisor.tokenUsed`（addTokenUsed） */
+  usedTokens: number;
+  /** 预算上限，0 = 不限（supervisor.tokenBudget） */
+  maxTokens: number;
+  /** 当前活跃会话数 */
+  concurrent: number;
+  maxConcurrent: number;
+}
+
+/** 决策 LLM 的输入快照（设计 §4.2 / PRD FR-2.2） */
+export interface MonitorSnapshot {
+  generatedAt: string;
+  pending: SnapshotPending[];
+  /** 待办池全量计数（pending 受 PENDING_LIMIT 截断，此值供 LLM 判断积压规模） */
+  pendingTotal: number;
+  sessions: SnapshotSession[];
+  failed: SnapshotFailed[];
+  budget: SnapshotBudget;
+}
+
+/** 决策动作类型（PRD §6 白名单：仅这 5 类安全动作，其余一律判为无效输出） */
+export type SupervisorActionType = 'CONTINUE' | 'RESUME' | 'REDISPATCH' | 'SPLIT' | 'ESCALATE';
+
+const ACTION_TYPES = new Set<string>(['CONTINUE', 'RESUME', 'REDISPATCH', 'SPLIT', 'ESCALATE']);
+
+/** 决策 LLM 产出的单条动作（结构对齐 PRD §7 模板） */
+export interface SupervisorAction {
+  type: SupervisorActionType;
+  /** 目标任务 id（取自快照）；无目标动作可缺省 */
+  taskId?: string;
+  /** RESUME 的源平台 */
+  platform?: string;
+  /** REDISPATCH 的目标平台 */
+  toPlatform?: string;
+  reason: string;
+}
+
+/** 一轮裁决结果（含审计所需的模型名与耗时） */
+export interface SupervisorDecision {
+  ok: boolean;
+  /** 决策模型名（供 T01278 写 monitor_runs 审计） */
+  model: string;
+  /** 动作计划；ok=false 时为空数组 */
+  actions: SupervisorAction[];
+  /** 是否经过「精简提示词」重试 */
+  retried: boolean;
+  error?: string;
+  durationMs: number;
+  /** T01289：本轮决策消耗的 token（含重试累计）；服务商未回传用量时缺省 */
+  usage?: TokenUsage;
+}
+
+/** 决策 LLM system 提示（PRD §7 模板逐条落地） */
+const MONITOR_SYSTEM_PROMPT = [
+  '你是 MTask 的监督决策器。你监控外部 AI 平台（WorkBuddy/Trae）的执行会话与待办状态，产出下一步动作计划。',
+  '只依据下方快照，不虚构任务、不虚构 taskId。',
+  '可用动作：',
+  '- CONTINUE：会话健康，等待下一心跳',
+  '- RESUME：会话停滞（stale），重新标记就绪触发续跑',
+  // T01357：明确 REDISPATCH 触发条件——会话级失败或「停滞+任务侧已有失败记录」，防止 failed 入快照后过度换台
+  '- REDISPATCH：换到另一个平台（toPlatform），仅在以下任一情形使用：会话已失败（failed）；会话停滞（stale）且其关联任务已在失败列表（failed 数组）或重试计数（retryCount）> 0。健康会话不换台，单次停滞优先 RESUME',
+  '- SPLIT：任务复杂度过高，拆分为子任务',
+  '- ESCALATE：超重试上限/需人工判断',
+  '只输出 JSON：{"actions":[{"type":"...","taskId":"...","toPlatform":"...","reason":"..."}]}；',
+  '无需动作时输出 {"actions":[]}；reason 用简体中文，一句话说明依据。',
+].join('\n');
+
+/** 重试用的精简提示（复用 askJson 的 retrySystem 机制）：首轮截断/解析失败时压缩输出规模再试 */
+const MONITOR_RETRY_PROMPT = [
+  '你是 MTask 的监督决策器。仅输出 JSON，不要解释、不要 Markdown 代码块。',
+  '格式：{"actions":[{"type":"CONTINUE|RESUME|REDISPATCH|SPLIT|ESCALATE","taskId":"...","toPlatform":"...","reason":"..."}]}',
+  'taskId 必须取自快照；无动作输出 {"actions":[]}。',
+].join('\n');
+
+/**
+ * 解析并校验决策 LLM 的 JSON 输出（作为 askJson 的 parse 回调——抛错即触发其自带的一次重试）。
+ * 校验从严：动作类型须在 §6 白名单内、reason 必填；不合规即整轮判为无效输出，
+ * 交给 askJson 用精简提示重试，仍失败则由 tick 记入 decision.error 降级（NFR-3）。
+ */
+function parseActions(content: string): SupervisorAction[] {
+  const parsed = JSON.parse(content) as { actions?: unknown };
+  if (!Array.isArray(parsed?.actions)) throw new Error('输出缺少 actions 数组');
+  const out: SupervisorAction[] = [];
+  for (const item of parsed.actions.slice(0, ACTION_LIMIT)) {
+    if (!item || typeof item !== 'object') throw new Error('动作项不是对象');
+    const r = item as Record<string, unknown>;
+    const type = typeof r.type === 'string' ? r.type.toUpperCase() : '';
+    if (!ACTION_TYPES.has(type)) throw new Error(`未知动作类型：${String(r.type)}`);
+    const reason = typeof r.reason === 'string' ? r.reason.trim() : '';
+    if (!reason) throw new Error(`动作 ${type} 缺少 reason`);
+    const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+    out.push({
+      type: type as SupervisorActionType,
+      taskId: str(r.taskId),
+      platform: str(r.platform),
+      toPlatform: str(r.toPlatform),
+      reason,
+    });
+  }
+  return out;
+}
+
+/**
+ * T01278（NFR-3）：决策 LLM 不可用时的**异常降级**——产出人工可见的 ESCALATE 动作。
+ *
+ * 为什么必须产出动作而不是空手而归：`decide()` 失败若只留空动作，链路表现就是「AI 看过快照
+ * 但什么都没做」，与「快照里确实无事可做」在日志和面板上无从区分——前者是故障、后者是正常，
+ * 静默会让人误判系统健康。NFR-3 要求异常「统一降级为人工可见状态」，故此处显式升级为 ESCALATE。
+ *
+ * 指向对象按「最需人工介入」排序：停滞会话关联任务 → 失败任务，去重后上限 ACTION_LIMIT。
+ * 快照里没有这两类对象时（例如仅 running 任务且会话健康）产出一条无 taskId 的全局信号，
+ * 保证降级始终可见，而非因「无对象可指」再次静默。
+ *
+ * 「平台不可达」的降级不在 M2：M2 无平台调用（拉取式属 T01280、推送式兜底属 T01283），
+ * 而平台不可达在观测层的表现就是心跳超时 → 会话 stalled，已被本函数的第一个来源覆盖。
+ */
+function buildDegradedActions(snapshot: MonitorSnapshot, error?: string): SupervisorAction[] {
+  const reason = `[异常降级] 决策 LLM 不可用（${error || '未知错误'}），本轮无法自动裁决，转人工`;
+  const out: SupervisorAction[] = [];
+  const seen = new Set<string>();
+  /** 追加一条降级动作；返回是否已达上限（true = 调用方应立即收手） */
+  const push = (taskId?: string): boolean => {
+    if (taskId) {
+      if (seen.has(taskId)) return false;
+      seen.add(taskId);
+    }
+    out.push({ type: 'ESCALATE', taskId, reason });
+    return out.length >= ACTION_LIMIT;
+  };
+  for (const s of snapshot.sessions) {
+    // T01357：failed 会话与停滞会话同样「需人工介入」，降级时一并升级为 ESCALATE
+    if (!s.stale && !s.failed) continue;
+    for (const t of s.tasks) if (push(t.taskId)) return out;
+  }
+  for (const f of snapshot.failed) if (push(f.taskId)) return out;
+  if (out.length === 0) push();
+  return out;
+}
+
+/**
+ * M6-6.1：本轮快照的「已知任务 id」全集（原 supervisorTick 内联三段循环）。
+ * 含 pending（受 PENDING_LIMIT 截断）＋会话关联任务＋失败任务（受 FAILED_LIMIT 截断）——
+ * LLM 只能引用它在快照里见过的 id，故集合外的 id 必属幻觉或越权引用。
+ */
+function collectKnownTaskIds(snapshot: MonitorSnapshot): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const p of snapshot.pending) if (p.taskId) ids.add(p.taskId);
+  for (const s of snapshot.sessions) for (const t of s.tasks) if (t.taskId) ids.add(t.taskId);
+  for (const f of snapshot.failed) if (f.taskId) ids.add(f.taskId);
+  return ids;
+}
+
+/** M6-6.1：本轮快照摘要日志（原内联 console.log 拼串） */
+function logSnapshot(s: MonitorSnapshot): void {
+  const readyCount = s.pending.filter((p) => p.ready).length;
+  console.log(
+    `[supervisor] 快照：待办 ${s.pending.length}/${s.pendingTotal}（就绪 ${readyCount}）` +
+      ` 活跃/停滞/失败会话 ${s.sessions.length} 失败任务 ${s.failed.length}` +
+      ` 并发 ${s.budget.concurrent}/${s.budget.maxConcurrent}`,
+  );
+}
+
+/** M6-6.1：裁决结果日志（失败额外带错误原因，便于排障「 LLM 不可用」） */
+function logDecision(d: SupervisorDecision): void {
+  console.log(
+    `[supervisor] 裁决：模型 ${d.model || '(未配置)'} 动作 ${d.actions.length} 耗时 ${d.durationMs}ms` +
+      (d.ok ? '' : ` 失败：${d.error ?? ''}`),
+  );
+}
+
+/** M6-6.1：护栏拍板结果日志（含去重后的拦截原因） */
+function logGuard<A extends GuardAction>(g: GuardResult<A>): void {
+  console.log(
+    `[supervisor] 护栏：放行 ${g.applied.length} 拦截 ${g.blocked.length}` +
+      (g.blockedBy ? `（${g.blockedBy}）` : ''),
+  );
+}
+
+/**
+ * 解析监督决策所用模型：优先「监控专用」配置 `supervisor.toolId`（PRD §13 独立监控模型）；
+ * 未配置（或指向已删除工具）时回退默认 AI 梳理 / 开发工具——否则开关打开后决策链路会整体不可用。
+ */
+function resolveDecisionToolId(): string | null {
+  const explicit = getSetting(TOOL_KEY);
+  if (explicit && getDb().prepare('SELECT 1 FROM ai_tools WHERE id = ?').get(explicit)) return explicit;
+  const d = ConfigService.getDefaults();
+  return d.organize ?? d.develop ?? null;
+}
+
+/** 异步 tick 的重入闸：LLM 调用最长 DECISION_TIMEOUT_MS 而 intervalMs 最小可配 1s，无闸会叠轮重复调 LLM */
+let ticking = false;
+
+/** T01286：本进程最近一次 tick 时刻（毫秒）。空转轮次不写审计，故「监督器是否在跑」只能由内存态回答；
+ *  进程重启后归零（视角为 null），如实表示「本进程未跑过」而非编造时间。 */
+let lastTickAtMs = 0;
+
+/** tick 周期可配范围（T01311 / FR-2.1）：下限 1s（再密就是忙轮询），上限 1h（再疏监督形同停摆） */
+const INTERVAL_MIN_MS = 1_000;
+const INTERVAL_MAX_MS = 60 * 60_000;
+
+/** 调度器句柄：热重载需先 clear 旧定时器再注册新的（未启动为 null） */
+let tickTimer: ReturnType<typeof setInterval> | null = null;
+
+/** 配置解析：缺失/非法一律回退默认，避免 0 或 NaN 让定时器退化成忙轮询 */
+function readIntervalMs(): number {
+  const n = Number(getSetting(INTERVAL_KEY));
+  return Number.isFinite(n) && n >= INTERVAL_MIN_MS ? n : DEFAULT_INTERVAL_MS;
+}
+
+/** T05741：就绪标记开关，缺失/空串默认 true（保持 A 兜底可用）；仅显式 0/false/off/no 关闭 */
+function readReadyMarkEnabled(): boolean {
+  const raw = getSetting(READY_MARK_KEY);
+  if (raw == null || raw.trim() === '') return true;
+  return !['0', 'false', 'off', 'no'].includes(raw.trim().toLowerCase());
+}
+
+/**
+ * 单轮 tick 的统一入口（T01311 收拢，启动轮与周期轮共用）。
+ * 异常必须留痕：console.error 会被 LogService 环形缓冲捕获，否则「监督器已挂」与「无监督对象」
+ * 在日志上无从区分——静默吞错会把故障伪装成正常空转。
+ */
+function runTick(): void {
+  void SupervisorService.supervisorTick().catch((e) => console.error('[supervisor] tick 失败:', e));
+}
+
+/** 数值型监督配置读取：缺失/空串/非法回退默认（`supervisor.maxConcurrent`、`supervisor.tokenBudget` 等）。
+ *  显式挡空值——`Number(null)` 为 0，会让未配置的 maxConcurrent 显示成 0 并与护栏口径不一致。 */
+function readIntSetting(key: string, fallback: number): number {
+  const raw = getSetting(key);
+  if (raw == null || raw.trim() === '') return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+/**
+ * T01289（FR-4.4 / REQ-019）：把一轮决策消耗的 token 累加进 `supervisor.tokenUsed`。
+ *
+ * 该键是预算护栏（SupervisorGuard 闸 2）**唯一**的「已用」数据源，此前全仓只有读取、没有写入，
+ * 导致 `tokenUsed` 恒为 0、护栏永不触发——REQ-019「累计超预算即暂停自动触发」形同虚设。
+ * 用量取自适配器回传的 usage：拿不到就不写，宁可无计量也不用字符数臆造（错值会直接导致漏拦或误拦）。
+ */
+function addTokenUsed(tokens: number): void {
+  if (!Number.isFinite(tokens) || tokens <= 0) return;
+  const used = readIntSetting('supervisor.tokenUsed', 0) + Math.round(tokens);
+  setSetting('supervisor.tokenUsed', String(used));
+}
+
+/** exec_sessions.task_ids（JSON 数组字符串）解析；脏数据按空数组处理 */
+function parseTaskIds(raw: string): string[] {
+  try {
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+export const SupervisorService = {
+  /**
+   * T01311（FR-2.1）：启动监督调度——启动即跑一轮 + 注册周期定时器。
+   * 从 index.ts 内联 setInterval 收拢到此处，是为了持有定时器句柄：散在 index 里没有句柄可 clear，
+   * intervalMs 在线修改就只能「显示已改、实际没变」（T01311 要修的误导性开关）。
+   */
+  startScheduler(): void {
+    runTick();
+    this.reschedule();
+  },
+
+  /** 按当前配置重注册定时器；返回生效周期。供启动与 intervalMs 热重载共用，保证两处同一口径 */
+  reschedule(): number {
+    const ms = readIntervalMs();
+    if (tickTimer) clearInterval(tickTimer);
+    tickTimer = setInterval(runTick, ms);
+    return ms;
+  },
+
+  /**
+   * T01311（FR-2.1）：在线改 tick 周期并**热重载**——写入即生效，才允许开放该配置。
+   * 范围校验挡在写库之前：0/NaN/负值会让定时器退化成忙轮询，写进去就是故障配置。
+   * 仅在调度器已启动时重注册（单测/脚本可能只调本方法而不启定时器，不该凭空造一个）。
+   */
+  setIntervalMs(ms: number): number {
+    if (!Number.isFinite(ms) || ms < INTERVAL_MIN_MS || ms > INTERVAL_MAX_MS) {
+      throw new Error(`tick 周期需在 ${INTERVAL_MIN_MS}~${INTERVAL_MAX_MS} 毫秒之间`);
+    }
+    const rounded = Math.round(ms);
+    setSetting(INTERVAL_KEY, String(rounded));
+    if (tickTimer) this.reschedule();
+    return rounded;
+  },
+
+  getConfig(): SupervisorConfig {
+    return { enabled: readEnabled(), readyMarkEnabled: readReadyMarkEnabled(), intervalMs: readIntervalMs(), auditRetentionDays: readRetentionDays() };
+  },
+
+  /**
+   * T01286（FR-5.2 / §6.1）：监督器运行态——熔断开关、tick 节奏、预算占用、最近决策、活跃会话。
+   * 只读聚合，不触发任何 LLM 调用；供设置页「监督审计」面板与 `mtask_supervisor_status` 共用。
+   */
+  getStatus(): SupervisorStatusView {
+    const limits = readGuardLimits();
+    const intervalMs = readIntervalMs();
+    const last = listMonitorRuns(1)[0];
+    return {
+      enabled: readEnabled(),
+      readyMarkEnabled: readReadyMarkEnabled(),
+      intervalMs,
+      auditRetentionDays: readRetentionDays(),
+      lastTickAt: lastTickAtMs ? new Date(lastTickAtMs).toISOString() : null,
+      nextTickAt: lastTickAtMs ? new Date(lastTickAtMs + intervalMs).toISOString() : null,
+      tokenBudgetUsed: limits.tokenUsed,
+      tokenBudget: limits.tokenBudget,
+      maxConcurrent: limits.maxConcurrent,
+      maxRetry: limits.maxRetry,
+      cooldownMs: limits.cooldownMs,
+      activeSessions: this.listActiveSessions(),
+      lastRunAt: last?.ranAt ?? null,
+      // 审计行由本模块写入（结构即 SupervisorAction），脏行按对象过滤丢弃而非整体报错
+      lastActions: (last?.actions ?? []).filter((a): a is SupervisorAction => !!a && typeof a === 'object'),
+      lastModel: last?.model ?? '',
+    };
+  },
+
+  /**
+   * 活跃/停滞/失败会话（含关联任务简述）——决策快照（collectSnapshot）与状态接口共用同一采集实现：
+   * 两处各写一套「会话 → 任务」联表，迟早出现「面板说有任务、快照说没有」的口径漂移。
+   * T01357：`failed` 纳入快照——平台已显式上报失败的会话对决策 LLM 可见（只读观测，M1 边界不变），
+   * 否则 REDISPATCH 的会话级前提（PRD §8）不可达，决策只能退化为依赖任务侧重试计数。
+   * IN 分批 200 规避 SQLite 变量上限（与 TaskService / ExecSessionService 同口径）。
+   */
+  listActiveSessions(): SnapshotSession[] {
+    const db = getDb();
+    const sessRows = db.prepare(
+      "SELECT platform, status, progress, task_ids FROM exec_sessions WHERE status IN ('active','stalled','failed') ORDER BY last_heartbeat DESC",
+    ).all() as Array<{ platform: string; status: string; progress: number; task_ids: string }>;
+    const sessTaskIds = new Set<string>();
+    for (const s of sessRows) for (const id of parseTaskIds(s.task_ids)) sessTaskIds.add(id);
+    const briefById = new Map<string, { taskId: string; taskNo: string | null; title: string }>();
+    const sessTaskList = [...sessTaskIds];
+    for (let i = 0; i < sessTaskList.length; i += 200) {
+      const chunk = sessTaskList.slice(i, i + 200);
+      const found = db.prepare(
+        `SELECT id, task_no, title FROM tasks WHERE id IN (${chunk.map(() => '?').join(',')})`,
+      ).all(...chunk) as Array<{ id: string; task_no: string | null; title: string }>;
+      for (const f of found) briefById.set(f.id, { taskId: f.id, taskNo: f.task_no, title: f.title });
+    }
+    return sessRows.map((s) => ({
+      platform: s.platform,
+      status: s.status,
+      progress: s.progress,
+      stale: s.status === 'stalled',
+      failed: s.status === 'failed',
+      tasks: parseTaskIds(s.task_ids)
+        .map((id) => briefById.get(id))
+        .filter((t): t is { taskId: string; taskNo: string | null; title: string } => !!t),
+    }));
+  },
+
+  /**
+   * 空转探测：四条 EXISTS 各走一条索引（idx_exec_platform_status / idx_tasks_ai_state），
+   * 用 LIMIT 1 而非 COUNT——命中即返回，让空转轮次成本与表规模无关（NFR-1）。
+   */
+  probe(): SupervisorProbe {
+    const db = getDb();
+    const has = (sql: string): boolean => !!db.prepare(sql).get();
+    const hasActiveSession = has("SELECT 1 FROM exec_sessions WHERE status = 'active' LIMIT 1");
+    const hasStalledSession = has("SELECT 1 FROM exec_sessions WHERE status = 'stalled' LIMIT 1");
+    // T01357：failed 会话单独探测——若只剩失败会话（无 active/stalled、无 running 任务），
+    // 旧逻辑 hasWork=false 会判空转，失败信号静默，REDISPATCH 的会话级前提不可达
+    const hasFailedSession = has("SELECT 1 FROM exec_sessions WHERE status = 'failed' LIMIT 1");
+    const hasRunningTask = has("SELECT 1 FROM tasks WHERE ai_state = 'running' LIMIT 1");
+    return {
+      hasActiveSession,
+      hasStalledSession,
+      hasFailedSession,
+      hasRunningTask,
+      hasWork: hasActiveSession || hasStalledSession || hasFailedSession || hasRunningTask,
+    };
+  },
+
+  /**
+   * T01274（FR-2.2）：采集决策 LLM 的输入快照——待办池（含计划依赖）、活跃/停滞会话、失败任务、预算占用。
+   *
+   * 全部为**只读批量查询**，不做 N+1：待办、其计划行、依赖计划、会话关联任务各自一次 IN 查询；
+   * IN 批次按 200 切分以规避 SQLite 变量上限 999（与 TaskService / ExecSessionService 同口径）。
+   */
+  collectSnapshot(): MonitorSnapshot {
+    const db = getDb();
+
+    // --- 待办池：未认领（ai_state=''）且未归档未搁置的待办任务 ---
+    const pendingTotal = (db.prepare(
+      "SELECT COUNT(*) AS n FROM tasks WHERE status = 'todo' AND archived = 0 AND shelved = 0 AND ai_state = ''",
+    ).get() as { n: number }).n;
+    const pendingRows = db.prepare(
+      `SELECT id, task_no, title, priority FROM tasks
+        WHERE status = 'todo' AND archived = 0 AND shelved = 0 AND ai_state = ''
+        ORDER BY ${PRIORITY_CASE}, created_at LIMIT ?`,
+    ).all(PENDING_LIMIT) as Array<{ id: string; task_no: string | null; title: string; priority: string }>;
+
+    // 待办 → 计划行（plan_tasks.linked_task_id 反指 tasks.id），并收集其依赖的计划 id
+    const planByTask = new Map<string, { deps: string | null }>();
+    const depIds = new Set<string>();
+    const taskIds = pendingRows.map((r) => r.id);
+    if (taskIds.length > 0) {
+      const plans = db.prepare(
+        `SELECT linked_task_id, deps FROM plan_tasks
+          WHERE archived = 0 AND linked_task_id IN (${taskIds.map(() => '?').join(',')})`,
+      ).all(...taskIds) as Array<{ linked_task_id: string; deps: string | null }>;
+      for (const p of plans) {
+        planByTask.set(p.linked_task_id, { deps: p.deps });
+        for (const d of parsePlanDeps(p.deps)) depIds.add(d.id);
+      }
+    }
+    const depStatus = new Map<string, { title: string; status: string }>();
+    const depIdList = [...depIds];
+    for (let i = 0; i < depIdList.length; i += 200) {
+      const chunk = depIdList.slice(i, i + 200);
+      const found = db.prepare(
+        `SELECT id, title, status FROM plan_tasks WHERE id IN (${chunk.map(() => '?').join(',')})`,
+      ).all(...chunk) as Array<{ id: string; title: string; status: string }>;
+      for (const f of found) depStatus.set(f.id, { title: f.title, status: f.status });
+    }
+
+    // T01284：判定用「存在行的状态」表；只查到的行入表，缺行由 depsSatisfied 视为已完成
+    const depStatusById = new Map<string, string>();
+    for (const [id, v] of depStatus) depStatusById.set(id, v.status);
+
+    const pending: SnapshotPending[] = pendingRows.map((r) => {
+      const planDeps = parsePlanDeps(planByTask.get(r.id)?.deps ?? null);
+      const deps: SnapshotDep[] = planDeps.map((d) => {
+        const info = depStatus.get(d.id);
+        return {
+          planTaskId: d.id,
+          title: info?.title ?? '',
+          type: d.type,
+          // 计划行已不存在时按「已完成」处理，与 PlanService.readyTasks 同口径（避免脏引用永久卡住排水）
+          done: !info || info.status === 'done',
+        };
+      });
+      // T01284（FR-3.7）：与 TaskService 排水**同一判定**（util/planDeps）——serial 前置须完成，
+      // parallel 不阻塞（可并发投给不同平台会话）。此前按「全部完成」判定，把 parallel 误当 serial。
+      return {
+        taskId: r.id,
+        taskNo: r.task_no,
+        title: r.title,
+        priority: r.priority,
+        deps,
+        ready: depsSatisfied(planDeps, depStatusById),
+      };
+    });
+
+    // --- 活跃/停滞/失败会话（带关联任务，供 LLM 定位 RESUME / REDISPATCH 目标） ---
+    const sessions = this.listActiveSessions();
+
+    // --- 失败任务（监督器重试口径，FR-4.2） ---
+    const failedRows = db.prepare(
+      `SELECT id, task_no, title, monitor_retry FROM tasks
+        WHERE archived = 0 AND ai_state = 'failed' ORDER BY ai_state_at DESC LIMIT ?`,
+    ).all(FAILED_LIMIT) as Array<{ id: string; task_no: string | null; title: string; monitor_retry: number }>;
+
+    const concurrent = (db.prepare(
+      "SELECT COUNT(*) AS n FROM exec_sessions WHERE status = 'active'",
+    ).get() as { n: number }).n;
+
+    return {
+      generatedAt: new Date().toISOString(),
+      pending,
+      pendingTotal,
+      sessions,
+      failed: failedRows.map((f) => ({
+        taskId: f.id,
+        taskNo: f.task_no,
+        title: f.title,
+        retryCount: f.monitor_retry ?? 0,
+      })),
+      budget: {
+        usedTokens: readIntSetting('supervisor.tokenUsed', 0),
+        maxTokens: readIntSetting('supervisor.tokenBudget', 0),
+        concurrent,
+        maxConcurrent: readIntSetting('supervisor.maxConcurrent', 2),
+      },
+    };
+  },
+
+  /**
+   * 监督 tick 入口（FR-2.1）。步骤顺序有意为之：
+   * 1) 观测层停滞兜底**先跑且不受熔断影响**（理由见文件头）；
+   * 2) 熔断开关关闭 → 决策层空转返回（FR-4.5）；
+   * 3) 就绪标记（T01280 / FR-3.1）——须早于空转判定，否则「有就绪待办但无会话」时排水死锁（见下方注释）；
+   * 4) 无监督对象 → 空转返回，不进入决策（NFR-1）；
+   * 5) 采集快照 → 调决策 LLM 得动作计划（T01275）→ 动作过护栏拍板（T01276；落地执行属 M3）。
+   *
+   * 因含 LLM 调用而为异步，故用 `ticking` 重入闸避免叠轮。
+   */
+  async supervisorTick(): Promise<SupervisorTickResult> {
+    lastTickAtMs = Date.now(); // T01286：无论本轮是否进入决策，都更新「监督器仍在跑」的活性信号
+    const stalledMarked = ExecSessionService.expireStaleSessions();
+    // T01311：审计清理与熔断开关无关——监督长期关闭时旧行同样该按保留策略回收。
+    // 内部按 1h 节流并自行兜错，故可每轮无脑调用；放在决策之前，避免被下方任何 early return 跳过。
+    pruneMonitorRuns();
+    const probe = this.probe();
+    // T05741（A 兜底 FR-3.1）：就绪排水与决策层解耦——supervisor.enabled=false 只停决策 LLM，
+    // 默认仍执行 markMonitorReady，否则 mtask_list_ready_tasks 恒空、A 兜底不可用。
+    // readyMarkEnabled=0 时保持旧语义（完全停摆），供「只关排水」的显式场景使用。
+    const readyMarked = readReadyMarkEnabled() ? TaskService.markMonitorReady() : 0;
+    if (!readEnabled()) return { ran: false, reason: 'disabled', stalledMarked, probe, readyMarked };
+    // T01280（FR-3.1）：就绪标记必须早于 hasWork 空转判定——积压里全是就绪待办、但无活跃会话/无 running 时，
+    // probe.hasWork 为假会直接空转返回，就绪任务永远标不上、拉取接口永远返空（排水死锁）。
+    if (!probe.hasWork) return { ran: false, reason: 'idle', stalledMarked, probe, readyMarked };
+    if (ticking) return { ran: false, reason: 'busy', stalledMarked, probe, readyMarked };
+    ticking = true;
+    try {
+      const snapshot = this.collectSnapshot();
+      logSnapshot(snapshot);
+      const decision = await this.decide(snapshot);
+      logDecision(decision);
+      // T01278（NFR-3）：决策不可用时改走异常降级——动作由 buildDegradedActions 生成，保证异常人工可见
+      const actions = decision.ok ? decision.actions : buildDegradedActions(snapshot, decision.error);
+      if (!decision.ok) {
+        // console.warn 会被 LogService 环形缓冲捕获，前端日志页可查（降级必须留痕，不能静默）
+        console.warn(`[supervisor] 异常降级：决策不可用，产出 ${actions.length} 条 ESCALATE 待人工处理`);
+      }
+      // T01276：LLM 只「建议」，动作能否落地由护栏拍板；被拦动作降级 ESCALATE
+      // T01342：一并传入本轮快照的任务 id 全集（collectKnownTaskIds）——护栏据此拦截 LLM 幻觉/越权的 taskId
+      const guarded = guard(actions, { concurrent: snapshot.budget.concurrent, knownTaskIds: collectKnownTaskIds(snapshot) });
+      logGuard(guarded);
+      // T01282（FR-3.3~3.5）：护栏只放行不执行，落地在这里——被拦动作已在 guard 内降级为 ESCALATE，
+      // 故落地对象只取 applied（blocked 的降级动作不改数据，由人工接手）。
+      // T01283：applyActions 改为异步（推送兜底需走中继 submit），动作间仍串行、独立容错。
+      const executed = await applyActions(guarded.applied);
+      const cnt = (s: ApplyOutcome['status']) => executed.filter((e) => e.status === s).length;
+      console.log(`[supervisor] 落地：成功 ${cnt('applied')} 跳过 ${cnt('skipped')} 失败 ${cnt('failed')}`);
+      // T01285（FR-4.6）：决策轮次写审计（空转/熔断/叠轮不写，理由见 SupervisorAudit 文件头）。
+      // 传本轮**实际采用**的动作而非 decision.actions——降级轮次 LLM 无输出，若传空会让审计丢失
+      // 「对哪些对象发了 ESCALATE」；降级本身由摘要里的 degraded/decisionError 标记区分。
+      recordMonitorRun({
+        snapshot,
+        actions,
+        executed,
+        blockedBy: guarded.blockedBy,
+        blockedCount: guarded.blocked.length,
+        decision,
+        readyMarked,
+        stalledMarked,
+      });
+      return { ran: true, reason: 'ok', stalledMarked, probe, snapshot, decision, guard: guarded, degraded: !decision.ok, readyMarked, executed };
+    } finally {
+      ticking = false;
+    }
+  },
+
+  /**
+   * T01275（FR-2.3）：把快照交给「监控专用」模型裁决，产出结构化动作计划。
+   *
+   * 复用 AIService.askJson——自带截断/解析失败重试 1 次与 ai_usage 计量（kind='ask-json'）；
+   * 调用参数按 PRD §7：max_tokens=2048、temperature=0、超时 10s（NFR-1）。
+   * 本方法**只裁决不落地**：动作是否被护栏放行、是否写 monitor_runs，属 T01276 / T01278。
+   */
+  async decide(snapshot: MonitorSnapshot): Promise<SupervisorDecision> {
+    const toolId = resolveDecisionToolId();
+    if (!toolId) {
+      return { ok: false, model: '', actions: [], retried: false, error: '未配置监督决策模型（supervisor.toolId）', durationMs: 0 };
+    }
+    const model = (getDb().prepare('SELECT model FROM ai_tools WHERE id = ?').get(toolId) as { model: string | null } | undefined)?.model ?? '';
+    const startedAt = Date.now();
+    try {
+      const res = await AIService.askJson<SupervisorAction[]>(
+        toolId,
+        MONITOR_SYSTEM_PROMPT,
+        JSON.stringify(snapshot),
+        parseActions,
+        { timeoutMs: DECISION_TIMEOUT_MS, retrySystem: MONITOR_RETRY_PROMPT, maxTokens: DECISION_MAX_TOKENS, temperature: DECISION_TEMPERATURE },
+      );
+      // T01289（FR-4.4 / REQ-019）：先计量再返回——预算是「累计」语义，失败轮次花的 token 同样是成本，
+      // 故不看 ok；res.usage 已是 askJson 全部尝试之和，重试不会被漏计。
+      if (res.usage) addTokenUsed(res.usage.totalTokens);
+      return {
+        ok: res.ok,
+        model,
+        actions: res.data ?? [],
+        retried: Boolean(res.retried),
+        error: res.error,
+        durationMs: Date.now() - startedAt,
+        usage: res.usage,
+      };
+    } catch (e) {
+      // 模型未配置 / 工具被删时 runtimeWithModel 抛错——统一按「决策不可用」返回，由 tick 记录降级
+      return {
+        ok: false,
+        model,
+        actions: [],
+        retried: false,
+        error: e instanceof Error ? e.message : String(e),
+        durationMs: Date.now() - startedAt,
+      };
+    }
+  },
+};

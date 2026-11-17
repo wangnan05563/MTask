@@ -50,7 +50,6 @@ import {
   type RepoBranchRow,
   type RepoChoice,
   type RepoListResult,
-  type RepoScanTarget,
 } from '../utils/gitRepoBranchGroups';
 import { mergeRepoTimelines, repoLabelOf, resolveMixedConfirmation, type RepoTimelineInput } from '../utils/gitTimelineMerge'; // T04912：多仓库混合时间线纯函数层
 import { shouldShowSubjectTooltip, subjectTooltipBox } from '../utils/gitSubjectTooltip'; // T04913：标题截断判据与浮层坐标
@@ -156,6 +155,20 @@ function laneCell(lanes: LaneLayout, row: number, lane: number) {
   return <span key={lane}> </span>;
 }
 
+/** 仓库下拉的单行文案：根仓库/子目录 + 分支 + 短 SHA；拆开拼接避免嵌套模板字符串 */
+function repoOptionLabel(c: RepoChoice): string {
+  const name = c.isRoot ? `根目录仓库 · ${c.displayName}` : c.subPath;
+  const branch = c.branch ? ` · ${c.branch}` : '';
+  const commit = c.commit ? `@${c.commit.slice(0, 8)}` : '';
+  return `${name}${branch}${commit}`;
+}
+
+/** 仓库行的展开箭头：未探到分支时给等宽占位，避免行首跳动 */
+function repoChevron(available: boolean, open: boolean) {
+  if (!available) return <span style={{ width: 11 }} />;
+  return open ? <ChevronDown size={11} aria-hidden /> : <ChevronRight size={11} aria-hidden />;
+}
+
 export function GitTreePickerModal({ projects, activeProjectId, selectedByProject, initialRepoView = false, onConfirm, onClose, zIndex = 1000, targetLabel, targetQueue = 0, targetTasks }: {
   readonly projects: Project[];
   readonly activeProjectId: string;
@@ -200,7 +213,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   const [mixedWarnings, setMixedWarnings] = useState<string[]>([]);
   /** T05063：确认按钮点击动画进行中（同时充当连点守卫） */
   const [confirming, setConfirming] = useState(false);
-  const confirmTimer = useRef<number | null>(null);
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [allBranches, setAllBranches] = useState(false);
   const [search, setSearch] = useState('');
   /** T04911：分组窗口懒加载时读「此刻」的搜索词（loadPane 不在 effect 依赖里，闭包会抓旧值） */
@@ -227,6 +240,10 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   /** T05690：「本次确认将关联到」条内的批量任务勾选（默认全选，点击说明条展开/收起） */
   const [targetPickerOpen, setTargetPickerOpen] = useState(false);
   const [checkedTargetIds, setCheckedTargetIds] = useState<string[]>(() => (targetTasks ?? []).map((t) => t.id));
+  /** T05690：勾选/取消单个关联任务，抽成命名函数避免 JSX 内三层箭头嵌套（S2004） */
+  function toggleTargetSelection(id: string, checked: boolean) {
+    setCheckedTargetIds((prev) => (checked ? [...new Set([...prev, id])] : prev.filter((x) => x !== id)));
+  }
   useEffect(() => {
     setCheckedTargetIds((targetTasks ?? []).map((t) => t.id));
   }, [targetTasks?.map((t) => t.id).join('|')]);
@@ -247,11 +264,11 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
     };
     const onUp = () => {
       dragState.current = null;
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
+      globalThis.removeEventListener('mousemove', onMove);
+      globalThis.removeEventListener('mouseup', onUp);
     };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
+    globalThis.addEventListener('mousemove', onMove);
+    globalThis.addEventListener('mouseup', onUp);
   };
   /** T04584：取数序号守卫——切子仓库分支时旧的根仓库请求可能晚到，晚到者不得覆盖新结果。 */
   const loadSeq = useRef(0);
@@ -423,9 +440,9 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
       const scoped = inputsForActiveWorkspace(next, projectId);
       const groups = buildRepoBranchGroups(showRemoteBranches ? scoped : localOnlyRefInputs(scoped), projectId);
       setOpenBranches((prev) => (prev.length ? prev : defaultExpandedBranches(groups, projectId)));
-      setOpenRepos((prev) => (prev.length
-        ? prev
-        : sharedBranchGroups(groups).flatMap((g) => defaultExpandedRepos(g, projectId).map((repoKey) => paneKeyOf(repoKey, g.branchName)))));
+      const defaultOpenPanes = sharedBranchGroups(groups)
+        .flatMap((g) => defaultExpandedRepos(g, projectId).map((repoKey) => paneKeyOf(repoKey, g.branchName)));
+      setOpenRepos((prev) => (prev.length ? prev : defaultOpenPanes));
     } finally {
       setScanning(false);
     }
@@ -542,7 +559,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
 
   // T05063：动画窗口内被取消/Esc 关闭时，绝不能把延迟提交漏到关闭之后
   useEffect(() => () => {
-    if (confirmTimer.current != null) window.clearTimeout(confirmTimer.current);
+    if (confirmTimer.current != null) globalThis.clearTimeout(confirmTimer.current);
     confirmTimer.current = null;
   }, []);
 
@@ -755,9 +772,13 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
       if (mixActive) {
         const out = resolveMixedConfirmation(commits, selected);
         if (!out.ok) {
-          setError(out.code === 'multi'
-            ? `已勾选 ${out.repoSubs.length} 个仓库的提交：提取/扫描按单一仓库逐仓库执行，一次确认只能回传一个仓库，请先清空其它仓库的勾选`
-            : out.code === 'missing' ? '所选提交已不在当前列表中，请重新取数后再确认' : '还没有勾选任何提交');
+          let msg = '还没有勾选任何提交';
+          if (out.code === 'multi') {
+            msg = `已勾选 ${out.repoSubs.length} 个仓库的提交：提取/扫描按单一仓库逐仓库执行，一次确认只能回传一个仓库，请先清空其它仓库的勾选`;
+          } else if (out.code === 'missing') {
+            msg = '所选提交已不在当前列表中，请重新取数后再确认';
+          }
+          setError(msg);
           return;
         }
         setError('');
@@ -809,8 +830,8 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
   function onConfirmClick() {
     if (!confirmEnabled) return;
     setConfirming(true);
-    if (confirmTimer.current != null) window.clearTimeout(confirmTimer.current);
-    confirmTimer.current = window.setTimeout(() => {
+    if (confirmTimer.current != null) globalThis.clearTimeout(confirmTimer.current);
+    confirmTimer.current = globalThis.setTimeout(() => {
       confirmTimer.current = null;
       setConfirming(false);
       confirm();
@@ -821,7 +842,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
     /* 原生 <dialog open>：显隐仍由本组件挂载/卸载控制（父层只在需要时渲染），Esc 仍由上面的监听负责。
        T05210：显式补 role="dialog"——原生 <dialog> 的隐式角色在部分自动化/无障碍工具里取不到
        `getAttribute('role')`，显式声明后「弹窗以 dialog 角色出场」这条可被直接断言，也不再依赖隐式语义。 */
-    <dialog open role="dialog" data-lck="git-tree-modal" data-fullscreen={fullscreen ? '1' : '0'} aria-modal="true" aria-label="从 Git 树选择评审范围"
+    <dialog open data-lck="git-tree-modal" data-fullscreen={fullscreen ? '1' : '0'} aria-modal="true" aria-label="从 Git 树选择评审范围"
       style={{
         position: 'fixed', inset: 0, zIndex: 1000, margin: 0,
         // T05556：全屏时 padding=0、背景铺满；非全屏保持原 16px 收边与半透明遮罩
@@ -910,8 +931,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
                       <label key={t.id} data-lck="git-tree-target-item" title={t.label}
                         style={{ ...chipStyle, display: 'inline-flex', gap: 4, alignItems: 'center', maxWidth: 280, cursor: 'pointer' }}>
                         <input type="checkbox" checked={checkedTargetIds.includes(t.id)}
-                          onChange={(e) => setCheckedTargetIds((prev) => (e.target.checked
-                            ? [...new Set([...prev, t.id])] : prev.filter((x) => x !== t.id)))} />
+                          onChange={(e) => toggleTargetSelection(t.id, e.target.checked)} />
                         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.label}</span>
                       </label>
                     ))}
@@ -964,7 +984,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
               style={{ ...boxStyle, maxWidth: 320 }}>
               {repoChoices.map((c) => (
                 <option key={c.subPath || '.'} value={c.subPath}>
-                  {`${c.isRoot ? `根目录仓库 · ${c.displayName}` : c.subPath}${c.branch ? ` · ${c.branch}` : ''}${c.commit ? `@${c.commit.slice(0, 8)}` : ''}`}
+                  {repoOptionLabel(c)}
                 </option>
               ))}
             </select>
@@ -983,8 +1003,8 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
               style={{ display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
               <input type="checkbox" checked={mixRepos}
                 onChange={(e) => { setMixRepos(e.target.checked); setSelected([]); setAnchor(null); }} />
-              混合全部仓库
-            </label>
+              {'混合全部仓库'}
+              </label>
           )}
           {!repoView && repoListState === 'error' && (
             <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>仓库清单取数失败，仍按当前仓库取数</span>
@@ -1043,7 +1063,7 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
             <label data-lck="git-tree-show-remote" title="默认只列本地分支；勾选后把各仓库的远程跟踪引用一起纳入分组"
               style={{ display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
               <input type="checkbox" checked={showRemoteBranches} onChange={(e) => setShowRemoteBranches(e.target.checked)} />
-              显示远程分支
+              {'显示远程分支'}
             </label>
           )}
         </div>
@@ -1136,16 +1156,21 @@ export function GitTreePickerModal({ projects, activeProjectId, selectedByProjec
             )}
           </div>
           {/* T05556：可拖拽分隔线——mousedown 起记录起点，mousemove 实时算左栏百分比（钳制 20%~70% 防布局崩坏） */}
-          <div data-lck="git-tree-divider" className="gt-divider"
+          <style>{`.gt-divider{transition:background .15s ease}.gt-divider:hover{background:var(--accent)}.gt-divider:active{background:var(--accent-soft)}`}</style>
+          <button type="button" data-lck="git-tree-divider" className="gt-divider"
             onMouseDown={startDrag}
-            role="separator" aria-orientation="vertical"
-            aria-label="拖拽调整左右栏宽度" aria-valuenow={Math.round(leftPanePct)}
+            onKeyDown={(e) => {
+              if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+              e.preventDefault();
+              const delta = e.key === 'ArrowLeft' ? -2 : 2;
+              setLeftPanePct((v) => Math.min(90, Math.max(20, v + delta)));
+            }}
+            aria-label={`拖拽或按左右方向键调整左右栏宽度，当前 ${Math.round(leftPanePct)}%`}
+            title="拖拽或按左右方向键调整左右栏宽度"
             style={{
-              flex: '0 0 4px', minHeight: 0, cursor: 'col-resize', background: 'var(--border)',
+              flex: '0 0 4px', minHeight: 0, padding: 0, border: 'none', cursor: 'col-resize', background: 'var(--border)',
               borderRadius: 2, margin: '0 3px', alignSelf: 'stretch', transition: 'background .15s ease',
-            }}>
-            <style>{`.gt-divider{transition:background .15s ease}.gt-divider:hover{background:var(--accent)}.gt-divider:active{background:var(--accent-soft)}`}</style>
-          </div>
+            }} />
           {/* T05691 二轮：右栏与左栏一样保留边缘留白，滚动条/下拉条不再把内容压到外框边缘截断 */}
           <div style={{ flex: '1 1 auto', minWidth: 0, maxWidth: '100%', paddingRight: 12, display: 'flex', flexDirection: 'column', maxHeight: '100%' }}>
             <GitTreeFilePanel entries={detailEntries} colorIndex={colorIndex} />
@@ -1258,7 +1283,7 @@ function CommitRefPills({ refs, compact }: { readonly refs: GitRefName[]; readon
  *    承担无障碍与取证（全文始终可从 DOM 读出）。
  */
 function CommitSubject({ text }: { readonly text: string }) {
-  const ref = useRef<HTMLSpanElement>(null);
+  const ref = useRef<HTMLButtonElement>(null);
   const [box, setBox] = useState<ReturnType<typeof subjectTooltipBox> | null>(null);
   const show = () => {
     const el = ref.current;
@@ -1266,32 +1291,34 @@ function CommitSubject({ text }: { readonly text: string }) {
     const r = el.getBoundingClientRect();
     setBox(subjectTooltipBox(
       { left: r.left, top: r.top, bottom: r.bottom, right: r.right },
-      { width: window.innerWidth, height: window.innerHeight },
+      { width: globalThis.innerWidth, height: globalThis.innerHeight },
     ));
   };
   useEffect(() => {
     if (!box) return;
     // 列表滚动 / 视口变化后旧坐标立即失效，收起而不是把浮层留在半空
     const hide = () => setBox(null);
-    window.addEventListener('scroll', hide, true);
-    window.addEventListener('resize', hide);
+    globalThis.addEventListener('scroll', hide, true);
+    globalThis.addEventListener('resize', hide);
     return () => {
-      window.removeEventListener('scroll', hide, true);
-      window.removeEventListener('resize', hide);
+      globalThis.removeEventListener('scroll', hide, true);
+      globalThis.removeEventListener('resize', hide);
     };
   }, [box]);
   return (
     <>
-      <span ref={ref} data-lck="git-tree-subject" data-full-subject={text} aria-label={text}
+      <button type="button" ref={ref} data-lck="git-tree-subject" data-full-subject={text} aria-label={text}
         onMouseEnter={show} onMouseLeave={() => setBox(null)}
+        onFocus={show} onBlur={() => setBox(null)}
         style={{
           flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          background: 'none', border: 'none', padding: 0, textAlign: 'left', color: 'inherit',
           // 由继承 body 字号收敛到 --fs-s（默认档 12px，比原 13px 小一级、仍比 11px 的日期/作者高一层级），
           // 配合行内边距由 3px 收到 2px，单条记录更紧凑，一屏能多看几行。
           fontSize: 'var(--fs-s)', lineHeight: 1.3,
         }}>
         {text}
-      </span>
+      </button>
       {box && createPortal(
         <span data-lck="git-tree-subject-tooltip" role="tooltip"
           style={{
@@ -1484,6 +1511,9 @@ function RepoBranchGroupList({ groups, blocked, activeProjectId, panes, openBran
               const badge = repoStatusBadge(row.status);
               const isCurrent = row.projectId === activeProjectId;
               const repoPath = repoPathOf(row.workspacePath, row.repoSub);
+              let repoIconColor = 'var(--text-muted)';
+              if (multiRepoColored) repoIconColor = repoColorVar(colorIndex[row.repoKey]);
+              else if (isCurrent) repoIconColor = 'var(--accent)';
               return (
                 <div key={paneKey} data-lck="git-repo-repo" data-project={row.projectId} data-repo-sub={row.repoSub || '.'} data-status={row.status}
                   style={{ marginLeft: 12, paddingLeft: 8, borderLeft: '2px solid var(--border)', background: repoOpen ? 'var(--surface-2)' : 'transparent' }}>
@@ -1494,9 +1524,9 @@ function RepoBranchGroupList({ groups, blocked, activeProjectId, panes, openBran
                       if (nextOpen && row.available && !pane) onLoadRepo(row, group.branchName, false);
                     }}
                     style={{ ...groupHeadStyle, background: 'transparent', borderBottom: 'none', padding: '4px 4px', cursor: row.available ? 'pointer' : 'not-allowed', opacity: row.available ? 1 : 0.7 }}>
-                    {row.available ? (repoOpen ? <ChevronDown size={11} aria-hidden /> : <ChevronRight size={11} aria-hidden />) : <span style={{ width: 11 }} />}
+                    {repoChevron(row.available, repoOpen)}
                     {/* T05210：多仓库时仓库图标取该仓库标识色（与右栏文件树同色）；单仓库保持原「当前项目 = 强调色」 */}
-                    <FolderGit2 size={13} style={{ color: multiRepoColored ? repoColorVar(colorIndex[row.repoKey]) : (isCurrent ? 'var(--accent)' : 'var(--text-muted)') }} />
+                    <FolderGit2 size={13} style={{ color: repoIconColor }} />
                     <span style={{ fontSize: 'var(--fs-s)', color: isCurrent ? 'var(--text)' : 'var(--text-secondary)' }}>{row.repoLabel}</span>
                     {/* 子仓库这一枚标记是「同一目录里不止一个仓库」的直接证据，门与用户都靠它 */}
                     {row.repoSub && <span data-lck="git-repo-repo-nested" style={chipStyle}>目录内仓库</span>}

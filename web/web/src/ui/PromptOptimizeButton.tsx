@@ -1,0 +1,145 @@
+import { useEffect, useState } from 'react';
+import { Loader2, Wand2 } from 'lucide-react';
+import { api, type AITool } from '../api/client';
+import { aiBlocked, aiBlockedTitle, useAiReadiness } from './aiReadiness';
+import { OPTIMIZE_SCOPE_REQ, runOptimize, useOptimizeStore } from '../stores/optimizeStore'; // T03684：优化运行态切页保持
+import { OPTIMIZE_EMPTY_MESSAGE, resolveOptimizeInput } from './optimizeInput'; // T04808：输入源判定单源
+
+/**
+ * 「提示词优化」按钮（T00842 二轮）：把一段正文改写为结构化提示词。
+ *
+ * 语义对齐任务页菜单的同名操作：调 POST /api/ai/optimize，输入为「标题 + 正文」，
+ * 用整理工具生成可复用、要素清晰的结构化提示词。与前缀 AiPolishButton（/ai/polish 润色
+ * 而非改写结构）是两个不同诉求，故单独抽出而非混用。
+ * T04808：正文为空时改用标题作为唯一输入（与提示词菜单共用同一判定单源）；
+ * 标题与正文都为空时点击给出「请输入标题或描述」，不再静默禁用按钮。
+ *
+ * 与 AiPolishButton 一致的约定：
+ * - toolId 为空时自动取「模型管理」里第一个已配置模型的工具（模块级缓存）；
+ * - 结果通过 onOptimized 回填输入框，由调用方确认后再保存，不自动落库；
+ *   ——所以本组件不做“是否脏数据”判断，保存决策交给页面。
+ * - 大模型常把结果包在 ```markdown ``` 代码围栏里，回填前剥离，避免落库/渲染多出围栏。
+ */
+
+/** 模块级缓存：AI 工具列表在同一会话内不变，避免每个按钮各拉一次 /aitools */
+let toolCache: string | null = null;
+let toolPending: Promise<string> | null = null;
+
+async function resolveToolId(): Promise<string> {
+  if (toolCache) return toolCache;
+  toolPending ??= api.get<AITool[]>('/aitools')
+    .then((list) => {
+      const valid = (list ?? []).find((t) => t.model);
+      toolCache = valid?.id ?? '';
+      return toolCache;
+    })
+    .catch(() => '')
+    .finally(() => { toolPending = null; });
+  return toolPending;
+}
+
+/** 剥离大模型常见的 ```markdown``` 代码围栏，避免结构标记残留在落库内容里 */
+function stripCodeFence(text: string): string {
+  const m = /^\s*```(?:markdown|md)?\s*\n?([\s\S]*?)\n?```\s*$/.exec(text);
+  return m ? m[1] : text;
+}
+
+export function PromptOptimizeButton({ title, content, onClick, onOptimized, disabled, flash, storeKey }: {
+  /** 条目/标题，作为优化输入的辅助信息（用于生成结构上下文） */
+  readonly title: string;
+  /** 待优化的正文；为空时回退用标题作为输入（T04808） */
+  readonly content: string;
+  /** 自定义执行钩子；不传时用内置逻辑调 /ai/optimize */
+  readonly onClick?: () => void;
+  /** 优化结果回填回调（不自动保存，由调用方确认后落库）；传了 storeKey 时不需要——结果由页面 drain 落草稿 */
+  readonly onOptimized?: (text: string) => void;
+  readonly disabled?: boolean;
+  /** 提示回调（页面统一的 flash/toast）；不传时静默 */
+  readonly flash?: (msg: string) => void;
+  /** T03684：本页域内的条目 id。给出后运行态与结果走模块级 optimizeStore（键 `req:${id}`）——
+   *  切一级菜单整页卸载时「进行中」呼吸态不丢、AI 回来的结果先 park 在 store，由页面挂载时排入草稿；
+   *  不传则维持组件内本地忙碌态 + onOptimized 当场回填（无切页诉求的调用方零改动）。 */
+  readonly storeKey?: string;
+}) {
+  const [busyLocal, setBusyLocal] = useState(false);
+  const [autoToolId, setAutoToolId] = useState('');
+  // T03176（D-14）：可用性以服务端单源为准——不可用时按钮仍可见，置灰并给出原因
+  const readiness = useAiReadiness();
+  const blocked = aiBlocked(readiness);
+  // 不传 apply：本组件只读忙碌态，结果排干归页面（避免按钮与页面两处抢同一份结果）
+  const storeSnap = useOptimizeStore(OPTIMIZE_SCOPE_REQ);
+  const busy = storeKey ? Boolean(storeSnap.busy[`${OPTIMIZE_SCOPE_REQ}${storeKey}`]) : busyLocal;
+
+  useEffect(() => {
+    void resolveToolId().then(setAutoToolId);
+  }, []);
+
+  // T04808：内容/标题的输入源判定与提示词页同口径；null 表示两者皆空
+  const input = resolveOptimizeInput(title, content);
+  const active = readiness?.toolId || autoToolId;
+
+  async function run() {
+    if (onClick) { onClick(); return; }
+    if (!input) { flash?.(OPTIMIZE_EMPTY_MESSAGE); return; }
+    if (!active) { flash?.('请先在「模型管理」页添加并选择 AI 工具'); return; }
+    if (storeKey) {
+      // 走 store：busy 由 store 记账（切页回来仍在），成功结果 park 后由页面 drain 落草稿
+      let failMsg = '';
+      const r = await runOptimize(
+        `${OPTIMIZE_SCOPE_REQ}${storeKey}`,
+        (signal) => api.post<{ ok: boolean; content?: string; error?: string }>('/ai/optimize', {
+          toolId: active, title: input.title, description: input.description,
+        }, signal),
+        (result) => {
+          if (!result.ok) { failMsg = result.error ?? '提示词优化失败'; return null; }
+          if (!result.content?.trim()) { failMsg = 'AI 未返回优化结果'; return null; }
+          return { text: stripCodeFence(result.content.trim()), source: input.source };
+        },
+      );
+      // 成功文案由页面 drain 给出（切页期间完成也能看到），这里只报失败
+      if (!r.ok) flash?.(failMsg || r.error || '提示词优化失败');
+      return;
+    }
+    setBusyLocal(true);
+    try {
+      const r = await api.post<{ ok: boolean; content?: string; error?: string }>('/ai/optimize', {
+        toolId: active, title: input.title, description: input.description,
+      });
+      if (!r.ok) { flash?.(r.error ?? '提示词优化失败'); return; }
+      if (!r.content?.trim()) { flash?.('AI 未返回优化结果'); return; }
+      onOptimized?.(stripCodeFence(r.content.trim()));
+      flash?.('已生成结构化提示词，请核对后保存');
+    } catch (e) {
+      flash?.(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyLocal(false);
+    }
+  }
+
+  // T04808：内容为空不再禁用按钮（仅标题可优化）；两者皆空时保留可点击，由 run() 给出明确提示
+  const idle = !busy && !disabled && !!input && !blocked;
+  const label = busy ? '提示词优化进行中…' : '提示词优化 — 用选中工具把内容改写为结构化提示词';
+  const tip = !input ? `${label}（${OPTIMIZE_EMPTY_MESSAGE}）`
+    : input.source === '标题' ? `${label}（内容为空，将基于标题优化）` : label;
+  let color = 'var(--text-muted)';
+  if (idle) color = 'var(--text)';
+  if (busy) color = 'var(--accent-text)';
+  return (
+    <button
+      onClick={() => void run()}
+      disabled={busy || disabled || blocked}
+      title={aiBlockedTitle(readiness, tip)}
+      aria-label={busy ? '提示词优化进行中' : '提示词优化：把内容改写为结构化提示词'}
+      className={`task-op tbtn-anim${busy ? ' task-breathe' : ''}`}
+      style={{
+        fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', border: 'none',
+        cursor: idle ? 'pointer' : 'default',
+        background: busy ? 'var(--accent)' : 'transparent',
+        color,
+        opacity: idle || busy ? 1 : 0.75,
+      }}
+    >
+      {busy ? <Loader2 size={13} className="aispin" /> : <Wand2 size={13} />}
+    </button>
+  );
+}

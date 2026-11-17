@@ -1,0 +1,160 @@
+import type { AIAdapter, TaskContext, ToolConfig, JobResult, AdapterType, ModelsResult, StreamResult } from './types';
+import { withTimeout, formatHttpError, normalizeModels, readStreamLines, probeOkMessage, modelDispatcher } from './netutil';
+import { streamTruncatedError } from './types'; // T00779：流式截断统一错误文案
+
+interface ChatResp {
+  message?: { content?: string };
+  done_reason?: string; // 走查 M-2：非流式同样判定触顶（length）
+  error?: string;
+}
+
+/** Ollama 本地模型适配器（POST /api/chat，stream=false）。endpoint 形如 http://127.0.0.1:11434。 */
+export class OllamaAdapter implements AIAdapter {
+  readonly type = 'ollama' as AdapterType;
+
+  private baseUrl(endpoint: string): string {
+    return endpoint.replace(/\/+$/, '');
+  }
+
+  async testConnection(config: ToolConfig) {
+    try {
+      const url = `${this.baseUrl(config.endpoint)}/api/tags`;
+      const tms = config.timeoutMs ?? 10000;
+      const res = await withTimeout(fetch(url, { dispatcher: modelDispatcher(tms) }), tms);
+      return res.ok
+        ? { ok: true, message: probeOkMessage('本地服务可达，模型目录可读') }
+        : { ok: false, message: formatHttpError(res.status, await res.text().catch(() => '')) };
+    } catch (e) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  /** GET /api/tags 拉取本地已拉取的模型清单（Ollama 返回 { models: [{ name }] }） */
+  async listModels(config: ToolConfig): Promise<ModelsResult> {
+    try {
+      const url = `${this.baseUrl(config.endpoint)}/api/tags`;
+      const tms = config.timeoutMs ?? 15000;
+      const res = await withTimeout(fetch(url, { dispatcher: modelDispatcher(tms) }), tms);
+      if (!res.ok) return { ok: false, message: formatHttpError(res.status, await res.text().catch(() => '')) };
+      const models = normalizeModels(await res.json().catch(() => null));
+      if (models.length === 0) return { ok: false, message: 'Ollama 未返回模型列表（可能尚未拉取任何模型）' };
+      return { ok: true, models };
+    } catch (e) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  async send(context: TaskContext, config: ToolConfig): Promise<JobResult> {
+    const user = [
+      `【项目】${context.projectName}`,
+      `【任务】${context.title}`,
+      context.description ? `【描述】${context.description}` : '',
+      context.aiSummary ? `【AI 梳理摘要】${context.aiSummary}` : '',
+      context.prdContext ? `【PRD 需求上下文】${context.prdContext}` : '', // T00763
+      context.workspacePath ? `【工作空间】${context.workspacePath}（项目上下文根路径）` : '', // T00771
+      '',
+      '你是 MTask 的开发任务执行者。请产出可直接交付的开发成果文本：实现思路(简短)、完整代码/配置/操作步骤(可复制)、关键风险与验证方式。只输出最终成果。',
+    ].filter(Boolean).join('\n');
+    return this.chat('', user, config);
+  }
+
+  /** 通用单轮对话：复用 /api/chat，供 send 与提示词优化等场景共用 */
+  async chat(system: string, user: string, config: ToolConfig, signal?: AbortSignal): Promise<JobResult> {
+    // T00838：为外部取消信号生成内部 AbortController，随 fetch 透传
+    const ctrl = signal ? new AbortController() : undefined;
+    if (signal && ctrl) signal.addEventListener('abort', () => ctrl.abort());
+    const tms = config.timeoutMs ?? 60000;
+    try {
+      const url = `${this.baseUrl(config.endpoint)}/api/chat`;
+      const prompt = system ? `${system}\n\n${user}` : user;
+
+      const res = await withTimeout(
+        fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: config.model ?? 'qwen2.5-coder:7b',
+            messages: [{ role: 'user', content: prompt }],
+            stream: false,
+            options: { temperature: config.temperature ?? 0.2 },
+          }),
+          ...(ctrl ? { signal: ctrl.signal } : {}),
+          dispatcher: modelDispatcher(tms),
+        }),
+        tms,
+      );
+
+      const data = (await res.json()) as ChatResp;
+      if (!res.ok || data.error) {
+        return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+      }
+      // 走查 M-2：非流式触顶判定（done_reason=length），与流式口径一致——先判 done_reason 再判空
+      if (data.done_reason === 'length') return { ok: false, error: streamTruncatedError(data.message?.content?.length ?? 0) };
+      if (!data.message?.content) return { ok: false, error: 'AI 返回内容为空' };
+      return { ok: true, content: data.message.content };
+    } catch (e) {
+      // T00838：外部主动中止归因到「任务已停止」
+      if (signal?.aborted) return { ok: false, error: '任务已停止' };
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  /** 流式通用单轮对话：stream:true，逐行取 message.content 增量回调，供 AI 周报 SSE 实时输出 */
+  async chatStream(system: string, user: string, config: ToolConfig, onDelta: (text: string) => void, signal?: AbortSignal): Promise<StreamResult> {
+    const ctrl = new AbortController();
+    // 流式期间受超时约束：超时即中断，避免长耗时任务无限挂起
+    const tms = config.timeoutMs ?? 60000;
+    const timer = setTimeout(() => ctrl.abort(), tms);
+    // T00838：外部取消信号（用户点「停止」）同样 abort 底层流请求
+    if (signal) signal.addEventListener('abort', () => ctrl.abort());
+    try {
+      const url = `${this.baseUrl(config.endpoint)}/api/chat`;
+      const prompt = system ? `${system}\n\n${user}` : user;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: config.model ?? 'qwen2.5-coder:7b',
+          messages: [{ role: 'user', content: prompt }],
+          // 请求流式，逐块返回 message.content
+          stream: true,
+          options: { temperature: config.temperature ?? 0.2 },
+        }),
+        signal: ctrl.signal,
+        dispatcher: modelDispatcher(tms),
+      });
+      if (!res.ok || !res.body) {
+        return { ok: false, error: res.ok ? 'AI 未返回流式内容' : formatHttpError(res.status, await res.text().catch(() => '')) };
+      }
+      let text = '';
+      let doneReason = ''; // T00779：Ollama 侧截断标志（done_reason=length）
+      await readStreamLines(res, (line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        try {
+          const json = JSON.parse(trimmed) as { message?: { content?: string }; error?: string; done?: boolean; done_reason?: string };
+          if (json.error) throw new Error(json.error);
+          if (typeof json.done_reason === 'string' && json.done_reason) doneReason = json.done_reason;
+          const delta = json.message?.content;
+          // Ollama 增量与最终残留都可能为空，仅对非空增量回调
+          if (typeof delta === 'string' && delta) {
+            text += delta;
+            onDelta(delta);
+          }
+        } catch {
+          // 忽略协议偶发的非 JSON 行，交由完整流结束后判断结果
+        }
+      });
+      if (!text) return { ok: false, error: 'AI 返回内容为空' };
+      if (doneReason === 'length') return { ok: false, error: streamTruncatedError(text.length), partial: text }; // T00779 + T00814 partial
+      return { ok: true, content: text };
+    } catch (e) {
+      // T00838：区分「外部主动停止」与「超时」
+      if (signal?.aborted) return { ok: false, error: '任务已停止' };
+      if (e instanceof Error && e.name === 'AbortError') return { ok: false, error: `连接超时（超过 ${config.timeoutMs ?? 60000}ms）` };
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}

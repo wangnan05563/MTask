@@ -1,0 +1,1112 @@
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { FIELD_BLOCK } from '../ui/primitives'; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
+import { Archive, ChevronDown, ChevronUp, Code2, Cpu, Copy, Eye, EyeOff, Loader2, Pencil, PlugZap, Plus, Power, Save, Star, X, Check, Zap } from 'lucide-react';
+import { api, type AITool, type ConfigIssue } from '../api/client';
+import { UsagePanel } from './UsagePanel';
+import { askConfirm } from '../ui/dialogs';
+import { PinToggle } from '../ui/PinToggle';
+
+/** 配置记录表单草稿（apiKey 留空 = 编辑时保留原密钥） */
+interface ToolForm {
+  name: string;
+  type: string;
+  endpoint: string;
+  apiKey: string;
+  model: string;
+  modelNotes: string;
+  purpose: 'organize' | 'develop';
+  enabled: boolean;
+  remark: string;
+  /** 厂商官方控制台页面 URL（仅用于跳转展示） */
+  consoleUrl: string;
+}
+
+const PURPOSE_LABEL: Record<string, string> = { organize: '整理', develop: '开发' };
+
+// 表格单元格与表单样式提到模块级：拆分出的行/弹窗子组件与主组件共用同一对象，避免重复定义
+const cellStyle: CSSProperties = { padding: 8, borderBottom: '1px solid var(--surface-2)', verticalAlign: 'top' };
+const fieldStyle: CSSProperties = FIELD_BLOCK; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
+const labelStyle: CSSProperties = { fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 4, display: 'block' };
+
+function emptyForm(defaultType: string): ToolForm {
+  return {
+    name: '', type: defaultType, endpoint: '', apiKey: '',
+    model: '', modelNotes: '', purpose: 'develop', enabled: true, remark: '', consoleUrl: '',
+  };
+}
+
+/** 操作列 props：按钮运行状态收敛为单值/单条结果，回调由父组件注入（S3776/S2004 拆分：降低页面组件复杂度） */
+interface ToolActionsCellProps {
+  readonly tool: AITool;
+  readonly testing: boolean;
+  readonly probing: boolean;
+  readonly fetchingModels: boolean;
+  readonly testResult: { ok: boolean; msg: string } | undefined;
+  readonly probeResult: { ok: boolean; msg: string } | undefined;
+  readonly modelsResult: readonly string[] | undefined;
+  readonly onOpenEdit: (t: AITool) => void;
+  readonly onTest: (t: AITool) => void;
+  readonly onProbe: (t: AITool) => void;
+  readonly onFetchRowModels: (t: AITool) => void;
+  readonly onSetDefault: (t: AITool, kind: 'organize' | 'develop') => void;
+  readonly onRemove: (t: AITool) => void;
+  readonly flash: (msg: string) => void;
+}
+
+/** 模型名复制按钮（S3776 拆分）：点击复制 + 1.5s 对勾反馈，样式与操作列其余按钮一致 */
+function ModelCopyButton({ model, flash }: { readonly model: string | null; readonly flash: (msg: string) => void }) {
+  // T00587：复制反馈——点击后图标切换为对勾并弹入，1.5s 复原（与其他复制交互一致）
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    if (!model) return;
+    void navigator.clipboard.writeText(model).then(() => {
+      flash(`已复制模型：${model}`);
+      setCopied(true);
+      globalThis.setTimeout(() => setCopied(false), 1500);
+    });
+  };
+  return (
+    <button
+      className="abtn" onClick={copy}
+      disabled={!model}
+      title={model ? `复制模型 — 复制当前选择的模型名称（${model}）` : '复制模型 — 当前未选择模型'}
+      aria-label={copied ? '已复制模型名称' : '复制模型名称'}
+      style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', cursor: model ? 'pointer' : 'not-allowed', opacity: model ? 1 : 0.4, color: copied ? 'var(--success, var(--accent))' : undefined }}
+    >
+      {copied
+        ? <Check size={13} className="copy-pop" style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+        : <Copy size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
+    </button>
+  );
+}
+
+/** 操作列的测试/探测/模型结果行（S3776 拆分）：三块结果各自只在有值时才出现 */
+function ToolResultLines({ testResult, probeResult, modelsResult }: {
+  readonly testResult: { ok: boolean; msg: string } | undefined;
+  readonly probeResult: { ok: boolean; msg: string } | undefined;
+  readonly modelsResult: readonly string[] | undefined;
+}) {
+  return (
+    <>
+      {testResult && (
+        <div style={{ fontSize: 'var(--fs-xs)', color: testResult.ok ? 'var(--success)' : 'var(--danger)', marginTop: 4, whiteSpace: 'normal', maxWidth: 200 }}>
+          {/* T02208：连接测试只做目录型探测，「成功」不再由前端断言——文案口径交给服务端给出 */}
+          {testResult.ok ? '✓ ' : '✗ '}{testResult.msg}
+        </div>
+      )}
+      {probeResult && (
+        <div style={{ fontSize: 'var(--fs-xs)', color: probeResult.ok ? 'var(--success)' : 'var(--danger)', marginTop: 4, whiteSpace: 'normal', maxWidth: 200 }}>
+          {probeResult.ok ? '✓ ' : '✗ '}{probeResult.msg}
+        </div>
+      )}
+      {modelsResult && (
+        // T00532：可滚动查看全部模型，超出 160px 内部滚动不再截断
+        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', marginTop: 4, whiteSpace: 'normal', maxWidth: 220, maxHeight: 160, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 4, padding: 4 }}>
+          可用模型（{modelsResult.length} 个）：{modelsResult.join('、')}
+        </div>
+      )}
+    </>
+  );
+}
+
+/** 操作列（S3776 拆分）：集中放置悬停显现按钮与测试/模型结果，独立成组件后行组件与页面组件复杂度均降至阈值内 */
+function ToolActionsCell({ tool, testing, probing, fetchingModels, testResult, probeResult, modelsResult, onOpenEdit, onTest, onProbe, onFetchRowModels, onSetDefault, onRemove, flash }: ToolActionsCellProps) {
+  return (
+    <td style={{ ...cellStyle, whiteSpace: 'nowrap' }}>
+      {tool.console_url ? (
+        <a
+          href={tool.console_url}
+          target="_blank"
+          rel="noreferrer"
+          className="abtn"
+          style={{ fontSize: 'var(--fs-s)', marginRight: 6, color: 'var(--accent)' }}
+        >控制台</a>
+      ) : null}
+      <button
+        className="abtn" onClick={() => onOpenEdit(tool)}
+        title="编辑 — 编辑该配置，保留原 API Key"
+        aria-label="编辑：编辑该配置，保留原 API Key"
+        style={{ fontSize: 'var(--fs-s)', marginRight: 6, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+      >
+        <Pencil size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+      </button>
+      <button
+        className="abtn" onClick={() => onTest(tool)}
+        disabled={testing}
+        title={testing ? '测试中…' : '测试 — 测试该配置的连通性'}
+        aria-label={testing ? '测试中：正在测试连通性' : '测试：测试该配置的连通性'}
+        style={{ fontSize: 'var(--fs-s)', marginRight: 6, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+      >
+        {testing ? <Loader2 size={13} className="aispin" /> : <PlugZap size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
+      </button>
+      <button
+        className="abtn" onClick={() => onProbe(tool)}
+        disabled={probing}
+        title={probing ? '实调探测中…' : '实调探测 — 发一条极小真实请求，验证该模型当前能否调用（会消耗少量额度，仅点击时发起）'}
+        aria-label={probing ? '探测中：正在发起最小实调探测' : '实调探测：发一条极小真实请求验证模型可调用'}
+        style={{ fontSize: 'var(--fs-s)', marginRight: 6, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+      >
+        {probing ? <Loader2 size={13} className="aispin" /> : <Zap size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
+      </button>
+      <button
+        className="abtn" onClick={() => onFetchRowModels(tool)}
+        disabled={fetchingModels}
+        title={fetchingModels ? '获取模型列表中…' : '模型 — 拉取该配置可用的模型列表'}
+        aria-label={fetchingModels ? '获取中：拉取可用模型列表' : '模型：拉取该配置可用的模型列表'}
+        style={{ fontSize: 'var(--fs-s)', marginRight: 6, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+      >
+        {fetchingModels ? <Loader2 size={13} className="aispin" /> : <Cpu size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
+      </button>
+      {!tool.isDefaultOrganize && (
+        <button
+          className="abtn" onClick={() => onSetDefault(tool, 'organize')}
+          title="默认整理 — 将该配置设为默认整理工具"
+          aria-label="默认整理：将该配置设为默认整理工具"
+          style={{ fontSize: 'var(--fs-s)', marginRight: 6, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+        >
+          <Star size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+        </button>
+      )}
+      {!tool.isDefaultDevelop && (
+        <button
+          className="abtn" onClick={() => onSetDefault(tool, 'develop')}
+          title="默认开发 — 将该配置设为默认开发工具"
+          aria-label="默认开发：将该配置设为默认开发工具"
+          style={{ fontSize: 'var(--fs-s)', marginRight: 6, display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+        >
+          <Code2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+        </button>
+      )}
+      {/* T00587：模型复制按钮——与其他操作列按钮样式对齐（abtn），点击后图标切换为对勾（弹入动画）1.5s 复原 */}
+      <ModelCopyButton model={tool.model} flash={flash} />
+      {/* T00587：删除改为归档——软删保留记录，列表默认隐藏 */}
+      <button
+        className="abtn" onClick={() => onRemove(tool)}
+        title="归档 — 归档该配置记录（列表不再显示，记录保留在库中）"
+        aria-label="归档：归档该配置记录"
+        style={{ fontSize: 'var(--fs-s)', color: 'var(--warning, var(--danger))', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+      >
+        <Archive size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+      </button>
+      <ToolResultLines testResult={testResult} probeResult={probeResult} modelsResult={modelsResult} />
+    </td>
+  );
+}
+
+/** API Key 列 props（S3776 拆分：掩码展示与明文切换独立成单元格组件） */
+interface ToolKeyCellProps {
+  readonly tool: AITool;
+  readonly revealed: string | undefined;
+  readonly onToggleReveal: (t: AITool) => void;
+}
+
+/** API Key 列（S3776 拆分）：默认仅展示掩码，点击按钮按需拉取明文 */
+function ToolKeyCell({ tool, revealed, onToggleReveal, flash }: ToolKeyCellProps & { flash: (msg: string) => void }) {
+  const copyRevealed = () => { navigator.clipboard.writeText(revealed ?? '').then(() => flash?.('已复制 API Key')); };
+  if (!revealed) {
+    return (
+      <td style={cellStyle}>
+        {tool.apiKeyMasked ?? '未配置'}
+        {tool.hasApiKey && (
+          <button
+            onClick={() => onToggleReveal(tool)}
+            title="查看原文 — 查看 API Key 明文"
+            aria-label="查看原文：查看 API Key 明文"
+            style={{ fontSize: 'var(--fs-xs)', marginTop: 2, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+          >
+            <Eye size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+          </button>
+        )}
+      </td>
+    );
+  }
+  return (
+    <td style={cellStyle}>
+      <button
+        type="button"
+        onClick={copyRevealed}
+        style={{ fontFamily: 'monospace', wordBreak: 'break-all', maxWidth: 200, cursor: 'copy', userSelect: 'text', display: 'block', width: '100%', textAlign: 'left', border: 'none', background: 'transparent', padding: 0, color: 'inherit', fontSize: 'inherit' }}
+        title="点击复制完整 API Key"
+      >
+        {revealed}
+      </button>
+      {tool.hasApiKey && (
+        <button
+          onClick={() => onToggleReveal(tool)}
+          title="隐藏 — 隐藏 API Key 明文"
+          aria-label="隐藏：隐藏 API Key 明文"
+          style={{ fontSize: 'var(--fs-xs)', marginTop: 2, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+        >
+          <EyeOff size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+        </button>
+      )}
+    </td>
+  );
+}
+
+/** 模型选择无框下拉（T00542，S3776/S6819/S3358/S4325 拆分修复）：模型字段与展开下拉的逻辑下沉为独立组件，
+ * 使 ToolRow 复杂度降至阈值内；保留 listbox 角色（自定义下拉无法等价替换为原生 select），并补 tabIndex/键盘可达性 */
+function ToolModelCell(props: {
+  readonly tool: AITool;
+  readonly modelMenuId: string;
+  readonly modelMenuPos: { top: number; left: number } | null;
+  readonly modelMenuRef: React.MutableRefObject<HTMLSpanElement | null>;
+  readonly fetchingModels: Record<string, boolean>;
+  readonly modelsResult: Record<string, string[]>;
+  readonly onToggleModelMenu: (t: AITool, anchor: HTMLElement) => void;
+  readonly onSelectModel: (t: AITool, model: string) => void;
+}) {
+  const { tool, modelMenuId, modelMenuPos, modelMenuRef, fetchingModels, modelsResult, onToggleModelMenu, onSelectModel } = props;
+  const isOpen = modelMenuId === tool.id;
+
+  // 下拉正文（S3358：将嵌套三元拆为独立函数，避免嵌套条件表达式）
+  const renderMenuBody = () => {
+    if (fetchingModels[tool.id]) {
+      return (
+        <div style={{ padding: '8px 10px', fontSize: 'var(--fs-s)', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <Loader2 size={12} className="aispin" /> 获取模型列表中…
+        </div>
+      );
+    }
+    const list = modelsResult[tool.id] ?? [];
+    if (list.length > 0) {
+      return list.map((m) => (
+        <button key={m} aria-pressed={m === tool.model}
+          onClick={() => onSelectModel(tool, m)}
+          title={m}
+          style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between', gap: 6, padding: '5px 10px', fontSize: 'var(--fs-s)', border: 'none', cursor: 'pointer', background: m === tool.model ? 'var(--accent-soft)' : 'transparent', color: m === tool.model ? 'var(--accent)' : 'var(--text)' }}>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m}</span>
+          {m === tool.model && <span style={{ fontSize: 'var(--fs-2xs)' }}>当前</span>}
+        </button>
+      ));
+    }
+    return <div style={{ padding: '8px 10px', fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>暂无模型列表，请先点击「拉取模型」获取</div>;
+  };
+
+  return (
+    <span ref={isOpen ? (modelMenuRef as unknown as React.RefObject<HTMLSpanElement>) : undefined} style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', gap: 2, maxWidth: 220 }}>
+      <button
+        onClick={(e) => onToggleModelMenu(tool, e.currentTarget as HTMLElement)}
+        title={tool.model ? `模型：${tool.model} — 点击选择可用模型` : '选择模型 — 点击拉取并选择可用模型'}
+        aria-label="选择模型" aria-haspopup="listbox" aria-expanded={isOpen}
+        className="task-op"
+        style={{ cursor: 'pointer', border: 'none', background: 'transparent', padding: 0, fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', gap: 3, color: tool.model ? 'var(--text)' : 'var(--text-muted)', fontFamily: 'inherit' }}
+      >
+        {fetchingModels[tool.id] ? <Loader2 size={11} className="aispin" /> : null}
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 170 }}>{tool.model ?? '选择模型'}</span>
+        <ChevronDown size={11} />
+      </button>
+      {isOpen && modelMenuPos && (
+        <div aria-label="可用模型列表"
+          style={{ position: 'fixed', top: modelMenuPos.top, left: modelMenuPos.left, zIndex: 70, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 6px 16px rgba(0,0,0,.16)', maxHeight: 200, overflowY: 'auto', minWidth: 220 }}>
+          {renderMenuBody()}
+        </div>
+      )}
+    </span>
+  );
+}
+
+/** 表格行 props：各状态按工具 id 记录在父组件，行组件只做展示与回调上报；readonly 声明防止子组件意外改写父状态（S6759 同规范） */
+interface ToolRowProps {
+  readonly tool: AITool;
+  readonly testing: Record<string, boolean>;
+  readonly probing: Record<string, boolean>;
+  readonly fetchingModels: Record<string, boolean>;
+  readonly testResult: Record<string, { ok: boolean; msg: string }>;
+  readonly probeResult: Record<string, { ok: boolean; msg: string }>;
+  readonly modelsResult: Record<string, string[]>;
+  readonly revealed: Record<string, string>;
+  readonly remarkExpanded: Record<string, boolean>;
+  readonly flushed: boolean;
+  readonly onTogglePin: (t: AITool) => void;
+  readonly onToggleReveal: (t: AITool) => void;
+  readonly onToggleEnabled: (t: AITool) => void;
+  readonly onToggleRemark: (id: string) => void;
+  readonly onOpenEdit: (t: AITool) => void;
+  readonly onTest: (t: AITool) => void;
+  readonly onProbe: (t: AITool) => void;
+  readonly onFetchRowModels: (t: AITool) => void;
+  readonly onSetDefault: (t: AITool, kind: 'organize' | 'develop') => void;
+  readonly onRemove: (t: AITool) => void;
+  /** T00542：模型无框下拉（选择后直接持久化） */
+  readonly modelMenuId: string;
+  readonly modelMenuPos: { top: number; left: number } | null;
+  readonly modelMenuRef: React.MutableRefObject<HTMLSpanElement | null>;
+  readonly onToggleModelMenu: (t: AITool, anchor: HTMLElement) => void;
+  readonly onSelectModel: (t: AITool, model: string) => void;
+  readonly flash: (msg: string) => void;
+  /** T00446：拖拽排序回调 */
+  readonly onDragStart?: (id: string) => void;
+  readonly onDragOver?: (id: string) => void;
+  readonly onDrop?: (id: string) => void;
+  readonly onDragEnd?: () => void;
+  readonly dragId?: string;
+  readonly overId?: string;
+}
+
+/** 表格行（S3776 拆分）：单行渲染逻辑从页面组件抽出，API Key 列与操作列再下沉到单元格组件 */
+function ToolRow(props: ToolRowProps) {
+  const { tool } = props;
+  // T00489：按住行 200ms 才缩放（组件内自管状态）
+  const [pressOn, setPressOn] = useState(false);
+  const pressTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const flushClass = props.flushed ? ' flush' : '';
+  let dragClass = '';
+  if (props.dragId === tool.id) dragClass = ' tool-dragging';
+  else if (props.overId === tool.id) dragClass = ' tool-over';
+  return (
+    <tr
+      className={`arena-row${flushClass}${dragClass}${pressOn ? ' item-pressing' : ''}`}
+      onMouseDown={(e) => { if ((e.target as HTMLElement).closest('button, input, select, a, textarea, label, [data-noscale]')) { return; } pressTimer.current = globalThis.setTimeout(() => setPressOn(true), 200); }}
+      onMouseUp={() => { clearTimeout(pressTimer.current); setPressOn(false); }}
+      onMouseLeave={() => { clearTimeout(pressTimer.current); setPressOn(false); }}
+      draggable
+      onDragStart={() => props.onDragStart?.(tool.id)}
+      onDragEnd={() => { props.onDragEnd?.(); }}
+      onDragOver={(e) => { e.preventDefault(); props.onDragOver?.(tool.id); }}
+      onDrop={() => props.onDrop?.(tool.id)}
+    >
+      <td style={cellStyle}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <PinToggle pinned={tool.pinned} onToggle={() => props.onTogglePin(tool)} />
+          <span style={{ fontWeight: 600 }}>{tool.name}</span>
+          {/* 备注展开/收起箭头：与提示词页一致用 lucide 图标，蓝色 13px；有备注才显示 */}
+          {tool.remark && (
+            <button
+              onClick={() => props.onToggleRemark(tool.id)}
+              title={props.remarkExpanded[tool.id] ? '收起备注 — 收起备注内容' : '展开备注 — 展开查看备注内容'}
+              aria-label={props.remarkExpanded[tool.id] ? '收起：收起备注内容' : '展开：展开查看备注内容'}
+              style={{ color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', cursor: 'pointer' }}
+            >
+              {props.remarkExpanded[tool.id] ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+            </button>
+          )}
+        </div>
+        {/* 备注默认收缩，仅展开时显示完整内容 */}
+        {tool.remark && props.remarkExpanded[tool.id] && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>{tool.remark}</div>}
+      </td>
+      <td data-noscale="1" style={{ ...cellStyle, cursor: 'copy', userSelect: 'text' }} draggable={false}
+        onDoubleClick={() => { void navigator.clipboard.writeText(tool.type).then(() => props.flash?.(`已复制厂商类型：${tool.type}`)); }}
+        title={`双击复制整个字段：${tool.type}`}>{tool.type}</td>
+      {/* T00768：用途/状态列默认宽度 + 不换行——笔记本屏幕下保持一行显示 */}
+      <td data-noscale="1" style={{ ...cellStyle, minWidth: 64, whiteSpace: 'nowrap', cursor: 'copy', userSelect: 'text' }} draggable={false}
+        onDoubleClick={() => { const v = PURPOSE_LABEL[tool.purpose] ?? tool.purpose; void navigator.clipboard.writeText(v).then(() => props.flash?.(`已复制用途：${v}`)); }}
+        title={`双击复制整个字段：${PURPOSE_LABEL[tool.purpose] ?? tool.purpose}`}>{PURPOSE_LABEL[tool.purpose] ?? tool.purpose}</td>
+      <td data-noscale="1" style={{ ...cellStyle, wordBreak: 'break-all', maxWidth: 220, cursor: 'copy', userSelect: 'text' }} draggable={false}
+        onDoubleClick={() => { void navigator.clipboard.writeText(tool.endpoint).then(() => props.flash?.('已复制 Endpoint')); }}
+        title={`双击复制整个字段：${tool.endpoint}`}>{tool.endpoint}</td>
+      <td style={cellStyle} draggable={false}>
+        <ToolModelCell
+          tool={tool}
+          modelMenuId={props.modelMenuId}
+          modelMenuPos={props.modelMenuPos}
+          modelMenuRef={props.modelMenuRef}
+          fetchingModels={props.fetchingModels}
+          modelsResult={props.modelsResult}
+          onToggleModelMenu={props.onToggleModelMenu}
+          onSelectModel={props.onSelectModel}
+        />
+        {tool.model_notes && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>{tool.model_notes}</div>}
+      </td>
+      {/* 默认仅展示掩码；点击「查看原文」按需拉取明文，再点隐藏即从内存移除（FR3.5） */}
+      <ToolKeyCell tool={tool} revealed={props.revealed[tool.id]} onToggleReveal={props.onToggleReveal} flash={props.flash} />
+      <td style={{ ...cellStyle, whiteSpace: 'nowrap' }}>
+        <button
+          onClick={() => props.onToggleEnabled(tool)}
+          title={tool.enabled ? '停用 — 停用该配置文件' : '启用 — 启用该配置文件'}
+          aria-label={tool.enabled ? '停用：停用该配置文件' : '启用：启用该配置文件'}
+          style={{ fontSize: 'var(--fs-s)', color: tool.enabled ? 'var(--success)' : 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+        >
+          <Power size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+        </button>
+      </td>
+      <td style={cellStyle}>
+        {tool.isDefaultOrganize && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', marginRight: 4 }}>整理✓</span>}
+        {tool.isDefaultDevelop && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--success)' }}>开发✓</span>}
+        {!tool.isDefaultOrganize && !tool.isDefaultDevelop && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>-</span>}
+      </td>
+      <ToolActionsCell
+        tool={tool}
+        testing={props.testing[tool.id] ?? false}
+        probing={props.probing[tool.id] ?? false}
+        fetchingModels={props.fetchingModels[tool.id] ?? false}
+        testResult={props.testResult[tool.id]}
+        probeResult={props.probeResult[tool.id]}
+        modelsResult={props.modelsResult[tool.id]}
+        onOpenEdit={props.onOpenEdit}
+        onTest={props.onTest}
+        onProbe={props.onProbe}
+        onFetchRowModels={props.onFetchRowModels}
+        onSetDefault={props.onSetDefault}
+        onRemove={props.onRemove}
+        flash={props.flash}
+      />
+    </tr>
+  );
+}
+
+/** 配置体检提示块（T02208）：保存/草稿测试时服务端本地判定回传的问题项，可规范化的给一键修复 */
+function ConfigWarnings({ warnings, onFix }: { readonly warnings: readonly ConfigIssue[]; readonly onFix: (w: ConfigIssue) => void }) {
+  if (warnings.length === 0) return null;
+  return (
+    <div style={{ gridColumn: '1 / -1', border: '1px solid var(--warning, var(--danger))', borderRadius: 6, padding: 8, background: 'var(--surface-2)' }}>
+      <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, marginBottom: 4 }}>配置体检（本地字符串判定，未发起外部请求）</div>
+      {warnings.map((w) => (
+        <div key={`${w.field}:${w.message}`} style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)', marginTop: 2, whiteSpace: 'normal', display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span>· {w.message}</span>
+          {w.fixed !== undefined && (
+            <button
+              onClick={() => onFix(w)}
+              title="一键规范化 — 用 ASCII 等价字符替换该字段中的不可见字符"
+              aria-label="一键规范化：以 ASCII 等价字符替换该字段中的不可见字符"
+              style={{ fontSize: 'var(--fs-xs)', padding: '1px 8px', cursor: 'pointer' }}
+            >一键规范化</button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** 表单弹窗 props：字段变更收敛为 patch 合并，减少回调数量；readonly 保证弹窗不直接改父状态 */
+interface ToolFormDialogProps {
+  readonly form: ToolForm;
+  readonly types: readonly string[];
+  readonly editingId: string;
+  readonly saving: boolean;
+  readonly formTesting: boolean;
+  readonly formFetching: boolean;
+  readonly formTest: { msg: string; ok: boolean } | null;
+  readonly formModels: readonly string[];
+  /** T02208：保存/草稿测试时服务端本地体检回传的问题项（含可一键规范化的目标值） */
+  readonly formWarnings: readonly ConfigIssue[];
+  readonly onFieldChange: (patch: Partial<ToolForm>) => void;
+  readonly onClose: () => void;
+  readonly onSave: () => void;
+  readonly onTestDraft: () => void;
+  readonly onFetchModels: () => void;
+  readonly onFixWarning: (w: ConfigIssue) => void;
+}
+
+/** 新增/编辑弹窗（S3776/S6848/S6853 拆分修复）：label 通过 htmlFor 显式关联控件 */
+function ToolFormDialog(props: ToolFormDialogProps) {
+  const { form } = props;
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // 遮罩点击关闭改为文档级事件委托：点击目标在面板外即视为点遮罩（与原 e.target === e.currentTarget 等价），
+  // 这样全屏遮罩 div 本身无需挂鼠标事件，避免非交互元素挂交互 handler（S6848）
+  useEffect(() => {
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (panelRef.current && e.target instanceof Node && !panelRef.current.contains(e.target)) props.onClose();
+    };
+    document.addEventListener('mousedown', onDocMouseDown);
+    return () => document.removeEventListener('mousedown', onDocMouseDown);
+  }, [props.onClose]);
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+      <div ref={panelRef} style={{ background: 'var(--card-bg)', borderRadius: 8, padding: 20, width: 520, maxWidth: '92vw', maxHeight: '88vh', overflowY: 'auto', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
+        <div style={{ fontSize: 'var(--fs-xl)', fontWeight: 600, marginBottom: 14 }}>{props.editingId ? '编辑配置记录' : '新增配置记录'}</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div>
+            <label htmlFor="aitool-name" style={labelStyle}>名称（厂商/工具名）*</label>
+            <input id="aitool-name" style={fieldStyle} value={form.name} onChange={(e) => props.onFieldChange({ name: e.target.value })} placeholder="例如 DeepSeek 官方" />
+          </div>
+          <div>
+            <label htmlFor="aitool-type" style={labelStyle}>厂商类型 *</label>
+            <select id="aitool-type" style={fieldStyle} value={form.type} onChange={(e) => props.onFieldChange({ type: e.target.value })}>
+              {props.types.map((tp) => <option key={tp} value={tp}>{tp}</option>)}
+            </select>
+          </div>
+          <div style={{ gridColumn: '1 / -1' }}>
+            <label htmlFor="aitool-endpoint" style={labelStyle}>Endpoint / Base URL *</label>
+            <input id="aitool-endpoint" style={fieldStyle} value={form.endpoint} onChange={(e) => props.onFieldChange({ endpoint: e.target.value })} placeholder="例如 https://api.deepseek.com/v1" />
+            {/* T01346：说明版本段的补齐口径，避免自带 /v4 的厂商（智谱）被再补一段 /v1 而 404 */}
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>
+              未带版本段时自动补 <code>/v1</code>；已带版本段（<code>/v1</code>、<code>/v4</code> 等）则原样使用，勿再补一段。例：DeepSeek 填 <code>https://api.deepseek.com</code>（或 <code>…/v1</code>），智谱填 <code>https://open.bigmodel.cn/api/paas/v4</code>。
+            </div>
+          </div>
+          <div style={{ gridColumn: '1 / -1' }}>
+            <label htmlFor="aitool-console-url" style={labelStyle}>厂商控制台 URL（可选）</label>
+            <input id="aitool-console-url" style={fieldStyle} value={form.consoleUrl} onChange={(e) => props.onFieldChange({ consoleUrl: e.target.value })} placeholder="例如 https://platform.deepseek.com" />
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>填写后，列表「控制台」按钮可直接打开该厂商官方控制台页面</div>
+          </div>
+          {/* 草稿连接测试：未保存即可验证 Endpoint + Key 连通性 */}
+          <div style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <button onClick={props.onTestDraft} disabled={props.formTesting} title={props.formTesting ? '测试中…' : '测试连接 — 用当前表单值验证连通性'} aria-label={props.formTesting ? '测试中：验证连通性' : '测试连接：用当前表单值验证连通性'} style={{ fontSize: 'var(--fs-s)', padding: '4px 12px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}>
+              {props.formTesting ? <Loader2 size={13} className="aispin" /> : <PlugZap size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
+            </button>
+            {props.formTest && <span style={{ fontSize: 'var(--fs-s)', color: props.formTest.ok ? 'var(--success)' : 'var(--danger)' }}>{props.formTest.msg}</span>}
+            {/* T02208：口径说明——连接测试走的是模型目录探测，读不到余额与模型权限，别再把它当「能调用」 */}
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', gridColumn: '1 / -1' }}>
+              连接测试只读服务商的模型目录，查不出账户余额与「该密钥能否调用该模型」；保存后用列表行的 <Zap size={11} style={{ display: 'inline-block', verticalAlign: '-1px' }} /> 实调探测 发一条极小真实请求确认（会消耗少量额度）。
+            </div>
+          </div>
+          <ConfigWarnings warnings={props.formWarnings} onFix={props.onFixWarning} />
+          <div>
+            <label style={labelStyle}>API Key{props.editingId ? '（留空保留原值）' : '（可留空）'}</label>
+            <input
+              style={fieldStyle}
+              aria-label="API Key"
+              type="password"
+              autoComplete="new-password"
+              value={form.apiKey}
+              onChange={(e) => props.onFieldChange({ apiKey: e.target.value })}
+              placeholder={props.editingId ? '留空 = 保留原密钥' : 'sk-…'}
+            />
+          </div>
+          <div>
+            <label htmlFor="aitool-model" style={labelStyle}>默认模型</label>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <input id="aitool-model" list="aitool-model-options" style={fieldStyle} value={form.model} onChange={(e) => props.onFieldChange({ model: e.target.value })} placeholder="例如 deepseek-chat" />
+              <button onClick={props.onFetchModels} disabled={props.formFetching} title={props.formFetching ? '获取中…' : '获取模型 — 拉取服务商可用模型清单'} aria-label={props.formFetching ? '获取中：拉取可用模型清单' : '获取模型：拉取服务商可用模型清单'} style={{ fontSize: 'var(--fs-s)', padding: '4px 10px', cursor: 'pointer', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center' }}>
+                {props.formFetching ? <Loader2 size={13} className="aispin" /> : <Cpu size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
+              </button>
+            </div>
+            <datalist id="aitool-model-options">
+              {props.formModels.map((m) => <option key={m} value={m} />)}
+            </datalist>
+          </div>
+          <div style={{ gridColumn: '1 / -1' }}>
+            <label htmlFor="aitool-model-notes" style={labelStyle}>模型配置说明</label>
+            <input id="aitool-model-notes" style={fieldStyle} value={form.modelNotes} onChange={(e) => props.onFieldChange({ modelNotes: e.target.value })} placeholder="例如 上下文 64K，建议 temperature 0.2" />
+          </div>
+          <div>
+            <label htmlFor="aitool-purpose" style={labelStyle}>用途</label>
+            <select id="aitool-purpose" style={fieldStyle} value={form.purpose} onChange={(e) => props.onFieldChange({ purpose: e.target.value as ToolForm['purpose'] })}>
+              <option value="organize">整理</option>
+              <option value="develop">开发</option>
+            </select>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'flex-end', paddingBottom: 8 }}>
+            {/* 「启用」文本包一层 span：label 内 input 与裸文本之间的换行空白属于歧义间距（S6772），间距交给 flex gap 控制 */}
+            <label style={{ fontSize: 'var(--fs-m)', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+              <input type="checkbox" checked={form.enabled} onChange={(e) => props.onFieldChange({ enabled: e.target.checked })} />
+              <span>启用</span>
+            </label>
+          </div>
+          <div style={{ gridColumn: '1 / -1' }}>
+            <label htmlFor="aitool-remark" style={labelStyle}>备注</label>
+            <textarea id="aitool-remark" style={{ ...fieldStyle, fontFamily: 'inherit' }} rows={2} value={form.remark} onChange={(e) => props.onFieldChange({ remark: e.target.value })} placeholder="内部备注，不会发送给 AI 厂商" />
+          </div>
+        </div>
+        <div style={{ marginTop: 14, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button onClick={props.onClose} title="取消 — 关闭弹窗，放弃未保存的修改" aria-label="取消：关闭弹窗，放弃未保存的修改" style={{ padding: '6px 14px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}>
+            <X size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+          </button>
+          <button
+            onClick={props.onSave}
+            disabled={props.saving}
+            title="保存 — 保存该配置记录"
+            aria-label="保存：保存该配置记录"
+            style={{ padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}
+          >
+            <Save size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 模型管理：集中记录各 AI 厂商的 API Key、模型配置等连接信息（复用 ai_tools 体系） */
+export function AIToolsPage() {
+  // T00446：模型拖拽排序状态
+  const [toolDragId, setToolDragId] = useState('');
+  const [toolOverId, setToolOverId] = useState('');
+  const [tools, setTools] = useState<AITool[]>([]);
+  const [types, setTypes] = useState<string[]>([]);
+  const [testResult, setTestResult] = useState<Record<string, { ok: boolean; msg: string }>>({});
+  // T02208：实调探测结果（与连接测试分列——两者口径不同，合并展示会重新制造「测试成功=能调用」的误读）
+  const [probeResult, setProbeResult] = useState<Record<string, { ok: boolean; msg: string }>>({});
+  // 连接测试 / 模型获取 的运行中状态（列表行按工具 id，用于按钮加载动画）
+  const [testing, setTesting] = useState<Record<string, boolean>>({});
+  const [probing, setProbing] = useState<Record<string, boolean>>({});
+  const [fetchingModels, setFetchingModels] = useState<Record<string, boolean>>({});
+  // 表单草稿内「测试连接 / 获取模型」的运行中状态
+  const [formTesting, setFormTesting] = useState(false);
+  const [formFetching, setFormFetching] = useState(false);
+  // 记录高亮：保存更新成功后对目标行打标记，flashAt 值变化触发行动画重放
+  const [flashAt, setFlashAt] = useState<Record<string, number>>({});
+  // 列表行「可用模型」拉取结果（按工具 id）
+  // T00542：模型无框下拉状态（展开任务 id / fixed 坐标 / 外点收起 ref）
+  const [modelMenuId, setModelMenuId] = useState('');
+  const [modelMenuPos, setModelMenuPos] = useState<{ top: number; left: number } | null>(null);
+  const modelMenuRef = useRef<HTMLSpanElement | null>(null);
+  const [modelsResult, setModelsResult] = useState<Record<string, string[]>>({});
+  // API Key 查看原文：仅点击后按需拉取明文，隐藏时立即从状态移除（仅内存保留）
+  const [revealed, setRevealed] = useState<Record<string, string>>({});
+  // 备注展开状态：默认收缩（同提示词页交互），点击标题行箭头展开查看
+  const [remarkExpanded, setRemarkExpanded] = useState<Record<string, boolean>>({});
+  const [notice, setNotice] = useState('');
+  // 筛选
+  const [keyword, setKeyword] = useState('');
+  const [filterPurpose, setFilterPurpose] = useState('');
+  const [filterType, setFilterType] = useState('');
+  // 表单弹窗：form 为 null 表示未打开；editingId 为被编辑记录 id
+  const [form, setForm] = useState<ToolForm | null>(null);
+  const [editingId, setEditingId] = useState('');
+  const [saving, setSaving] = useState(false);
+  // 表单内草稿测试/模型拉取结果（不落库，用当前表单值提前验证）
+  const [formTest, setFormTest] = useState<{ msg: string; ok: boolean } | null>(null);
+  const [formModels, setFormModels] = useState<string[]>([]);
+  // T02208：保存/草稿测试时服务端本地体检回传的配置问题（含一键规范化目标值）
+  const [formWarnings, setFormWarnings] = useState<readonly ConfigIssue[]>([]);
+
+  const flash = (msg: string) => {
+    setNotice(msg);
+    setTimeout(() => setNotice(''), 2500);
+  };
+
+  const load = useCallback(async () => {
+    try {
+      setTools(await api.get<AITool[]>('/aitools'));
+      setTypes(await api.get<string[]>('/aitools/types'));
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+  // T00542：模型无框下拉外点收起
+  useEffect(() => {
+    if (!modelMenuId) return;
+    const onDoc = (e: MouseEvent) => {
+      if (modelMenuRef.current && !modelMenuRef.current.contains(e.target as Node)) setModelMenuId('');
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [modelMenuId]);
+
+  // ---------- 增删改 ----------
+  function openCreate() {
+    setForm(emptyForm(types[0] ?? 'openai-compatible'));
+    setEditingId('');
+    setFormTest(null);
+    setFormModels([]);
+    setFormWarnings([]);
+  }
+
+  function openEdit(t: AITool) {
+    setForm({
+      name: t.name, type: t.type, endpoint: t.endpoint, apiKey: '',
+      model: t.model ?? '', modelNotes: t.model_notes ?? '',
+      purpose: t.purpose === 'organize' ? 'organize' : 'develop',
+      enabled: t.enabled, remark: t.remark ?? '', consoleUrl: t.console_url ?? '',
+    });
+    setEditingId(t.id);
+    setFormTest(null);
+    setFormModels([]);
+    setFormWarnings([]);
+  }
+
+  function closeForm() {
+    setForm(null);
+    setEditingId('');
+    setFormWarnings([]);
+  }
+
+  // 表单字段统一以 patch 合并：弹窗组件只上报变更，不持有 setForm，保持状态单向流动
+  const patchForm = (patch: Partial<ToolForm>) => {
+    setForm((f) => (f ? { ...f, ...patch } : f));
+    // T02208：字段一改就撤掉该字段的体检提示，避免「已改好却仍挂着告警」
+    const changed = Object.keys(patch);
+    setFormWarnings((prev) => (prev.length === 0 ? prev : prev.filter((w) => !changed.includes(w.field))));
+  };
+
+  /** T02208：一键规范化——用服务端给出的 ASCII 等价文本回填对应字段 */
+  function fixWarning(w: ConfigIssue) {
+    if (w.fixed === undefined) return;
+    patchForm({ [w.field]: w.fixed } as Partial<ToolForm>);
+  }
+
+  async function saveForm() {
+    if (!form || saving) return;
+    if (!form.name.trim()) return flash('名称必填');
+    if (!form.endpoint.trim()) return flash('Endpoint 必填');
+    const payload: Record<string, unknown> = {
+      name: form.name.trim(),
+      type: form.type,
+      endpoint: form.endpoint.trim(),
+      model: form.model.trim() || undefined,
+      modelNotes: form.modelNotes,
+      purpose: form.purpose,
+      enabled: form.enabled,
+      remark: form.remark,
+      consoleUrl: form.consoleUrl,
+      // API Key 留空 → 不传该字段，后端保留原密文
+      apiKey: form.apiKey ? form.apiKey : undefined,
+    };
+    setSaving(true);
+    try {
+      // T02208：保存响应可带 warnings（本地配置体检），命中时不关弹窗——就地给出「一键规范化」
+      type SaveResult = { warnings?: ConfigIssue[] };
+      const r = editingId
+        ? await api.patch<SaveResult>(`/aitools/${editingId}`, payload)
+        : await api.post<SaveResult>('/aitools', payload);
+      if (editingId) setFlashAt((prev) => ({ ...prev, [editingId]: Date.now() }));
+      setRevealed({});
+      void load();
+      const warnings = r?.warnings ?? [];
+      setFormWarnings(warnings);
+      if (warnings.length > 0) {
+        flash(`已保存，但配置体检发现 ${warnings.length} 处问题（实调必失败），见表单内提示`);
+        return;
+      }
+      flash('配置已保存');
+      closeForm();
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // T00587：归档（软删）——记录保留在库中，列表默认隐藏
+  async function remove(t: AITool) {
+    if (!(await askConfirm(`归档配置记录「${t.name}」？归档后列表不再显示（记录保留在库中）。`))) return;
+    try {
+      await api.post(`/aitools/${t.id}/archive`);
+      void load();
+      flash('已归档，列表不再显示该配置');
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /** 启用/停用快捷切换 */
+  async function toggleEnabled(t: AITool) {
+    try {
+      await api.patch(`/aitools/${t.id}`, { enabled: !t.enabled });
+      void load();
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function test(t: AITool) {
+    setTesting((prev) => ({ ...prev, [t.id]: true }));
+    try {
+      const r = await api.post<{ ok: boolean; message: string }>(`/aitools/${t.id}/test`);
+      setTestResult((prev) => ({ ...prev, [t.id]: { ok: r.ok, msg: r.message } }));
+    } catch (e) {
+      setTestResult((prev) => ({ ...prev, [t.id]: { ok: false, msg: e instanceof Error ? e.message : String(e) } }));
+    } finally {
+      setTesting((prev) => ({ ...prev, [t.id]: false }));
+    }
+  }
+
+  /** T02208：实调探测——真实调用通道的一次极小请求（会计费），只在用户显式点击该行按钮时发起 */
+  async function probe(t: AITool) {
+    setProbing((prev) => ({ ...prev, [t.id]: true }));
+    setProbeResult((prev) => ({ ...prev, [t.id]: { ok: true, msg: '实调探测中…' } }));
+    try {
+      const r = await api.post<{ ok: boolean; message: string }>(`/aitools/${t.id}/probe`);
+      setProbeResult((prev) => ({ ...prev, [t.id]: { ok: r.ok, msg: r.message } }));
+    } catch (e) {
+      setProbeResult((prev) => ({ ...prev, [t.id]: { ok: false, msg: e instanceof Error ? e.message : String(e) } }));
+    } finally {
+      setProbing((prev) => ({ ...prev, [t.id]: false }));
+    }
+  }
+
+  /** 查看原文/隐藏：明文按需从服务端拉取，隐藏时立即从内存状态移除 */
+  async function toggleReveal(t: AITool) {
+    if (revealed[t.id]) {
+      setRevealed((prev) => {
+        const next = { ...prev };
+        delete next[t.id];
+        return next;
+      });
+      return;
+    }
+    try {
+      const r = await api.get<{ hasApiKey: boolean; apiKey: string | null }>(`/aitools/${t.id}/api-key`);
+      if (r.apiKey) {
+        setRevealed((prev) => ({ ...prev, [t.id]: r.apiKey as string }));
+      } else {
+        flash('该配置未设置 API Key');
+      }
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /** 拉取已保存工具的可用模型列表，展示在操作列下方 */
+  async function fetchRowModels(t: AITool) {
+    setFetchingModels((prev) => ({ ...prev, [t.id]: true }));
+    try {
+      const r = await api.post<{ ok: boolean; models?: string[]; message?: string }>(`/aitools/${t.id}/models`);
+      if (r.ok && r.models) {
+        setModelsResult((prev) => ({ ...prev, [t.id]: r.models! }));
+        flash(`获取到 ${r.models.length} 个可用模型`);
+      } else {
+        flash(r.message ?? '获取模型列表失败');
+      }
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    } finally {
+      setFetchingModels((prev) => ({ ...prev, [t.id]: false }));
+    }
+  }
+
+  // T00542：展开/收起模型无框下拉——首展开且未拉取过则自动拉取模型列表
+  function toggleModelMenu(t: AITool, anchorEl: HTMLElement) {
+    const rect = anchorEl.getBoundingClientRect();
+    setModelMenuPos({ top: rect.bottom + 4, left: rect.left });
+    const next = modelMenuId === t.id ? '' : t.id;
+    setModelMenuId(next);
+    if (next && !modelsResult[t.id]) void fetchRowModels(t);
+  }
+
+  // T00542：选择可用模型并直接持久化
+  async function selectRowModel(t: AITool, model: string) {
+    try {
+      await api.patch(`/aitools/${t.id}`, { model });
+      setTools((prev) => prev.map((x) => (x.id === t.id ? { ...x, model } : x)));
+      setModelMenuId('');
+      flash(`模型已设为 ${model}`);
+    } catch (e) { flash(String((e as Error).message ?? e)); }
+  }
+
+  /** 表单内草稿连接测试：用未保存的当前表单值提前验证，避免保存后才发现配置错误 */
+  async function testDraftFromForm() {
+    if (!form) return;
+    if (!form.endpoint.trim()) return flash('请先填写 Endpoint');
+    setFormTesting(true);
+    setFormTest({ msg: '测试中…', ok: true });
+    try {
+      const r = await api.post<{ ok: boolean; message: string; warnings?: ConfigIssue[] }>('/aitools/test', {
+        type: form.type,
+        endpoint: form.endpoint.trim(),
+        apiKey: form.apiKey || undefined,
+        model: form.model.trim() || undefined,
+      });
+      setFormTest({ msg: r.message, ok: r.ok });
+      // T02208：草稿测试同样带回地检结果，就地点在表单上（不必等到保存）
+      setFormWarnings(r.warnings ?? []);
+    } catch (e) {
+      setFormTest({ msg: e instanceof Error ? e.message : String(e), ok: false });
+    } finally {
+      setFormTesting(false);
+    }
+  }
+
+  /** 表单内拉取可用模型：编辑中走已保存记录（服务端用存量密钥），新建走草稿参数，结果填入 datalist 供选择 */
+  async function fetchFormModels() {
+    if (!form) return;
+    if (!form.endpoint.trim()) return flash('请先填写 Endpoint');
+    setFormFetching(true);
+    try {
+      const r = editingId
+        ? await api.post<{ ok: boolean; models?: string[]; message?: string }>(`/aitools/${editingId}/models`)
+        : await api.post<{ ok: boolean; models?: string[]; message?: string }>('/aitools/models', {
+            type: form.type,
+            endpoint: form.endpoint.trim(),
+            apiKey: form.apiKey || undefined,
+          });
+      if (r.ok && r.models) {
+        setFormModels(r.models);
+        flash(`获取到 ${r.models.length} 个可用模型，可直接在默认模型框中选择`);
+      } else {
+        flash(r.message ?? '获取模型列表失败，可手工填写模型名');
+      }
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    } finally {
+      setFormFetching(false);
+    }
+  }
+
+  /** 置顶/取消置顶：切换后重新拉取，置顶项排到列表顶部 */
+  async function togglePin(t: AITool) {
+    try {
+      await api.patch(`/aitools/${t.id}`, { pinned: !t.pinned });
+      void load();
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /** FR3.4 设为默认整理/开发工具 */
+  async function setDefault(t: AITool, kind: 'organize' | 'develop') {
+    try {
+      await api.post(`/aitools/${t.id}/set-default`, { kind });
+      void load();
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  // ---------- 筛选 ----------
+  const filtered = tools.filter((t) => {
+    if (filterPurpose && t.purpose !== filterPurpose) return false;
+    if (filterType && t.type !== filterType) return false;
+    const kw = keyword.trim().toLowerCase();
+    if (kw) {
+      const hit = [t.name, t.type, t.endpoint, t.model ?? '', t.remark ?? '']
+        .some((s) => s.toLowerCase().includes(kw));
+      if (!hit) return false;
+    }
+    return true;
+  });
+
+  return (
+    <section>
+      {/* 按钮加载旋转动画：供连接测试 / 模型获取等按钮 loading 图标使用 */}
+      <style>{`@keyframes aispin{to{transform:rotate(360deg)}}.aispin{animation:aispin .8s linear infinite;display:inline-block}
+        /* T00587：复制成功图标弹入动画（对齐全局 tbtn-anim 交互动画基调） */
+        @keyframes copy-pop{0%{transform:scale(.5);opacity:.4}60%{transform:scale(1.25)}100%{transform:scale(1);opacity:1}}
+        .copy-pop{animation:copy-pop .28s ease-out;display:inline-block}
+        .arena-row { transition: transform .12s ease; }
+        .arena-row.item-pressing { transform: scale(.985); } /* T00489：仅按住行触发 */
+        .arena-row:hover td { background: var(--surface-2); }
+        /* UX-03①：行内操作默认淡出但不能 visibility:hidden——那会把按钮移出 Tab 序，键盘用户没有任何入口
+           编辑/归档记录（焦点进不去，:focus-within 也就永远不会亮）。改用 opacity + pointer-events：
+           键盘仍能 Tab 进来，进入即由 :focus-within 显形；鼠标未悬浮时也不会误点到隐身按钮。 */
+        .abtn { opacity: 0; pointer-events: none; transition: opacity .15s ease; }
+        .arena-row:hover .abtn, .arena-row:focus-within .abtn { opacity: 1; pointer-events: auto; }
+        @keyframes rowflush { 0% { background: var(--accent-soft); } 100% { background: transparent; } }
+        .arena-row.flush td { animation: rowflush 1.4s ease; }
+        .tool-dragging { opacity: .5; transform: scale(1.01); box-shadow: 0 6px 18px rgba(0,0,0,.22); background: var(--surface-2); }
+        .tool-over { box-shadow: inset 0 3px 0 var(--accent); background: var(--accent-soft, rgba(9,105,218,.08)); }`}</style>
+      {/* 工具栏（T00522 修正：op-host 宿主 + 筛选下拉/搜索框默认隐藏悬浮显示）
+          T03162（U39/U06 回归用例）：op-host 首个可聚焦元素必须常驻可见且排在 op-hidden 之前——
+          原实现 h3 后直接是三个 op-hidden 控件，纯键盘 Tab 掠过工具栏后整段筛选/搜索不可达。
+          现将常驻「新增配置」按钮前置（图标旁保留文字标签）：Tab 到按钮即触发 :focus-within
+          显形，后续 Tab 依 DOM 序自然抵达筛选下拉与搜索框。 */}
+      <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <h3 style={{ fontSize: 'var(--fs-xl)', margin: 0 }}>配置记录（{filtered.length}/{tools.length}）</h3>
+        <button
+          onClick={openCreate}
+          title="新增配置 — 新增一条 AI 厂商配置记录"
+          aria-label="新增配置：新增一条 AI 厂商配置记录"
+          style={{ background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', padding: '6px 14px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+        >
+          <Plus size={13} /> 新增配置
+        </button>
+        {/* UX-03②：原生 select 的可访问名不来自当前 option，必须显式 aria-label；title 同步给出操作说明 */}
+        <select className="op-hidden" value={filterType} onChange={(e) => setFilterType(e.target.value)}
+          aria-label="筛选厂商类型" title="厂商类型筛选 — 按厂商类型过滤配置记录"
+          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          <option value="">全部厂商类型</option>
+          {types.map((tp) => <option key={tp} value={tp}>{tp}</option>)}
+        </select>
+        <select className="op-hidden" value={filterPurpose} onChange={(e) => setFilterPurpose(e.target.value)}
+          aria-label="筛选用途" title="用途筛选 — 按整理/开发用途过滤配置记录"
+          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+          <option value="">全部用途</option>
+          <option value="organize">整理</option>
+          <option value="develop">开发</option>
+        </select>
+        <input
+          className="op-hidden"
+          value={keyword}
+          onChange={(e) => setKeyword(e.target.value)}
+          placeholder="搜索名称/厂商/Endpoint/备注…" data-page-search
+          aria-label="搜索配置（名称/厂商/Endpoint/备注）"
+          title="搜索配置 — 按名称/厂商类型/Endpoint/备注检索"
+          style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', flex: 1, minWidth: 180 }}
+        />
+        {notice && <output className="flash-toast">{notice}</output>}
+      </div>
+
+      {/* 列表：九列在窄窗口靠横向滚动保读，不靠压缩列宽把 Endpoint/备注挤成竖排（UX-03③）。
+          滚动容器用原生 section + 可访问名，不再自造 region 角色，也不抢占 Tab 序；
+          键盘用户 Tab 到行内按钮时浏览器会自动把该列滚动到可见区。 */}
+      <section aria-label="配置记录表格（可横向滚动）" style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', minWidth: 1000, borderCollapse: 'collapse', fontSize: 'var(--fs-l)' }}>
+        <thead>
+          <tr style={{ textAlign: 'left', color: 'var(--text-secondary)' }}>
+            <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>名称</th>
+            <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>厂商类型</th>
+            <th style={{ padding: 8, borderBottom: '1px solid var(--border)', minWidth: 64, whiteSpace: 'nowrap' }}>用途</th>
+            <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>Endpoint</th>
+            <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>默认模型</th>
+            <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>API Key</th>
+            <th style={{ padding: 8, borderBottom: '1px solid var(--border)', minWidth: 48, whiteSpace: 'nowrap' }}>状态</th>
+            <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>默认</th>
+            <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {filtered.map((t) => (
+            <ToolRow
+              // key 携带 flashAt 时间戳：保存高亮时强制 React 重建该行，重放 flush 动画
+              key={flashAt[t.id] ? `f${flashAt[t.id]}-${t.id}` : t.id}
+              tool={t}
+              dragId={toolDragId}
+              overId={toolOverId}
+              onDragStart={setToolDragId}
+              onDragOver={setToolOverId}
+              onDragEnd={() => { setToolDragId(''); setToolOverId(''); }}
+              onDrop={(targetId) => {
+                if (!toolDragId || toolDragId === targetId) { setToolDragId(''); setToolOverId(''); return; }
+                const ids = filtered.map((x) => x.id);
+                const from = ids.indexOf(toolDragId);
+                const to = ids.indexOf(targetId);
+                if (from < 0 || to < 0) return;
+                ids.splice(to, 0, ids.splice(from, 1)[0]);
+                void api.post('/aitools/reorder', { orderedIds: ids }).then(() => { void load(); });
+                setToolDragId(''); setToolOverId('');
+              }}
+              testing={testing}
+              probing={probing}
+              fetchingModels={fetchingModels}
+              modelMenuId={modelMenuId}
+              modelMenuPos={modelMenuPos}
+              modelMenuRef={modelMenuRef}
+              onToggleModelMenu={toggleModelMenu}
+              onSelectModel={selectRowModel}
+              flash={flash}
+              testResult={testResult}
+              probeResult={probeResult}
+              modelsResult={modelsResult}
+              revealed={revealed}
+              remarkExpanded={remarkExpanded}
+              flushed={Boolean(flashAt[t.id])}
+              onTogglePin={(tool) => void togglePin(tool)}
+              onToggleReveal={(tool) => void toggleReveal(tool)}
+              onToggleEnabled={(tool) => void toggleEnabled(tool)}
+              onToggleRemark={(id) => setRemarkExpanded((prev) => ({ ...prev, [id]: !prev[id] }))}
+              onOpenEdit={openEdit}
+              onTest={(tool) => void test(tool)}
+              onProbe={(tool) => void probe(tool)}
+              onFetchRowModels={(tool) => void fetchRowModels(tool)}
+              onSetDefault={(tool, kind) => void setDefault(tool, kind)}
+              onRemove={(tool) => void remove(tool)}
+            />
+          ))}
+          {filtered.length === 0 && (
+            <tr><td colSpan={9} style={{ padding: 16, color: 'var(--text-muted)', textAlign: 'center' }}>{tools.length === 0 ? '暂无配置记录，点击「新增配置」接入你的 AI 厂商' : '没有符合筛选条件的配置记录'}</td></tr>
+          )}
+        </tbody>
+      </table>
+      </section>
+
+      {/* 新增/编辑弹窗：渲染与遮罩关闭逻辑封装在 ToolFormDialog 内 */}
+      {form && (
+        <ToolFormDialog
+          form={form}
+          types={types}
+          editingId={editingId}
+          saving={saving}
+          formTesting={formTesting}
+          formFetching={formFetching}
+          formTest={formTest}
+          formModels={formModels}
+          formWarnings={formWarnings}
+          onFieldChange={patchForm}
+          onClose={closeForm}
+          onSave={() => void saveForm()}
+          onTestDraft={() => void testDraftFromForm()}
+          onFixWarning={fixWarning}
+          onFetchModels={() => void fetchFormModels()}
+        />
+      )}
+
+      {/* T00448 / PRD AI-1：AI 用量统计面板（近 N 天概览+按工具分组+最近明细） */}
+      <UsagePanel />
+    </section>
+  );
+}

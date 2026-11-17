@@ -70,7 +70,7 @@ export function scorePrdSection(heading: string, body: string): number {
   let s = 0;
   for (const k of PRD_SECTION_HIGH_KEYWORDS) {
     if (h.includes(k.toLowerCase())) s += 2;
-    const re = new RegExp(k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    const re = new RegExp(k.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
     const m = b.match(re);
     if (m) s += Math.min(m.length, 3); // 正文命中封顶，避免长章节靠重复词刷分
   }
@@ -172,7 +172,6 @@ function trimPrdContent(content: string, docId: string): string {
       const half = Math.max(1, Math.floor(budget / 2));
       s.full = `${s.full.slice(0, half)}\n\n……（中段略去 ${s.full.length - budget} 字符，全文见 PRD 文档 ${docId}）……\n\n${s.full.slice(-half)}`;
       selected.add(item.i);
-      budget = 0;
       break;
     } else {
       break; // 预算已不足以容纳下一章，后续章节全部省略
@@ -183,7 +182,12 @@ function trimPrdContent(content: string, docId: string): string {
   const omitted = scored.filter((_, i) => !selected.has(i)).map((s) => s.heading || '(无标题段)');
   let out = kept.join('\n\n');
   if (omitted.length > 0) {
-    out += `\n\n……（已省略章节：${omitted.join('、')}，全文见 PRD 文档 ${docId}）……`;
+    out += `\n\n……（已省略章节：${omitted.join('、')}，中段略去 ${Math.max(0, content.length - out.length)} 字符，全文见 PRD 文档 ${docId}）……`;
+  }
+  // 省略章节清单本身也占预算：超出上限时退回机械保头保尾，保证返回正文不超过约定窗口
+  if (out.length > PRD_CONTEXT_LIMIT + 200) {
+    const half = Math.floor(PRD_CONTEXT_LIMIT / 2);
+    return `${content.slice(0, half)}\n\n……（中段略去 ${content.length - PRD_CONTEXT_LIMIT} 字符，全文见 PRD 文档 ${docId}）……\n\n${content.slice(-half)}`;
   }
   return out;
 }
@@ -245,7 +249,7 @@ function buildDocIndex(db: ReturnType<typeof getDb>, projectId: string, primaryP
     filename: r.filename,
     chars: r.content_md.length,
     hit: r.id === primaryPrdId,
-    docKind: (r.doc_kind === 'design' || r.doc_kind === 'test' ? r.doc_kind : 'prd') as 'prd' | 'design' | 'test',
+    docKind: r.doc_kind === 'design' || r.doc_kind === 'test' ? r.doc_kind : 'prd',
   }));
 }
 
