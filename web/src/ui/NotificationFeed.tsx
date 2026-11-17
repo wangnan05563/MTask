@@ -47,7 +47,7 @@ function drawerTabForEvent(it: EventItem): FocusOpenMode | false {
   return false;
 }
 
-export function NotificationFeed({ limit = 50 }: { readonly limit?: number }) {
+export function NotificationFeed({ limit = 50, headerActions }: { readonly limit?: number; readonly headerActions?: React.ReactNode }) {
   const [items, setItems] = useState<EventItem[]>([]);
   const [lastSeen] = useState(readLastSeen);
   const [error, setError] = useState('');
@@ -98,14 +98,14 @@ export function NotificationFeed({ limit = 50 }: { readonly limit?: number }) {
         .notify-feed-scroll { scrollbar-width: none; -ms-overflow-style: none; }
         .notify-feed-scroll::-webkit-scrollbar { display: none; }
       `}</style>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 2px 10px', flexShrink: 0 }}>
+      <div data-t06007="notification-header" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 2px 10px', flexShrink: 0 }}>
         <Bell size={15} style={{ color: 'var(--accent)' }} />
-        <span style={{ fontSize: 'calc(var(--fs-m) + 0.5px)', fontWeight: 600, color: 'var(--text)' }}>通知中心</span>
         {unreadCount > 0 && (
           <span style={{ minWidth: 18, height: 18, padding: '0 5px', borderRadius: 999, background: 'var(--danger)', color: 'var(--on-solid)', fontSize: 'var(--fs-2xs)', fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
             {unreadCount > 99 ? '99+' : unreadCount}
           </span>
         )}
+        {headerActions}
         <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>
           {updatedAt ? `更新于 ${relTime(updatedAt.toISOString())}` : '等待刷新'}
         </span>

@@ -509,6 +509,25 @@ export function ArchivePage() {
     { key: 'matrix', label: '需求跟踪矩阵', count: archivedMatrixReqs.length },
     { key: 'cases', label: '测试用例', count: archivedCases.length },
   ];
+  // T05775 复审：archive.tab 是持久化自由字符串；旧版本/手工写入的未知 key 会让所有 sheet 同时 display:none。
+  // 渲染前收敛到已知页签，未知值按「任务」兜底，保证至少有一个可见内容区。
+  const archiveTabSafe = archiveTabs.some((t) => t.key === archiveTab) ? archiveTab : 'tasks';
+
+  // T06000：页签切换联动筛选——隐藏的筛选项回默认值；分页与多选选择一并复位，避免跨页签残留。
+  const switchArchiveTab = (key: string) => {
+    setArchiveTab(key);
+    if (key !== 'tasks') setCatFilter('');
+    if (key !== 'plans') setProjFilter('');
+    setPage(1); setPlanPage(1); setPromptPage(1);
+    setSelTaskIds([]); setSelPlanIds([]);
+  };
+  const resetArchiveFilters = () => {
+    setSearchKw('');
+    setCatFilter('');
+    setProjFilter('');
+    setPage(1); setPlanPage(1); setPromptPage(1);
+  };
+  const hasActiveFilters = Boolean(kwQuery || catFilter || projFilter);
 
   return (
     <section>
@@ -520,71 +539,84 @@ export function ArchivePage() {
       `}</style>
       {notice && <div style={{ position: 'fixed', top: 12, right: 16, zIndex: 200, padding: '6px 12px', borderRadius: 6, background: 'var(--card-bg)', border: '1px solid var(--accent)', fontSize: 'var(--fs-s)', color: 'var(--text)' }}>{notice}</div>}
 
-      {/* T00586：顶部工具区——多选开关 + 搜索 + 分类/项目筛选（对齐计划页工具栏风格） */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-        <span style={{ flex: 1 }} />
+      {/* T06000：页签 + 多选 + 搜索 + 分类/项目筛选合并为同一排；窄屏横向滚动，不挤压主操作区 */}
+      <div data-t06000="archive-toolbar" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'nowrap', overflowX: 'auto', borderBottom: '1px solid var(--border-strong)', marginBottom: 10, paddingBottom: 6 }}>
+        <div role="tablist" aria-label="归档类型切换" data-t05775="archive-type-tabs" style={{ display: 'flex', gap: 2, alignItems: 'center', flex: '0 0 auto' }}>
+          {archiveTabs.map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              role="tab"
+              aria-selected={archiveTabSafe === t.key}
+              data-t05775={`archive-type-${t.key}`}
+              onClick={() => switchArchiveTab(t.key)}
+              title={`${t.label} (${t.count}) — 点击切换归档类型`}
+              style={{
+                fontSize: 'var(--fs-s)', padding: '5px 8px', border: 'none', background: archiveTabSafe === t.key ? 'var(--accent-soft)' : 'transparent',
+                cursor: 'pointer', whiteSpace: 'nowrap', flex: '0 0 auto', borderRadius: 6,
+                fontWeight: archiveTabSafe === t.key ? 700 : 400,
+                color: archiveTabSafe === t.key ? 'var(--accent)' : 'var(--text-muted)',
+                borderBottom: archiveTabSafe === t.key ? '2px solid var(--accent)' : '2px solid transparent',
+              }}
+            >
+              {t.label} ({t.count})
+            </button>
+          ))}
+        </div>
+        <span aria-hidden="true" style={{ width: 1, height: 24, background: 'var(--border)', flex: '0 0 auto' }} />
         {/* 多选模式（参考计划页：ListChecks/Check 图标切换） */}
         <button onClick={() => { setMulti((m) => !m); setSelTaskIds([]); setSelPlanIds([]); }}
           className="tbtn-anim"
           title={multi ? '退出多选模式' : '多选模式 — 勾选归档条目后批量还原/删除'}
           aria-label={multi ? '退出多选模式' : '进入多选模式'}
-          style={{ fontSize: 'var(--fs-s)', padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', border: '1px solid var(--border-strong)', background: multi ? 'var(--accent)' : 'transparent', color: multi ? 'var(--accent-text)' : 'var(--text)' }}>
+          style={{ fontSize: 'var(--fs-s)', padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', flex: '0 0 auto', border: '1px solid var(--border-strong)', background: multi ? 'var(--accent)' : 'transparent', color: multi ? 'var(--accent-text)' : 'var(--text)' }}>
           {multi ? <Check size={13} /> : <ListChecks size={13} />}
         </button>
         {/* 搜索（标题/编号/项目名） */}
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, border: '1px solid var(--border-strong)', borderRadius: 6, padding: '3px 8px', background: 'var(--card-bg)' }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, border: '1px solid var(--border-strong)', borderRadius: 6, padding: '3px 8px', background: 'var(--card-bg)', flex: '0 1 230px', minWidth: 170 }}>
           <Search size={13} style={{ color: 'var(--text-muted)' }} />
           <input ref={searchRef} value={searchKw} onChange={(e) => { setSearchKw(e.target.value); setPage(1); setPlanPage(1); setPromptPage(1); }}
             placeholder="搜索归档标题…" aria-label="搜索归档内容" data-page-search
-            style={{ border: 'none', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)', width: 150 }} />
+            style={{ border: 'none', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)', width: '100%', minWidth: 100 }} />
           {searchKw && <button onClick={() => setSearchKw('')} title="清除搜索" aria-label="清除搜索" style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: 0 }}><X size={12} /></button>}
         </span>
+        {archiveTabSafe === 'tasks' && (
+          <select value={catFilter} onChange={(e) => { setCatFilter(e.target.value); setPage(1); }}
+            aria-label="按分类筛选归档任务" title="按分类筛选归档任务"
+            style={{ padding: '4px 6px', fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', flex: '0 0 auto' }}>
+            <option value="">全部分类</option>
+            {cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            <option value="none">未分类</option>
+          </select>
+        )}
+        {archiveTabSafe === 'plans' && (
+          <>
+            <select value={projFilter} onChange={(e) => { setProjFilter(e.target.value); setPlanPage(1); }}
+              aria-label="按项目筛选归档计划" title="按项目筛选归档计划"
+              style={{ padding: '4px 6px', fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', flex: '0 0 auto' }}>
+              <option value="">全部项目</option>
+              {Object.entries(projectNames).map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+            </select>
+            <ProjectListHint view={projectList} />
+          </>
+        )}
       </div>
-
-      {/* T05775：顶层按「归档类型」分 sheet 页签；任务分类筛选恢复为下拉，不再把缺陷分类当页签 */}
-      <div
-        data-t05775="archive-type-tabs"
-        role="tablist"
-        aria-label="归档类型切换"
-        style={{ display: 'flex', gap: 4, alignItems: 'center', borderBottom: '1px solid var(--border-strong)', marginBottom: 12, overflowX: 'auto', paddingBottom: 0 }}
-      >
-        {archiveTabs.map((t) => (
-          <button
-            key={t.key}
-            type="button"
-            role="tab"
-            aria-selected={archiveTab === t.key}
-            data-t05775={`archive-type-${t.key}`}
-            onClick={() => { setArchiveTab(t.key); setSelTaskIds([]); setSelPlanIds([]); }}
-            title={`${t.label} (${t.count}) — 点击切换归档类型`}
-            style={{
-              fontSize: 'var(--fs-l)', padding: '6px 12px', border: 'none', background: 'transparent', cursor: 'pointer',
-              whiteSpace: 'nowrap', flex: '0 0 auto',
-              fontWeight: archiveTab === t.key ? 700 : 400,
-              color: archiveTab === t.key ? 'var(--text)' : 'var(--text-muted)',
-              borderBottom: archiveTab === t.key ? '2px solid var(--accent)' : '2px solid transparent',
-            }}
-          >
-            {t.label} ({t.count})
+      {hasActiveFilters && (
+        <div data-t06000="filter-reset" style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
+          <span>当前筛选{kwQuery ? `：关键词「${kwQuery}」` : ''}{catFilter ? ' · 指定分类' : ''}{projFilter ? ' · 指定项目' : ''}</span>
+          <button type="button" onClick={resetArchiveFilters} title="重置搜索与筛选" aria-label="重置搜索与筛选"
+            style={{ fontSize: 'var(--fs-xs)', padding: '2px 8px', borderRadius: 5, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer' }}>
+            重置筛选
           </button>
-        ))}
-      </div>
+        </div>
+      )}
 
-      <div data-t05775="archive-section" data-archive-type="tasks" style={{ display: archiveTab === 'tasks' ? 'block' : 'none' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-        <select value={catFilter} onChange={(e) => { setCatFilter(e.target.value); setPage(1); }}
-          aria-label="按分类筛选归档任务" title="按分类筛选归档任务"
-          style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
-          <option value="">全部分类</option>
-          {cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          <option value="none">未分类</option>
-        </select>
-      </div>
-      <ResourceHint view={tasksView} label="归档任务列表" />
+      <div data-t05775="archive-section" data-archive-type="tasks" style={{ display: archiveTabSafe === 'tasks' ? 'block' : 'none' }}>
+      <ResourceHint view={tasksView} label="归档任务列表" showLoading />
       {renderBatchBar('task')}
       {/* 空态只在「取数成功且本页为空」时出现——失败态由上方 ResourceHint 承载，两者不再同形 */}
       {tasksView.phase === 'ready' && pageTasks.length === 0 && (
-        <p style={{ color: 'var(--text-muted)' }}>暂无归档任务（或当前筛选无结果）。待办/已完成任务归档后在此管理。</p>
+        <p style={{ color: 'var(--text-muted)' }}>{hasActiveFilters ? '未找到相关归档。请调整搜索/筛选条件，或点上方「重置筛选」。' : '暂无归档任务。待办/已完成任务归档后在此管理。'}</p>
       )}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
         {pageTasks.map((t) => (
@@ -606,22 +638,12 @@ export function ArchivePage() {
       {renderPager(curTaskPage, taskPages, (n) => setPage(n), '归档任务')}
       </div>
 
-      <div data-t05775="archive-section" data-archive-type="plans" style={{ display: archiveTab === 'plans' ? 'block' : 'none' }}>
+      <div data-t05775="archive-section" data-archive-type="plans" style={{ display: archiveTabSafe === 'plans' ? 'block' : 'none' }}>
       {/* T00442 扩展：项目计划归档区——计划「删除」改归档后在此恢复或彻底删除 */}
-      <ResourceHint view={plansView} label="归档计划列表" />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-        <select value={projFilter} onChange={(e) => { setProjFilter(e.target.value); setPlanPage(1); }}
-          aria-label="按项目筛选归档计划" title="按项目筛选归档计划"
-          style={{ padding: 3, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
-          <option value="">全部项目</option>
-          {Object.entries(projectNames).map(([id, name]) => <option key={id} value={id}>{name}</option>)}
-        </select>
-        {/* T02201：项目名取数失败时筛选器只剩「全部项目」，此处显式给出原因与重试入口 */}
-        <ProjectListHint view={projectList} />
-      </div>
+      <ResourceHint view={plansView} label="归档计划列表" showLoading />
       {renderBatchBar('plan')}
       {plansView.phase === 'ready' && pagePlans.length === 0 && (
-        <p style={{ color: 'var(--text-muted)' }}>暂无归档的项目计划（或当前筛选无结果）。</p>
+        <p style={{ color: 'var(--text-muted)' }}>{hasActiveFilters ? '未找到相关归档。请调整搜索/筛选条件，或点上方「重置筛选」。' : '暂无归档的项目计划。'}</p>
       )}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
         {pagePlans.map((p) => (
@@ -640,11 +662,11 @@ export function ArchivePage() {
       {renderPager(curPlanPage, planPages, (n) => setPlanPage(n), '归档项目计划')}
       </div>
 
-      <div data-t05775="archive-section" data-archive-type="prompts" style={{ display: archiveTab === 'prompts' ? 'block' : 'none' }}>
+      <div data-t05775="archive-section" data-archive-type="prompts" style={{ display: archiveTabSafe === 'prompts' ? 'block' : 'none' }}>
       {/* T00872：归档提示词区——提示词「归档」（软删）后在此还原或彻底删除 */}
-      <ResourceHint view={promptsView} label="归档提示词列表" />
+      <ResourceHint view={promptsView} label="归档提示词列表" showLoading />
       {promptsView.phase === 'ready' && pagePrompts.length === 0 && (
-        <p style={{ color: 'var(--text-muted)' }}>暂无归档提示词（或当前筛选无结果）。提示词页归档后的条目会出现在这里。</p>
+        <p style={{ color: 'var(--text-muted)' }}>{hasActiveFilters ? '未找到相关归档。请调整搜索/筛选条件，或点上方「重置筛选」。' : '暂无归档提示词。提示词页归档后的条目会出现在这里。'}</p>
       )}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
         {pagePrompts.map((p) => (
@@ -661,12 +683,12 @@ export function ArchivePage() {
       {renderPager(curPromptPage, promptPages, (n) => setPromptPage(n), '归档提示词')}
       </div>
 
-      <div data-t05775="archive-section" data-archive-type="reqs" style={{ display: archiveTab === 'reqs' ? 'block' : 'none' }}>
+      <div data-t05775="archive-section" data-archive-type="reqs" style={{ display: archiveTabSafe === 'reqs' ? 'block' : 'none' }}>
       {/* T03685：归档通用需求区——通用需求条目「归档」（软删）后在此还原或彻底删除，
           与提示词区同构；入口来自通用需求菜单的行内归档按钮 */}
-      <ResourceHint view={reqsView} label="归档通用需求列表" />
+      <ResourceHint view={reqsView} label="归档通用需求列表" showLoading />
       {reqsView.phase === 'ready' && archivedReqs.length === 0 && (
-        <p style={{ color: 'var(--text-muted)' }}>暂无归档通用需求（或当前搜索无结果）。通用需求页归档后的条目会出现在这里。</p>
+        <p style={{ color: 'var(--text-muted)' }}>{hasActiveFilters ? '未找到相关归档。请调整搜索/筛选条件，或点上方「重置筛选」。' : '暂无归档通用需求。通用需求页归档后的条目会出现在这里。'}</p>
       )}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
         {archivedReqs.map((e) => (
@@ -682,11 +704,11 @@ export function ArchivePage() {
       </ul>
       </div>
 
-      <div data-t05775="archive-section" data-archive-type="prd" style={{ display: archiveTab === 'prd' ? 'block' : 'none' }}>
+      <div data-t05775="archive-section" data-archive-type="prd" style={{ display: archiveTabSafe === 'prd' ? 'block' : 'none' }}>
       {/* T05080：归档 PRD 文档区——PRD 管理视图「归档」后在此还原或彻底删除 */}
-      <ResourceHint view={prdDocsArchivedView} label="归档 PRD 文档列表" />
+      <ResourceHint view={prdDocsArchivedView} label="归档 PRD 文档列表" showLoading />
       {prdDocsArchivedView.phase === 'ready' && archivedPrdDocs.length === 0 && (
-        <p style={{ color: 'var(--text-muted)' }}>暂无归档 PRD 文档（或当前搜索无结果）。PRD 管理页归档后的文档会出现在这里。</p>
+        <p style={{ color: 'var(--text-muted)' }}>{hasActiveFilters ? '未找到相关归档。请调整搜索/筛选条件，或点上方「重置筛选」。' : '暂无归档 PRD 文档。PRD 管理页归档后的文档会出现在这里。'}</p>
       )}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
         {archivedPrdDocs.map((d) => (
@@ -702,11 +724,11 @@ export function ArchivePage() {
       </ul>
       </div>
 
-      <div data-t05775="archive-section" data-archive-type="matrix" style={{ display: archiveTab === 'matrix' ? 'block' : 'none' }}>
+      <div data-t05775="archive-section" data-archive-type="matrix" style={{ display: archiveTabSafe === 'matrix' ? 'block' : 'none' }}>
       {/* T05080：归档需求跟踪矩阵区——需求跟踪矩阵视图「归档」后在此还原或彻底删除 */}
-      <ResourceHint view={reqMatrixArchivedView} label="归档需求跟踪矩阵列表" />
+      <ResourceHint view={reqMatrixArchivedView} label="归档需求跟踪矩阵列表" showLoading />
       {reqMatrixArchivedView.phase === 'ready' && archivedMatrixReqs.length === 0 && (
-        <p style={{ color: 'var(--text-muted)' }}>暂无归档需求跟踪矩阵行（或当前搜索无结果）。需求跟踪矩阵页归档后的行会出现在这里。</p>
+        <p style={{ color: 'var(--text-muted)' }}>{hasActiveFilters ? '未找到相关归档。请调整搜索/筛选条件，或点上方「重置筛选」。' : '暂无归档需求跟踪矩阵行。需求跟踪矩阵页归档后的行会出现在这里。'}</p>
       )}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
         {archivedMatrixReqs.map((r) => (
@@ -722,11 +744,11 @@ export function ArchivePage() {
       </ul>
       </div>
 
-      <div data-t05775="archive-section" data-archive-type="cases" style={{ display: archiveTab === 'cases' ? 'block' : 'none' }}>
+      <div data-t05775="archive-section" data-archive-type="cases" style={{ display: archiveTabSafe === 'cases' ? 'block' : 'none' }}>
       {/* T05080：归档测试用例区——测试用例视图「归档」后在此还原或彻底删除 */}
-      <ResourceHint view={casesArchivedView} label="归档测试用例列表" />
+      <ResourceHint view={casesArchivedView} label="归档测试用例列表" showLoading />
       {casesArchivedView.phase === 'ready' && archivedCases.length === 0 && (
-        <p style={{ color: 'var(--text-muted)' }}>暂无归档测试用例（或当前搜索无结果）。测试用例页归档后的用例会出现在这里。</p>
+        <p style={{ color: 'var(--text-muted)' }}>{hasActiveFilters ? '未找到相关归档。请调整搜索/筛选条件，或点上方「重置筛选」。' : '暂无归档测试用例。测试用例页归档后的用例会出现在这里。'}</p>
       )}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
         {archivedCases.map((c) => (

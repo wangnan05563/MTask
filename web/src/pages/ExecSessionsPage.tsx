@@ -24,7 +24,7 @@ import { desktopApi } from '../ui/desktop';
 const ACTIVE_POLL_MS = 2000;
 const HIDDEN_POLL_MS = 15000;
 
-/** 可重派状态（PRD §8：心跳超时→stalled、平台报错→failed 才有一键重派；其余状态服务端整单拒绝） */
+/** 可显示重派入口的会话状态；仍需至少一条未归档待办任务才会实际渲染按钮（PRD §8） */
 const REDISPATCHABLE = new Set(['stalled', 'failed']);
 
 /** T05767：左右分栏默认 4:1（左 80% / 右 20%），拖动范围留出两侧安全边界。
@@ -300,7 +300,7 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
     );
   } else {
     content = (
-      <div className="exec-kanban-grid" style={{ display: 'grid', gridTemplateColumns: `repeat(${columns.length}, minmax(190px, 1fr))`, gap: 12, alignItems: 'stretch', height: '100%', minHeight: 0, paddingBottom: 2 }}>
+      <div className="exec-kanban-grid" style={{ display: 'grid', gridTemplateColumns: `repeat(${columns.length}, minmax(190px, 1fr))`, gap: 8, alignItems: 'stretch', height: '100%', minHeight: 0, paddingBottom: 0 }}>
         {columns.map((col) => (
           <KanbanColumn
             key={col.key}
@@ -375,44 +375,14 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
         .exec-icon-btn:active { background: var(--accent-soft, var(--surface-2)) !important; }
       `}</style>
 
-      {/* T05792：移除与左侧菜单重复的整行标题 + 说明文字 + 图标，仅保留必要的操作区 */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, flexShrink: 0, paddingTop: standalone ? 12 : 0, paddingLeft: standalone ? 16 : 0, paddingRight: standalone ? 16 : 0 }}>
-        {standalone ? (
+      {/* T06007：置顶监控/刷新移入右侧通知区头部（通知中心图标之后、更新时间之前）；独立监控窗保留状态徽标 */}
+      {standalone && (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, flexShrink: 0, paddingTop: 12, paddingLeft: 16, paddingRight: 16 }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-s)', color: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 999, padding: '4px 10px' }}>
             <Pin size={13} /> 置顶监控中
           </span>
-        ) : (
-          <>
-            {/* T05792：去文字 + 无边框图标按钮；title/aria-label 保留完整功能说明，悬浮有轻微反馈 */}
-            <button
-              className="tbtn-anim exec-icon-btn"
-              onClick={() => void openMonitor()}
-              title="弹出置顶监控窗口 — 独立于主应用运行，主应用最小化后仍可见"
-              aria-label="弹出置顶监控窗口"
-              style={{
-                display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 30, height: 30, padding: 0,
-                background: 'transparent', color: 'var(--accent)', border: 'none',
-                borderRadius: 6, cursor: 'pointer',
-              }}
-            >
-              <Pin size={16} />
-            </button>
-            <button
-              className="tbtn-anim exec-icon-btn"
-              onClick={() => void load()}
-              title="刷新列表"
-              aria-label="刷新：重新拉取执行会话列表"
-              style={{
-                display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 30, height: 30, padding: 0,
-                background: 'transparent', color: 'var(--text-secondary)', border: 'none',
-                borderRadius: 6, cursor: 'pointer',
-              }}
-            >
-              <RefreshCw size={16} />
-            </button>
-          </>
-        )}
-      </div>
+        </div>
+      )}
 
       {error && <div style={{ fontSize: 'var(--fs-m)', color: 'var(--danger)', flexShrink: 0 }}>加载失败：{error}</div>}
 
@@ -456,7 +426,36 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
           <span aria-hidden="true" style={{ position: 'absolute', left: 2, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', fontSize: 10, lineHeight: 1 }}>⋮</span>
         </div>
         <div data-lck="notification-column" style={{ minWidth: 0, minHeight: 0, overflow: 'hidden', paddingLeft: 10 }}>
-          <NotificationFeed limit={50} />
+          <NotificationFeed limit={50} headerActions={standalone ? undefined : (
+            <>
+              <button
+                className="tbtn-anim exec-icon-btn"
+                onClick={() => void openMonitor()}
+                title="弹出置顶监控窗口 — 独立于主应用运行，主应用最小化后仍可见"
+                aria-label="弹出置顶监控窗口"
+                style={{
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 26, padding: 0,
+                  background: 'transparent', color: 'var(--accent)', border: 'none',
+                  borderRadius: 6, cursor: 'pointer', flexShrink: 0,
+                }}
+              >
+                <Pin size={15} />
+              </button>
+              <button
+                className="tbtn-anim exec-icon-btn"
+                onClick={() => void load()}
+                title="刷新列表"
+                aria-label="刷新：重新拉取执行会话列表"
+                style={{
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 26, padding: 0,
+                  background: 'transparent', color: 'var(--text-secondary)', border: 'none',
+                  borderRadius: 6, cursor: 'pointer', flexShrink: 0,
+                }}
+              >
+                <RefreshCw size={15} />
+              </button>
+            </>
+          )} />
         </div>
       </div>
     </div>
@@ -484,7 +483,7 @@ function KanbanColumn({
       style={{
         minWidth: 0, height: '100%', minHeight: 0, position: 'relative',
         background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14,
-        padding: 10, display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        padding: 8, display: 'flex', flexDirection: 'column', overflow: 'hidden',
       }}
     >
       <div
@@ -492,7 +491,7 @@ function KanbanColumn({
         className="exec-column-scroll"
         data-lck="exec-column-scroll"
         aria-label={`${title}泳道内容`}
-        style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, paddingBottom: 32, paddingRight: 2 }}
+        style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, paddingBottom: 8, paddingRight: 0 }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '1px 2px', position: 'sticky', top: 0, zIndex: 1, background: 'var(--surface)' }}>
           <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, boxShadow: `0 0 0 3px ${tone}` }} />
@@ -525,7 +524,13 @@ function SessionCard({ s, cardRef, enterAnimation = false }: { readonly s: ExecS
   const pct = Math.max(0, Math.min(100, Math.round(s.progress ?? 0)));
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
-  const redispatchable = REDISPATCHABLE.has(s.status);
+  const needsAttention = REDISPATCHABLE.has(s.status);
+  /** 新版服务端会返回任务状态；旧版返回缺少字段时退回原行为，不误报“无待办任务”。 */
+  const taskStateKnown = s.tasks.every((t) => typeof t.status === 'string');
+  /** 与服务端 redispatchSession 同口径：只有未归档的待办任务才会真正派发。 */
+  const eligibleTasks = taskStateKnown ? s.tasks.filter((t) => t.status === 'todo' && !t.archived) : [];
+  const redispatchable = needsAttention && (taskStateKnown ? eligibleTasks.length > 0 : s.tasks.length > 0);
+  const noEligibleTask = needsAttention && taskStateKnown && eligibleTasks.length === 0;
   const projectLabels = Array.from(new Set(s.tasks.map((t) => t.project_name?.trim()).filter(Boolean))) as string[];
 
   const redispatch = async () => {
@@ -563,28 +568,24 @@ function SessionCard({ s, cardRef, enterAnimation = false }: { readonly s: ExecS
       data-status={s.status}
       style={{ ...card, display: 'flex', flexDirection: 'column', gap: 6, animation: enterAnimation ? 'exec-card-in .24s ease-out' : undefined }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      {/* T05999：首行固定 Logo → 项目标签 → 处理时间；项目标签单行截断，时间永不被遮挡 */}
+      <div data-t05999="card-head" style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'nowrap', minWidth: 0 }}>
         <PlatformLogo platform={s.platform} size={28} />
-        {/* T05793 二轮：卡片只保留来源平台 Logo，工具名移入 Logo 的 title/aria-label，给项目与任务信息让出横向空间。 */}
-        {/* T05767：状态已由泳道顶部表达，卡片重复徽标改为项目标签 */}
         {projectLabels.length > 0 ? (
-          <>
-            {projectLabels.slice(0, 2).map((name) => (
-              <span key={name} data-lck="session-project-tag" title={`所属项目：${name}`} style={projectBadge}>
-                {name}
-              </span>
-            ))}
-            {projectLabels.length > 2 && (
-              <span data-lck="session-project-tag-more" title={`全部项目：${projectLabels.join('、')}`} style={{ ...projectBadge, maxWidth: 36 }}>
-                +{projectLabels.length - 2}
+          <div data-lck="session-project-tags" style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, flex: 1, overflow: 'hidden', whiteSpace: 'nowrap' }}>
+            <span data-lck="session-project-tag" title={`所属项目：${projectLabels[0]}`} style={{ ...projectBadge, maxWidth: '100%', flexShrink: 1 }}>
+              {projectLabels[0]}
+            </span>
+            {projectLabels.length > 1 && (
+              <span data-lck="session-project-tag-more" title={`全部项目：${projectLabels.join('、')}`} style={{ ...projectBadge, maxWidth: 36, flexShrink: 0 }}>
+                +{projectLabels.length - 1}
               </span>
             )}
-          </>
+          </div>
         ) : (
-          <span data-lck="session-project-tag" title="未分配项目" style={projectBadge}>未分配项目</span>
+          <span data-lck="session-project-tag" title="未分配项目" style={{ ...projectBadge, maxWidth: '100%', flex: 1 }}>未分配项目</span>
         )}
-        <span style={{ flex: 1 }} />
-        <span title={fullTime(s.last_heartbeat)} style={{ fontSize: 'var(--fs-xs)', color: redispatchable ? 'var(--danger)' : 'var(--text-muted)' }}>
+        <span data-t05999="handle-time" title={fullTime(s.last_heartbeat)} style={{ fontSize: 'var(--fs-xs)', color: needsAttention ? 'var(--danger)' : 'var(--text-muted)', flexShrink: 0 }}>
           {relTime(s.last_heartbeat)}
         </span>
       </div>
@@ -599,8 +600,8 @@ function SessionCard({ s, cardRef, enterAnimation = false }: { readonly s: ExecS
             className="tbtn-anim"
             onClick={() => void redispatch()}
             disabled={busy}
-            aria-label={`重派会话 ${s.session_id ?? s.id} 的停滞任务`}
-            title="一键重派：经中继把该会话关联的待办任务重新派发（复用既有派发链路）"
+            aria-label={`重派会话 ${s.session_id ?? s.id} 的待办任务`}
+            title="一键重派：仅把该会话关联的未归档待办任务经中继重新派发"
             style={{
               marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', padding: '2px 8px',
               background: 'var(--surface-2)', color: 'var(--danger)', border: '1px solid var(--danger)',
@@ -610,7 +611,27 @@ function SessionCard({ s, cardRef, enterAnimation = false }: { readonly s: ExecS
             <RotateCcw size={11} style={{ animation: busy ? 'exec-spin 1s linear infinite' : undefined }} /> {busy ? '重派中' : '重派'}
           </button>
         )}
+        {noEligibleTask && (
+          <span data-lck="redispatch-empty" title="该会话关联的任务均已完成、已归档或已删除，没有可重派的待办任务"
+            style={{
+              marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', fontSize: 'var(--fs-xs)',
+              color: 'var(--text-muted)', background: 'var(--surface-2)', border: '1px solid var(--border)',
+              borderRadius: 7, padding: '2px 8px', flexShrink: 0,
+            }}>
+            无待办任务
+          </span>
+        )}
       </div>
+
+      {notice && (
+        <div data-lck="redispatch-notice" role="status"
+          style={{
+            fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', background: 'var(--surface-2)',
+            border: '1px solid var(--border)', borderRadius: 6, padding: '4px 8px',
+          }}>
+          {notice}
+        </div>
+      )}
 
       {s.phase && <div title={s.phase} style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>阶段：{s.phase}</div>}
 
@@ -622,7 +643,7 @@ function SessionCard({ s, cardRef, enterAnimation = false }: { readonly s: ExecS
       </div>
 
       {s.tasks.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+        <div data-t05999="task-labels" style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
           {s.tasks.map((t) => (
             <button
               key={t.id}
@@ -631,22 +652,21 @@ function SessionCard({ s, cardRef, enterAnimation = false }: { readonly s: ExecS
               onClick={() => void focusTaskByNo(t.task_no, 'notice')}
               title={`任务ID：${t.id}｜${t.project_name ?? '未分配项目'}｜${t.task_no ?? ''} ${t.title}——点击直达任务`}
               style={{
-                ...chip, display: 'inline-flex', alignItems: 'center', gap: 4, lineHeight: '16px',
+                ...chip, display: 'inline-flex', alignItems: 'center', gap: 4, lineHeight: '16px', maxWidth: '100%',
                 border: '1px solid var(--border)', cursor: 'pointer', background: 'var(--surface-2)', textAlign: 'left', font: 'inherit',
               }}
             >
-              <span data-lck="task-project-badge" title={t.project_name ?? '未分配项目'} style={projectBadge}>
-                {t.project_name ?? '未分配'}
+              {/* T05999：底部任务标签不再重复项目标签，只保留任务编号 + 主题（项目已在首行） */}
+              <span data-t05999="task-no" style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+                {t.task_no ?? '—'}
               </span>
-              <span style={{ fontSize: 'var(--fs-xs)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {t.task_no ? `${t.task_no} · ` : ''}{t.title}
+              <span data-t05999="task-title" style={{ fontSize: 'var(--fs-xs)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+                {t.title}
               </span>
             </button>
           ))}
         </div>
       )}
-
-      {notice && <div data-lck="redispatch-notice" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>{notice}</div>}
     </div>
   );
 }
