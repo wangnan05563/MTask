@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api } from '../api/client';
+import { api, type TaskCategory } from '../api/client';
 import { askConfirm } from '../ui/dialogs'; // T01699：确认框归一（原生 confirm 阻塞渲染线程且样式不一致）
+import { AlertTriangle, Pencil, Play, Save, X } from 'lucide-react';
+import { RecurringSchedulePicker, defaultSchedule, ruleFromSchedule, scheduleFromRule, scheduleSummary, type RecurringSchedule } from './RecurringSchedulePicker';
 import { ProjectListHint, loadProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表统一容错层
 import { getLang, onLangChange, registerDict, setLang as setGlobalLang, t, term, useLang, type Lang } from '../i18n';
 
@@ -99,151 +101,322 @@ export function LangSwitch() {
 }
 
 interface RecurringRule {
-  id: string; project_id: string; project_name: string; title: string;
+  id: string; project_id: string; project_name: string; title: string; description?: string;
+  priority?: string; category_id?: string | null; interval_n?: number | null; first_run_immediate?: number | null;
   freq: string; cron_expr?: string; next_run_at: string; last_task_no: string | null; enabled: number; created_at: string;
 }
-const FREQ_LABELS: Record<string, string> = { daily: term('每天'), weekly: term('每周'), monthly: term('每月'), cron: term('cron 定时') };
+const FREQ_LABELS: Record<string, string> = {
+  daily: term('每天'), weekly: term('每周'), monthly: term('每月'), cron: term('cron 定时'),
+  interval_days: term('每 N 天'), interval_weeks: term('每 N 周'),
+};
 /** T01071 后续：频率标签在渲染时取译文（模块级 t() 只会算一次，切语言后不刷新） */
 const freqLabel = (k: string): string => t(FREQ_LABELS[k] ?? k, FREQ_LABELS[k] ?? k);
 /** T01073 后续：cron 5 段式提示（分 时 日 月 周） */
 const CRON_PLACEHOLDER = '0 9 * * 1';
 
+/** T05818：后端 next_run_at 是 UTC 存储串；展示时转本地（不再直接 slice）。 */
+function parseStoreTime(s: string): Date | null {
+  if (!s) return null;
+  const d = new Date(`${s.replace(' ', 'T')}Z`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+export function formatLocalDateTime(s: string, withTime = true): string {
+  const d = parseStoreTime(s);
+  if (!d) return s || '—';
+  const p = (n: number) => String(n).padStart(2, '0');
+  const date = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  return withTime ? `${date} ${p(d.getHours())}:${p(d.getMinutes())}` : date;
+}
+
 export function RecurringTab() {
-  useLang(); // T01071 后续：语言切换后重渲染（t() 结果随之更新）
+  useLang();
   const [rules, setRules] = useState<RecurringRule[]>([]);
-  const projectList = useProjectList({ excludeInbox: true }); // T02201
+  const projectList = useProjectList({ excludeInbox: true });
   const { projects } = projectList;
+  const [categories, setCategories] = useState<TaskCategory[]>([]);
   const [projectId, setProjectId] = useState('');
   const [title, setTitle] = useState('');
-  const [freq, setFreq] = useState('weekly');
-  // T01073 后续：cron 表达式（可选）。非空时优先于上面的频率下拉——精确到「每周一 9:00」这类时刻
-  const [cron, setCron] = useState('');
+  const [description, setDescription] = useState('');
+  const [priority, setPriority] = useState('normal');
+  const [categoryId, setCategoryId] = useState('');
+  const [schedule, setSchedule] = useState<RecurringSchedule>(() => defaultSchedule());
+  const [firstImmediate, setFirstImmediate] = useState(true);
+  const [preview, setPreview] = useState('');
+  const [previewError, setPreviewError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [runBusyId, setRunBusyId] = useState('');
+  const [editRule, setEditRule] = useState<RecurringRule | null>(null);
   const [notice, setNotice] = useState('');
-  const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3000); };
+  const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3500); };
 
   const load = useCallback(async () => {
-    // T02201：项目列表改由容错层取数——与规则列表解绑，任一条取数失败不再连带把另一条也拖成空态
     void loadProjectList();
-    try {
-      setRules(await api.get<RecurringRule[]>('/recurring'));
-    } catch { /* 忽略 */ }
+    try { setRules(await api.get<RecurringRule[]>('/recurring')); } catch { /* 规则列表失败不阻塞表单 */ }
+    try { setCategories(await api.get<TaskCategory[]>('/task-categories')); } catch { /* 分类失败不阻塞 */ }
   }, []);
   useEffect(() => { void load(); }, [load]);
 
+  // T05823：周期选择变化即向后端要「下次生成」预览（同一份 cron 解析器，避免前端另写一套）
+  useEffect(() => {
+    let alive = true;
+    const rule = ruleFromSchedule(schedule);
+    const timer = setTimeout(() => {
+      if (!rule.cron && !rule.freq) { setPreviewError('请先选择生成周期'); return; }
+      api.post<{ nextRunAt: string }>('/recurring/preview', { ...rule, firstRunImmediate: firstImmediate })
+        .then((r) => { if (alive) { setPreview(formatLocalDateTime(r.nextRunAt)); setPreviewError(''); } })
+        .catch((e) => { if (alive) { setPreview(''); setPreviewError(e instanceof Error ? e.message : String(e)); } });
+    }, 260);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [schedule, firstImmediate]);
+
   async function createRule() {
+    const rule = ruleFromSchedule(schedule);
     if (!projectId || !title.trim()) return flash(t('请选择项目并填写标题', '请选择项目并填写标题'));
+    if (!schedule.advanced && schedule.kind === 'cron' && !rule.cron) return flash('自定义 cron 不能为空');
+    if (!description.trim() && !(await askConfirm('未填写「执行说明」：生成的任务只有标题，外部 Agent 认领后可能不知道要做什么。仍要创建吗？'))) return;
     setBusy(true);
     try {
-      await api.post('/recurring', { projectId, title: title.trim(), freq, cron: cron.trim(), priority: 'normal' });
+      await api.post('/recurring', {
+        projectId, title: title.trim(), description: description.trim(), priority,
+        categoryId: categoryId || null, freq: rule.freq, cron: rule.cron, intervalN: rule.intervalN, firstRunImmediate: firstImmediate,
+      });
       setTitle('');
-      setCron('');
-      flash(cron.trim()
-        ? `${t('循环规则已创建', '循环规则已创建')}（${t('按 cron 定时生成', '按 cron 定时生成')}「${cron.trim()}」）`
-        : t('循环规则已创建（server 启动与每小时 tick 时到期生成）', '循环规则已创建（server 启动与每小时 tick 时到期生成）'));
+      setDescription('');
+      flash(`循环规则已创建；${firstImmediate ? '下一分钟内生成首份' : `首份按计划 ${preview || '按 cron 首次时刻'} 生成`}。周期只决定何时生成，任务仍由外部 Agent 认领执行。`);
       await load();
-    } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
+    } catch (e) { flash(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
   }
 
-  /** T01073 后续：行内改 cron 表达式（改完即时生效；非法表达式由后端拒绝，错误直接闪现） */
-  async function updateCron(rule: RecurringRule, expr: string) {
-    if (expr === (rule.cron_expr ?? '')) return;
+  async function toggleRule(rule: RecurringRule) {
+    try { await api.put(`/recurring/${rule.id}`, { enabled: !rule.enabled }); await load(); }
+    catch (e) { flash(e instanceof Error ? e.message : String(e)); }
+  }
+
+  async function runNow(rule: RecurringRule) {
+    if (runBusyId) return;
+    setRunBusyId(rule.id);
     try {
-      await api.put(`/recurring/${rule.id}`, { cron: expr });
-      flash(expr
-        ? `「${rule.title}」${t('已改为 cron', '已改为 cron')}「${expr}」`
-        : `「${rule.title}」${t('已取消 cron，按', '已取消 cron，按')}${freqLabel(rule.freq)}${t('生成', '生成')}`);
+      const r = await api.post<{ taskNo: string; nextRunAt: string }>(`/recurring/${rule.id}/run-now`, {});
+      flash(`已立即生成 ${r.taskNo}（不会重复触发，下一轮 ${formatLocalDateTime(r.nextRunAt)}）`);
       await load();
-    } catch (e) { flash(String((e as Error).message ?? e)); }
+    } catch (e) { flash(e instanceof Error ? e.message : String(e)); } finally { setRunBusyId(''); }
   }
 
   const cell: { padding: number; borderBottom: string; fontSize: string } = { padding: 8, borderBottom: '1px solid var(--surface-2)', fontSize: 'var(--fs-s)' };
-
   const projectSelectIdleText = projectList.phase === 'loading' ? t('项目列表加载中…', '项目列表加载中…') : t('选择项目…', '选择项目…');
+  const rule = ruleFromSchedule(schedule);
 
   return (
-    <div style={{ maxWidth: 760 }}>
-      <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 12 }}>
-        {t('按周期自动生成任务副本（例：每周周报）。到期由后端每小时检查并生成，标题自动带日期后缀。', '按周期自动生成任务副本（例：每周周报）。到期由后端每小时检查并生成，标题自动带日期后缀。')}
-        {t('需要精确到时刻时填 cron 表达式', '需要精确到时刻时填 cron 表达式')}（<code>{t('分 时 日 月 周', '分 时 日 月 周')}</code>{t('，如', '，如')} <code>0 9 * * 1</code> {t('= 每周一 9:00，按本地时区；留空则按上面的频率粗粒度生成。', '= 每周一 9:00，按本地时区；留空则按上面的频率粗粒度生成。')}）
+    <div style={{ maxWidth: 980 }}>
+      {/* T05823：功能说明前置——先讲清「只生成、不执行」，再进入表单 */}
+      <div data-t05823="intro" style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 12, marginBottom: 14, background: 'var(--surface)', fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', lineHeight: 1.65 }}>
+        <div style={{ fontSize: 'var(--fs-m)', fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>循环任务只负责「按周期生成任务副本」，不会自动执行任务</div>
+        <ul style={{ margin: 0, paddingLeft: 18 }}>
+          <li>执行由外部 Agent / WorkBuddy 从 MTask 就绪池认领后完成；循环规则本身不运行任务内容。</li>
+          <li>周期 / cron 只决定「何时生成」，不决定「任务做什么」；任务做什么必须写进下面的<b>执行说明</b>。</li>
+          <li>规则名称只作为生成任务的标题模板，生成时会自动追加日期后缀；不要把执行指令藏在名称里。</li>
+          <li>调度器每 60 秒检查一次；<b>错过的历史周期不会自动补生成</b>，恢复后只生成当前一轮。</li>
+          <li>时间按本地时区展示，存储仍为 UTC；创建时可选「立即生成首份」或「按 cron 首次计划时刻生成」。</li>
+        </ul>
       </div>
 
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
-        <select value={projectId} onChange={(e) => setProjectId(e.target.value)} aria-label={t('循环任务项目', '循环任务项目')}
-          disabled={projectList.unusable}
-          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
-          <option value="">{projectList.phase === 'error' ? t('项目列表加载失败', '项目列表加载失败') : projectSelectIdleText}</option>
-          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
-        <ProjectListHint view={projectList} />
-        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t('任务标题（如：写周报）', '任务标题（如：写周报）')} aria-label={t('循环任务标题', '循环任务标题')}
-          style={{ flex: 1, minWidth: 180, padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }} />
-        <select value={freq} onChange={(e) => setFreq(e.target.value)} aria-label={t('循环频率', '循环频率')}
-          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
-          {Object.entries(FREQ_LABELS).map(([k]) => <option key={k} value={k}>{freqLabel(k)}</option>)}
-        </select>
-        <input value={cron} onChange={(e) => setCron(e.target.value)} placeholder={`${t('cron 可选（如', 'cron 可选（如')} ${CRON_PLACEHOLDER}）`} aria-label={t('cron 表达式', 'cron 表达式')}
-          title={t('cron 5 段式：分 时 日 月 周（按本地时区）。填写后忽略上面的频率下拉，可精确到时刻，如「0 9 * * 1」= 每周一 9:00', 'cron 5 段式：分 时 日 月 周（按本地时区）。填写后忽略上面的频率下拉，可精确到时刻，如「0 9 * * 1」= 每周一 9:00')}
-          onKeyDown={(e) => { if (e.key === 'Enter') void createRule(); }}
-          style={{ width: 150, padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }} />
-        <button onClick={() => void createRule()} disabled={busy}
-          style={{ padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 'var(--fs-s)' }}>
-          {t('添加规则', '添加规则')}
-        </button>
+      <div data-t05823="create" style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14, padding: 12, border: '1px solid var(--border)', borderRadius: 10, background: 'var(--card-bg)' }}>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          <select value={projectId} onChange={(e) => setProjectId(e.target.value)} aria-label={t('循环任务项目', '循环任务项目')}
+            disabled={projectList.unusable}
+            style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+            <option value="">{projectList.phase === 'error' ? t('项目列表加载失败', '项目列表加载失败') : projectSelectIdleText}</option>
+            {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+          <ProjectListHint view={projectList} />
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="规则名称（生成任务标题模板，如：写周报）" aria-label="循环任务标题"
+            style={{ flex: 1, minWidth: 200, padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }} />
+          <select value={priority} onChange={(e) => setPriority(e.target.value)} aria-label="生成任务优先级"
+            style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+            <option value="low">低</option><option value="normal">普通</option><option value="high">高</option><option value="urgent">紧急</option>
+          </select>
+          <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} aria-label="生成任务分类"
+            style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+            <option value="">不分类</option>
+            {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
+        <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3}
+          placeholder="执行说明 / 任务描述：告诉外部执行者具体要做什么、输入在哪、完成标准是什么。该内容会写入每一条生成任务。"
+          aria-label="循环任务执行说明"
+          data-t05817="description"
+          style={{ width: '100%', boxSizing: 'border-box', padding: 8, fontSize: 'var(--fs-s)', border: `1px solid ${description.trim() ? 'var(--border-strong)' : 'var(--warning, #d97706)'}`, borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', resize: 'vertical' }} />
+        {!description.trim() && <div data-t05817="empty-warning" style={{ fontSize: 'var(--fs-xs)', color: 'var(--warning, #d97706)', display: 'flex', gap: 4, alignItems: 'center' }}><AlertTriangle size={12} /> 建议填写执行说明：空描述会让认领者只能看到标题。</div>}
+
+        <RecurringSchedulePicker value={schedule} onChange={setSchedule} previewText={preview} error={previewError} />
+
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', fontSize: 'var(--fs-xs)' }}>
+          {rule.cron ? (
+            <label style={{ display: 'inline-flex', gap: 5, alignItems: 'center' }}>
+              <input type="checkbox" checked={firstImmediate} onChange={(e) => setFirstImmediate(e.target.checked)} />
+              创建后立即生成首份（不勾选则按 cron 首次计划时刻生成）
+            </label>
+          ) : <span style={{ color: 'var(--text-muted)' }}>无 cron 的间隔规则创建后立即生成首份，之后按间隔推进。</span>}
+          <span style={{ flex: 1 }} />
+          <button onClick={() => void createRule()} disabled={busy}
+            style={{ padding: '7px 16px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: busy ? 'wait' : 'pointer', fontSize: 'var(--fs-s)', fontWeight: 600 }}>
+            {busy ? '创建中…' : t('添加规则', '添加规则')}
+          </button>
+        </div>
+        {notice && <div data-t05823="notice" style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)' }}>{notice}</div>}
       </div>
-      {notice && <div style={{ marginBottom: 10, fontSize: 'var(--fs-s)', color: 'var(--accent)' }}>{notice}</div>}
 
       {rules.length === 0 ? (
         <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: 12 }}>{t('暂无循环规则——上方添加一条即可。', '暂无循环规则——上方添加一条即可。')}</div>
       ) : (
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead>
-            <tr style={{ textAlign: 'left', color: 'var(--text-secondary)', fontSize: 'var(--fs-s)' }}>
-              <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>{t('标题', '标题')}</th>
-              <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>{t('项目', '项目')}</th>
-              <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>{t('频率', '频率')}</th>
-              <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>{t('下次生成', '下次生成')}</th>
-              <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>{t('最近生成', '最近生成')}</th>
-              <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>{t('操作', '操作')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rules.map((r) => (
-              <tr key={r.id}>
-                <td style={{ ...cell, color: r.enabled ? 'var(--text)' : 'var(--text-muted)' }}>{r.title}</td>
-                <td style={cell}>{r.project_name}</td>
-                <td style={cell}>
-                  {r.freq === 'cron' ? (
-                    <input key={`${r.id}-${r.cron_expr ?? ''}`} defaultValue={r.cron_expr ?? ''} aria-label={`${r.title} ${t('cron 表达式', 'cron 表达式')}`}
-                      title={t('cron 5 段式：分 时 日 月 周（本地时区）。回车/失焦保存；清空则回退为按频率生成', 'cron 5 段式：分 时 日 月 周（本地时区）。回车/失焦保存；清空则回退为按频率生成')}
-                      onBlur={(e) => void updateCron(r, e.target.value.trim())}
-                      onKeyDown={(e) => { if (e.key === 'Enter') void updateCron(r, e.currentTarget.value.trim()); }}
-                      style={{ width: 110, padding: 3, fontSize: 'var(--fs-xs)', fontFamily: 'Consolas, Menlo, monospace', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--text)' }} />
-                  ) : (freqLabel(r.freq))}
-                </td>
-                <td style={{ ...cell, color: 'var(--text-muted)' }}>{r.next_run_at.slice(0, r.freq === 'cron' ? 16 : 10)}</td>
-                <td style={cell}>{r.last_task_no ?? '—'}</td>
-                <td style={cell}>
-                  <button onClick={async () => { await api.put(`/recurring/${r.id}`, { enabled: !r.enabled }); void load(); }}
-                    title={r.enabled ? t('停用该规则', '停用该规则') : t('启用该规则', '启用该规则')}
-                    style={{ fontSize: 'var(--fs-xs)', padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: r.enabled ? 'var(--text-secondary)' : 'var(--accent)', cursor: 'pointer', marginRight: 4 }}>
-                    {r.enabled ? t('停用', '停用') : t('启用', '启用')}
-                  </button>
-                  <button onClick={async () => { if (await askConfirm(`${t('删除循环规则', '删除循环规则')}「${r.title}」？${t('已生成的任务不受影响。', '已生成的任务不受影响。')}`)) { await api.del(`/recurring/${r.id}`); void load(); } }}
-                    title={t('删除该规则', '删除该规则')}
-                    style={{ fontSize: 'var(--fs-xs)', padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--danger)', cursor: 'pointer' }}>
-                    {t('删除', '删除')}
-                  </button>
-                </td>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 820 }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: 'var(--text-secondary)', fontSize: 'var(--fs-s)' }}>
+                <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>{t('标题', '标题')}</th>
+                <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>{t('项目', '项目')}</th>
+                <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>{t('频率', '频率')}</th>
+                <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>{t('下次生成', '下次生成')}</th>
+                <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>{t('最近生成', '最近生成')}</th>
+                <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>{t('操作', '操作')}</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rules.map((r) => (
+                <tr key={r.id} data-t05823="rule-row">
+                  <td style={{ ...cell, color: r.enabled ? 'var(--text)' : 'var(--text-muted)', maxWidth: 280 }}>
+                    <div style={{ fontWeight: 600 }}>{r.title}</div>
+                    {r.description?.trim() && <div title={r.description} style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 260 }}>{r.description}</div>}
+                  </td>
+                  <td style={cell}>{r.project_name}</td>
+                  <td style={cell}>
+                    <div>{r.freq === 'cron' ? <span style={{ fontFamily: 'Consolas, Menlo, monospace', fontSize: 'var(--fs-xs)' }}>{r.cron_expr}</span> : freqLabel(r.freq)}</div>
+                    {(r.freq === 'interval_days' || r.freq === 'interval_weeks') && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>间隔 {r.interval_n ?? 1}</div>}
+                  </td>
+                  <td style={{ ...cell, color: 'var(--text-muted)' }} title={`本地时间：${formatLocalDateTime(r.next_run_at)}；存储 UTC：${r.next_run_at}`}>{formatLocalDateTime(r.next_run_at)}</td>
+                  <td style={cell}>{r.last_task_no ?? '—'}</td>
+                  <td style={cell}>
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                      <button onClick={() => void runNow(r)} disabled={runBusyId === r.id}
+                        title="立即生成 — 不等 tick，马上生成一份任务副本" aria-label="立即生成"
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 'var(--fs-xs)', padding: '3px 7px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--accent)', cursor: runBusyId === r.id ? 'wait' : 'pointer' }}>
+                        <Play size={11} />{runBusyId === r.id ? '生成中…' : '立即生成'}
+                      </button>
+                      <button onClick={() => setEditRule(r)} title="编辑规则 — 标题/说明/调度/项目" aria-label="编辑循环规则"
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 'var(--fs-xs)', padding: '3px 7px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer' }}>
+                        <Pencil size={11} />编辑
+                      </button>
+                      <button onClick={() => void toggleRule(r)} title={r.enabled ? t('停用该规则', '停用该规则') : t('启用该规则', '启用该规则')}
+                        style={{ fontSize: 'var(--fs-xs)', padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: r.enabled ? 'var(--text-secondary)' : 'var(--accent)', cursor: 'pointer' }}>
+                        {r.enabled ? t('停用', '停用') : t('启用', '启用')}
+                      </button>
+                      <button onClick={async () => { if (await askConfirm(`${t('删除循环规则', '删除循环规则')}「${r.title}」？${t('已生成的任务不受影响。', '已生成的任务不受影响。')}`)) { await api.del(`/recurring/${r.id}`); void load(); } }}
+                        title={t('删除该规则', '删除该规则')}
+                        style={{ fontSize: 'var(--fs-xs)', padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--danger)', cursor: 'pointer' }}>
+                        {t('删除', '删除')}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
+
+      {editRule && <RecurringRuleEditor rule={editRule} projects={projects} categories={categories}
+        onClose={() => setEditRule(null)} onSaved={async () => { setEditRule(null); await load(); flash('规则已保存，新生成任务将使用新值'); }} />}
     </div>
   );
 }
 
+/** T05820：规则编辑弹窗——与新建共用同一套引导式选择器/高级模式，保存后由服务端重算 next_run_at。 */
+function RecurringRuleEditor({ rule, projects, categories, onClose, onSaved }: {
+  readonly rule: RecurringRule;
+  readonly projects: Array<{ id: string; name: string }>;
+  readonly categories: TaskCategory[];
+  readonly onClose: () => void;
+  readonly onSaved: () => Promise<void>;
+}) {
+  const [title, setTitle] = useState(rule.title);
+  const [description, setDescription] = useState(rule.description ?? '');
+  const [priority, setPriority] = useState(rule.priority ?? 'normal');
+  const [categoryId, setCategoryId] = useState(rule.category_id ?? '');
+  const [projectId, setProjectId] = useState(rule.project_id);
+  const [schedule, setSchedule] = useState<RecurringSchedule>(() => scheduleFromRule(rule));
+  const [firstImmediate, setFirstImmediate] = useState((rule.first_run_immediate ?? 1) !== 0);
+  const [preview, setPreview] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    const r = ruleFromSchedule(schedule);
+    const timer = setTimeout(() => {
+      api.post<{ nextRunAt: string }>('/recurring/preview', { ...r, firstRunImmediate: firstImmediate })
+        .then((x) => { if (alive) { setPreview(formatLocalDateTime(x.nextRunAt)); setError(''); } })
+        .catch((e) => { if (alive) setError(e instanceof Error ? e.message : String(e)); });
+    }, 260);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [schedule, firstImmediate]);
+
+  async function save() {
+    const r = ruleFromSchedule(schedule);
+    if (!title.trim() || !projectId) { setError('标题与项目必填'); return; }
+    if (!schedule.advanced && schedule.kind === 'cron' && !r.cron) { setError('自定义 cron 不能为空'); return; }
+    setBusy(true);
+    try {
+      await api.put(`/recurring/${rule.id}`, {
+        title: title.trim(), description: description.trim(), priority, categoryId: categoryId || null,
+        projectId, freq: r.freq, cron: r.cron, intervalN: r.intervalN, firstRunImmediate: firstImmediate,
+      });
+      await onSaved();
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
+  }
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div role="dialog" aria-modal="true" aria-label="编辑循环规则" style={{ width: 'min(720px, 94vw)', maxHeight: '90vh', overflowY: 'auto', background: 'var(--card-bg)', borderRadius: 10, boxShadow: '0 10px 34px rgba(0,0,0,.2)', padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-m)', fontWeight: 700 }}>
+          <Pencil size={14} /> 编辑循环规则
+          <span style={{ flex: 1 }} />
+          <button onClick={onClose} aria-label="关闭编辑弹窗" title="关闭" style={{ background: 'transparent', border: 'none', color: 'var(--text)', cursor: 'pointer' }}><X size={15} /></button>
+        </div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <select value={projectId} onChange={(e) => setProjectId(e.target.value)} aria-label="规则项目" style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+            {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} aria-label="规则标题" placeholder="规则名称" style={{ flex: 1, minWidth: 180, padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }} />
+          <select value={priority} onChange={(e) => setPriority(e.target.value)} aria-label="优先级" style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+            <option value="low">低</option><option value="normal">普通</option><option value="high">高</option><option value="urgent">紧急</option>
+          </select>
+          <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} aria-label="分类" style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
+            <option value="">不分类</option>
+            {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
+        <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={4} aria-label="执行说明"
+          placeholder="执行说明 / 任务描述：会写入每条生成任务，外部执行者据此执行"
+          style={{ width: '100%', boxSizing: 'border-box', padding: 8, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', resize: 'vertical' }} />
+        <RecurringSchedulePicker value={schedule} onChange={setSchedule} previewText={preview} error={error} />
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 'var(--fs-xs)' }}>
+          {ruleFromSchedule(schedule).cron && (
+            <label style={{ display: 'inline-flex', gap: 5, alignItems: 'center' }}>
+              <input type="checkbox" checked={firstImmediate} onChange={(e) => setFirstImmediate(e.target.checked)} />
+              调度变更后立即生成首份（不勾选则按计划时刻）
+            </label>
+          )}
+          <span style={{ flex: 1 }} />
+          <button onClick={onClose} style={{ padding: '6px 12px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer' }}>取消</button>
+          <button onClick={() => void save()} disabled={busy} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 14px', border: '1px solid var(--accent)', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', cursor: busy ? 'wait' : 'pointer' }}>
+            <Save size={13} />{busy ? '保存中…' : '保存'}
+          </button>
+        </div>
+        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>当前摘要：{scheduleSummary(schedule)}</div>
+      </div>
+    </div>
+  );
+}
 /** T01073 后续：权限范围——read 只读（仅放行 GET，写操作返回 403）/ write 读写 */
 type TokenScope = 'read' | 'write';
 const SCOPE_LABELS: Record<TokenScope, string> = { read: term('只读'), write: term('读写') };

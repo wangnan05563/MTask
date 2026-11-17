@@ -11,8 +11,8 @@ import { getDb } from '../db/connection';
 import { TaskService } from './TaskService';
 import { nextCronRunText, validateCron } from '../util/cron'; // T01073 后续：cron 精确时刻
 
-// 'cron' 仅作展示口径（真正的调度由 cron_expr 列驱动），故一并纳入合法频率集合
-const FREQS = ['daily', 'weekly', 'monthly', 'cron'] as const;
+// 'cron' 仅作展示口径（真正的调度由 cron_expr 列驱动）；interval_days/interval_weeks 供 T05823 引导式「每 N 天/周」使用
+const FREQS = ['daily', 'weekly', 'monthly', 'interval_days', 'interval_weeks', 'cron'] as const;
 export type Freq = (typeof FREQS)[number];
 
 /** T01073 后续：API Token 权限范围——read=只读凭据（仅放行 GET），write=读写（默认，兼容既有凭据） */
@@ -23,12 +23,34 @@ function now(): string {
   return new Date().toISOString().slice(0, 19).replace('T', ' ');
 }
 
+/** 本地日历日 YYYY-MM-DD（T05818：标题日期必须与用户看到的本地日期一致，不能直接用 UTC 串截取） */
+function localDateTag(d = new Date()): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/** 规范化间隔值：只接受正整数，非法回 1（避免每 N 天=0 造成每 tick 生成） */
+function normalizeInterval(n: unknown): number {
+  const v = Number(n);
+  return Number.isFinite(v) && v >= 1 ? Math.min(365, Math.floor(v)) : 1;
+}
+
+const VALID_PRIORITIES = ['low', 'normal', 'high', 'urgent'] as const;
+type TaskPriority = (typeof VALID_PRIORITIES)[number];
+function normalizePriority(v: unknown): TaskPriority {
+  return typeof v === 'string' && (VALID_PRIORITIES as readonly string[]).includes(v) ? v as TaskPriority : 'normal';
+}
+
 /**
  * 推进下次触发时刻。
  * - 有 cron 表达式 → 按 cron 计算（精确到分钟，本地时区解释，见 util/cron 的时区说明）；
- * - 否则按频率粗粒度推进（daily/weekly/monthly 各自 +1 天/周/月）。
+ * - interval_days / interval_weeks → 按 N 天/N 周推进；
+ * - 其余按频率粗粒度推进（daily/weekly/monthly 各自 +1 天/周/月）。
+ * 存储仍是 UTC 串（与既有字符串比较口径一致），只在 UI 展示时转本地。
  */
-function advanceNext(freq: Freq, from = new Date(), cron = ''): string {
+function advanceNext(freq: Freq, from = new Date(), cron = '', intervalN = 1): string {
   if (cron.trim()) {
     const next = nextCronRunText(cron.trim(), from);
     // 无解（如 2 月 30 日）时不能返回空串写库——那会让 next_run_at <= now 恒成立、每 tick 都生成一份
@@ -38,6 +60,8 @@ function advanceNext(freq: Freq, from = new Date(), cron = ''): string {
   if (freq === 'daily') d.setDate(d.getDate() + 1);
   else if (freq === 'weekly') d.setDate(d.getDate() + 7);
   else if (freq === 'monthly') d.setMonth(d.getMonth() + 1);
+  else if (freq === 'interval_days') d.setDate(d.getDate() + normalizeInterval(intervalN));
+  else if (freq === 'interval_weeks') d.setDate(d.getDate() + 7 * normalizeInterval(intervalN));
   else d.setDate(d.getDate() + 1); // freq='cron' 但表达式缺失/无解时的兜底：按天推进，避免空转
   return d.toISOString().slice(0, 19).replace('T', ' ');
 }
@@ -50,6 +74,28 @@ function freqText(v: unknown, fallback: string): string {
   return JSON.stringify(v) ?? '';
 }
 
+interface RecurringRow {
+  id: string; project_id: string; title: string; description: string; priority: string;
+  category_id: string | null; freq: string; cron_expr?: string | null; interval_n?: number | null;
+  first_run_immediate?: number | null; next_run_at: string; last_task_no: string | null; enabled: number;
+}
+
+/** T05822：把「创建任务 + 写回 last_task_no/next_run_at」收口到一处，tick / runNow / 编辑后手动生成共用。 */
+function createTaskFromRule(r: RecurringRow): { taskNo: string; title: string } {
+  const dateTag = localDateTag();
+  const title = `${r.title}（${dateTag}）`;
+  const task = TaskService.create({
+    projectId: r.project_id,
+    title,
+    description: r.description ?? '',
+    priority: normalizePriority(r.priority),
+    categoryId: r.category_id ?? undefined,
+  });
+  const taskNo = task.task_no;
+  if (!taskNo) throw new Error('任务创建失败：未返回 task_no');
+  return { taskNo, title };
+}
+
 export const RecurringService = {
   list(): Array<Record<string, unknown>> {
     return getDb().prepare(
@@ -60,7 +106,7 @@ export const RecurringService = {
     ).all() as Array<Record<string, unknown>>;
   },
 
-  create(input: { projectId: string; title: string; description?: string; priority?: string; categoryId?: string | null; freq: string; cron?: string }): Record<string, unknown> {
+  create(input: { projectId: string; title: string; description?: string; priority?: string; categoryId?: string | null; freq: string; cron?: string; intervalN?: number; firstRunImmediate?: boolean }): Record<string, unknown> {
     // cron 优先：给了合法表达式即按 cron 调度（freq 仅作展示口径记为 'cron'）
     const cron = (input.cron ?? '').trim();
     let freq: string;
@@ -75,11 +121,14 @@ export const RecurringService = {
     const db = getDb();
     const id = cryptoId();
     const t = now();
-    // 首次生成即视为到期（当天生成第一份），此后按频率/cron 推进
+    const firstImmediate = input.firstRunImmediate !== false ? 1 : 0;
+    // T05820：首次生成策略显式化——cron 且不立即生成时，next_run_at 对齐首个计划时刻；其余仍立即生成首份。
+    const nextAt = !firstImmediate && cron ? (nextCronRunText(cron, new Date()) || t) : t;
+    const intervalN = normalizeInterval(input.intervalN);
     db.prepare(
-      `INSERT INTO recurring_rules (id, project_id, title, description, priority, category_id, freq, cron_expr, next_run_at, enabled, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
-    ).run(id, input.projectId, input.title.trim(), input.description ?? '', input.priority ?? 'normal', input.categoryId ?? null, freq, cron, t, t);
+      `INSERT INTO recurring_rules (id, project_id, title, description, priority, category_id, freq, cron_expr, interval_n, first_run_immediate, next_run_at, enabled, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+    ).run(id, input.projectId, input.title.trim(), input.description ?? '', normalizePriority(input.priority), input.categoryId ?? null, freq, cron, intervalN, firstImmediate, nextAt, t);
     const row = this.byId(id);
     if (!row) throw new Error('循环规则创建失败');
     return row;
@@ -103,7 +152,8 @@ export const RecurringService = {
     if (expr) {
       const bad = validateCron(expr);
       if (bad) throw new Error(bad);
-      getDb().prepare("UPDATE recurring_rules SET cron_expr = ?, freq = 'cron' WHERE id = ?").run(expr, id);
+      getDb().prepare("UPDATE recurring_rules SET cron_expr = ?, freq = 'cron', next_run_at = ? WHERE id = ?")
+        .run(expr, nextCronRunText(expr, new Date()) || now(), id);
     } else {
       // 清空 cron：freq 需退回一个可用的频率，否则 'cron' 无表达式时会走按天兜底、与用户预期不符
       const row = this.byId(id);
@@ -113,31 +163,117 @@ export const RecurringService = {
     return this.byId(id);
   },
 
+  /** 清空 cron 后，回退到可用的频率；若原 freq 是 cron 则默认 weekly */
   remove(id: string): void {
     getDb().prepare('DELETE FROM recurring_rules WHERE id = ?').run(id);
   },
 
-  /** 到期规则生成副本（启动 + 每小时 tick 调用；单次 tick 每条最多生成 1 份，防止积压爆发） */
+  /**
+   * T05820/T05823：编辑规则（标题、执行说明、优先级、分类、项目、调度、首次策略）。
+   * 调度字段变更时会重算 next_run_at；只改标题/说明不会把已排定的下一次打乱。
+   */
+  update(id: string, patch: Record<string, unknown>): Record<string, unknown> {
+    const db = getDb();
+    const row = this.byId(id) as RecurringRow | undefined;
+    if (!row) throw new Error('规则不存在');
+    const has = (k: string) => Object.prototype.hasOwnProperty.call(patch, k);
+    const title = has('title') ? String(patch.title ?? '').trim() : row.title;
+    if (!title) throw new Error('标题必填');
+    const description = has('description') ? String(patch.description ?? '') : (row.description ?? '');
+    const priority = has('priority') ? normalizePriority(patch.priority) : normalizePriority(row.priority);
+    const projectId = has('projectId') && String(patch.projectId ?? '').trim() ? String(patch.projectId) : row.project_id;
+    const categoryId = has('categoryId') ? ((patch.categoryId as string | null) ?? null) : row.category_id;
+    const cron = has('cron') ? String(patch.cron ?? '').trim() : (row.cron_expr ?? '').trim();
+    if (cron) {
+      const bad = validateCron(cron);
+      if (bad) throw new Error(bad);
+    }
+    let freq = row.freq;
+    if (has('freq')) {
+      const candidate = String(patch.freq ?? '');
+      if (!(FREQS as readonly string[]).includes(candidate)) throw new Error('频率非法');
+      freq = candidate;
+    }
+    if (cron) freq = 'cron';
+    else if (!has('freq') && freq === 'cron') freq = 'weekly';
+    const intervalN = has('intervalN') ? normalizeInterval(patch.intervalN) : normalizeInterval(row.interval_n);
+    const firstImmediate = has('firstRunImmediate') ? (patch.firstRunImmediate === false ? 0 : 1) : Number(row.first_run_immediate ?? 1);
+    const enabled = has('enabled') ? (patch.enabled ? 1 : 0) : row.enabled;
+    const scheduleChanged = has('cron') || has('freq') || has('intervalN');
+    let nextAt = row.next_run_at;
+    if (scheduleChanged) {
+      if (firstImmediate) nextAt = now();
+      else if (cron) nextAt = nextCronRunText(cron, new Date()) || now();
+      else nextAt = advanceNext(freq as Freq, new Date(), '', intervalN);
+    }
+    db.prepare(
+      `UPDATE recurring_rules
+          SET project_id = ?, title = ?, description = ?, priority = ?, category_id = ?,
+              freq = ?, cron_expr = ?, interval_n = ?, first_run_immediate = ?, enabled = ?, next_run_at = ?
+        WHERE id = ?`,
+    ).run(projectId, title, description, priority, categoryId, freq, cron, intervalN, firstImmediate, enabled, nextAt, id);
+    return this.byId(id)!;
+  },
+
+  /** T05823：引导式选择器/高级模式的「下次生成」预览；返回 UTC 存储串，前端按本地时区格式化。 */
+  previewNext(input: { freq?: string; cron?: string; intervalN?: number; firstRunImmediate?: boolean }): { nextRunAt: string } {
+    const cron = (input.cron ?? '').trim();
+    if (cron) {
+      const bad = validateCron(cron);
+      if (bad) throw new Error(bad);
+    }
+    const freq = (FREQS as readonly string[]).includes(input.freq ?? '') && input.freq !== 'cron' ? input.freq as Freq : 'weekly';
+    if (input.firstRunImmediate !== false) return { nextRunAt: now() };
+    if (cron) return { nextRunAt: nextCronRunText(cron, new Date()) || now() };
+    return { nextRunAt: advanceNext(freq, new Date(), '', normalizeInterval(input.intervalN)) };
+  },
+
+  /** T05820：立即生成一份，不等待 tick；任务创建与规则指针更新在同一事务内完成。 */
+  runNow(id: string): { taskNo: string; nextRunAt: string } {
+    const db = getDb();
+    const row = this.byId(id) as RecurringRow | undefined;
+    if (!row) throw new Error('规则不存在');
+    const tx = db.transaction(() => {
+      const { taskNo } = createTaskFromRule(row);
+      const nextRunAt = advanceNext(row.freq as Freq, new Date(), row.cron_expr ?? '', row.interval_n ?? 1);
+      db.prepare('UPDATE recurring_rules SET last_task_no = ?, next_run_at = ? WHERE id = ?').run(taskNo, nextRunAt, id);
+      return { taskNo, nextRunAt };
+    });
+    const r = tx.immediate();
+    console.log(`[recurring] 手动生成 ${r.taskNo}（规则「${row.title}」）`);
+    return r;
+  },
+
+  /**
+   * 到期规则生成副本（启动 + 每 60 秒 tick 调用；单次 tick 每条最多生成 1 份，防止积压爆发）。
+   * T05819/T05821：调度精度与 cron 对齐到分钟；停机跨过的历史周期不补，只生成恢复后的当前一轮。
+   * T05822：任务创建与规则指针更新在同一 immediate 事务内，直接使用 TaskService.create 返回的 task_no，
+   *        不再「项目+标题」反查（同名规则/同秒标题不再串号）。
+   */
   tick(): number {
     const db = getDb();
     const nowStr = now();
     const due = db.prepare(
       'SELECT * FROM recurring_rules WHERE enabled = 1 AND next_run_at <= ?',
-    ).all(nowStr) as Array<{ id: string; project_id: string; title: string; description: string; priority: string; category_id: string | null; freq: string; cron_expr?: string | null }>;
+    ).all(nowStr) as RecurringRow[];
     let created = 0;
     for (const r of due) {
       try {
-        const dateTag = nowStr.slice(0, 10);
-        TaskService.create({
-          projectId: r.project_id,
-          title: `${r.title}（${dateTag}）`,
-          description: r.description,
-          priority: (r.priority === 'low' || r.priority === 'high' || r.priority === 'urgent' ? r.priority : 'normal'),
-          categoryId: r.category_id ?? undefined,
+        const overdueMin = Math.max(0, Math.round((Date.parse(`${nowStr.replace(' ', 'T')}Z`) - Date.parse(`${r.next_run_at.replace(' ', 'T')}Z`)) / 60000));
+        if (overdueMin > 1) {
+          console.warn(`[recurring] 规则「${r.title}」已过期 ${overdueMin} 分钟：按策略仅生成当前一轮，错过的历史周期不补`);
+        }
+        const tx = db.transaction(() => {
+          // 条件更新即“抢占”：并发/多实例下只有一个 tick 能把同一个 next_run_at 推进
+          const next = advanceNext(r.freq as Freq, new Date(), r.cron_expr ?? '', r.interval_n ?? 1);
+          const claimed = db.prepare('UPDATE recurring_rules SET next_run_at = ? WHERE id = ? AND next_run_at = ?')
+            .run(next, r.id, r.next_run_at);
+          if (claimed.changes !== 1) return 0;
+          const { taskNo } = createTaskFromRule(r);
+          db.prepare('UPDATE recurring_rules SET last_task_no = ? WHERE id = ?').run(taskNo, r.id);
+          return 1;
         });
-        created++;
-        db.prepare('UPDATE recurring_rules SET next_run_at = ?, last_task_no = (SELECT task_no FROM tasks WHERE id = ?) WHERE id = ?')
-          .run(advanceNext(r.freq as Freq, new Date(), r.cron_expr ?? ''), (db.prepare('SELECT id FROM tasks WHERE project_id = ? AND title = ? ORDER BY created_at DESC LIMIT 1').get(r.project_id, `${r.title}（${dateTag}）`) as { id: string } | undefined)?.id ?? '', r.id);
+        created += tx.immediate();
       } catch (e) {
         console.error('[recurring] 生成循环任务失败:', r.title, e);
       }

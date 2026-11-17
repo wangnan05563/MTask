@@ -991,6 +991,10 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('plan_tasks', 'complexity', 'complexity INTEGER');
   // T01073 后续：①循环任务 cron 表达式（精确到时刻；空=按 freq 粗粒度调度，列在 CREATE 段已含 cron_expr 的库无需重复）
   ensureColumn('recurring_rules', 'cron_expr', "cron_expr TEXT DEFAULT ''");
+  // T05817/T05820：创建时是否立即生成首份（1=立即，0=按 cron 首次计划时刻）；老规则默认保持立即生成
+  ensureColumn('recurring_rules', 'first_run_immediate', 'first_run_immediate INTEGER NOT NULL DEFAULT 1');
+  // T05823：引导式「每 N 天 / 每 N 周」间隔值；freq=interval_days / interval_weeks 时生效
+  ensureColumn('recurring_rules', 'interval_n', 'interval_n INTEGER NOT NULL DEFAULT 1');
   // T01073 后续：②API Token 权限范围——read=只读凭据（仅放行 GET，含 MCP 写操作）、write=读写（默认，兼容既有凭据）
   ensureColumn('api_tokens', 'scope', "scope TEXT NOT NULL DEFAULT 'write'");
   // T00620：AI 状态变更时间（ISO 字符串）——两个用途：

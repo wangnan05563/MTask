@@ -776,30 +776,40 @@ api.post('/tasks/by-no/:taskNo/result-rollback', (req, res) => {
 // T01073-FR5.5：循环任务规则管理（到期由 server tick 自动生成副本）
 api.get('/recurring', (_req, res) => res.json(RecurringService.list()));
 api.post('/recurring', (req, res) => {
-  const { projectId, title, description, priority, categoryId, freq, cron } = req.body ?? {};
+  const { projectId, title, description, priority, categoryId, freq, cron, intervalN, firstRunImmediate } = req.body ?? {};
   try {
-    res.status(201).json(RecurringService.create({ projectId, title, description, priority, categoryId: categoryId ?? null, freq: freq ?? 'weekly', cron: cron ?? '' }));
+    res.status(201).json(RecurringService.create({ projectId, title, description, priority, categoryId: categoryId ?? null, freq: freq ?? 'weekly', cron: cron ?? '', intervalN, firstRunImmediate }));
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
 });
+// T05820：编辑规则支持完整字段（标题/执行说明/优先级/分类/项目/调度/首次策略）；enabled/cron 仍兼容
 api.put('/recurring/:id', (req, res) => {
-  // T01073 后续：cron 与 enabled 可分别更新（cron 需校验；非法表达式会被拒，不会写库）
-  const cron = req.body?.cron;
-  if (typeof cron === 'string') {
-    try {
-      const r = RecurringService.setCron(req.params.id, cron);
-      if (!r) return res.status(404).json({ error: '规则不存在' });
-      return res.json(r);
-    } catch (e) {
-      return res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
-    }
+  try {
+    const r = RecurringService.update(req.params.id, req.body ?? {});
+    if (!r) return res.status(404).json({ error: '规则不存在' });
+    return res.json(r);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return res.status(msg.includes('不存在') ? 404 : 400).json({ error: msg });
   }
-  const enabled = req.body?.enabled;
-  if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled 布尔值或 cron 字符串必填' });
-  const r = RecurringService.setEnabled(req.params.id, enabled);
-  if (!r) return res.status(404).json({ error: '规则不存在' });
-  res.json(r);
+});
+// T05820：立即生成一份（不等 tick）；内部与 tick 共用同一生成/回写事务
+api.post('/recurring/:id/run-now', (req, res) => {
+  try {
+    res.json(RecurringService.runNow(req.params.id));
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(msg.includes('不存在') ? 404 : 400).json({ error: msg });
+  }
+});
+// T05823：引导式选择器的下次生成预览（只计算，不写库）
+api.post('/recurring/preview', (req, res) => {
+  try {
+    res.json(RecurringService.previewNext(req.body ?? {}));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
 });
 api.delete('/recurring/:id', (req, res) => {
   RecurringService.remove(req.params.id);

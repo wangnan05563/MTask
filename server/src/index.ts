@@ -288,14 +288,15 @@ app.listen(PORT, HOST, () => {
   console.log(`[mtask] health: http://${HOST}:${PORT}/api/health`);
   // T01061-FR5.1：每日自动备份（当天首启即备 + 每小时检查日期翻转）
   startDailyBackupTimer();
-  // T01073-FR5.5：循环任务到期生成（启动即跑一轮 + 每小时检查）
+  // T01073-FR5.5：循环任务到期生成（启动即跑一轮 + 每分钟检查）
+  // T05819：tick 从 1 小时收紧到 60 秒，与 cron 的分钟级精度对齐；每次每条规则仍最多生成 1 份。
   try { RecurringService.tick(); } catch (e) { console.error('[recurring] 启动 tick 失败:', e); }
   // T04150（PRD MEM-307/F9）：记忆月度整理复用同一调度点，内部按 30 天节流，幂等可重跑。
   try { maybeOrganizeMemories(); } catch (e) { console.error('[memory] 启动整理失败:', e); }
   setInterval(() => {
     try { RecurringService.tick(); } catch { /* 单轮失败不中断定时 */ }
     try { maybeOrganizeMemories(); } catch (e) { console.error('[memory] 定期整理失败:', e); }
-  }, 3600000);
+  }, 60_000);
   // T03227（PM-201⑥）：迭代结束日在本次运行之前被跨过、且还没有周报卡的迭代，启动时各补一张。
   //  判据自带幂等（候选=「无 weekly_card 事件」），故只在此跑一轮、不挂小时定时器：
   //  挂着跑会让「今天才结束」的迭代提前拿到卡，与本条要求的「关闭期间跨过」不是同一件事。
