@@ -65,37 +65,75 @@ SESSION_FILE = os.environ.get('MTASK_SESSION_FILE') or os.path.join(
     tempfile.gettempdir(), "mtask-session.txt")
 
 
-# T05793：平台识别改为配置化映射表（避免硬编码厂商名到分支里）。
-# 键=宿主目录/标识片段（小写子串），值=规范平台名。命中顺序按字典声明顺序（长串在前）。
-# MTASK_PLATFORM 环境变量优先级最高（调用方显式声明），其次按脚本所在路径匹配本表，
-# 都未命中才回落到 workbuddy（保持既有 WorkBuddy 默认口径，不再把所有第三方误归为它）。
-PLATFORM_HOST_MAP = [
-    (".trae-cn", "trae"),
-    (".trae", "trae"),
-    (".qoder-cn", "qoder"),
-    (".qoder", "qoder"),
-    (".codex", "codex"),
-    ("codex", "codex"),
-    (".doubao", "doubao"),
-    ("doubao", "doubao"),
-    ("豆包", "doubao"),
-    (".workbuddy", "workbuddy"),
-]
-PLATFORM_FALLBACK = "workbuddy"
+# T05793：平台识别配置化（skills/mtask/config/platforms.json）。
+# 优先级：MTASK_PLATFORM 显式声明 > 宿主进程环境变量 > 脚本路径片段 > fallback。
+# 关键修复：豆包 Agent 的仓库内脚本路径不含 "doubao"（脚本在 MTask 仓库、宿主是豆包），
+# 旧实现因此一路落到 workbuddy；现优先识别 DOUBAO_OFFICE_* 等宿主环境变量。
+PLATFORM_CONFIG_PATH = os.environ.get("MTASK_PLATFORM_CONFIG") or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "platforms.json")
+
+
+def _load_platform_config(path=None):
+    """读平台识别配置；缺失/损坏时回落到内置最小表，避免拖垮 MCP 直连。"""
+    defaults = {
+        "fallback": "workbuddy",
+        "envMarkers": [],
+        "hostMarkers": [
+            [".trae-cn", "trae"], [".trae", "trae"],
+            [".qoder-cn", "qoder"], [".qoder", "qoder"],
+            [".codex", "codex"], ["codex", "codex"],
+            [".doubao", "doubao"], ["doubao", "doubao"], ["豆包", "doubao"],
+            [".workbuddy", "workbuddy"],
+        ],
+        "aliases": {},
+    }
+    try:
+        with open(path or PLATFORM_CONFIG_PATH, encoding="utf-8") as f:
+            raw = json.load(f)
+        if isinstance(raw, dict):
+            defaults.update(raw)
+    except (OSError, ValueError):
+        pass
+    env_markers = []
+    for item in defaults.get("envMarkers") or []:
+        if isinstance(item, dict) and item.get("prefix") and item.get("platform"):
+            env_markers.append((str(item["prefix"]).upper(), str(item["platform"]).lower()))
+    host_markers = []
+    for item in defaults.get("hostMarkers") or []:
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            host_markers.append((str(item[0]).lower(), str(item[1]).lower()))
+    aliases = {
+        str(k).lower(): str(v).lower()
+        for k, v in (defaults.get("aliases") or {}).items()
+        if k and v
+    }
+    fallback = str(defaults.get("fallback") or "workbuddy").lower()
+    return env_markers, host_markers, aliases, fallback
+
+
+PLATFORM_ENV_MARKERS, PLATFORM_HOST_MAP, PLATFORM_ALIASES, PLATFORM_FALLBACK = _load_platform_config()
 
 
 def resolve_platform(script_path=None, env=None):
     """T05793：解析上报平台名（纯函数，便于门脚本隔离测试）。
-    优先级：MTASK_PLATFORM 显式声明 > 脚本路径命中 PLATFORM_HOST_MAP > 默认 workbuddy。
+    优先级：MTASK_PLATFORM 显式声明 > 宿主进程环境变量 > 脚本路径片段 > 配置 fallback。
     显式声明会去掉 relay:/mcp: 通道前缀并归一别名，避免 'mcp:doubao' 落成未知平台。"""
     env = env if env is not None else os.environ
     explicit = (env.get("MTASK_PLATFORM") or "").strip()
     if explicit:
-        key = explicit.lower()
+        key = re.sub(r"^(relay|mcp|平台|platform)[:：/]\s*", "", explicit.lower()).strip()
         for frag, canonical in PLATFORM_HOST_MAP:
             if frag in key:
                 return canonical
-        return key
+        return PLATFORM_ALIASES.get(key, key)
+    # 先看宿主注入的环境变量：豆包/WorkBuddy/Codex 的脚本可能从仓库副本运行，路径本身无宿主名。
+    for name, value in env.items():
+        if not value:
+            continue
+        upper = str(name).upper()
+        for prefix, canonical in PLATFORM_ENV_MARKERS:
+            if upper.startswith(prefix):
+                return canonical
     path = (script_path if script_path is not None else __file__).lower()
     for frag, canonical in PLATFORM_HOST_MAP:
         if frag in path:

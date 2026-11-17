@@ -1,0 +1,49 @@
+{
+  "fallback": "unknown",
+  "envMarkers": [
+    { "prefix": "DOUBAO_OFFICE_", "platform": "doubao" },
+    { "prefix": "DOUBAO_", "platform": "doubao" },
+    { "prefix": "TRAE_", "platform": "trae" },
+    { "prefix": "QODER_", "platform": "qoder" },
+    { "prefix": "CODEX_", "platform": "codex" },
+    { "prefix": "WORKBUDDY_", "platform": "workbuddy" },
+    { "prefix": "CODEBUDDY_", "platform": "workbuddy" }
+  ],
+  "hostMarkers": [
+    [".trae-cn", "trae"],
+    [".trae", "trae"],
+    [".qoder-cn", "qoder"],
+    [".qoder", "qoder"],
+    [".codex", "codex"],
+    ["codex", "codex"],
+    [".doubao", "doubao"],
+    ["doubao", "doubao"],
+    ["豆包", "doubao"],
+    [".workbuddy", "workbuddy"]
+  ],
+  "aliases": {
+    "doubao-mcp": "doubao",
+    "doubaoai": "doubao",
+    "dou-bao": "doubao",
+    "豆包ai": "doubao",
+    "豆包助手": "doubao",
+    "volcengine": "doubao",
+    "火山": "doubao",
+    "火山方舟": "doubao",
+    "方舟": "doubao",
+    "openai-codex": "codex",
+    "codexcli": "codex",
+    "codex-cli": "codex",
+    "codexmcp": "codex",
+    "codex-mcp": "codex",
+    "codexpp": "codex",
+    "codex ++": "codex",
+    "work-buddy": "workbuddy",
+    "work buddy": "workbuddy",
+    "wb": "workbuddy",
+    "traeai": "trae",
+    "trae-ai": "trae",
+    "qcoder": "qoder",
+    "qoder-ai": "qoder"
+  }
+}

@@ -326,9 +326,11 @@ ai-state:
 exec-session:
   enabled: true
   # 平台标识（写入 exec_sessions.platform，面板首列展示）：取值口径声明。
-  # 脚本实际取值链（T01665 起）：MTASK_PLATFORM 环境变量 → 按脚本所在宿主目录推断
-  # （.trae-cn→trae / .qoder-cn→qoder / 其余→workbuddy）；本脚本不解析 yaml，此项仅是给 Agent 的口径说明。
-  platform: "workbuddy"
+  # 脚本实际取值链（T05793 起）：MTASK_PLATFORM 显式声明 → 宿主进程环境变量
+  # （DOUBAO_OFFICE_*→doubao / CODEBUDDY_*→workbuddy / CODEX_*→codex / TRAE_*→trae / QODER_*→qoder）
+  # → 脚本路径片段（.trae/.qoder/.codex/.doubao/.workbuddy）→ platforms.json 的 fallback。
+  # 映射表在 skills/mtask/config/platforms.json（新增厂商只改配置，不改脚本分支）；本脚本不解析 yaml。
+  platform: "auto"
   # 会话建立时机：与「开工先写 running」同批（拿到任务详情后立即上报）
   start-with-running: true
   # 续心跳建议间隔（毫秒）：兼作任务侧 running 续期，避免超 MTASK_AI_STATE_STALE_MS（默认 30min）被置 failed

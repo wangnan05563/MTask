@@ -37,6 +37,7 @@ const BRANDS: Record<string, Brand> = {
   '豆包': { label: '豆包', short: '豆', color: '#f97316', text: '#ffffff', icon: doubaoIcon },
   codex: { label: 'Codex', short: 'Cx', color: '#111827', text: '#ffffff', icon: codexIcon },
   'codex++': { label: 'Codex', short: 'Cx', color: '#111827', text: '#ffffff', icon: codexIcon },
+  unknown: { label: '未知平台', short: '?', color: '#64748b', text: '#ffffff' },
   relay: { label: '中继', short: 'R', color: '#475569', text: '#ffffff' },
   mcp: { label: 'MCP', short: 'M', color: '#0369a1', text: '#ffffff' },
 };
