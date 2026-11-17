@@ -67,6 +67,56 @@ export function SettingsPage() {
   }, [menuMode]);
   const compactMenu = menuMode === 'compact';
   const groups = filterSettingsGroups(q);
+  // T05815 复查：简化模式必须收敛为「单行图标」，点击后用短浮动标签回显名称；
+  // 原实现仍按三个 fieldset 分组渲染，视觉上还是三行，未达到工单的空间目标。
+  const [compactHint, setCompactHint] = useState('');
+  const compactHintTimer = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (compactHintTimer.current !== null) window.clearTimeout(compactHintTimer.current);
+  }, []);
+  const activateTab = (key: string, label: string) => {
+    setSt(key);
+    if (!compactMenu) return;
+    setCompactHint(label);
+    if (compactHintTimer.current !== null) window.clearTimeout(compactHintTimer.current);
+    compactHintTimer.current = window.setTimeout(() => setCompactHint(''), 1800);
+  };
+  type SettingsTabEntry = (typeof groups)[number]['tabs'][number];
+  const renderTabButton = (t: SettingsTabEntry) => {
+    const on = active === t.key;
+    const Icon = t.icon;
+    return (
+      <button
+        key={t.key}
+        onClick={() => activateTab(t.key, t.label)}
+        aria-current={on ? 'page' : undefined}
+        aria-label={t.label}
+        data-t03271="tab"
+        data-tab={t.key}
+        data-t05815-mode={menuMode}
+        title={SETTINGS_TAB_LABELS[t.key]}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: compactMenu ? 0 : 5,
+          fontSize: 'var(--fs-m)',
+          padding: compactMenu ? '7px' : '6px 12px',
+          borderRadius: 6,
+          background: on ? 'var(--accent)' : 'var(--card-bg)',
+          color: on ? 'var(--accent-text)' : 'var(--text)',
+          cursor: 'pointer',
+          flex: compactMenu ? '0 0 auto' : undefined,
+        }}
+      >
+        {compactMenu ? (
+          <Icon size={16} aria-hidden="true" />
+        ) : (
+          <>
+            <Icon size={14} aria-hidden="true" />
+            {t.label}
+          </>
+        )}
+      </button>
+    );
+  };
   return (
     <section>
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 10 }}>
@@ -102,52 +152,44 @@ export function SettingsPage() {
         </button>
       </div>
       <nav aria-label="设置分组" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
-        {groups.map((g) => {
-          const GroupIcon = g.icon;
-          return (
-          <fieldset key={g.key} aria-label={g.label} data-t03271="group" data-group={g.key}
-            style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4, border: 'none', margin: 0, padding: 0, minWidth: 0 }}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 80 }}>
-              <GroupIcon size={13} aria-hidden="true" />
-              {g.label}
+        {compactMenu ? (
+          <div style={{ position: 'relative' }}>
+            <div
+              data-t05815="compact-row"
+              style={{ display: 'flex', flexWrap: 'nowrap', alignItems: 'center', gap: 4, overflowX: 'auto', paddingBottom: 2 }}
+            >
+              {groups.flatMap((g) => g.tabs).map(renderTabButton)}
+            </div>
+            <span
+              data-t05815="compact-label"
+              aria-live="polite"
+              style={{
+                position: 'absolute', left: 0, top: 'calc(100% + 5px)', zIndex: 5, pointerEvents: 'none',
+                padding: '3px 9px', borderRadius: 999, background: 'var(--accent)', color: 'var(--accent-text)',
+                fontSize: 'var(--fs-xs)', whiteSpace: 'nowrap', boxShadow: '0 4px 14px rgba(0,0,0,.18)',
+                opacity: compactHint ? 1 : 0,
+                transform: compactHint ? 'translateY(0)' : 'translateY(-4px)',
+                transition: 'opacity .18s ease, transform .18s ease',
+              }}
+            >
+              {compactHint || ' '}
             </span>
-            {g.tabs.map((t) => {
-              const on = active === t.key;
-              const Icon = t.icon;
-              return (
-                <button
-                  key={t.key}
-                  onClick={() => setSt(t.key)}
-                  aria-current={on ? 'page' : undefined}
-                  aria-label={t.label}
-                  data-t03271="tab"
-                  data-tab={t.key}
-                  data-t05815-mode={menuMode}
-                  title={SETTINGS_TAB_LABELS[t.key]}
-                  style={{
-                    display: 'inline-flex', alignItems: 'center', gap: compactMenu ? 0 : 5,
-                    fontSize: 'var(--fs-m)',
-                    padding: compactMenu ? '7px' : '6px 12px',
-                    borderRadius: 6,
-                    background: on ? 'var(--accent)' : 'var(--card-bg)',
-                    color: on ? 'var(--accent-text)' : 'var(--text)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  {compactMenu ? (
-                    <Icon size={16} aria-hidden="true" />
-                  ) : (
-                    <>
-                      <Icon size={14} aria-hidden="true" />
-                      {t.label}
-                    </>
-                  )}
-                </button>
-              );
-            })}
-          </fieldset>
-          );
-        })}
+          </div>
+        ) : (
+          groups.map((g) => {
+            const GroupIcon = g.icon;
+            return (
+              <fieldset key={g.key} aria-label={g.label} data-t03271="group" data-group={g.key}
+                style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4, border: 'none', margin: 0, padding: 0, minWidth: 0 }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 80 }}>
+                  <GroupIcon size={13} aria-hidden="true" />
+                  {g.label}
+                </span>
+                {g.tabs.map(renderTabButton)}
+              </fieldset>
+            );
+          })
+        )}
         {groups.length === 0 && (
           <output data-t03271="empty" style={{ display: 'block', padding: '8px 0', fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>
             无匹配设置项
@@ -328,12 +370,20 @@ function GeneralTab() {
   );
 
   return (
-    <div style={{ maxWidth: 560 }}>
+    <div data-t06006="general-layout" style={{ maxWidth: '100%' }}>
+      <style>{`
+        .settings-general-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+        .settings-general-col { display: grid; gap: 18px; align-content: start; min-width: 0; }
+        @media (max-width: 1200px) { .settings-general-grid { grid-template-columns: 1fr; gap: 0; } }
+      `}</style>
       <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 16 }}>
         以下偏好会立即应用并自动保存，刷新或重开应用后保持。
       </div>
 
-      <div style={{ marginBottom: 18 }}>
+      <div className="settings-general-grid">
+      <div className="settings-general-col">
+
+      <div style={{ marginBottom: 0 }}>
         {field('主题', '选择界面配色风格')}
         <div style={{ display: 'flex', gap: 6 }}>
           <button onClick={() => update('theme', 'light')} style={segButton(prefs.theme === 'light')} title="浅色主题" aria-label="主题：浅色">
@@ -404,7 +454,9 @@ function GeneralTab() {
           </button>
         </div>
       </div>
+      </div>
 
+      <div className="settings-general-col">
       {notifyOn !== null && desktop?.setNotifyEnabled && (
         <div style={{ marginBottom: 18 }}>
           {field('任务通知', 'AI 任务处理完成或失败时弹出系统通知，点击通知可跳转到对应任务（仅桌面应用内可用）')}
@@ -505,6 +557,8 @@ function GeneralTab() {
         <div style={{ marginTop: 6, fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }}>
           生效范围：桌面与移动端的页面正文、控件、表格与弹层均已接入字号令牌；导出的 PDF/PPT/Excel 保持固定版式，不随档位缩放。
         </div>
+      </div>
+      </div>
       </div>
     </div>
   );
