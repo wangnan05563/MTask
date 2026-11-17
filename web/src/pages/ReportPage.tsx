@@ -29,7 +29,7 @@ import { useCodeReviewLecture } from '../stores/codeReviewLectureStore'; // T028
 import { aiImportStore } from '../stores/aiImportStore'; // T01038：项目计划/PRD 导入运行态
 import { RunStatusBadge, type RunStatus } from '../ui/runStatus'; // T01038：统一运行状态徽标
 import { FlowButton } from '../ui/FlowButton'; // T01068-FR4.4：流光按钮（loading 态）
-import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileUp, FileStack, Loader2, X, RotateCcw, Zap, ListChecks, Presentation, FileChartColumn, ScrollText, FolderOpen, FolderGit2, ScanLine } from 'lucide-react';
+import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileUp, FileStack, Loader2, X, RotateCcw, Zap, ListChecks, Presentation, FileChartColumn, ScrollText, FolderOpen, FolderGit2, ScanLine, LayoutGrid } from 'lucide-react';
 import { resetWorkbenchArtifacts, RESET_CONFIRM_CARD } from '../ui/consoleReset'; // T01042：卡片侧重置入口（与控制台重置共用核心）
 import { askConfirm } from '../ui/dialogs'; // T01042 建议：重置二次确认统一走对话框（Electron 下原生 confirm 不可靠）
 import { focusTaskByNo } from '../ui/focusTask'; // T01057 建议：就绪任务跳转按编号定位（跨项目可命中）
@@ -142,6 +142,9 @@ function cardFrameStyle(open: boolean, blocked: boolean, dimmed: boolean): CSSPr
     border: open && !blocked ? '1px solid var(--accent)' : '1px solid var(--border)',
     borderRadius: 10, background: 'var(--card-bg)', cursor: blocked ? 'not-allowed' : 'pointer',
     opacity: dimmed ? 0.65 : 1, display: 'flex', gap: 10, alignItems: 'flex-start', width: '100%',
+    // T06009：与右侧控制台同源的设计语言——细边框 + 极轻投影，悬浮时由 .card-btn 统一抬升
+    boxShadow: open ? '0 2px 10px rgba(15, 23, 42, .06)' : '0 1px 2px rgba(15, 23, 42, .04)',
+    transition: 'border-color .15s ease, box-shadow .15s ease, transform .15s ease',
   };
 }
 
@@ -185,6 +188,7 @@ function ReportCard({ icon, title, desc, hint, aria, open, onToggle, onOpen, act
   return (
     <div
       className={`card-btn ln${glow && !blocked ? ' flow-glow' : ''}`}
+      data-t06009="function-card"
       style={cardFrameStyle(open, Boolean(blocked), dimmed)}
     >
       <button
@@ -195,7 +199,7 @@ function ReportCard({ icon, title, desc, hint, aria, open, onToggle, onOpen, act
         aria-label={aria}
         style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', margin: 0, padding: 0, border: 'none', borderRadius: 10, background: 'transparent', cursor: blocked ? 'not-allowed' : 'pointer' }}
       />
-      {icon}
+      <span data-t06009="card-icon" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 30, height: 30, borderRadius: 8, background: 'var(--accent-soft)', border: '1px solid var(--border)', flexShrink: 0 }}>{icon}</span>
       <span style={{ flex: 1 }}>
         <span style={{ display: 'block', fontSize: 'var(--fs-l)', fontWeight: 600, color: 'var(--text)' }}>{title}</span>
         <span style={{ display: 'block', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4 }}>{desc}</span>
@@ -1608,6 +1612,15 @@ export function ReportPage() {
 
       {/* T03176（D-14）：AI 不可用只提示一次（而非每张卡重复一遍），卡片本身保留可见但禁用 */}
       {aiDown && readiness && <AiUnavailableHint r={readiness} style={{ margin: '14px 0 0' }} />}
+
+      {/* T06009：左侧能力区补齐标题图标，与右侧「AI 控制台」标题行保持同一套图标/字重/间距语言；
+          其下能力卡片统一使用 30×30 图标容器、细边框与极轻投影，形成完整的「功能卡片」模块。 */}
+      <div data-t06009="function-cards-header" style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, margin: '14px 0 0', padding: '0 2px 9px', borderBottom: '1px solid var(--border)' }}>
+        <LayoutGrid size={14} style={{ color: 'var(--accent)', flexShrink: 0 }} aria-hidden />
+        <span style={{ fontSize: 'var(--fs-l)', fontWeight: 600, color: 'var(--text)' }}>功能卡片</span>
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>选择能力，点击卡片展开对应工作面板</span>
+        <span data-t06009="function-card-count" style={{ marginLeft: 'auto', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{reportCards.length} 项能力</span>
+      </div>
 
       {/* T00621：AI 能力入口五卡片同行（统一风格：图标 + 标题 + 描述 + 底部展开提示；S3776 数据驱动抽取） */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12, margin: '14px 0 0' }}>
