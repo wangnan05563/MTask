@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, type TaskCategory } from '../api/client';
 import { askConfirm } from '../ui/dialogs'; // T01699：确认框归一（原生 confirm 阻塞渲染线程且样式不一致）
-import { AlertTriangle, Pencil, Play, Save, X } from 'lucide-react';
+import { AlertTriangle, ChevronDown, HelpCircle, LayoutTemplate, Pencil, Play, Save, X } from 'lucide-react';
 import { RecurringSchedulePicker, defaultSchedule, ruleFromSchedule, scheduleFromRule, scheduleSummary, type RecurringSchedule } from './RecurringSchedulePicker';
 import { ProjectListHint, loadProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表统一容错层
 import { getLang, onLangChange, registerDict, setLang as setGlobalLang, t, term, useLang, type Lang } from '../i18n';
@@ -115,6 +115,48 @@ const freqLabel = (k: string): string => t(FREQ_LABELS[k] ?? k, FREQ_LABELS[k] ?
 const CRON_PLACEHOLDER = '0 9 * * 1';
 
 /** T05818：后端 next_run_at 是 UTC 存储串；展示时转本地（不再直接 slice）。 */
+const INBOX_PROJECT_ID = 'sys-inbox';
+
+/** T06003：常用循环任务模板——卡片只负责填表，项目统一落收件箱，创建仍走原 /recurring 接口。 */
+interface RecurringTemplate {
+  id: string;
+  name: string;
+  hint: string;
+  title: string;
+  description: string;
+  priority: string;
+  categoryName: string;
+  kind: RecurringSchedule['kind'];
+  hour: number;
+  minute: number;
+  weekday?: number;
+  monthDay?: number;
+  intervalN?: number;
+}
+
+const RECURRING_TEMPLATES: RecurringTemplate[] = [
+  {
+    id: 'daily-read', name: '每日资讯阅读', hint: '每天 08:30 生成一份阅读任务',
+    title: '今日资讯阅读', description: '阅读当天与项目相关的行业资讯/公告，整理 3 条要点并标注来源；完成后把摘要回写到任务结果。', priority: 'normal', categoryName: '学习', kind: 'daily', hour: 8, minute: 30,
+  },
+  {
+    id: 'weekly-report', name: '每周工作周报', hint: '每周五 17:30 生成',
+    title: '本周工作周报', description: '汇总本周完成事项、未完成事项与下周计划；按项目/任务编号列出来源，输出 Markdown 周报。', priority: 'normal', categoryName: '文档', kind: 'weekly', hour: 17, minute: 30, weekday: 5,
+  },
+  {
+    id: 'weekly-review', name: '每周复盘', hint: '每周一 10:00 生成',
+    title: '上周复盘与本周计划', description: '复盘上周目标达成情况、阻塞与风险，给出本周三项优先事项及可执行动作。', priority: 'high', categoryName: '复盘', kind: 'weekly', hour: 10, minute: 0, weekday: 1,
+  },
+  {
+    id: 'monthly-check', name: '每月数据核对', hint: '每月 1 日 09:00 生成',
+    title: '月度数据核对', description: '核对上月关键数据口径与异常波动，列出差异清单、原因假设和需要人工确认的问题。', priority: 'normal', categoryName: '数据', kind: 'monthly', hour: 9, minute: 0, monthDay: 1,
+  },
+  {
+    id: 'interval-followup', name: '隔天跟进事项', hint: '每 2 天生成一次跟进任务',
+    title: '隔天跟进待办', description: '检查当前未闭环事项的进展，按负责人/截止时间列出需要跟进的对象，并给出下一步动作。', priority: 'normal', categoryName: '跟进', kind: 'interval_days', hour: 9, minute: 0, intervalN: 2,
+  },
+];
+
 function parseStoreTime(s: string): Date | null {
   if (!s) return null;
   const d = new Date(`${s.replace(' ', 'T')}Z`);
@@ -147,6 +189,8 @@ export function RecurringTab() {
   const [runBusyId, setRunBusyId] = useState('');
   const [editRule, setEditRule] = useState<RecurringRule | null>(null);
   const [notice, setNotice] = useState('');
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
   const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3500); };
 
   const load = useCallback(async () => {
@@ -156,12 +200,19 @@ export function RecurringTab() {
   }, []);
   useEffect(() => { void load(); }, [load]);
 
-  // T05823：周期选择变化即向后端要「下次生成」预览（同一份 cron 解析器，避免前端另写一套）
+  // T05823 复查：周期选择变化即向后端要「下次生成」预览；空自定义 cron 不发请求，失败时清空旧预览，
+  // 避免「上一次有效时间」与错误提示并列展示造成误判。
   useEffect(() => {
     let alive = true;
     const rule = ruleFromSchedule(schedule);
+    if (!schedule.advanced && schedule.kind === 'cron' && !rule.cron) {
+      setPreview('');
+      setPreviewError('自定义 cron 不能为空');
+      return;
+    }
+    setPreview('');
+    setPreviewError('');
     const timer = setTimeout(() => {
-      if (!rule.cron && !rule.freq) { setPreviewError('请先选择生成周期'); return; }
       api.post<{ nextRunAt: string }>('/recurring/preview', { ...rule, firstRunImmediate: firstImmediate })
         .then((r) => { if (alive) { setPreview(formatLocalDateTime(r.nextRunAt)); setPreviewError(''); } })
         .catch((e) => { if (alive) { setPreview(''); setPreviewError(e instanceof Error ? e.message : String(e)); } });
@@ -182,9 +233,26 @@ export function RecurringTab() {
       });
       setTitle('');
       setDescription('');
-      flash(`循环规则已创建；${firstImmediate ? '下一分钟内生成首份' : `首份按计划 ${preview || '按 cron 首次时刻'} 生成`}。周期只决定何时生成，任务仍由外部 Agent 认领执行。`);
+      flash(`循环规则已创建；${firstImmediate ? '下一分钟内生成首份' : `首份按计划 ${preview || '首次到期时刻'} 生成`}。周期只决定何时生成，任务仍由外部 Agent 认领执行。`);
       await load();
     } catch (e) { flash(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
+  }
+
+  /** T06003：套用模板——项目强制收件箱，其余字段按模板预填，用户可继续微调。 */
+  function applyTemplate(tpl: RecurringTemplate) {
+    const base = defaultSchedule();
+    setProjectId(INBOX_PROJECT_ID);
+    setTitle(tpl.title);
+    setDescription(tpl.description);
+    setPriority(tpl.priority);
+    const matched = categories.find((c) => c.name === tpl.categoryName);
+    setCategoryId(matched?.id ?? '');
+    setSchedule({
+      ...base, advanced: false, kind: tpl.kind, hour: tpl.hour, minute: tpl.minute, weekday: tpl.weekday ?? base.weekday,
+      monthDay: tpl.monthDay ?? base.monthDay, intervalN: tpl.intervalN ?? base.intervalN,
+    });
+    setTemplatesOpen(false);
+    flash(`已套用模板「${tpl.name}」：项目已设为收件箱，确认周期与执行说明后点「添加规则」。`);
   }
 
   async function toggleRule(rule: RecurringRule) {
@@ -197,36 +265,53 @@ export function RecurringTab() {
     setRunBusyId(rule.id);
     try {
       const r = await api.post<{ taskNo: string; nextRunAt: string }>(`/recurring/${rule.id}/run-now`, {});
-      flash(`已立即生成 ${r.taskNo}（不会重复触发，下一轮 ${formatLocalDateTime(r.nextRunAt)}）`);
+      flash(`已立即生成 ${r.taskNo}；当前轮次已推进，下一轮 ${formatLocalDateTime(r.nextRunAt)}`);
       await load();
     } catch (e) { flash(e instanceof Error ? e.message : String(e)); } finally { setRunBusyId(''); }
   }
 
   const cell: { padding: number; borderBottom: string; fontSize: string } = { padding: 8, borderBottom: '1px solid var(--surface-2)', fontSize: 'var(--fs-s)' };
   const projectSelectIdleText = projectList.phase === 'loading' ? t('项目列表加载中…', '项目列表加载中…') : t('选择项目…', '选择项目…');
+  // T06002：收件箱始终作为显式选项（sys-inbox 与任务菜单收件箱同值）；其余活跃项目来自统一容错层（已排除收件箱）
+  const projectOptions = [
+    { id: INBOX_PROJECT_ID, name: '收件箱' },
+    ...projects.filter((p) => p.id !== INBOX_PROJECT_ID),
+  ];
   const rule = ruleFromSchedule(schedule);
 
   return (
     <div style={{ maxWidth: 980 }}>
-      {/* T05823：功能说明前置——先讲清「只生成、不执行」，再进入表单 */}
-      <div data-t05823="intro" style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 12, marginBottom: 14, background: 'var(--surface)', fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', lineHeight: 1.65 }}>
-        <div style={{ fontSize: 'var(--fs-m)', fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>循环任务只负责「按周期生成任务副本」，不会自动执行任务</div>
-        <ul style={{ margin: 0, paddingLeft: 18 }}>
-          <li>执行由外部 Agent / WorkBuddy 从 MTask 就绪池认领后完成；循环规则本身不运行任务内容。</li>
-          <li>周期 / cron 只决定「何时生成」，不决定「任务做什么」；任务做什么必须写进下面的<b>执行说明</b>。</li>
-          <li>规则名称只作为生成任务的标题模板，生成时会自动追加日期后缀；不要把执行指令藏在名称里。</li>
-          <li>调度器每 60 秒检查一次；<b>错过的历史周期不会自动补生成</b>，恢复后只生成当前一轮。</li>
-          <li>时间按本地时区展示，存储仍为 UTC；创建时可选「立即生成首份」或「按 cron 首次计划时刻生成」。</li>
-        </ul>
+      {/* T06002：大段说明默认收敛为帮助入口，点击展开/再点收起；收敛态不占主要操作区垂直空间 */}
+      <div data-t06002="help" style={{ marginBottom: 10 }}>
+        <button type="button" onClick={() => setHelpOpen((v) => !v)} aria-expanded={helpOpen} aria-controls="recurring-help-body"
+          title={helpOpen ? '收起循环任务说明' : '展开循环任务说明：周期只决定何时生成，不执行任务'}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 10px', borderRadius: 999, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 'var(--fs-s)' }}>
+          <HelpCircle size={14} />
+          循环任务如何工作？
+          <ChevronDown size={13} style={{ transform: helpOpen ? 'rotate(180deg)' : 'none', transition: 'transform .15s ease' }} />
+        </button>
+        {helpOpen && (
+          <div id="recurring-help-body" data-t05823="intro"
+            style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 12, marginTop: 8, background: 'var(--surface)', fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', lineHeight: 1.65 }}>
+            <div style={{ fontSize: 'var(--fs-m)', fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>循环任务只负责「按周期生成任务副本」，不会自动执行任务</div>
+            <ul style={{ margin: 0, paddingLeft: 18 }}>
+              <li>执行由外部 Agent / WorkBuddy 从 MTask 就绪池认领后完成；循环规则本身不运行任务内容。</li>
+              <li>周期 / cron 只决定「何时生成」，不决定「任务做什么」；任务做什么必须写进下面的<b>执行说明</b>。</li>
+              <li>规则名称只作为生成任务的标题模板，生成时会自动追加日期后缀；不要把执行指令藏在名称里。</li>
+              <li>调度器每 60 秒检查一次；<b>错过的历史周期不会自动补生成</b>，恢复后只生成当前一轮。</li>
+              <li>时间按本地时区展示，存储仍为 UTC；创建或编辑调度时可选「立即生成首份」或「按首次计划时刻生成」。</li>
+            </ul>
+          </div>
+        )}
       </div>
 
       <div data-t05823="create" style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14, padding: 12, border: '1px solid var(--border)', borderRadius: 10, background: 'var(--card-bg)' }}>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
           <select value={projectId} onChange={(e) => setProjectId(e.target.value)} aria-label={t('循环任务项目', '循环任务项目')}
-            disabled={projectList.unusable}
+            disabled={projectList.phase === 'loading' && projects.length === 0}
             style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
             <option value="">{projectList.phase === 'error' ? t('项目列表加载失败', '项目列表加载失败') : projectSelectIdleText}</option>
-            {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            {projectOptions.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
           <ProjectListHint view={projectList} />
           <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="规则名称（生成任务标题模板，如：写周报）" aria-label="循环任务标题"
@@ -251,20 +336,46 @@ export function RecurringTab() {
         <RecurringSchedulePicker value={schedule} onChange={setSchedule} previewText={preview} error={previewError} />
 
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', fontSize: 'var(--fs-xs)' }}>
-          {rule.cron ? (
-            <label style={{ display: 'inline-flex', gap: 5, alignItems: 'center' }}>
-              <input type="checkbox" checked={firstImmediate} onChange={(e) => setFirstImmediate(e.target.checked)} />
-              创建后立即生成首份（不勾选则按 cron 首次计划时刻生成）
-            </label>
-          ) : <span style={{ color: 'var(--text-muted)' }}>无 cron 的间隔规则创建后立即生成首份，之后按间隔推进。</span>}
+          <label style={{ display: 'inline-flex', gap: 5, alignItems: 'center' }}>
+            <input type="checkbox" checked={firstImmediate} onChange={(e) => setFirstImmediate(e.target.checked)} />
+            创建后立即生成首份（不勾选则按{rule.cron ? ' cron 首次计划时刻' : '该间隔的首次到期时刻'}生成）
+          </label>
           <span style={{ flex: 1 }} />
           <button onClick={() => void createRule()} disabled={busy}
             style={{ padding: '7px 16px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: busy ? 'wait' : 'pointer', fontSize: 'var(--fs-s)', fontWeight: 600 }}>
             {busy ? '创建中…' : t('添加规则', '添加规则')}
           </button>
+          {/* T06003：模板入口固定在「添加规则」右侧 */}
+          <button type="button" onClick={() => setTemplatesOpen((v) => !v)} aria-expanded={templatesOpen} aria-controls="recurring-templates"
+            title="从模板添加 — 套用预设的名称/说明/周期/分类/优先级，项目默认收件箱"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '7px 12px', background: 'var(--surface-2)', color: 'var(--text)', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer', fontSize: 'var(--fs-s)' }}>
+            <LayoutTemplate size={13} /> 从模板添加
+            <ChevronDown size={12} style={{ transform: templatesOpen ? 'rotate(180deg)' : 'none', transition: 'transform .15s ease' }} />
+          </button>
         </div>
         {notice && <div data-t05823="notice" style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)' }}>{notice}</div>}
       </div>
+
+      {/* T06003：模板卡片容器——点击任意卡片即回填表单，项目强制收件箱 */}
+      {templatesOpen && (
+        <div id="recurring-templates" data-t06003="templates" style={{ marginBottom: 14, padding: 12, border: '1px solid var(--border)', borderRadius: 10, background: 'var(--surface)' }}>
+          <div style={{ fontSize: 'var(--fs-m)', fontWeight: 700, color: 'var(--text)', marginBottom: 2 }}>从模板添加</div>
+          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 10 }}>选择常用场景，自动填入规则名称、执行说明、周期、分类与优先级；项目统一使用收件箱，仍可创建前微调。</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 8 }}>
+            {RECURRING_TEMPLATES.map((tpl) => (
+              <button key={tpl.id} type="button" data-t06003="template-card" onClick={() => applyTemplate(tpl)}
+                title={`套用模板「${tpl.name}」`}
+                style={{ textAlign: 'left', padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer', display: 'grid', gap: 4 }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-m)', fontWeight: 600 }}>
+                  <LayoutTemplate size={13} style={{ color: 'var(--accent)' }} /> {tpl.name}
+                </span>
+                <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{tpl.hint}</span>
+                <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>优先级 {tpl.priority} · 分类 {tpl.categoryName}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {rules.length === 0 ? (
         <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: 12 }}>{t('暂无循环规则——上方添加一条即可。', '暂无循环规则——上方添加一条即可。')}</div>
@@ -352,13 +463,30 @@ function RecurringRuleEditor({ rule, projects, categories, onClose, onSaved }: {
   useEffect(() => {
     let alive = true;
     const r = ruleFromSchedule(schedule);
+    const baseline = ruleFromSchedule(scheduleFromRule(rule));
+    const scheduleChanged = r.cron !== baseline.cron || r.freq !== baseline.freq || r.intervalN !== baseline.intervalN;
+    if (!schedule.advanced && schedule.kind === 'cron' && !r.cron) {
+      setPreview('');
+      setError('自定义 cron 不能为空');
+      return;
+    }
+    // 复查：调度未变时保存不会重排 next_run_at，预览必须显示库里的当前值；
+    // 若仍调用 preview（从 now 起算），间隔类规则会显示一个与真实下一次不同的时间。
+    if (!scheduleChanged) {
+      setPreview(rule.next_run_at ? formatLocalDateTime(rule.next_run_at) : '');
+      setError('');
+      return;
+    }
+    setPreview('');
+    setError('');
     const timer = setTimeout(() => {
-      api.post<{ nextRunAt: string }>('/recurring/preview', { ...r, firstRunImmediate: firstImmediate })
+      // 只改标题/说明时 scheduleChanged=false，预览不能显示「现在」，否则会与「保存不重排」的真实行为相反。
+      api.post<{ nextRunAt: string }>('/recurring/preview', { ...r, firstRunImmediate: scheduleChanged ? firstImmediate : false })
         .then((x) => { if (alive) { setPreview(formatLocalDateTime(x.nextRunAt)); setError(''); } })
-        .catch((e) => { if (alive) setError(e instanceof Error ? e.message : String(e)); });
+        .catch((e) => { if (alive) { setPreview(''); setError(e instanceof Error ? e.message : String(e)); } });
     }, 260);
     return () => { alive = false; clearTimeout(timer); };
-  }, [schedule, firstImmediate]);
+  }, [schedule, firstImmediate, rule]);
 
   async function save() {
     const r = ruleFromSchedule(schedule);
@@ -400,12 +528,10 @@ function RecurringRuleEditor({ rule, projects, categories, onClose, onSaved }: {
           style={{ width: '100%', boxSizing: 'border-box', padding: 8, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', resize: 'vertical' }} />
         <RecurringSchedulePicker value={schedule} onChange={setSchedule} previewText={preview} error={error} />
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 'var(--fs-xs)' }}>
-          {ruleFromSchedule(schedule).cron && (
-            <label style={{ display: 'inline-flex', gap: 5, alignItems: 'center' }}>
-              <input type="checkbox" checked={firstImmediate} onChange={(e) => setFirstImmediate(e.target.checked)} />
-              调度变更后立即生成首份（不勾选则按计划时刻）
-            </label>
-          )}
+          <label style={{ display: 'inline-flex', gap: 5, alignItems: 'center' }}>
+            <input type="checkbox" checked={firstImmediate} onChange={(e) => setFirstImmediate(e.target.checked)} />
+            调度变更后立即生成首份（不勾选则按计划/间隔首次到期时刻）
+          </label>
           <span style={{ flex: 1 }} />
           <button onClick={onClose} style={{ padding: '6px 12px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer' }}>取消</button>
           <button onClick={() => void save()} disabled={busy} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 14px', border: '1px solid var(--accent)', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', cursor: busy ? 'wait' : 'pointer' }}>

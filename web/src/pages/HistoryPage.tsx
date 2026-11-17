@@ -5,7 +5,7 @@ import { Archive, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, FolderInput
 import { relTime } from '../ui/format';
 import { useSessionState } from '../ui/session';
 import { SETTINGS_SEARCH_EVENT, peekSettingsSearchIntent, takeSettingsSearchIntent, type SettingsSearchIntentEventDetail } from '../ui/settingsSearch'; // T04099：命令面板跳转带关键词
-import { ProjectListHint, projectListPlaceholder, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
+import { ProjectListHint, projectListPlaceholder, refreshProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
 
 /** 快照内任务（只读） */
 interface SnapTask {
@@ -193,7 +193,7 @@ export function HistoryPage() {
       const r = await api.post<{ ok: boolean; tasks: number; plans: number; projectName: string }>('/history/transfer', { projectId: transferProject });
       flash(`已沉淀快照「${r.projectName}」：任务 ${r.tasks} 条、计划 ${r.plans} 条`);
       setTransferProject('');
-      await load();
+      await Promise.all([load(), refreshProjectList()]);
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
   }
 
@@ -220,16 +220,26 @@ export function HistoryPage() {
   }
 
   const statCards = [
-    { label: '活跃项目', value: summary?.activeProjects ?? 0, hint: '当前任务/计划菜单可见的项目' },
-    { label: '历史快照', value: summary?.snapshotProjects ?? 0, hint: '已整体沉淀的项目快照' },
-    { label: '快照任务', value: summary?.snapshotTasks ?? 0, hint: '快照内保留的任务总数' },
-    { label: '快照计划', value: summary?.snapshotPlans ?? 0, hint: '快照内保留的计划总数' },
+    { label: '活跃项目', value: summary?.activeProjects ?? 0, hint: '当前任务/计划菜单可见的项目', color: 'var(--accent)', bg: 'var(--accent-soft)' },
+    { label: '历史快照', value: summary?.snapshotProjects ?? 0, hint: '已整体沉淀的项目快照', color: 'var(--success)', bg: 'color-mix(in srgb, var(--success) 10%, transparent)' },
+    { label: '快照任务', value: summary?.snapshotTasks ?? 0, hint: '快照内保留的任务总数', color: 'var(--warn)', bg: 'color-mix(in srgb, var(--warn) 10%, transparent)' },
+    { label: '快照计划', value: summary?.snapshotPlans ?? 0, hint: '快照内保留的计划总数', color: 'var(--danger)', bg: 'color-mix(in srgb, var(--danger) 10%, transparent)' },
   ];
 
   return (
     <section>
       <style>{`
         .snap-card:hover { border-color: var(--accent) !important; }
+        .snap-card-action { opacity: 0; visibility: hidden; transition: opacity .15s ease, visibility 0s linear .15s; }
+        .snap-card:hover .snap-card-action, .snap-card:focus-within .snap-card-action,
+        .snap-card-action:focus-visible { opacity: 1; visibility: visible; transition: opacity .15s ease, visibility 0s; }
+        @media (hover: none) {
+          .snap-card-action { opacity: 1; visibility: visible; }
+        }
+        .snap-precipitate-action { opacity: .35; transition: opacity .15s ease; }
+        .snap-precipitate:hover .snap-precipitate-action, .snap-precipitate:focus-within .snap-precipitate-action,
+        .snap-precipitate-action:focus-visible { opacity: 1; }
+        @media (hover: none) { .snap-precipitate-action { opacity: 1; } }
       `}</style>
 
       {notice && <div style={{ position: 'fixed', top: 12, right: 16, zIndex: 200, padding: '6px 12px', borderRadius: 6, background: 'var(--card-bg)', border: '1px solid var(--accent)', fontSize: 'var(--fs-s)', color: 'var(--text)' }}>{notice}</div>}
@@ -242,9 +252,10 @@ export function HistoryPage() {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: 10, margin: '12px 0' }}>
         {statCards.map((c) => (
-          <div key={c.label} title={c.hint} style={{ padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card-bg)' }}>
-            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{c.label}</div>
-            <div style={{ fontSize: 'var(--fs-title)', fontWeight: 600, color: 'var(--text)', lineHeight: 1.4 }}>{c.value}</div>
+          <div key={c.label} data-t06001="stat-card" title={c.hint}
+            style={{ padding: '10px 12px', border: '1px solid var(--border)', borderLeft: `3px solid ${c.color}`, borderRadius: 8, background: c.bg }}>
+            <div style={{ fontSize: 'var(--fs-xs)', color: c.color, fontWeight: 600 }}>{c.label}</div>
+            <div style={{ fontSize: 'var(--fs-title)', fontWeight: 700, color: 'var(--text)', lineHeight: 1.4 }}>{c.value}</div>
           </div>
         ))}
       </div>
@@ -255,7 +266,7 @@ export function HistoryPage() {
       )}
 
       {/* 沉淀操作 + 搜索 */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card-bg)', marginBottom: 12 }}>
+      <div className="snap-precipitate" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card-bg)', marginBottom: 12 }}>
         <select value={transferProject} onChange={(e) => setTransferProject(e.target.value)}
           aria-label="选择要沉淀的项目" title="选择一个活跃项目整体沉淀为历史快照"
           disabled={projectList.unusable}
@@ -264,10 +275,10 @@ export function HistoryPage() {
           {activeProjects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         <ProjectListHint view={projectList} />
-        <button onClick={() => void transfer()} disabled={busy || !transferProject} className="tbtn-anim"
+        <button onClick={() => void transfer()} disabled={busy || !transferProject} className="tbtn-anim snap-precipitate-action"
           title="把所选项目整体沉淀为历史资产快照" aria-label="沉淀为历史快照"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, cursor: transferProject ? 'pointer' : 'not-allowed', border: '1px solid var(--accent)', background: 'transparent', color: 'var(--accent)', fontSize: 'var(--fs-s)', opacity: transferProject ? 1 : 0.5 }}>
-          <FolderInput size={13} /> 沉淀为历史快照
+          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 26, padding: 0, borderRadius: 6, cursor: transferProject ? 'pointer' : 'not-allowed', border: '1px solid var(--accent)', background: 'transparent', color: 'var(--accent)', fontSize: 'var(--fs-s)', opacity: transferProject ? 1 : 0.5 }}>
+          <FolderInput size={13} />
         </button>
         <span style={{ flex: 1 }} />
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, border: '1px solid var(--border-strong)', borderRadius: 6, padding: '3px 8px' }}>
@@ -351,15 +362,15 @@ export function HistoryPage() {
                 任务 {s.stats.tasks}（完成 {s.stats.doneTasks}）· 计划 {s.stats.plans}（完结 {s.stats.donePlans}）· 沉淀于 {relTime(s.history_at)}
               </span>
               <span style={{ flex: 1 }} />
-              <button onClick={() => void restore(s)} disabled={busy} className="tbtn-anim"
+              <button onClick={() => void restore(s)} disabled={busy} className="tbtn-anim snap-card-action"
                 title="恢复 — 该快照整体恢复为活跃项目（重新出现在任务/计划菜单）" aria-label="恢复该快照"
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '3px 10px', borderRadius: 6, border: '1px solid var(--accent)', background: 'transparent', color: 'var(--accent)', fontSize: 'var(--fs-s)', cursor: 'pointer' }}>
-                <RotateCcw size={12} /> 恢复
+                style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 26, padding: 0, borderRadius: 6, border: '1px solid var(--accent)', background: 'transparent', color: 'var(--accent)', fontSize: 'var(--fs-s)', cursor: 'pointer' }}>
+                <RotateCcw size={12} />
               </button>
-              <button onClick={() => void toArchive(s)} disabled={busy} className="tbtn-anim"
+              <button onClick={() => void toArchive(s)} disabled={busy} className="tbtn-anim snap-card-action"
                 title="归档删除 — 整个项目内容转入归档区（软删除，可恢复）" aria-label="归档删除该快照"
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '3px 10px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--danger)', fontSize: 'var(--fs-s)', cursor: 'pointer' }}>
-                <Archive size={12} /> 归档删除
+                style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 26, padding: 0, borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--danger)', fontSize: 'var(--fs-s)', cursor: 'pointer' }}>
+                <Archive size={12} />
               </button>
             </div>
 

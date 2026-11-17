@@ -124,12 +124,21 @@ function Card({ title, icon, extra, children }: { readonly title: string; readon
   );
 }
 
-/** 单个指标：标签在上、值在下，值支持悬浮完整说明 */
-function Metric({ label, value, hint }: { readonly label: string; readonly value: ReactNode; readonly hint?: string }) {
+/** 单个指标：标签在上、值在下；T06004 增加主题色块，便于快速区分指标类别 */
+const METRIC_TONES = {
+  accent: { color: 'var(--accent)', bg: 'var(--accent-soft)' },
+  success: { color: 'var(--success)', bg: 'color-mix(in srgb, var(--success) 10%, transparent)' },
+  warn: { color: 'var(--warn)', bg: 'color-mix(in srgb, var(--warn) 10%, transparent)' },
+  danger: { color: 'var(--danger)', bg: 'color-mix(in srgb, var(--danger) 10%, transparent)' },
+  muted: { color: 'var(--text-secondary)', bg: 'var(--surface-2)' },
+} as const;
+
+function Metric({ label, value, hint, tone = 'muted' }: { readonly label: string; readonly value: ReactNode; readonly hint?: string; readonly tone?: keyof typeof METRIC_TONES }) {
+  const theme = METRIC_TONES[tone];
   return (
-    <div title={hint} style={{ minWidth: 132 }}>
-      <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>{label}</div>
-      <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600, marginTop: 2 }}>{value}</div>
+    <div title={hint} data-t06004="metric" style={{ minWidth: 132, padding: '8px 10px', borderRadius: 10, border: `1px solid ${theme.color}33`, borderLeft: `3px solid ${theme.color}`, background: theme.bg }}>
+      <div style={{ fontSize: 'var(--fs-s)', color: theme.color, fontWeight: 600 }}>{label}</div>
+      <div style={{ fontSize: 'var(--fs-m)', fontWeight: 700, marginTop: 2, color: 'var(--text)' }}>{value}</div>
     </div>
   );
 }
@@ -147,6 +156,12 @@ export function SupervisorPanel() {
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  // T06004：五模块标签页 + 决策动作/会话列表前端分页（默认 20，可选 50/100/200）
+  const [panelTab, setPanelTab] = useState<'actions' | 'sessions' | 'runtime' | 'relay' | 'audit'>('actions');
+  const [pageSize, setPageSize] = useState(20);
+  const [actionPage, setActionPage] = useState(1);
+  const [sessionPage, setSessionPage] = useState(1);
+  const [jumpPage, setJumpPage] = useState('');
 
   const flash = (msg: string) => {
     setNotice(msg);
@@ -256,53 +271,93 @@ export function SupervisorPanel() {
 
   const renderStatusMetrics = () => (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, marginBottom: 12 }}>
-      <Metric label="tick 周期" value={`${Math.round((status?.intervalMs ?? 0) / 1000)} 秒`} hint="supervisor.intervalMs；可在下方「运行参数」修改，写入即热重载生效" />
-      <Metric label="审计保留" value={status && status.auditRetentionDays > 0 ? `${status.auditRetentionDays} 天` : '不清理'} hint="supervisor.auditRetentionDays；0 表示保留全部（不清理），清理每小时最多执行一次" />
-      <Metric label="最近一次 tick" value={status?.lastTickAt ? relTime(status.lastTickAt) : '本进程尚未 tick'} hint={status?.lastTickAt ? fullTime(status.lastTickAt) : '含空转轮次；空转不写审计，故单独记内存态'} />
-      <Metric label="下次 tick" value={status?.nextTickAt ? relTime(status.nextTickAt) : '—'} hint={status?.nextTickAt ? fullTime(status.nextTickAt) : '本进程尚未 tick，无法推算'} />
+      <Metric label="tick 周期" tone="accent" value={`${Math.round((status?.intervalMs ?? 0) / 1000)} 秒`} hint="supervisor.intervalMs；可在下方「运行参数」修改，写入即热重载生效" />
+      <Metric label="审计保留" tone="success" value={status && status.auditRetentionDays > 0 ? `${status.auditRetentionDays} 天` : '不清理'} hint="supervisor.auditRetentionDays；0 表示保留全部（不清理），清理每小时最多执行一次" />
+      <Metric label="最近一次 tick" tone="warn" value={status?.lastTickAt ? relTime(status.lastTickAt) : '本进程尚未 tick'} hint={status?.lastTickAt ? fullTime(status.lastTickAt) : '含空转轮次；空转不写审计，故单独记内存态'} />
+      <Metric label="下次 tick" tone="success" value={status?.nextTickAt ? relTime(status.nextTickAt) : '—'} hint={status?.nextTickAt ? fullTime(status.nextTickAt) : '本进程尚未 tick，无法推算'} />
       <Metric
         label="最近决策"
+        tone="accent"
         value={status?.lastRunAt ? relTime(status.lastRunAt) : '尚无决策记录'}
         hint={status?.lastRunAt ? `${fullTime(status.lastRunAt)} · 模型 ${status.lastModel || '未配置'}` : '空转/熔断轮次不写审计'}
       />
       <Metric
         label="token 预算"
+        tone="danger"
         value={status && status.tokenBudget > 0 ? `${status.tokenBudgetUsed} / ${status.tokenBudget}` : `不限（已用 ${status?.tokenBudgetUsed ?? 0}）`}
         hint="supervisor.tokenBudget；0 表示不限"
       />
-      <Metric label="活跃会话" value={`${status?.activeSessions.length ?? 0} / ${status?.maxConcurrent ?? 0}`} hint="当前活跃/停滞/失败会话数 / 并发上限 supervisor.maxConcurrent" />
-      <Metric label="重试上限" value={`${status?.maxRetry ?? 0} 次`} hint="supervisor.maxRetry；超限动作被拦截并升级人工" />
-      <Metric label="冷却窗口" value={`${Math.round((status?.cooldownMs ?? 0) / 60000)} 分钟`} hint="supervisor.cooldownMs；同一任务两次触发的最小间隔" />
+      <Metric label="活跃会话" tone="accent" value={`${status?.activeSessions.length ?? 0} / ${status?.maxConcurrent ?? 0}`} hint="当前活跃/停滞/失败会话数 / 并发上限 supervisor.maxConcurrent" />
+      <Metric label="重试上限" tone="warn" value={`${status?.maxRetry ?? 0} 次`} hint="supervisor.maxRetry；超限动作被拦截并升级人工" />
+      <Metric label="冷却窗口" tone="muted" value={`${Math.round((status?.cooldownMs ?? 0) / 60000)} 分钟`} hint="supervisor.cooldownMs；同一任务两次触发的最小间隔" />
     </div>
   );
 
-  const renderLastActions = () => (
-    status?.lastActions.length ? (
-      <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 4 }}>
-        {status.lastActions.map((a, i) => (
-          <li key={`${a.type}-${a.taskId ?? i}`} style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 'var(--fs-m)' }}>
-            <span style={{ color: ACTION_COLOR[a.type] ?? 'var(--text)', fontWeight: 600, minWidth: 88 }}>{a.type}</span>
-            <span style={{ color: 'var(--text-secondary)' }}>{a.taskId ?? '（全局）'}</span>
-            <span style={{ color: 'var(--text-secondary)' }}>{a.reason}</span>
-          </li>
-        ))}
-      </ul>
-    ) : (
-      <p style={{ margin: 0, fontSize: 'var(--fs-m)', color: 'var(--text-muted)' }}>暂无动作记录（监督器每个决策轮次记录一次）。</p>
-    )
-  );
+  const actionsAll = status?.lastActions ?? [];
+  const sessionsAll = status?.activeSessions ?? [];
 
-  const renderActiveSessions = () => (
-    !!status?.activeSessions.length && (
+  const renderPager = (total: number, current: number, setCurrent: (n: number) => void, label: string) => {
+    const pages = Math.max(1, Math.ceil(total / pageSize));
+    const safeCurrent = Math.min(Math.max(1, current), pages);
+    const go = (n: number) => setCurrent(Math.min(Math.max(1, n), pages));
+    return (
+      <div data-t06004="pager" style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end', marginTop: 10, fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
+        <span>{label} 共 {total} 条 · 第 {safeCurrent}/{pages} 页</span>
+        <select value={pageSize} onChange={(e) => { const n = Number(e.target.value); setPageSize(n); setActionPage(1); setSessionPage(1); setJumpPage(''); }}
+          aria-label={`${label}每页条数`} title={`${label}每页条数`}
+          style={{ padding: '2px 6px', fontSize: 'var(--fs-s)', border: '1px solid var(--border)', borderRadius: 5, background: 'var(--surface)', color: 'var(--text)' }}>
+          {[20, 50, 100, 200].map((n) => <option key={n} value={n}>{n} 条/页</option>)}
+        </select>
+        <button type="button" onClick={() => go(safeCurrent - 1)} disabled={safeCurrent <= 1} title="上一页" aria-label={`${label}上一页`}
+          style={{ padding: '2px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--surface)', color: safeCurrent <= 1 ? 'var(--text-muted)' : 'var(--text)', cursor: safeCurrent <= 1 ? 'not-allowed' : 'pointer' }}>
+          上一页
+        </button>
+        <input value={jumpPage} onChange={(e) => setJumpPage(e.target.value.replace(/[^\d]/g, ''))}
+          onKeyDown={(e) => { if (e.key === 'Enter') { const n = Number(jumpPage); if (n) go(n); setJumpPage(''); } }}
+          onBlur={() => { const n = Number(jumpPage); if (n) go(n); setJumpPage(''); }}
+          inputMode="numeric" placeholder="页码" aria-label={`${label}跳转页码`}
+          style={{ width: 52, padding: '2px 6px', fontSize: 'var(--fs-s)', border: '1px solid var(--border)', borderRadius: 5, background: 'var(--surface)', color: 'var(--text)' }} />
+        <button type="button" onClick={() => go(safeCurrent + 1)} disabled={safeCurrent >= pages} title="下一页" aria-label={`${label}下一页`}
+          style={{ padding: '2px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--surface)', color: safeCurrent >= pages ? 'var(--text-muted)' : 'var(--text)', cursor: safeCurrent >= pages ? 'not-allowed' : 'pointer' }}>
+          下一页
+        </button>
+      </div>
+    );
+  };
+
+  const renderLastActions = () => {
+    if (actionsAll.length === 0) return <p style={{ margin: 0, fontSize: 'var(--fs-m)', color: 'var(--text-muted)' }}>暂无动作记录（监督器每个决策轮次记录一次）。</p>;
+    const safePage = Math.min(Math.max(1, actionPage), Math.max(1, Math.ceil(actionsAll.length / pageSize)));
+    const slice = actionsAll.slice((safePage - 1) * pageSize, safePage * pageSize);
+    return (
       <>
-        <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600, margin: '12px 0 6px' }}>活跃 / 停滞 / 失败会话</div>
+        <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 4 }}>
+          {slice.map((a, i) => (
+            <li key={`${a.type}-${a.taskId ?? i}`} style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 'var(--fs-m)', padding: '3px 0', borderBottom: '1px solid var(--surface-2)' }}>
+              <span style={{ color: ACTION_COLOR[a.type] ?? 'var(--text)', fontWeight: 600, minWidth: 88 }}>{a.type}</span>
+              <span style={{ color: 'var(--text-secondary)' }}>{a.taskId ?? '（全局）'}</span>
+              <span style={{ color: 'var(--text-secondary)' }}>{a.reason}</span>
+            </li>
+          ))}
+        </ul>
+        {renderPager(actionsAll.length, safePage, setActionPage, '决策动作')}
+      </>
+    );
+  };
+
+  const renderActiveSessions = () => {
+    if (sessionsAll.length === 0) return <p style={{ margin: 0, fontSize: 'var(--fs-m)', color: 'var(--text-muted)' }}>暂无活跃、停滞或失败会话。</p>;
+    const safePage = Math.min(Math.max(1, sessionPage), Math.max(1, Math.ceil(sessionsAll.length / pageSize)));
+    const slice = sessionsAll.slice((safePage - 1) * pageSize, safePage * pageSize);
+    return (
+      <>
         <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 6 }}>
-          {status.activeSessions.map((s, i) => {
+          {slice.map((s, i) => {
             let stateLabel = '存活';
             if (s.stale) stateLabel = '停滞';
             if (s.failed) stateLabel = '失败';
             return (
-              <li key={`${s.platform}-${i}`} style={{ fontSize: 'var(--fs-m)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <li key={`${s.platform}-${i}`} style={{ fontSize: 'var(--fs-m)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '3px 0', borderBottom: '1px solid var(--surface-2)' }}>
                 <span style={{ fontWeight: 600 }}>{platformLabel(s.platform)}</span>
                 <span style={{ color: s.stale || s.failed ? 'var(--danger)' : 'var(--success)' }}>{stateLabel}</span>
                 <span style={{ color: 'var(--text-muted)' }}>{Math.round(s.progress)}%</span>
@@ -311,9 +366,10 @@ export function SupervisorPanel() {
             );
           })}
         </ul>
+        {renderPager(sessionsAll.length, safePage, setSessionPage, '会话')}
       </>
-    )
-  );
+    );
+  };
 
   const renderRuntimeCard = () => (
     <Card
@@ -505,6 +561,14 @@ export function SupervisorPanel() {
     </Card>
   );
 
+  const panelTabs = [
+    { key: 'actions' as const, label: '最近一轮决策动作', count: actionsAll.length },
+    { key: 'sessions' as const, label: '活跃 / 停滞 / 失败会话', count: sessionsAll.length },
+    { key: 'runtime' as const, label: '运行参数', count: null },
+    { key: 'relay' as const, label: '中继兜底通道', count: null },
+    { key: 'audit' as const, label: '监督审计', count: runs.length },
+  ];
+
   return (
     <section style={{ maxWidth: 960 }}>
       <Card
@@ -524,14 +588,38 @@ export function SupervisorPanel() {
       >
         {renderCircuitToggle()}
         {renderStatusMetrics()}
-        <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600, marginBottom: 6 }}>最近一轮决策动作</div>
-        {renderLastActions()}
-        {renderActiveSessions()}
       </Card>
 
-      {renderRuntimeCard()}
-      {renderRelayCard()}
-      {renderAuditCard()}
+      <div data-t06004="tabs" role="tablist" aria-label="监督模块切换"
+        style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12, borderBottom: '1px solid var(--border)', paddingBottom: 6 }}>
+        {panelTabs.map((t) => (
+          <button key={t.key} type="button" role="tab" aria-selected={panelTab === t.key} onClick={() => { setPanelTab(t.key); setJumpPage(''); }}
+            title={`切换到「${t.label}」`}
+            style={{
+              fontSize: 'var(--fs-s)', padding: '5px 10px', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap',
+              border: panelTab === t.key ? '1px solid var(--accent)' : '1px solid transparent',
+              background: panelTab === t.key ? 'var(--accent-soft)' : 'transparent',
+              color: panelTab === t.key ? 'var(--accent)' : 'var(--text-secondary)',
+              fontWeight: panelTab === t.key ? 700 : 400,
+            }}>
+            {t.label}{t.count !== null ? ` (${t.count})` : ''}
+          </button>
+        ))}
+      </div>
+
+      {panelTab === 'actions' && (
+        <Card title="最近一轮决策动作" icon={<Activity size={14} />} extra={<span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>最近 {actionsAll.length} 条</span>}>
+          {renderLastActions()}
+        </Card>
+      )}
+      {panelTab === 'sessions' && (
+        <Card title="活跃 / 停滞 / 失败会话" icon={<Activity size={14} />} extra={<span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>共 {sessionsAll.length} 个</span>}>
+          {renderActiveSessions()}
+        </Card>
+      )}
+      {panelTab === 'runtime' && renderRuntimeCard()}
+      {panelTab === 'relay' && renderRelayCard()}
+      {panelTab === 'audit' && renderAuditCard()}
 
       {notice && <output className="flash-toast">{notice}</output>}
     </section>
