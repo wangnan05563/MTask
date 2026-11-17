@@ -503,6 +503,9 @@ export interface ExecSessionTaskBrief {
   id: string;
   task_no: string | null;
   title: string;
+  /** 重派按钮前置判定：仅 todo 且未归档可重派；旧版服务端未返回时按未知处理 */
+  status?: string;
+  archived?: number;
   /** T04065：所属项目（多项目并行时用于识别归属） */
   project_id: string;
   project_name: string | null;

@@ -75,6 +75,9 @@ export interface SessionTaskBrief {
   id: string;
   task_no: string | null;
   title: string;
+  /** 面板重派前置判定：仅 todo 且未归档的任务可重派（与 redispatchSession 同口径） */
+  status: string;
+  archived: number;
   /** T04065：任务所属项目——多项目并行时让会话卡的任务 chip 一眼可辨 */
   project_id: string;
   project_name: string | null;
@@ -381,7 +384,7 @@ export const ExecSessionService = {
       const chunk = all.slice(i, i + 200);
       const placeholders = chunk.map(() => '?').join(',');
       const found = db.prepare(
-        `SELECT t.id, t.task_no, t.title, t.project_id, p.name AS project_name
+        `SELECT t.id, t.task_no, t.title, t.status, t.archived, t.project_id, p.name AS project_name
            FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
           WHERE t.id IN (${placeholders})`,
       ).all(...chunk) as SessionTaskBrief[];
@@ -414,7 +417,7 @@ export const ExecSessionService = {
     const sig = createHash('sha256')
       .update(rows
         .map((r) => `${r.id}\u0001${r.status}\u0001${r.progress}\u0001${r.phase}\u0001${r.last_heartbeat}\u0001${r.finished_at ?? ''}\u0001${r.task_ids}`)
-        .sort()
+        .sort((a, b) => a.localeCompare(b))
         .join('\u0002'))
       .digest('hex');
     return { sig, rows: rows.length };
