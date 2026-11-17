@@ -33,6 +33,11 @@ async function resolveToolId(): Promise<string> {
   return toolPending;
 }
 
+/** T05811：标题级 AI 操作与正文美化共用同一套工具解析，避免调用方各自重复请求 /aitools。 */
+export function resolveAiToolId(): Promise<string> {
+  return resolveToolId();
+}
+
 export function AiPolishButton({ value, onPolished, toolId, disabled, flash, title }: {
   /** 待润色的原文（空则按钮禁用） */
   readonly value: string;

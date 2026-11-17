@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronUp, FolderPlus, ListTodo, Loader2, Move, Pencil, Plus, RotateCcw, Rocket, Save, SquarePen, Trash2, UnfoldVertical, FoldVertical, Wand2, X, Archive, Layers } from 'lucide-react';
+import { ChevronDown, ChevronUp, FolderPlus, ListTodo, Loader2, Move, Palette, Pencil, Plus, RotateCcw, Rocket, Save, SquarePen, Trash2, UnfoldVertical, FoldVertical, Wand2, X, Archive, Layers } from 'lucide-react';
 import { CopyButton } from '../ui/CopyButton';
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type AITool, type Project, type Prompt, type PromptCategory, type ReqCategory } from '../api/client';
@@ -10,6 +10,7 @@ import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：AI 
 import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
 import { FavoriteToggle } from '../ui/FavoriteToggle'; // T03683：收藏切换（与置顶正交，两页共用同一组件）
+import { TaskMoreMenu } from '../ui/TaskMoreMenu'; // T05812：低频操作收进与任务菜单同款的「更多操作」
 import { ALL_FAV, isAllFav } from '../ui/favScope'; // T05687：分类下拉「全部收藏」哨兵
 import { OPTIMIZE_SCOPE_PROMPTS, busyScope, runOptimize, useOptimizeStore } from '../stores/optimizeStore'; // T03684：提示词优化运行态切页保持
 import { relTime } from '../ui/format';
@@ -384,7 +385,7 @@ export function PromptsPage() {
   // T00837：撤销快照——最近一次分组/通用需求分类调整前的归属，用于一键还原
   const [lastMove, setLastMove] = useState<{ id: string; prevCategoryId: string; prevReqCategoryId: string } | null>(null);
   // 当前分类：跨切换会话记忆用户选择，便于切回后继续操作
-  const [activeCat, setActiveCat] = useSessionState('prompts.activeCat', '');
+  const [activeCat, setActiveCat] = useSessionState('prompts.activeCat', ALL_FAV);
   const [search, setSearch] = useSessionState<string>('prompts.search', ''); // T00560：命令面板跳转写入搜索词
   const [notice, setNotice] = useState('');
   // 排序条件：sortKey 排序字段，sortDir 升降序（默认时间降序，与后端默认一致）
@@ -561,7 +562,7 @@ export function PromptsPage() {
   const categoriesView = useResource<PromptCategory[]>(async () => {
     const cats = await api.get<PromptCategory[]>('/prompt-categories');
     // 保持当前选中；选中项被删除或首次加载时回落到第一个分类
-    setActiveCat((cur) => (isAllFav(cur) || cats.some((c) => c.id === cur) ? cur : cats[0]?.id ?? ''));
+    setActiveCat((cur) => (isAllFav(cur) || cats.some((c) => c.id === cur) ? cur : ALL_FAV));
     return cats;
   });
   const categories = categoriesView.data ?? [];
@@ -674,7 +675,7 @@ export function PromptsPage() {
 
   // ---------- 提示词增删改查 ----------
   async function createPrompt() {
-    if (!newTitle.trim() || !activeCat) return;
+    if (!newTitle.trim() || !activeCat || isAllFav(activeCat)) return;
     try {
       await api.post('/prompts', { categoryId: activeCat, title: newTitle.trim(), content: newContent });
       setNewTitle('');
@@ -716,6 +717,19 @@ export function PromptsPage() {
     try {
       await api.patch(`/prompts/${p.id}`, { archived: true });
       flash('已归档');
+      void loadPrompts(activeCat, search);
+      void loadCategories();
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /** T05812：真正删除（不可恢复）——从「更多操作」进入，二次确认与任务菜单的删除口径一致。 */
+  async function deletePrompt(p: Prompt) {
+    if (!(await askConfirm(`彻底删除提示词「${p.title}」？删除后不可恢复；如只想隐藏，请改用「归档」。`))) return;
+    try {
+      await api.del(`/prompts/${p.id}`);
+      flash('已删除');
       void loadPrompts(activeCat, search);
       void loadCategories();
     } catch (e) {
@@ -961,10 +975,10 @@ export function PromptsPage() {
         )}
         <button
           onClick={() => { setCreating(!creating); setNewTitle(''); setNewContent(''); }}
-          disabled={!activeCat}
+          disabled={!activeCat || isAllFav(activeCat)}
           // 无文字纯图标按钮：悬浮提示随状态切换（新建/收起），点击动画由全局 button:active 提供
           // T00760：默认隐藏悬浮显示
-          title={creating ? '收起 — 收起新建提示词表单' : '新建提示词 — 展开新建提示词表单'}
+          title={isAllFav(activeCat) ? '请先切换到具体分类，再新建提示词' : creating ? '收起 — 收起新建提示词表单' : '新建提示词 — 展开新建提示词表单'}
           aria-label={creating ? '收起：收起新建提示词表单' : '新建提示词：展开新建提示词表单'}
           className="op-hidden"
           style={{ marginLeft: 12, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', padding: '6px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}
@@ -1174,20 +1188,11 @@ export function PromptsPage() {
                         <Layers size={11} />{reqCats.find((c) => c.id === p.req_category_id)?.name ?? '通用需求分类'}
                       </span>
                     )}
-                    <span className="abtn" style={{ display: 'inline-flex', alignItems: 'center' }}>
-                      <FontColorButton current={p.color ?? ''} onApply={(c) => applyColor(p.id, c)} />
-                    </span>
                     <CopyButton getText={() => p.title + (p.content ? '\n' + p.content : '')} title="复制 — 复制提示词内容到剪贴板" ariaLabel="复制：复制提示词内容" />
                     {/* T00436：复制到待办任务 — 转成收件箱项目的待办，悬浮提示按任务规格 */}
                     <button className="abtn" onClick={() => void copyToTask(p)} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
                       title="复制到待办任务 — 以该提示词创建一条待办任务（收件箱项目）" aria-label="复制到待办任务">
                       <ListTodo size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
-                    </button>
-                    {/* T03247（AI-104①②）：发起提示词——填齐 {{变量}} 后新建 AI 控制台任务 */}
-                    <button className="abtn" onClick={() => openLaunch(p)} data-t03247="launch"
-                      style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-                      title="发起 — 填齐模板变量后在 AI 控制台新建任务执行" aria-label="发起：填齐模板变量后在 AI 控制台执行">
-                      <Rocket size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
                     </button>
                     <button
                       className="abtn"
@@ -1196,11 +1201,6 @@ export function PromptsPage() {
                       title="编辑 — 编辑这条提示词" aria-label="编辑：编辑这条提示词"
                     >
                       <Pencil size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
-                    </button>
-                    {/* T00873：移动到其他分组——整体迁移（覆盖 category_id，原分组不再包含）；点击打开移动弹窗 */}
-                    <button className="abtn" onClick={() => openMove(p)} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-                      title="移动 — 将该提示词整体移动到其他提示词分组（原分组不再包含）" aria-label="移动：将该提示词整体移动到其他分组">
-                      <Move size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
                     </button>
                     <button className="abtn" onClick={() => void archivePrompt(p)} style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
                       title="归档 — 归档这条提示词（数据保留，列表不再显示）" aria-label="归档：归档这条提示词">
@@ -1214,6 +1214,35 @@ export function PromptsPage() {
                         <RotateCcw size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
                       </button>
                     )}
+                    {/* T05812：字体颜色、发起、移动与新增的删除统一收进与任务菜单同款的「更多操作」 */}
+                    <span className="abtn" style={{ display: 'inline-flex', alignItems: 'center' }}>
+                      <TaskMoreMenu
+                        taskTitle={p.title}
+                        items={[
+                          {
+                            key: 'color', label: '字体颜色', icon: <Palette size={13} />,
+                            title: '字体颜色 — 修改该提示词标题的颜色',
+                            trailing: <FontColorButton current={p.color ?? ''} onApply={(c) => applyColor(p.id, c)} />,
+                          },
+                          {
+                            key: 'launch', label: '发起', icon: <Rocket size={13} />,
+                            title: '发起 — 填齐模板变量后在 AI 控制台新建任务执行',
+                            dataAttrs: { 'data-t03247': 'launch' },
+                            onClick: () => openLaunch(p),
+                          },
+                          {
+                            key: 'move', label: '移动', icon: <Move size={13} />,
+                            title: '移动 — 将该提示词整体移动到其他提示词分组（原分组不再包含）',
+                            onClick: () => openMove(p),
+                          },
+                          {
+                            key: 'delete', label: '删除', icon: <Trash2 size={13} />, danger: true,
+                            title: '删除 — 彻底删除这条提示词（不可恢复）',
+                            onClick: () => void deletePrompt(p),
+                          },
+                        ]}
+                      />
+                    </span>
                   </div>
                   {expandedIds[p.id] && (
                     // MarkdownContent 默认渲染富文本、可切源码视图，右上角切换/复制按钮悬浮于内容之上

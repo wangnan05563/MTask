@@ -1,19 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Archive, CalendarRange, ChevronDown, ChevronUp, FolderInput, FolderPlus, ListTodo, Loader2, Minimize2, Pencil, Plus, Save, Sparkles, SquarePen, Trash2, Wand2, X, UnfoldVertical, FoldVertical } from 'lucide-react';
+import { Archive, CalendarRange, ChevronDown, ChevronUp, FolderInput, FolderPlus, ListTodo, Loader2, Minimize2, Palette, Pencil, Plus, Save, Sparkles, SquarePen, Trash2, Wand2, X, UnfoldVertical, FoldVertical } from 'lucide-react';
 import { CopyButton } from '../ui/CopyButton';
 import { FontColorButton } from '../ui/FontColorButton';
 import { api, type ReqCategory, type ReqEntry } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { ProjectListHint, loadProjectList, projectListPlaceholder, useProjectList } from '../ui/projectList'; // T02201
-import { NotOpenButton } from '../ui/notOpen'; // T03185（UX-05⑤）：未开放入口=可见但禁用+范围说明
 import { MarkdownContent } from '../ui/Markdown';
 import { PinToggle } from '../ui/PinToggle';
 import { FavoriteToggle } from '../ui/FavoriteToggle'; // T03683：收藏切换（与提示词页共用同一组件）
+import { TaskMoreMenu } from '../ui/TaskMoreMenu'; // T05810：低频操作收进与任务菜单同款的「更多操作」
 import { ALL_FAV, isAllFav } from '../ui/favScope'; // T05687：分类下拉「全部收藏」哨兵
 import { focusSettingsTab } from '../ui/settingsTabs'; // T03685：工具条「归档」直达归档管理页
 import { applyDeepLink } from '../ui/deepLink'; // T03685：focusSettingsTab 只落页签，切一级菜单要靠 deepLink（与 SonarScanPanel.goSettings 同口径）
-import { AiPolishButton } from '../ui/AiPolishButton'; // T00796 二轮：通用需求正文 AI 美化
+import { AiPolishButton, resolveAiToolId } from '../ui/AiPolishButton'; // T00796 二轮：通用需求正文 AI 美化
 import { PromptOptimizeButton } from '../ui/PromptOptimizeButton'; // T00842 二轮：正文改写为结构化提示词
 import { OPTIMIZE_SCOPE_REQ, useOptimizeStore } from '../stores/optimizeStore'; // T03684：优化运行态切页保持
 import { relTime } from '../ui/format';
@@ -89,7 +89,7 @@ function useOverlayDismiss(active: boolean, busy: boolean, close: () => void) {
 export function ReqPage() {
   const [categories, setCategories] = useState<ReqCategory[]>([]);
   // 当前分类：跨切换会话记忆用户选择，便于切回后继续操作
-  const [activeCat, setActiveCat] = useSessionState('req.activeCat', '');
+  const [activeCat, setActiveCat] = useSessionState('req.activeCat', ALL_FAV);
   const [entries, setEntries] = useState<ReqEntry[]>([]);
   // T03684：搜索词/排序条件/显示范围跨页面切换保持——此前是组件级 useState，
   // App.tsx 切 tab 会卸载整页，回到本页即被重置（用户报「切页面后筛选/排序全丢」）
@@ -161,6 +161,8 @@ export function ReqPage() {
   const [overId, setOverId] = useState(''); // overId 供列表行接入拖拽高亮后读取，setOverId 用于拖拽悬停态重渲染
   // 调整分组：moveOpenId 记录当前展开分组选择器的条目 id（单开），'' 表示全部收起
   const [moveOpenId, setMoveOpenId] = useState('');
+  // T05811：标题级 AI 美化/简化运行态；按条目隔离，避免一行操作把整页按钮都锁住
+  const [aiTitleBusy, setAiTitleBusy] = useState<Record<string, 'beautify' | 'simplify' | ''>>({});
   // 分组选择器容器引用：用于判断点击是否落在菜单外部（点击外部收起）
   const moveRef = useRef<HTMLDivElement | null>(null);
 
@@ -178,7 +180,7 @@ export function ReqPage() {
     const cats = await api.get<ReqCategory[]>('/req-categories');
     setCategories(cats);
     // 保持当前选中；选中项被删除或首次加载时回落到第一个分类
-    setActiveCat((cur) => (isAllFav(cur) || cats.some((c) => c.id === cur) ? cur : cats[0]?.id ?? ''));
+    setActiveCat((cur) => (isAllFav(cur) || cats.some((c) => c.id === cur) ? cur : ALL_FAV));
   }, []);
 
   const loadEntries = useCallback(async (categoryId: string, keyword: string) => {
@@ -234,7 +236,7 @@ export function ReqPage() {
 
   // ---------- 条目增删改查 ----------
   async function createEntry() {
-    if (!newTitle.trim() || !activeCat) return;
+    if (!newTitle.trim() || !activeCat || isAllFav(activeCat)) return;
     try {
       await api.post('/req-entries', { categoryId: activeCat, title: newTitle.trim(), content: newContent });
       setNewTitle('');
@@ -278,6 +280,42 @@ export function ReqPage() {
       void loadCategories();
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /**
+   * T05811：把标题级 AI 美化/简化的结果落进**编辑草稿**，不直接改库。
+   * 用户可在草稿里核对/继续修改，再点保存才真正覆盖原记录；失败与空文本都在按钮层给出明确反馈。
+   */
+  async function aiRewriteTitle(p: ReqEntry, mode: 'beautify' | 'simplify') {
+    if (aiTitleBusy[p.id]) return;
+    if (mode === 'simplify' && !p.content.trim()) {
+      flash('AI 简化需先有正文内容 —— 请先展开并补充这条通用需求的描述');
+      return;
+    }
+    setAiTitleBusy((prev) => ({ ...prev, [p.id]: mode }));
+    try {
+      const toolId = await resolveAiToolId();
+      if (!toolId) { flash('请先在「模型管理」页添加并选择 AI 工具'); return; }
+      const endpoint = mode === 'beautify' ? '/ai/beautify' : '/ai/simplify';
+      const body = mode === 'beautify'
+        ? { toolId, title: p.title }
+        : { toolId, title: p.title, description: p.content };
+      const r = await api.post<{ ok: boolean; content?: string; error?: string }>(endpoint, body);
+      if (!r.ok) { flash(r.error ?? (mode === 'beautify' ? 'AI 美化失败' : 'AI 简化失败')); return; }
+      const nextTitle = (r.content ?? '').trim();
+      if (!nextTitle) { flash(mode === 'beautify' ? 'AI 未返回美化标题' : 'AI 未返回简化标题'); return; }
+      setDrafts((prev) => ({
+        ...prev,
+        [p.id]: { title: nextTitle, content: p.content, categoryId: p.category_id },
+      }));
+      flash(mode === 'beautify'
+        ? 'AI 美化完成，已填入标题草稿，请核对后保存'
+        : 'AI 简化完成，已填入标题草稿，请核对后保存');
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAiTitleBusy((prev) => ({ ...prev, [p.id]: '' }));
     }
   }
 
@@ -524,23 +562,19 @@ export function ReqPage() {
         )}
         <button
           onClick={() => { setCreating(!creating); setNewTitle(''); setNewContent(''); }}
-          disabled={!activeCat}
+          disabled={!activeCat || isAllFav(activeCat)}
           // 无文字纯图标按钮：悬浮提示随状态切换（新建/收起），点击动画由全局 button:active 提供
           // T00760：默认隐藏悬浮显示
-          title={creating ? '收起 — 收起新建通用需求表单' : '新建通用需求 — 展开新建通用需求表单'}
+          title={isAllFav(activeCat) ? '请先切换到具体分类，再新建通用需求' : creating ? '收起 — 收起新建通用需求表单' : '新建通用需求 — 展开新建通用需求表单'}
           aria-label={creating ? '收起：收起新建通用需求表单' : '新建通用需求：展开新建通用需求表单'}
           className="op-hidden"
           style={{ marginLeft: 12, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', padding: '6px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}
         >
           <Plus size={13} />
         </button>
-        {/* T00842 位置2「需求标题栏」→ T03185（UX-05⑤）：三个未开放入口改为「可见但禁用 + 范围说明」，
-            不再点击后只弹一句「开发中」 */}
+        {/* T05811：标题级 AI 美化/简化已落到每条需求的工具栏（结果进草稿不覆盖原文）。
+            顶部工具栏不再保留「未排期」占位，避免同一能力出现两套入口语义。 */}
         <span className="op-hidden" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
-          <NotOpenButton label="AI 美化" scope="polishTitle" icon={<Sparkles size={13} />}
-            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6 }} />
-          <NotOpenButton label="AI 简化" scope="summarizeTitle" icon={<Minimize2 size={13} />}
-            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6 }} />
           {/* T03685：工具条「归档」由未开放占位转为真实入口——进入归档管理页（还原/彻底删除都在那里），
               行内归档按钮负责把条目送进来，两者构成完整闭环 */}
           <button className="tbtn-anim" data-t03685="archive-hub"
@@ -756,19 +790,11 @@ export function ReqPage() {
                       </span>
                     )}
                     <span className="abtn" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flexShrink: 0 }} title={`更新于 ${p.updated_at}`}>{relTime(p.updated_at)}</span>
-                    <span className="abtn" style={{ display: 'inline-flex', alignItems: 'center' }}>
-                      <FontColorButton current={p.color ?? ''} onApply={(c) => { void api.patch(`/req-entries/${p.id}`, { color: c }).then(() => { void loadEntries(activeCat, search); }); }} />
-                    </span>
                     <CopyButton getText={() => p.title + (p.content ? '\n' + p.content : '')} title="复制 — 复制通用需求内容到剪贴板" ariaLabel="复制：复制通用需求内容" />
                     {/* T00436：复制到待办任务 — 转成收件箱项目的待办，悬浮提示按任务规格 */}
                     <button className="abtn" onClick={() => void copyToTask(p)} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
                       title="复制到待办任务 — 以该通用需求创建一条待办任务（收件箱项目）" aria-label="复制到待办任务">
                       <ListTodo size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
-                    </button>
-                    {/* T00456 / PRD INT-5：转计划 — 把通用需求转为目标项目的计划任务（T03185 改为项目下拉选择） */}
-                    <button className="abtn" onClick={() => toPlan(p)} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-                      title="转计划 — 把该通用需求转为目标项目的计划任务（下拉选择项目）" aria-label="转计划：转为目标项目的计划任务">
-                      <CalendarRange size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
                     </button>
                     <button
                       className="abtn"
@@ -778,15 +804,58 @@ export function ReqPage() {
                     >
                       <Pencil size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
                     </button>
-                    {/* 调整分组：行内浮层选择器，打开后点外部收起；当前分组高亮并标注（当前） */}
+                    {/* T05811：标题级 AI 美化/简化改为真实可交互入口；结果只进编辑草稿，不覆盖历史原文 */}
+                    <button className="abtn" data-t05811="ai-beautify" onClick={() => void aiRewriteTitle(p, 'beautify')}
+                      disabled={Boolean(aiTitleBusy[p.id])}
+                      title="AI 美化 — 润色该需求标题，结果先填入编辑草稿，核对后保存" aria-label="AI 美化：润色通用需求标题"
+                      style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
+                      {aiTitleBusy[p.id] === 'beautify' ? <Loader2 size={13} className="aispin" /> : <Sparkles size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
+                    </button>
+                    <button className="abtn" data-t05811="ai-simplify" onClick={() => void aiRewriteTitle(p, 'simplify')}
+                      disabled={Boolean(aiTitleBusy[p.id])}
+                      title="AI 简化 — 依据正文高度概括标题（≤40 字），结果先填入编辑草稿，核对后保存" aria-label="AI 简化：依据正文概括通用需求标题"
+                      style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
+                      {aiTitleBusy[p.id] === 'simplify' ? <Loader2 size={13} className="aispin" /> : <Minimize2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
+                    </button>
+                    {/* T03685：归档由「未开放」转真实可用——需求侧补齐 archived/archived_at 列后，
+                        与提示词页 T00525 同语义（软删、可在归档管理页还原） */}
+                    <button className="abtn" data-t03685="archive-entry" onClick={() => void archiveEntry(p)}
+                      style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+                      title="归档 — 归档这条通用需求（数据保留，列表不再显示，可在「设置 → 归档」还原）" aria-label="归档：归档这条通用需求">
+                      <Archive size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
+                    </button>
+                    {/* T05810：字体颜色、转计划、调整分组、删除统一收进与任务菜单同款的「更多操作」 */}
+                    <span className="abtn" style={{ display: 'inline-flex', alignItems: 'center' }}>
+                      <TaskMoreMenu
+                        taskTitle={p.title}
+                        items={[
+                          {
+                            key: 'color', label: '字体颜色', icon: <Palette size={13} />,
+                            title: '字体颜色 — 修改该通用需求标题的颜色',
+                            trailing: <FontColorButton current={p.color ?? ''} onApply={(c) => { void api.patch(`/req-entries/${p.id}`, { color: c }).then(() => { void loadEntries(activeCat, search); }); }} />,
+                          },
+                          {
+                            key: 'to-plan', label: '转计划', icon: <CalendarRange size={13} />,
+                            title: '转计划 — 把该通用需求转为目标项目的计划任务（下拉选择项目）',
+                            onClick: () => toPlan(p),
+                          },
+                          {
+                            key: 'move', label: '调整分组', icon: <FolderInput size={13} />,
+                            title: '调整分组 — 移动该通用需求到其他分组',
+                            onClick: () => setMoveOpenId(p.id),
+                          },
+                          {
+                            key: 'delete', label: '删除', icon: <Trash2 size={13} />, danger: true,
+                            title: '删除 — 删除这条通用需求（不可恢复）',
+                            onClick: () => void removeEntry(p),
+                          },
+                        ]}
+                      />
+                    </span>
+                    {/* 调整分组弹层：由「更多操作」打开，位置仍贴行尾；点击外部收起 */}
                     <div ref={moveOpenId === p.id ? moveRef : undefined} style={{ position: 'relative', display: 'inline-flex' }}>
-                      <button className="abtn move-btn" onClick={() => setMoveOpenId(moveOpenId === p.id ? '' : p.id)}
-                        title="调整分组 — 移动该通用需求到其他分组" aria-label="调整分组：移动该通用需求到其他分组"
-                        style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>
-                        <FolderInput size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
-                      </button>
                       {moveOpenId === p.id && (
-                        <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.12)', padding: 4, zIndex: 10, minWidth: 140 }}>
+                        <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.12)', padding: 4, zIndex: 30, minWidth: 140 }}>
                           {categories.map((c) => (
                             <button key={c.id} onClick={() => void moveEntry(p, c.id)}
                               style={{ display: 'block', width: '100%', textAlign: 'left', padding: '4px 8px', fontSize: 'var(--fs-s)', borderRadius: 4, background: 'transparent', color: c.id === p.category_id ? 'var(--accent)' : 'var(--text)' }}>
@@ -796,22 +865,6 @@ export function ReqPage() {
                         </div>
                       )}
                     </div>
-                    {/* T00842 位置1「通用需求菜单」→ T03185（UX-05⑤）：同上，未开放入口不再做成能点的占位按钮 */}
-                    <NotOpenButton className="abtn" label="AI 美化" scope="polishTitle" icon={<Sparkles size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
-                      style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }} />
-                    <NotOpenButton className="abtn" label="AI 简化" scope="summarizeTitle" icon={<Minimize2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
-                      style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }} />
-                    {/* T03685：归档由「未开放」转真实可用——需求侧补齐 archived/archived_at 列后，
-                        与提示词页 T00525 同语义（软删、可在归档管理页还原） */}
-                    <button className="abtn" data-t03685="archive-entry" onClick={() => void archiveEntry(p)}
-                      style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-                      title="归档 — 归档这条通用需求（数据保留，列表不再显示，可在「设置 → 归档」还原）" aria-label="归档：归档这条通用需求">
-                      <Archive size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
-                    </button>
-                    <button className="abtn" onClick={() => void removeEntry(p)} style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-                      title="删除 — 删除这条通用需求" aria-label="删除：删除这条通用需求">
-                      <Trash2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
-                    </button>
                   </div>
                   {expandedIds[p.id] && (
                     // MarkdownContent 默认渲染富文本、可切源码视图，右上角切换/复制按钮悬浮于内容之上
