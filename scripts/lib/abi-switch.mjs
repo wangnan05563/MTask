@@ -382,8 +382,20 @@ export function switchAbi(root, mode, { fail, log = (m) => console.log(m), lockR
   }
 }
 
-/** 按字节原样还原快照；无快照（工作区本来就没有 .node）时回落到 switchAbi('dev')。 */
-export function restoreWorkspaceAbi(root, snapshot, { fail, log = (m) => console.log(m), sidecar = null } = {}) {
+/**
+ * 按字节原样还原快照；无快照（工作区本来就没有 .node）时回落到 switchAbi('dev')。
+ *
+ * 与 switchAbi 对称的 EBUSY 兜底（此前只有 switch 有、restore 没有 → 打包产物已成功、
+ * 收尾还原却因 dev server / 桌面壳占用 .node 而整包报红，2026-11-17 实测）：
+ *   1) 有旁路文件时先 rename 回填（原字节，不依赖能否覆盖被映射中的 .node）；
+ *   2) 带重试直接写快照；
+ *   3) 仍不可写 → 改名旁路：rename dst→sidecar 后写快照（Windows 上被 map 的 dll 可改名、不可覆盖）。
+ * 任何一步失败都尽力回滚，避免留下「既不是快照也不是切换目标」的半截二进制。
+ */
+export function restoreWorkspaceAbi(root, snapshot, {
+  fail, log = (m) => console.log(m), sidecar = null,
+  lockRetries = 4, lockRetryDelayMs = 750,
+} = {}) {
   const dst = workspaceNodePath(root);
   const sp = sidecar || lockSidecarPath(root);
 
@@ -402,13 +414,41 @@ export function restoreWorkspaceAbi(root, snapshot, { fail, log = (m) => console
     return;
   }
   const want = sha256Buffer(snapshot);
+
+  // 带重试直接写：dev server 重启/杀毒扫描造成的瞬时占用在这一层就消化掉
+  let lastErr = null;
+  for (let i = 0; i <= lockRetries; i += 1) {
+    try {
+      if (!fs.existsSync(dst) || sha256File(dst) !== want) fs.writeFileSync(dst, snapshot);
+      const got = sha256File(dst);
+      if (got !== want) throw new Error(`字节校验不一致（期望 ${want.slice(0, 12)}，实际 ${got.slice(0, 12)}）`);
+      log('[ABI] better-sqlite3 → 还原打包前工作区版本（sha256 校验通过）');
+      return;
+    } catch (e) {
+      lastErr = e;
+      if (i === 0 && lockRetries > 0) log(`[ABI] 还原目标暂时不可写（${e.code || e.message}），重试 ${lockRetries} 次…`);
+      if (i < lockRetries) sleepSync(lockRetryDelayMs);
+    }
+  }
+
+  // 重试仍失败：改名旁路接管（被映射中的 .node 可以 rename，不可覆盖写）
   try {
-    if (!fs.existsSync(dst) || sha256File(dst) !== want) fs.writeFileSync(dst, snapshot);
+    if (fs.existsSync(sp)) fs.rmSync(sp, { force: true });
+    let movedAside = false;
+    if (fs.existsSync(dst)) { fs.renameSync(dst, sp); movedAside = true; }
+    fs.writeFileSync(dst, snapshot);
     const got = sha256File(dst);
-    if (got !== want) fail(`还原失败：工作区 better_sqlite3.node 与打包前不一致（期望 ${want.slice(0, 12)}，实际 ${got.slice(0, 12)}）`);
-    log('[ABI] better-sqlite3 → 还原打包前工作区版本（sha256 校验通过）');
+    if (got !== want) throw new Error(`字节校验不一致（期望 ${want.slice(0, 12)}，实际 ${got.slice(0, 12)}）`);
+    log(`[ABI][WARN] 还原目标被占用（${lastErr?.code ?? '未知'}），已改名旁路接管：打包前版本已就位`);
+    return;
   } catch (e) {
-    fail(`还原工作区原生二进制失败：${e.message}`);
+    try {
+      if (fs.existsSync(dst)) fs.rmSync(dst, { force: true });
+      if (fs.existsSync(sp)) fs.renameSync(sp, dst);
+    } catch { /* 回滚失败一并报出 */ }
+    const holders = describeHolders(root);
+    fail(`还原工作区原生二进制失败：${e.message}`
+      + (holders.length ? `\n  可能的占用进程：\n   - ${holders.join('\n   - ')}` : ''));
   }
 }
 
