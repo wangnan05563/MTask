@@ -3,7 +3,7 @@ import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视
 import { api, type TaskCategory } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { FONT_OPTIONS, FONT_SIZE_OPTIONS, useSettings, type ImportMode } from '../settings';
-import { Ban, Download, ExternalLink, FileUp, FolderPlus, MonitorCog, Moon, Pencil, RefreshCw, RotateCcw, Save, ShieldCheck, Sun, Trash2 } from 'lucide-react';
+import { AlignLeft, Ban, Download, ExternalLink, FileUp, FolderPlus, LayoutGrid, MonitorCog, Moon, Pencil, RefreshCw, RotateCcw, Save, ShieldCheck, Sun, Trash2 } from 'lucide-react';
 import { getLang, setLang, onLangChange, type Lang } from '../i18n'; // T01071-FR5.4：i18n 底座
 import { usePersistentState } from '../ui/session'; // T03271（UX-09③）：Tab 选中态跨页面/跨会话保持（沿用 T02977 口径）
 import { SETTINGS_TAB_LABELS, filterSettingsGroups, normalizeSettingsTab } from '../ui/settingsTabs'; // T03271（UX-09①②）：页签与分组单源
@@ -56,6 +56,16 @@ export function SettingsPage() {
     return () => globalThis.removeEventListener('mtaskSettingsTab', onFocus);
   }, [setSt]);
   const [q, setQ] = useState('');
+  // T05815：设置菜单两种视图——detailed=明文详情（默认，保持历史布局），compact=简化图标（纯图标+悬浮提示）。
+  // 只改菜单项呈现，不改分组/页签层级；写入 localStorage，刷新与重启后保持用户选择。
+  const [menuMode, setMenuMode] = useState<'detailed' | 'compact'>(() => {
+    try { return localStorage.getItem('mtask.settingsMenuMode') === 'compact' ? 'compact' : 'detailed'; }
+    catch { return 'detailed'; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('mtask.settingsMenuMode', menuMode); } catch { /* 隐私模式/存储禁用时静默降级 */ }
+  }, [menuMode]);
+  const compactMenu = menuMode === 'compact';
   const groups = filterSettingsGroups(q);
   return (
     <section>
@@ -70,6 +80,26 @@ export function SettingsPage() {
         <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
           {groups.reduce((n, g) => n + g.tabs.length, 0)} 项
         </span>
+        {/* T05815：搜索框右侧的模式切换——图标按钮无文字，悬浮提示说明当前动作；localStorage 持久化 */}
+        <button
+          type="button"
+          data-t05815="menu-mode"
+          aria-label={compactMenu ? '切换为明文详情模式' : '切换为简化图标模式'}
+          aria-pressed={compactMenu}
+          title={compactMenu ? '明文详情 — 显示菜单文字，当前为简化图标模式' : '简化图标 — 只显示图标，当前为明文详情模式'}
+          onClick={() => setMenuMode(compactMenu ? 'detailed' : 'compact')}
+          style={{
+            width: 32, height: 32, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            background: compactMenu ? 'var(--accent-soft, rgba(9,105,218,.10))' : 'var(--card-bg)',
+            border: `1px solid ${compactMenu ? 'var(--accent)' : 'var(--border-strong)'}`,
+            borderRadius: 8, cursor: 'pointer', color: compactMenu ? 'var(--accent)' : 'var(--text-secondary)',
+            transition: 'background .15s ease, border-color .15s ease, color .15s ease, transform .15s ease',
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-1px)'; }}
+          onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; }}
+        >
+          {compactMenu ? <AlignLeft size={16} /> : <LayoutGrid size={16} />}
+        </button>
       </div>
       <nav aria-label="设置分组" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
         {groups.map((g) => {
@@ -89,21 +119,29 @@ export function SettingsPage() {
                   key={t.key}
                   onClick={() => setSt(t.key)}
                   aria-current={on ? 'page' : undefined}
+                  aria-label={t.label}
                   data-t03271="tab"
                   data-tab={t.key}
+                  data-t05815-mode={menuMode}
                   title={SETTINGS_TAB_LABELS[t.key]}
                   style={{
-                    display: 'inline-flex', alignItems: 'center', gap: 5,
+                    display: 'inline-flex', alignItems: 'center', gap: compactMenu ? 0 : 5,
                     fontSize: 'var(--fs-m)',
-                    padding: '6px 12px',
+                    padding: compactMenu ? '7px' : '6px 12px',
                     borderRadius: 6,
                     background: on ? 'var(--accent)' : 'var(--card-bg)',
                     color: on ? 'var(--accent-text)' : 'var(--text)',
                     cursor: 'pointer',
                   }}
                 >
-                  <Icon size={14} aria-hidden="true" />
-                  {t.label}
+                  {compactMenu ? (
+                    <Icon size={16} aria-hidden="true" />
+                  ) : (
+                    <>
+                      <Icon size={14} aria-hidden="true" />
+                      {t.label}
+                    </>
+                  )}
                 </button>
               );
             })}
