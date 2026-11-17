@@ -12,6 +12,7 @@ import deepseek from '../assets/providers/deepseek.svg';
 import gemini from '../assets/providers/gemini.svg';
 import groq from '../assets/providers/groq.ico';
 import kimi from '../assets/providers/kimi.svg';
+import dashscope from '../assets/providers/dashscope.png';
 import mimo from '../assets/providers/mimo.svg';
 import minimax from '../assets/providers/minimax.svg';
 import mistral from '../assets/providers/mistral.svg';
@@ -19,6 +20,8 @@ import ollama from '../assets/providers/ollama.svg';
 import openai from '../assets/providers/openai.ico';
 import openrouter from '../assets/providers/openrouter.svg';
 import qwen from '../assets/providers/qwen.svg';
+import volcengine from '../assets/providers/volcengine.png';
+import zhipu from '../assets/providers/zhipu.png';
 
 /** 预制 id → 本地打包图标 URL；优先于远端 icon_url。 */
 export const LOCAL_PROVIDER_LOGOS: Readonly<Record<string, string>> = {
@@ -35,6 +38,9 @@ export const LOCAL_PROVIDER_LOGOS: Readonly<Record<string, string>> = {
   openai,
   openrouter,
   qwen,
+  dashscope,
+  volcengine,
+  zhipu,
 };
 
 /**
@@ -46,6 +52,7 @@ const PROVIDER_HINTS: ReadonlyArray<readonly [string, readonly string[]]> = [
   ['kimi', ['kimi', 'moonshot']],
   ['mimo', ['mimo', 'xiaomi', '小米']],
   ['minimax', ['minimax', '海螺']],
+  ['dashscope', ['dashscope', 'bailian', '百炼']],
   ['qwen', ['qwen', '通义', '千问', 'dashscope', '百炼']],
   ['deepseek', ['deepseek', '深度求索']],
   ['openrouter', ['openrouter']],
