@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent, type CSSProperties, type DragEvent } from 'react';
 import { FIELD_XS } from '../ui/primitives'; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { api, type Project, type AITool } from '../api/client';
@@ -29,7 +29,7 @@ import { useCodeReviewLecture } from '../stores/codeReviewLectureStore'; // T028
 import { aiImportStore } from '../stores/aiImportStore'; // T01038：项目计划/PRD 导入运行态
 import { RunStatusBadge, type RunStatus } from '../ui/runStatus'; // T01038：统一运行状态徽标
 import { FlowButton } from '../ui/FlowButton'; // T01068-FR4.4：流光按钮（loading 态）
-import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileUp, FileStack, Loader2, X, RotateCcw, Zap, ListChecks, Presentation, FileChartColumn, ScrollText, FolderOpen, FolderGit2, ScanLine, LayoutGrid } from 'lucide-react';
+import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileUp, FileStack, Loader2, X, RotateCcw, Zap, ListChecks, Presentation, FileChartColumn, ScrollText, FolderOpen, FolderGit2, ScanLine, LayoutGrid, Star, GripVertical } from 'lucide-react';
 import { resetWorkbenchArtifacts, RESET_CONFIRM_CARD } from '../ui/consoleReset'; // T01042：卡片侧重置入口（与控制台重置共用核心）
 import { askConfirm } from '../ui/dialogs'; // T01042 建议：重置二次确认统一走对话框（Electron 下原生 confirm 不可靠）
 import { focusTaskByNo } from '../ui/focusTask'; // T01057 建议：就绪任务跳转按编号定位（跨项目可命中）
@@ -149,7 +149,7 @@ function cardFrameStyle(open: boolean, blocked: boolean, dimmed: boolean): CSSPr
 }
 
 /** 能力入口卡片（T00621，S3776 抽取；T00908 支持可选右上角动作按钮；T01038 支持底部运行状态徽标） */
-function ReportCard({ icon, title, desc, hint, aria, open, onToggle, onOpen, action, statusNode, onReset, glow, blocked, onBlocked, blockedVisual, toneText }: {
+function ReportCard({ icon, title, desc, hint, aria, open, onToggle, onOpen, action, statusNode, onReset, glow, blocked, onBlocked, blockedVisual, toneText, favorite, onToggleFavorite, onCardDragStart, onCardDragEnd }: {
   readonly icon: React.ReactNode; readonly title: string; readonly desc: React.ReactNode;
   readonly hint: string; readonly aria: string; readonly open: boolean; readonly onToggle: () => void;
   /** T03189（G-1）：只在「展开」这一半触发，收起不算一轮材料准备的开始 */
@@ -166,6 +166,12 @@ function ReportCard({ icon, title, desc, hint, aria, open, onToggle, onOpen, act
   readonly blockedVisual?: boolean;
   /** T03366：blockedVisual 时替换底部提示语（不套 AI 不可用文案） */
   readonly toneText?: string;
+  /** T06008：常用视图星标状态 */
+  readonly favorite?: boolean;
+  readonly onToggleFavorite?: () => void;
+  /** T06008：拖拽手柄（只在手柄上启动拖拽，避免与铺满卡片的展开按钮冲突） */
+  readonly onCardDragStart?: (e: DragEvent<HTMLSpanElement>) => void;
+  readonly onCardDragEnd?: () => void;
 }) {
   // T02143：卡片右上角有动作/重置按钮，HTML 不允许按钮套按钮——因此外框仍是普通容器，
   //         可点击/可聚焦的部分改由铺满卡片的原生 <button> 承担（角标按钮是它的后续兄弟节点，
@@ -177,7 +183,7 @@ function ReportCard({ icon, title, desc, hint, aria, open, onToggle, onOpen, act
     setResetting(true);
     try { await onReset(); } finally { setResetting(false); }
   }
-  const hasCorner = Boolean(action || onReset);
+  const hasCorner = Boolean(action || onReset || onToggleFavorite || onCardDragStart);
   /** T03366：灰化与警示色可由 blockedVisual 触发，但光标/aria-disabled 仍只属于「点了没用」的真 blocked */
   const dimmed = Boolean(blocked) || Boolean(blockedVisual);
   const act = () => {
@@ -200,7 +206,7 @@ function ReportCard({ icon, title, desc, hint, aria, open, onToggle, onOpen, act
         style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', margin: 0, padding: 0, border: 'none', borderRadius: 10, background: 'transparent', cursor: blocked ? 'not-allowed' : 'pointer' }}
       />
       <span data-t06009="card-icon" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 30, height: 30, borderRadius: 8, background: 'var(--accent-soft)', border: '1px solid var(--border)', flexShrink: 0 }}>{icon}</span>
-      <span style={{ flex: 1 }}>
+      <span style={{ flex: 1, minWidth: 0, paddingRight: hasCorner ? 104 : 0 }}>
         <span style={{ display: 'block', fontSize: 'var(--fs-l)', fontWeight: 600, color: 'var(--text)' }}>{title}</span>
         <span style={{ display: 'block', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4 }}>{desc}</span>
         <span style={{ display: 'block', fontSize: 'var(--fs-xs)', color: dimmed ? 'var(--warn)' : 'var(--accent)', marginTop: 8 }}>
@@ -210,8 +216,26 @@ function ReportCard({ icon, title, desc, hint, aria, open, onToggle, onOpen, act
       </span>
       {hasCorner && (
         // S6848/S1082：角标按钮各自 stopPropagation——冒泡到铺满卡片的按钮会连带触发展开/收起
-        <span style={{ position: 'absolute', top: 9, right: 9, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ position: 'absolute', top: 9, right: 9, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           {action}
+          {onToggleFavorite && (
+            <button
+              type="button"
+              data-t06008="favorite-toggle"
+              onClick={(e) => { e.stopPropagation(); onToggleFavorite(); }}
+              aria-pressed={Boolean(favorite)}
+              title={favorite ? '取消常用 — 从「常用卡片」视图移除' : '设为常用 — 固定到「常用卡片」视图'}
+              aria-label={favorite ? `取消常用：${title}` : `设为常用：${title}`}
+              style={{
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 22, height: 22,
+                borderRadius: 6, border: '1px solid var(--border-strong)', cursor: 'pointer',
+                background: favorite ? 'var(--accent-soft)' : 'var(--card-bg)',
+                color: favorite ? '#d97706' : 'var(--text-muted)',
+              }}
+            >
+              <Star size={12} fill={favorite ? '#f59e0b' : 'none'} />
+            </button>
+          )}
           {onReset && (
             <button
               type="button"
@@ -219,10 +243,25 @@ function ReportCard({ icon, title, desc, hint, aria, open, onToggle, onOpen, act
               disabled={resetting}
               title={resetting ? '重置中…' : '重置 — 清空控制台任务、该能力运行状态与关联草稿产物（与控制台重置等效）'}
               aria-label={`重置${title}的运行状态与关联草稿产物`}
-              style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 26, borderRadius: 7, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text-muted)', cursor: resetting ? 'wait' : 'pointer', opacity: resetting ? 0.6 : 1 }}
+              style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 22, height: 22, borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text-muted)', cursor: resetting ? 'wait' : 'pointer', opacity: resetting ? 0.6 : 1 }}
             >
-              {resetting ? <Loader2 size={13} className="aispin" /> : <RotateCcw size={13} />}
+              {resetting ? <Loader2 size={12} className="aispin" /> : <RotateCcw size={12} />}
             </button>
+          )}
+          {onCardDragStart && (
+            <span
+              draggable
+              data-t06008="card-drag-handle"
+              onDragStart={(e) => { e.stopPropagation(); onCardDragStart(e); }}
+              onDragEnd={() => onCardDragEnd?.()}
+              role="button"
+              tabIndex={0}
+              title="拖拽调整卡片顺序"
+              aria-label={`拖拽调整${title}的顺序`}
+              style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 22, height: 22, borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text-muted)', cursor: 'grab' }}
+            >
+              <GripVertical size={12} />
+            </span>
           )}
         </span>
       )}
@@ -1163,6 +1202,12 @@ export function ReportPage() {
   const [sonarEnvDown, setSonarEnvDown] = useState(false);
   // T00908：「已上传 PRD 文档」弹层展开态 + 导入面板强制重挂载计数（选择文档后递增 key 触发面板重挂，
   //          使 useSessionState 重新读取 sessionStorage 中的目标项目与 docId，保证自动带入生效）
+  // T06008：能力卡片视图偏好——全量/常用双视图、收藏集合、卡片顺序全部走 localStorage，刷新/重开保持。
+  const [cardView, setCardView] = usePersistentState<'all' | 'favorite'>('mtask.report.cards.view', 'all');
+  const [cardFavorites, setCardFavorites] = usePersistentState<string[]>('mtask.report.cards.favorites', []);
+  const [cardOrder, setCardOrder] = usePersistentState<string[]>('mtask.report.cards.order', []);
+  const [draggingCardKey, setDraggingCardKey] = useState<string | null>(null);
+  const [dragOverCardKey, setDragOverCardKey] = useState<string | null>(null);
   const [prdDocsOpen, setPrdDocsOpen] = useState(false);
   const [prdRemountKey, setPrdRemountKey] = useState(0);
   const [aiTools, setAiTools] = useState<AITool[]>([]);
@@ -1398,6 +1443,64 @@ export function ReportPage() {
       onToggle: () => togglePanel('sonarScan') },
   ];
 
+  // T06008：顺序还原——localStorage 里的旧顺序优先，已下线的新卡片自动追加到末尾，避免历史配置把新能力吞掉。
+  const defaultCardKeys = reportCards.map((c) => c.key);
+  const orderedReportCards = [
+    ...cardOrder.filter((k) => defaultCardKeys.includes(k)),
+    ...defaultCardKeys.filter((k) => !cardOrder.includes(k)),
+  ]
+    .map((k) => reportCards.find((c) => c.key === k))
+    .filter((c): c is ReportCardCfg => Boolean(c));
+  const effectiveCardView = cardView === 'favorite' ? 'favorite' : 'all';
+  const favoriteCount = orderedReportCards.filter((c) => cardFavorites.includes(c.key)).length;
+  const visibleReportCards = effectiveCardView === 'favorite'
+    ? orderedReportCards.filter((c) => cardFavorites.includes(c.key))
+    : orderedReportCards;
+
+  const toggleCardFavorite = (key: string) => {
+    setCardFavorites((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
+  };
+  const startCardDrag = (e: DragEvent<HTMLSpanElement>, key: string) => {
+    setDraggingCardKey(key);
+    setDragOverCardKey(null);
+    try {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', key);
+    } catch { /* 老浏览器可能限制 dataTransfer，拖拽状态仍由本地 state 兜底 */ }
+  };
+  const endCardDrag = () => {
+    setDraggingCardKey(null);
+    setDragOverCardKey(null);
+  };
+  const overCard = (e: DragEvent<HTMLDivElement>, key: string) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverCardKey(draggingCardKey && key !== draggingCardKey ? key : null);
+  };
+  const dropCard = (e: DragEvent<HTMLDivElement>, targetKey: string) => {
+    e.preventDefault();
+    const fromKey = e.dataTransfer.getData('text/plain') || draggingCardKey;
+    if (fromKey && fromKey !== targetKey) {
+      const keys = orderedReportCards.map((c) => c.key);
+      const fromIndex = keys.indexOf(fromKey);
+      const targetIndex = keys.indexOf(targetKey);
+      if (fromIndex >= 0 && targetIndex >= 0) {
+        const next = [...keys];
+        next.splice(fromIndex, 1);
+        next.splice(targetIndex, 0, fromKey);
+        setCardOrder(next);
+      }
+    }
+    endCardDrag();
+  };
+  const cardViewTabStyle = (active: boolean): CSSProperties => ({
+    display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 9px', borderRadius: 7,
+    border: `1px solid ${active ? 'var(--accent)' : 'transparent'}`,
+    background: active ? 'var(--accent-soft)' : 'transparent',
+    color: active ? 'var(--accent)' : 'var(--text)',
+    fontSize: 'var(--fs-xs)', fontWeight: active ? 600 : 400, cursor: 'pointer',
+  });
+
   // 工作面板开关回调（S3776：从 JSX 内联箭头下沉）
   const closePrdGen = () => setShowPrdGen(false);
   const prdGenSaved = (r: { issues: number }) => flash(`PRD 已录入管理视图（含问题 ${r.issues} 条）——可在「项目管理」页的 PRD 管理视图中查看`);
@@ -1622,33 +1725,81 @@ export function ReportPage() {
         <span data-t06009="function-card-count" style={{ marginLeft: 'auto', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{reportCards.length} 项能力</span>
       </div>
 
+      {/* T06008：全量/常用双视图 + 拖拽排序状态条。视图、收藏集合、顺序均持久化到 localStorage。 */}
+      <div data-t06008="card-view-bar" style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, margin: '10px 0 0' }}>
+        <div role="tablist" aria-label="功能卡片视图" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: 3, border: '1px solid var(--border)', borderRadius: 9, background: 'var(--surface-2)' }}>
+          <button
+            type="button" role="tab" data-t06008="view-all"
+            aria-selected={effectiveCardView === 'all'}
+            onClick={() => setCardView('all')}
+            style={cardViewTabStyle(effectiveCardView === 'all')}
+          >
+            全量卡片 <span style={{ opacity: 0.8 }}>{reportCards.length}</span>
+          </button>
+          <button
+            type="button" role="tab" data-t06008="view-favorite"
+            aria-selected={effectiveCardView === 'favorite'}
+            onClick={() => setCardView('favorite')}
+            style={cardViewTabStyle(effectiveCardView === 'favorite')}
+          >
+            常用卡片 <span style={{ opacity: 0.8 }}>{favoriteCount}</span>
+          </button>
+        </div>
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>拖拽卡片右上角手柄排序；星标固定到常用视图</span>
+      </div>
+
       {/* T00621：AI 能力入口五卡片同行（统一风格：图标 + 标题 + 描述 + 底部展开提示；S3776 数据驱动抽取） */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12, margin: '14px 0 0' }}>
-        {reportCards.map((c) => {
+        {visibleReportCards.map((c) => {
           const st = cardStatus(c.key);
           const cardDown = Boolean(c.needsAi) && aiDown;
           return (
-            <ReportCard
+            <div
               key={c.key}
-              icon={c.icon}
-              title={c.title}
-              desc={c.desc}
-              hint={cardDown ? aiBlockedTitle(readiness, c.hint) : c.hint}
-              aria={c.aria}
-              open={c.open}
-              action={c.action}
-              onReset={c.onReset}
-              blocked={cardDown}
-              blockedVisual={c.blockedVisual}
-              toneText={c.toneText}
-              onBlocked={() => flash(`「${c.title}」暂不可用：${readiness?.reason ?? 'AI 未就绪'}——点击上方「去模型管理」配置后重试`)}
-              glow={st.status === 'running'} /* T01068-FR4.4：运行中卡片光晕呼吸 */
-              onOpen={c.onOpen}
-              onToggle={c.onToggle}
-              statusNode={<RunStatusBadge status={st.status} startedAt={st.startedAt} finalElapsed={st.finalElapsed} size={12} showLabel={false} />}
-            />
+              data-t06008="function-card-shell"
+              onDragOver={(e) => overCard(e, c.key)}
+              onDrop={(e) => dropCard(e, c.key)}
+              style={{
+                position: 'relative', borderRadius: 10,
+                opacity: draggingCardKey === c.key ? 0.45 : 1,
+                transition: 'opacity .15s ease',
+              }}
+            >
+              {dragOverCardKey === c.key && draggingCardKey !== c.key && (
+                <div style={{ position: 'absolute', inset: 0, border: '2px dashed var(--accent)', borderRadius: 10, background: 'var(--accent-soft)', opacity: 0.55, pointerEvents: 'none', zIndex: 2 }} />
+              )}
+              <ReportCard
+                icon={c.icon}
+                title={c.title}
+                desc={c.desc}
+                hint={cardDown ? aiBlockedTitle(readiness, c.hint) : c.hint}
+                aria={c.aria}
+                open={c.open}
+                action={c.action}
+                onReset={c.onReset}
+                blocked={cardDown}
+                blockedVisual={c.blockedVisual}
+                toneText={c.toneText}
+                favorite={cardFavorites.includes(c.key)}
+                onToggleFavorite={() => toggleCardFavorite(c.key)}
+                onCardDragStart={(e) => startCardDrag(e, c.key)}
+                onCardDragEnd={endCardDrag}
+                onBlocked={() => flash(`「${c.title}」暂不可用：${readiness?.reason ?? 'AI 未就绪'}——点击上方「去模型管理」配置后重试`)}
+                glow={st.status === 'running'} /* T01068-FR4.4：运行中卡片光晕呼吸 */
+                onOpen={c.onOpen}
+                onToggle={c.onToggle}
+                statusNode={<RunStatusBadge status={st.status} startedAt={st.startedAt} finalElapsed={st.finalElapsed} size={12} showLabel={false} />}
+              />
+            </div>
           );
         })}
+        {visibleReportCards.length === 0 && (
+          <div data-t06008="favorites-empty" style={{ gridColumn: '1 / -1', padding: '24px 16px', border: '1px dashed var(--border-strong)', borderRadius: 10, background: 'var(--card-bg)', textAlign: 'center' }}>
+            <Star size={20} style={{ color: 'var(--text-muted)' }} />
+            <div style={{ marginTop: 8, fontSize: 'var(--fs-m)', fontWeight: 600, color: 'var(--text)' }}>常用卡片为空</div>
+            <div style={{ marginTop: 4, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>切到「全量卡片」，点击卡片右上角星标即可固定到这里；再次点击星标可取消。</div>
+          </div>
+        )}
       </div>
 
       <ReportWorkPanels aiToolId={activeToolId} projectId={projectId} projectIds={projectIds} onProjectIdsChange={setProjectIds} projects={projects} scopeNote={scopeNoteOf('本面板')}
