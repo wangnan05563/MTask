@@ -3,6 +3,7 @@ import Graph from 'graphology';
 import Sigma, { DEFAULT_STYLES } from 'sigma';
 import ForceAtlas2 from 'graphology-layout-forceatlas2';
 import { api } from '../api/client';
+import { dragPullOffset, resolveLabelVisibility, springStep } from './memoryGraphMath';
 
 /**
  * T05738：记忆图谱视图（Obsidian 式力导向图，sigma.js v4 + graphology + ForceAtlas2）。
@@ -15,7 +16,7 @@ import { api } from '../api/client';
  *
  * T05790 三项优化（对应工单「记忆管理图谱进一步优化」）：
  * 1. 回弹力反馈——拖拽时一跳邻居橡皮筋牵引，松手后阻尼弹簧回位（带轻微过冲），全局参数单一来源 BOUNCE；
- * 2. 放大后标题全量显示——相机 ratio 低于 LABEL_ZOOM_RATIO 时所有节点强制 visible 标签，缩回时恢复悬停态避免堆字；
+ * 2. 放大后标题全量显示——相机 ratio 低于 LABEL_ALL_RATIO 时所有节点强制 visible 标签，缩回时恢复悬停态避免堆字；
  * 3. 页面切换状态保持——相机/节点坐标/选中项存 sessionStorage（按 productKey 隔离），切走再回来自动还原。
  */
 
@@ -213,7 +214,17 @@ function readViewState(productKey: string): GraphViewState | null {
     const raw = sessionStorage.getItem(viewStateKey(productKey));
     if (!raw) return null;
     const v = JSON.parse(raw) as GraphViewState;
-    if (!v?.camera || typeof v.camera.ratio !== 'number' || !v.positions || !Array.isArray(Object.keys(v.positions))) return null;
+    if (!v?.camera || typeof v.camera.x !== 'number' || typeof v.camera.y !== 'number'
+      || typeof v.camera.ratio !== 'number' || !Number.isFinite(v.camera.ratio) || v.camera.ratio <= 0) return null;
+    if (!v.positions || typeof v.positions !== 'object' || Array.isArray(v.positions)) return null;
+    // 抽样校验坐标是有限数字：坏数据直接判不可恢复，避免把 NaN 灌进 sigma 相机/布局
+    for (const id of Object.keys(v.positions)) {
+      const p = v.positions[id];
+      if (!p || typeof p.x !== 'number' || typeof p.y !== 'number'
+        || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return null;
+    }
+    if (v.selectedId !== null && typeof v.selectedId !== 'string') return null;
+    if (typeof v.savedAt !== 'number') return null;
     return v;
   } catch {
     return null;
@@ -273,11 +284,13 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
   // T05790-① 拖拽回弹：被拖节点 + 一跳邻居的 rest/offset/速度；phase=drag 牵引、release 欠阻尼回位
   const dragBounceRef = useRef<{
     dragged: string;
+    /** 被拖节点按下时的图坐标：drag 阶段用「当前坐标 - 起点」得到真实拖拽位移 */
+    originX: number;
+    originY: number;
     phase: 'drag' | 'release';
     neighbors: Map<string, { restX: number; restY: number; offX: number; offY: number; vx: number; vy: number }>;
   } | null>(null);
-  // T05790-② 相机缩放 → 标题全量显示：ratio 与「是否放大态」放 ref，camera updated 时按需 sigma.refresh
-  const cameraRatioRef = useRef(1);
+  // T05790-② 相机缩放 → 标题全量显示：只在「是否放大态」翻转时 sigma.refresh（ratio 本身无需留存）
   const labelsAllRef = useRef(false);
   // T05790-③ 视图状态持久化：selected 镜像（供 effect 内的 saveView 读最新值）+ 保存节流时间戳
   const selectedRef = useRef<GraphNode | null>(null);
@@ -348,13 +361,16 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
   // 图谱构建与渲染：数据变化时重建（量级 ≤ 数百节点，重建成本毫秒级）
   useEffect(() => {
     const container = containerRef.current;
-    if (!container || !data || data.nodes.length === 0) return;
+    if (!container || !data) return;
+    // 「重排布局」标记必须在本轮数据消费时清掉：空图/请求失败也清，避免残留到下一次成功加载
+    const skipRestore = skipRestoreRef.current;
+    skipRestoreRef.current = false;
+    if (data.nodes.length === 0) return;
 
     const graph = new Graph({ multi: false, type: 'undirected' });
     const startPositions = new Map<string, { x: number; y: number }>();
     // T05790-③ 视图状态恢复：仅当上次保存的节点集覆盖当前 ≥80% 时视为可复用，避免数据增删后错位。
-    const saved = skipRestoreRef.current ? null : readViewState(productKey);
-    skipRestoreRef.current = false;
+    const saved = skipRestore ? null : readViewState(productKey);
     const savedIds = saved ? Object.keys(saved.positions) : [];
     const canRestore = !!saved && savedIds.length > 0
       && data.nodes.filter((n) => saved.positions[n.id]).length >= Math.ceil(data.nodes.length * 0.8);
@@ -396,7 +412,7 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
         labelDensity: 0.7,
         minCameraRatio: 0.08,
         maxCameraRatio: 8,
-        // 方案 A：保留 sigma 原生节点拖拽（不做邻域弹簧/回弹），让交互保持 Obsidian 的「稳定布局 + 手动整理」手感
+        // 方案 A：保留 sigma 原生节点拖拽；T05790 在其上叠加一跳邻居回弹，不改变原生拖拽的稳定性
         enableNodeDrag: true,
         dragTimeout: 60,
       },
@@ -442,30 +458,31 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
         const baseSize = Number((attrs as unknown as Record<string, unknown>).size ?? 6);
         // T05738：默认隐藏标签，仅 hover/选中时显示。主题切换会重建画布并改变缩放，
         // 若依赖 labelRenderedSizeThreshold，缩放变大时全部标签会同时出现并互相压字。
-        res.labelVisibility = 'hidden';
         // T05790-② 放大态（相机 ratio ≤ LABEL_ALL_RATIO）：所有可见/已加载节点强制显示记忆标题。
-        // 放在 hover 逻辑之前作为基线，hover/选中再在其上做高亮；回放隐藏的节点上面已 return，不会被强制显示。
-        if (labelsAllRef.current) res.labelVisibility = 'visible';
+        // 回放隐藏的节点上面已 return，不会被强制显示；标签可见性统一由 resolveLabelVisibility 决策。
         const hovered = hoveredRef.current;
         if (hovered === node) {
           res.size = baseSize;
           res.opacity = 1;
-          res.labelVisibility = 'visible';
         } else if (hovered) {
           // 方案 A：悬停只做一跳邻域高亮（非邻域淡出但保留原色），不做呼吸/缩放式持续动画
           const isNeighbor = graph.areNeighbors(node, hovered);
           if (!isNeighbor) {
             res.opacity = 0.46;
-            res.labelVisibility = 'hidden';
           } else {
             res.size = baseSize;
             res.opacity = 1;
-            // T05738：只显示悬停节点自身的标签。邻域节点若同时显示标签，密度高的簇会互相压字。
-            res.labelVisibility = 'hidden';
           }
         }
         // T05790-③ 用 ref 读选中态：selectNode 会 sigma.refresh()，选中/恢复都能即时高亮（原闭包 selected 会陈旧）
-        if (selectedRef.current?.id === node) { res.opacity = 1; res.labelVisibility = 'visible'; }
+        const selectedSelf = selectedRef.current?.id === node;
+        if (selectedSelf) res.opacity = 1;
+        // T05790-② 放大态优先于 hover 的“仅显示悬停标签”：labelsAll 时所有节点标题保持可见。
+        res.labelVisibility = resolveLabelVisibility({
+          labelsAll: labelsAllRef.current,
+          selected: selectedSelf,
+          hoveredSelf: hovered === node,
+        });
         return res;
       },
       edgeReducer: (edge, attrs) => {
@@ -527,14 +544,11 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
       const dx = g.getNodeAttribute(bs.dragged, 'x') as number;
       const dy = g.getNodeAttribute(bs.dragged, 'y') as number;
       if (bs.phase === 'drag') {
-        // 橡皮筋牵引：邻居朝被拖节点位移方向靠拢，限幅 maxPull
+        // 橡皮筋牵引：按被拖节点相对按下点的真实位移牵引邻居，避免起手就把初始间距当成位移
+        const off = dragPullOffset(dx, dy, bs.originX, bs.originY, BOUNCE.pull, BOUNCE.maxPull);
         bs.neighbors.forEach((n, id) => {
           if (!g.hasNode(id)) return;
-          let tx = (dx - n.restX) * BOUNCE.pull;
-          let ty = (dy - n.restY) * BOUNCE.pull;
-          const dist = Math.hypot(tx, ty);
-          if (dist > BOUNCE.maxPull) { tx = (tx / dist) * BOUNCE.maxPull; ty = (ty / dist) * BOUNCE.maxPull; }
-          n.offX = tx; n.offY = ty; n.vx = 0; n.vy = 0;
+          n.offX = off.x; n.offY = off.y; n.vx = 0; n.vy = 0;
           g.setNodeAttribute(id, 'x', n.restX + n.offX);
           g.setNodeAttribute(id, 'y', n.restY + n.offY);
         });
@@ -543,9 +557,10 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
         let settled = true;
         bs.neighbors.forEach((n, id) => {
           if (!g.hasNode(id)) return;
-          n.vx = (n.vx - BOUNCE.stiffness * n.offX) * BOUNCE.damping;
-          n.vy = (n.vy - BOUNCE.stiffness * n.offY) * BOUNCE.damping;
-          n.offX += n.vx; n.offY += n.vy;
+          const sx = springStep(n.offX, n.vx, BOUNCE.stiffness, BOUNCE.damping);
+          const sy = springStep(n.offY, n.vy, BOUNCE.stiffness, BOUNCE.damping);
+          n.offX = sx.off; n.vx = sx.v;
+          n.offY = sy.off; n.vy = sy.v;
           if (Math.abs(n.offX) + Math.abs(n.offY) + Math.abs(n.vx) + Math.abs(n.vy) > BOUNCE.settleEps) settled = false;
           g.setNodeAttribute(id, 'x', n.restX + n.offX);
           g.setNodeAttribute(id, 'y', n.restY + n.offY);
@@ -593,14 +608,11 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
       ? { x: saved!.camera.x, y: saved!.camera.y, ratio: saved!.camera.ratio }
       : { x: 0.5, y: 0.5, ratio: 1 };
     sigma.getCamera().setState(initCam);
-    cameraRatioRef.current = initCam.ratio;
     labelsAllRef.current = initCam.ratio <= LABEL_ALL_RATIO;
 
     // T05790-③ 相机 updated → 更新放大态（标题全显门控）+ 节流保存视角；只在门控翻转时 refresh
     const onCamera = () => {
-      const ratio = sigma.getCamera().ratio;
-      cameraRatioRef.current = ratio;
-      const all = ratio <= LABEL_ALL_RATIO;
+      const all = sigma.getCamera().ratio <= LABEL_ALL_RATIO;
       if (all !== labelsAllRef.current) { labelsAllRef.current = all; sigma.refresh(); }
       saveView();
     };
@@ -610,7 +622,7 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
     // T05790-③ 可恢复视图时 startPositions 已是终位，动画为 no-op
     animateNodesIn(graph, startPositions, sigma);
 
-    // 方案 A：悬停只做一跳邻域高亮；不做呼吸式缩放，也不接管节点拖拽的邻域位移
+    // 方案 A：悬停只做一跳邻域高亮；不做呼吸式缩放。节点拖拽的邻域位移由 T05790 回弹接管。
     sigma.on('enterNode', ({ node }) => {
       hoveredRef.current = node;
       sigma.refresh();
@@ -623,6 +635,8 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
     // 原生拖拽 + T05790-① 回弹力：拖拽开始记录一跳邻居 rest 坐标，结束转入 release 弹簧回位。
     sigma.on('nodeDragStart', ({ node }) => {
       simPausedRef.current = true;
+      const originX = graph.getNodeAttribute(node, 'x') as number;
+      const originY = graph.getNodeAttribute(node, 'y') as number;
       const neighbors = new Map<string, { restX: number; restY: number; offX: number; offY: number; vx: number; vy: number }>();
       graph.neighbors(node).forEach((id) => {
         neighbors.set(id, {
@@ -631,7 +645,7 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
           offX: 0, offY: 0, vx: 0, vy: 0,
         });
       });
-      dragBounceRef.current = { dragged: node, phase: 'drag', neighbors };
+      dragBounceRef.current = { dragged: node, originX, originY, phase: 'drag', neighbors };
     });
     sigma.on('nodeDragEnd', () => {
       if (dragBounceRef.current && dragBounceRef.current.neighbors.size > 0) {
@@ -640,8 +654,9 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
         dragBounceRef.current = null;
         simPausedRef.current = false;
       }
+      // 先把节流时间戳清零再保存：否则上次保存 <400ms 时 saveView 会直接 return，拖拽结束不落盘
+      lastSaveRef.current = 0;
       saveViewRef.current?.();
-      lastSaveRef.current = 0; // 拖拽结束立即允许下一次保存
     });
 
     sigma.on('clickNode', ({ node }) => {

@@ -9,6 +9,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { dragPullOffset, resolveLabelVisibility, springStep } from '../../web/src/pages/memoryGraphMath';
 
 const ROOT = process.env.MTASK_GATE_ROOT
   ? resolve(process.env.MTASK_GATE_ROOT)
@@ -31,25 +32,52 @@ ok('A-01 全局统一回弹参数 BOUNCE（pull/maxPull/stiffness/damping/settle
   && /pull: [\d.]+/.test(GRAPH) && /maxPull: \d+/.test(GRAPH)
   && /stiffness: [\d.]+/.test(GRAPH) && /damping: [\d.]+/.test(GRAPH)
   && /settleEps: [\d.]+/.test(GRAPH));
-ok('A-02 dragBounceRef 状态机：dragged + phase(drag|release) + 邻居 rest/off/v 映射',
+ok('A-02 dragBounceRef 状态机：dragged + origin 起点 + phase(drag|release) + 邻居 rest/off/v 映射',
   /dragBounceRef = useRef</.test(GRAPH)
+  && /originX: number;\s*\n\s*originY: number;/.test(GRAPH)
   && /phase: 'drag' \| 'release'/.test(GRAPH)
   && /neighbors: Map<string, \{ restX: number; restY: number; offX: number; offY: number; vx: number; vy: number \}>/.test(GRAPH));
-ok('A-03 nodeDragStart 记录一跳邻居 rest 坐标（graph.neighbors）并暂停 FA2',
+ok('A-03 nodeDragStart 记录一跳邻居 rest 坐标与被拖节点起点（graph.neighbors）并暂停 FA2',
   /sigma\.on\('nodeDragStart', \(\{ node \}\) => \{/.test(GRAPH)
   && /simPausedRef\.current = true/.test(GRAPH)
   && /graph\.neighbors\(node\)\.forEach/.test(GRAPH)
-  && /dragBounceRef\.current = \{ dragged: node, phase: 'drag', neighbors \}/.test(GRAPH));
-ok('A-04 drag 阶段橡皮筋牵引：邻居按 BOUNCE.pull 跟随、maxPull 限幅，停 FA2 由 stepBounce 接管',
+  && /const originX = graph\.getNodeAttribute\(node, 'x'\) as number;/.test(GRAPH)
+  && /const originY = graph\.getNodeAttribute\(node, 'y'\) as number;/.test(GRAPH)
+  && /dragBounceRef\.current = \{ dragged: node, originX, originY, phase: 'drag', neighbors \}/.test(GRAPH));
+ok('A-04 drag 阶段牵引走纯函数 dragPullOffset(dx,dy,originX,originY,pull,maxPull)，停 FA2 由 stepBounce 接管',
   /bs\.phase === 'drag'/.test(GRAPH)
-  && /\(dx - n\.restX\) \* BOUNCE\.pull/.test(GRAPH)
-  && /BOUNCE\.maxPull/.test(GRAPH)
+  && /dragPullOffset\(dx, dy, bs\.originX, bs\.originY, BOUNCE\.pull, BOUNCE\.maxPull\)/.test(GRAPH)
   && /g\.setNodeAttribute\(id, 'x', n\.restX \+ n\.offX\)/.test(GRAPH));
-ok('A-05 release 阶段欠阻尼弹簧回位：v=(v-k·off)·damping、off+=v、收敛归位后恢复 FA2',
-  /n\.vx = \(n\.vx - BOUNCE\.stiffness \* n\.offX\) \* BOUNCE\.damping/.test(GRAPH)
-  && /n\.offX \+= n\.vx/.test(GRAPH)
+// A-04b 运行时断言：0 位移必须 0 牵引（旧实现把「节点间初始间距」当位移，起手就跳）
+{
+  const still = dragPullOffset(100, 100, 100, 100, 0.28, 12);
+  const moved = dragPullOffset(110, 100, 100, 100, 0.28, 12);
+  const clamped = dragPullOffset(200, 100, 100, 100, 0.28, 12);
+  const okStill = Math.abs(still.x) < 1e-9 && Math.abs(still.y) < 1e-9;
+  const okMoved = Math.abs(moved.x - 2.8) < 1e-6 && Math.abs(moved.y) < 1e-9;
+  const okClamped = Math.abs(Math.hypot(clamped.x, clamped.y) - 12) < 1e-6;
+  ok('A-04b 回弹数学：鼠标未移动时邻居位移为 0；位移 10 → 牵引 2.8；超限按 maxPull=12 截断',
+    okStill && okMoved && okClamped, { still, moved, clamped });
+}
+ok('A-05 release 阶段欠阻尼弹簧回位走纯函数 springStep + 收敛归位后恢复 FA2',
+  /springStep\(n\.offX, n\.vx, BOUNCE\.stiffness, BOUNCE\.damping\)/.test(GRAPH)
   && /BOUNCE\.settleEps/.test(GRAPH)
   && /dragBounceRef\.current = null;\s*\n\s*simPausedRef\.current = false/.test(GRAPH));
+// A-05b 运行时断言：欠阻尼应出现过冲（回弹手感），且最终收敛到 0
+{
+  let off = 10;
+  let v = 0;
+  let peak = 0;
+  for (let i = 0; i < 200; i += 1) {
+    const s = springStep(off, v, 0.22, 0.74);
+    off = s.off; v = s.v;
+    peak = Math.min(peak, off);
+  }
+  const overshot = peak < -0.05;
+  const settled = Math.abs(off) < 0.5;
+  ok('A-05b 回弹数学：欠阻尼弹簧产生过冲（负向越过 rest）且最终收敛',
+    overshot && settled, { peak, finalOff: off });
+}
 ok('A-06 nodeDragEnd 转入 release；无邻居则直接恢复物理；rAF 每帧 stepBounce + refresh',
   /sigma\.on\('nodeDragEnd'/.test(GRAPH)
   && /phase = 'release'/.test(GRAPH)
@@ -62,8 +90,20 @@ ok('B-02 camera updated 监听：更新 ratio、门控翻转才 refresh（避免
   /sigma\.getCamera\(\)\.on\('updated', onCamera\)/.test(GRAPH)
   && /const onCamera = \(\) => \{/.test(GRAPH)
   && /if \(all !== labelsAllRef\.current\) \{ labelsAllRef\.current = all; sigma\.refresh\(\); \}/.test(GRAPH));
-ok('B-03 nodeReducer 放大态强制全量标签：labelsAllRef → labelVisibility=visible（回放隐藏节点已提前 return）',
-  /if \(labelsAllRef\.current\) res\.labelVisibility = 'visible';/.test(GRAPH));
+ok('B-03 nodeReducer 放大态全量标签走 resolveLabelVisibility（labelsAll 优先于 hover 隐藏）',
+  /resolveLabelVisibility\(\{/.test(GRAPH)
+  && /labelsAll: labelsAllRef\.current/.test(GRAPH)
+  && /hoveredSelf: hovered === node/.test(GRAPH));
+// B-03b 运行时断言：放大态下即使 hover 其他节点，非悬停节点也必须 visible（旧实现会重新隐藏）
+{
+  const allVisible = resolveLabelVisibility({ labelsAll: true, selected: false, hoveredSelf: false });
+  const normalHidden = resolveLabelVisibility({ labelsAll: false, selected: false, hoveredSelf: false });
+  const hoveredVisible = resolveLabelVisibility({ labelsAll: false, selected: false, hoveredSelf: true });
+  const selectedVisible = resolveLabelVisibility({ labelsAll: false, selected: true, hoveredSelf: false });
+  ok('B-03b 标签可见性数学：labelsAll 时所有节点 visible；普通态仅悬停/选中 visible',
+    allVisible === 'visible' && normalHidden === 'hidden' && hoveredVisible === 'visible' && selectedVisible === 'visible',
+    { allVisible, normalHidden, hoveredVisible, selectedVisible });
+}
 ok('B-04 恢复视图时用 saved.ratio 初始化 labelsAllRef，切页回来门控状态一致',
   /labelsAllRef\.current = initCam\.ratio <= LABEL_ALL_RATIO/.test(GRAPH));
 
@@ -97,9 +137,19 @@ ok('C-06 选中项恢复：按 saved.selectedId 找回节点回填面板与 ref'
 ok('C-07 卸载前强制保存 + 移除 camera 监听（切页/刷新落盘，无泄漏）',
   /lastSaveRef\.current = 0;\s*\n\s*saveView\(\);/.test(GRAPH)
   && /sigma\.getCamera\(\)\.removeListener\('updated', onCamera\)/.test(GRAPH));
+ok('C-07b 拖拽结束先清零节流时间戳再保存，避免 400ms 节流吞掉落盘',
+  /lastSaveRef\.current = 0;\s*\n\s*saveViewRef\.current\?\.\(\);/.test(GRAPH));
 ok('C-08 「重排布局」显式跳过恢复（skipRestoreRef），产品切换仍默认恢复',
   /skipRestoreRef\.current = true; void load\(\)/.test(GRAPH)
-  && /const saved = skipRestoreRef\.current \? null : readViewState\(productKey\)/.test(GRAPH));
+  && /const skipRestore = skipRestoreRef\.current;/.test(GRAPH)
+  && /skipRestoreRef\.current = false;/.test(GRAPH)
+  && /const saved = skipRestore \? null : readViewState\(productKey\)/.test(GRAPH));
+{
+  const idxSkip = GRAPH.indexOf('const skipRestore = skipRestoreRef.current;');
+  const idxEmpty = GRAPH.indexOf('if (data.nodes.length === 0) return;');
+  ok('C-08b skipRestore 标记在空图/失败分支前就被消费，避免残留到下一次成功加载',
+    idxSkip >= 0 && idxEmpty > idxSkip);
+}
 ok('C-09 统一选中入口 selectNode 镜像 ref + refresh + 触发保存（点击/关闭/事件一致）',
   /const selectNode = useCallback/.test(GRAPH)
   && /selectedRef\.current = node;/.test(GRAPH)

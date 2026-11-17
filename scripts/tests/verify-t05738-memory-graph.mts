@@ -63,12 +63,11 @@ ok('B-02 ForceAtlas2 种子布局 + rAF 持续单步物理（拖拽暂停/松手
   && /simPausedRef\.current = true/.test(GRAPH)
   && /simPausedRef\.current = false/.test(GRAPH)
   && /barnesHutOptimize: data\.nodes\.length > \d+/.test(GRAPH));
-ok('B-03 悬停高亮一跳邻域：默认隐藏标签 + 非邻域淡出 + 仅悬停节点显示（避免缩放后堆字）',
+ok('B-03 悬停高亮一跳邻域：非邻域淡出 + 标签可见性统一由 resolveLabelVisibility 决策（T05790 放大态优先）',
   /graph\.areNeighbors\(node, hovered\)/.test(GRAPH)
-  && /默认隐藏标签/.test(GRAPH)
-  && /只显示悬停节点自身的标签/.test(GRAPH)
-  && /res\.labelVisibility = 'hidden';/.test(GRAPH)
-  && /res\.labelVisibility = 'visible';/.test(GRAPH));
+  && /res\.opacity = 0\.46/.test(GRAPH)
+  && /resolveLabelVisibility\(\{/.test(GRAPH)
+  && /labelsAll: labelsAllRef\.current/.test(GRAPH));
 ok('B-04 点击节点开详情面板 + clickStage 清除 + sigma.kill() 卸载清理',
   /sigma\.on\('clickNode'/.test(GRAPH) && /sigma\.on\('clickStage'/.test(GRAPH) && /sigma\.kill\(\)/.test(GRAPH));
 ok('B-05 type 四色映射 + 失效灰显 + 项目聚簇色（图例齐备）',
@@ -97,7 +96,7 @@ ok('B-10 P2 回放控制条：播放/停止切换 + 进度计数（data-lck 锚�
   /▶ 回放生长/.test(GRAPH) && /⏸ 停止回放/.test(GRAPH)
   && /data-lck="memory-graph-replay-progress"/.test(GRAPH)
   && /\(\) => \{ if \(replayTimerRef\.current\) clearInterval\(replayTimerRef\.current\); \}, \[\]/.test(GRAPH));
-ok('B-11 悬停只做邻域高亮 + 原生拖拽；拖拽仅暂停/继续物理，不再叠加 hover 呼吸/邻域弹簧',
+ok('B-11 悬停只做邻域高亮 + 原生拖拽；T05790 起在其上叠加一跳邻居回弹（不再有 hover 呼吸）',
   /enableNodeDrag: true/.test(GRAPH)
   && /sigma\.on\('enterNode'/.test(GRAPH)
   && /sigma\.on\('leaveNode'/.test(GRAPH)
