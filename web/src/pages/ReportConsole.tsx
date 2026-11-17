@@ -715,6 +715,9 @@ export function ReportConsole({
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewMd, setPreviewMd] = useState('');
   const bodyRef = useRef<HTMLDivElement>(null);
+  // T05816：输出流默认跟随最新内容；用户主动向上滚动阅读历史时暂停跟随，避免每来一个 chunk 就被拽回底部。
+  const followRef = useRef(true);
+  const [autoFollow, setAutoFollow] = useState(true);
   // 「转存到通用需求」弹窗状态：打开时懒加载 req 分类，支持 AI 智能分组 / 手动选分组两种模式
   const [saveOpen, setSaveOpen] = useState(false);
   const [saveMode, setSaveMode] = useState<'ai' | 'manual'>('ai');
@@ -877,9 +880,33 @@ export function ReportConsole({
 
   // 正在生成（AI 周报流式或手动任务进行中）时随内容滚到底部，保证流式输出始终跟随最新内容
   const live = isLive(onReportTab, streaming, streamText, activeTask) || onAiImportTab || onPrdGenTab || onTestCaseGenTab || onKickoffPptTab || onSummaryPptTab || onReviewLectureTab;
+  // T05816：新一轮输出开始即恢复跟随；滚动事件里再按「是否贴底」动态暂停/恢复。
   useEffect(() => {
-    if (live) bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight });
+    if (!live) return;
+    followRef.current = true;
+    setAutoFollow(true);
+  }, [live]);
+  useEffect(() => {
+    if (live && followRef.current) bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight });
   }, [live, streamText, streamsLen(activeTask), prdSnap.streamText, prdSnap.logs.length, tcSnap.streamText, tcSnap.logs.length, kfSnap.logs.length, sumSnap.logs.length, lecSnap.logs.length]);
+
+  /** T05816：贴底判定——离底部 24px 内视为跟随；用户向上滚读历史即暂停自动跟随。 */
+  function handleBodyScroll() {
+    const el = bodyRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 24;
+    followRef.current = atBottom;
+    setAutoFollow(atBottom);
+  }
+
+  /** T05816：「回到底部」——恢复跟随并立即贴底，不改变当前生成任务。 */
+  function jumpToBottom() {
+    const el = bodyRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    followRef.current = true;
+    setAutoFollow(true);
+  }
 
   // 统一按 id 局部更新任务字段，避免在并发更新中因闭包持有旧 tasks 而互相覆盖
   const updateTask = useCallback((id: string, patch: Partial<AnalysisTask>) => {
@@ -1341,12 +1368,18 @@ export function ReportConsole({
         {logItems.map(({ id, log }) => (
           <div key={id} style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', padding: '2px 0' }}>• {log}</div>
         ))}
-        {/* AI 洞察正文：流式增量实时渲染 */}
+        {/* AI 洞察正文：流式增量实时渲染（T05816：与豆包消息气泡同构的 AI 气泡） */}
         {!!streamText && (
           <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed var(--border)' }}>
-            <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, marginBottom: 4 }}>AI 洞察（实时）</div>
-            <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text)' }}>
-              <MarkdownContent content={streamText} />
+            <div className="mconsole-msg-row">
+              <span className="mconsole-avatar" aria-label="AI" title="AI"><Sparkles size={12} /></span>
+              <div className="mconsole-bubble">
+                <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 4 }}>AI 洞察（实时）</div>
+                <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text)' }}>
+                  <MarkdownContent content={streamText} />
+                  {streaming && <span className="mconsole-caret" aria-hidden="true">▍</span>}
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -1359,18 +1392,28 @@ export function ReportConsole({
 
   function renderFocusTaskBody(focused: AnalysisTask) {
     return (
-      <div>
-        {focused.status === 'busy' && (
-          <div style={{ fontSize: 'var(--fs-s)', color: focused.answer ? 'var(--text)' : 'var(--text-muted)' }}>
-            {focused.answer ? <MarkdownContent content={focused.answer} /> : 'AI 正在分析…'}
-          </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {/* T05816：参考豆包工作任务的消息气泡——用户提问右对齐、AI 回答左对齐带头像，输出过程有轻微升起动画 */}
+        {!!focused.prompt && (
+          <div className="mconsole-user-bubble" title={focused.prompt}>{focused.prompt}</div>
         )}
-        {focused.status === 'done' && <MarkdownContent content={focused.answer} />}
-        {focused.status === 'error' && (
-          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)' }}>
-            {focused.error || '分析失败'}
+        <div className="mconsole-msg-row">
+          <span className="mconsole-avatar" aria-label="AI" title="AI"><Sparkles size={12} /></span>
+          <div className="mconsole-bubble">
+            {focused.status === 'busy' && (
+              <>
+                {focused.answer
+                  ? <MarkdownContent content={focused.answer} />
+                  : <span className="mconsole-typing" aria-label="AI 正在分析"><i /><i /><i /></span>}
+                {focused.answer && <span className="mconsole-caret" aria-hidden="true">▍</span>}
+              </>
+            )}
+            {focused.status === 'done' && <MarkdownContent content={focused.answer} />}
+            {focused.status === 'error' && (
+              <span style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)' }}>{focused.error || '分析失败'}</span>
+            )}
           </div>
-        )}
+        </div>
       </div>
     );
   }
@@ -1847,18 +1890,49 @@ export function ReportConsole({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, border: '1px solid var(--border)', borderRadius: 8, padding: 12, background: 'var(--card-bg)', height: '100%', minHeight: 420 }}>
-      <style>{'@keyframes mconsole-spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }'}</style>
+      <style>{`@keyframes mconsole-spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
+        @keyframes mconsole-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+        @keyframes mconsole-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes mconsole-dot { 0%, 80%, 100% { transform: scale(.55); opacity: .35; } 40% { transform: scale(1); opacity: 1; } }
+        .mconsole-caret { display: inline-block; margin-left: 2px; color: var(--accent); animation: mconsole-blink 1s steps(1) infinite; }
+        .mconsole-msg-row { display: flex; gap: 8px; align-items: flex-start; animation: mconsole-rise .26s ease both; }
+        .mconsole-avatar { width: 24px; height: 24px; flex: 0 0 24px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; color: var(--accent); background: var(--accent-soft, rgba(9,105,218,.10)); border: 1px solid var(--border); margin-top: 2px; }
+        .mconsole-bubble { min-width: 0; max-width: min(760px, 92%); padding: 9px 12px; border-radius: 14px 14px 14px 4px; background: var(--card-bg); border: 1px solid var(--border); box-shadow: 0 2px 9px rgba(0,0,0,.045); animation: mconsole-rise .26s ease both; }
+        .mconsole-user-bubble { align-self: flex-end; max-width: 82%; padding: 7px 11px; border-radius: 14px 14px 4px 14px; background: var(--accent-soft, rgba(9,105,218,.10)); border: 1px solid var(--border); color: var(--text); font-size: var(--fs-s); white-space: pre-wrap; word-break: break-word; animation: mconsole-rise .26s ease both; }
+        .mconsole-typing { display: inline-flex; gap: 4px; align-items: center; padding: 3px 0; }
+        .mconsole-typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); display: inline-block; animation: mconsole-dot 1.2s infinite ease-in-out; }
+        .mconsole-typing i:nth-child(2) { animation-delay: .16s; } .mconsole-typing i:nth-child(3) { animation-delay: .32s; }`}</style>
 
       {renderToolbar()}
       {renderTabBar()}
 
-      {/* 结果区：当前聚焦任务/流式滚动展示（data-console-body 供门做「控制台确有日志输出」的真实 DOM 断言） */}
-      <div
-        ref={bodyRef}
-        data-console-body
-        style={{ flex: 1, minHeight: 0, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6, padding: 8, background: 'var(--surface)' }}
-      >
-        {renderBody()}
+      {/* 结果区：当前聚焦任务/流式滚动展示（data-console-body 供门做「控制台确有日志输出」的真实 DOM 断言）
+          T05816：外层 relative + 内层 onScroll 负责「用户滚读历史时暂停跟随」，右下角给出回到底部入口 */}
+      <div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
+        <div
+          ref={bodyRef}
+          data-console-body
+          onScroll={handleBodyScroll}
+          style={{ height: '100%', overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6, padding: 8, background: 'var(--surface)' }}
+        >
+          {renderBody()}
+        </div>
+        {live && !autoFollow && (
+          <button
+            type="button"
+            onClick={jumpToBottom}
+            title="回到底部 — 恢复跟随最新输出（当前已暂停自动跟随）"
+            aria-label="回到底部并恢复跟随"
+            style={{
+              position: 'absolute', right: 12, bottom: 10, zIndex: 5,
+              display: 'inline-flex', alignItems: 'center', gap: 3, padding: '4px 9px',
+              borderRadius: 999, border: '1px solid var(--border-strong)', background: 'var(--card-bg)',
+              color: 'var(--text)', fontSize: 'var(--fs-xs)', cursor: 'pointer', boxShadow: '0 4px 12px rgba(0,0,0,.12)',
+            }}
+          >
+            <ChevronDown size={12} /> 回到底部
+          </button>
+        )}
       </div>
 
       {renderBottomBar()}
