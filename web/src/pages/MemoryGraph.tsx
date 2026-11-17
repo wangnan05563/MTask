@@ -215,6 +215,7 @@ function readViewState(productKey: string): GraphViewState | null {
     if (!raw) return null;
     const v = JSON.parse(raw) as GraphViewState;
     if (!v?.camera || typeof v.camera.x !== 'number' || typeof v.camera.y !== 'number'
+      || !Number.isFinite(v.camera.x) || !Number.isFinite(v.camera.y)
       || typeof v.camera.ratio !== 'number' || !Number.isFinite(v.camera.ratio) || v.camera.ratio <= 0) return null;
     if (!v.positions || typeof v.positions !== 'object' || Array.isArray(v.positions)) return null;
     // 抽样校验坐标是有限数字：坏数据直接判不可恢复，避免把 NaN 灌进 sigma 相机/布局
@@ -224,7 +225,7 @@ function readViewState(productKey: string): GraphViewState | null {
         || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return null;
     }
     if (v.selectedId !== null && typeof v.selectedId !== 'string') return null;
-    if (typeof v.savedAt !== 'number') return null;
+    if (typeof v.savedAt !== 'number' || !Number.isFinite(v.savedAt)) return null;
     return v;
   } catch {
     return null;
@@ -297,6 +298,9 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
   const lastSaveRef = useRef(0);
   // 「重排布局」显式要求重新播种：置 true 后本次 load 跳过视图恢复（产品切换不带此标记）
   const skipRestoreRef = useRef(false);
+  // T05790 复查：恢复视图后先冻结常开 FA2，避免已恢复的节点坐标在 780ms 后被物理循环立刻推走；
+  // 用户首次拖拽后再恢复持续力模拟（否则回弹效果仍可用，但整图不会主动漂移）。
+  const livePhysicsRef = useRef(true);
 
   /** effect 内的 saveView 以 ref 暴露给事件回调，避免闭包捕获旧 state。 */
   const saveViewRef = useRef<(() => void) | null>(null);
@@ -404,7 +408,9 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
     const sigma = new Sigma(graph, container, {
       settings: {
         // 自动把图包围盒铺满画布；stagePadding 保证节点/标签不被边框裁掉
-        autoRescale: true,
+        // T05790 复查：恢复的视图已经有上次相机与坐标，禁用 autoRescale 防止构造时把相机覆盖回全览；
+        // 首次加载/重排布局仍开启，保持原有自动铺满行为。
+        autoRescale: !canRestore,
         autoRescaleContent: 'nodes',
         stagePadding: 56,
         // 默认只给大节点显示标签，避免十几个长标题叠在一起；缩放或 hover/选中后显示当前节点标签
@@ -531,6 +537,9 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
       });
     };
     saveViewRef.current = saveView;
+    // T05790 复查：刷新/关闭标签页时 React cleanup 可能来不及，补 pagehide 兜底（sessionStorage 同标签页有效）。
+    const onPageHide = () => { lastSaveRef.current = 0; saveView(); };
+    window.addEventListener('pagehide', onPageHide);
 
     // 第二步：常开物理——每 ~32ms 跑一次单步 FA2，让图持续轻微收敛/回弹（KarpathyWiki 的 physics.enabled 手感）。
     // 拖拽/回弹期间由 simPausedRef 暂停 FA2；rAF 循环本身保持，避免频繁重建定时器。
@@ -583,7 +592,8 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
         sigma.refresh();
       } else if (!simPausedRef.current) {
         const now = performance.now();
-        if (now - lastPhysicsStep >= 32) {
+        // T05790 复查：恢复视图时 livePhysicsRef=false，rAF 仍运行以驱动回弹，但不再主动跑 FA2。
+        if (livePhysicsRef.current && now - lastPhysicsStep >= 32) {
           lastPhysicsStep = now;
           ForceAtlas2.assign(graph, { iterations: 1, settings: { ...LIVE_PHYSICS, barnesHutOptimize: data.nodes.length > 300 } });
           sigma.refresh();
@@ -609,6 +619,9 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
       : { x: 0.5, y: 0.5, ratio: 1 };
     sigma.getCamera().setState(initCam);
     labelsAllRef.current = initCam.ratio <= LABEL_ALL_RATIO;
+    // T05790 复查：恢复成功后冻结 FA2，保证切页返回时坐标/缩放/选中与离开时一致；
+    // 未恢复（首次加载或显式重排）继续常开物理。
+    livePhysicsRef.current = !canRestore;
 
     // T05790-③ 相机 updated → 更新放大态（标题全显门控）+ 节流保存视角；只在门控翻转时 refresh
     const onCamera = () => {
@@ -648,6 +661,8 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
       dragBounceRef.current = { dragged: node, originX, originY, phase: 'drag', neighbors };
     });
     sigma.on('nodeDragEnd', () => {
+      // T05790 复查：用户主动拖拽后恢复常开 FA2，让图重新获得自然收敛手感。
+      livePhysicsRef.current = true;
       if (dragBounceRef.current && dragBounceRef.current.neighbors.size > 0) {
         dragBounceRef.current.phase = 'release'; // 交回弹簧，收敛后自动恢复 FA2
       } else {
@@ -673,6 +688,7 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
     }
 
     return () => {
+      window.removeEventListener('pagehide', onPageHide);
       // 离开页面前最后保存一次视角（节流窗口内也强制写），供切回时还原
       lastSaveRef.current = 0;
       saveView();
