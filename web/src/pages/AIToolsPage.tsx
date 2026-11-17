@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { FIELD_BLOCK } from '../ui/primitives'; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
-import { Archive, ChevronDown, ChevronUp, Code2, Cpu, Copy, Eye, EyeOff, Loader2, Pencil, PlugZap, Plus, Power, RotateCcw, Save, Star, X, Check, Zap } from 'lucide-react';
+import { Archive, ChevronDown, ChevronUp, Code2, Cpu, Copy, Eye, EyeOff, Loader2, Pencil, PlugZap, Plus, Power, RotateCcw, Save, Settings2, Star, X, Check, Zap } from 'lucide-react';
 import { api, type AIProviderPreset, type AITool, type ConfigIssue } from '../api/client';
 import { UsagePanel } from './UsagePanel';
 import { askConfirm } from '../ui/dialogs';
@@ -128,6 +128,30 @@ function ToolActionsCell({ tool, testing, probing, fetchingModels, testResult, p
           style={{ fontSize: 'var(--fs-s)', marginRight: 6, color: 'var(--accent)' }}
         >控制台</a>
       ) : null}
+      <button
+        className="tbtn-anim"
+        data-t05813="config-button"
+        onClick={() => onOpenEdit(tool)}
+        title="配置 — 打开该模型的配置表单"
+        aria-label="配置模型"
+        style={{
+          width: 32, height: 32, marginRight: 6, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          background: 'transparent', border: '1px solid transparent', borderRadius: 8, cursor: 'pointer',
+          color: 'var(--text-secondary)', transition: 'background .15s ease, border-color .15s ease, color .15s ease',
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = 'var(--surface-2)';
+          e.currentTarget.style.borderColor = 'var(--border-strong)';
+          e.currentTarget.style.color = 'var(--text)';
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = 'transparent';
+          e.currentTarget.style.borderColor = 'transparent';
+          e.currentTarget.style.color = 'var(--text-secondary)';
+        }}
+      >
+        <Settings2 size={16} style={{ display: 'inline-block' }} />
+      </button>
       <button
         className="abtn" onClick={() => onOpenEdit(tool)}
         title="编辑 — 编辑该配置，保留原 API Key"
