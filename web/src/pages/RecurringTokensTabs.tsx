@@ -155,6 +155,55 @@ const RECURRING_TEMPLATES: RecurringTemplate[] = [
     id: 'interval-followup', name: '隔天跟进事项', hint: '每 2 天生成一次跟进任务',
     title: '隔天跟进待办', description: '检查当前未闭环事项的进展，按负责人/截止时间列出需要跟进的对象，并给出下一步动作。', priority: 'normal', categoryName: '跟进', kind: 'interval_days', hour: 9, minute: 0, intervalN: 2,
   },
+  /* T06011：扩充 8 条常用循环任务模板（资讯/知识/竞品/安全/分支/技术简报）。 */
+  {
+    id: 'daily-ai-news', name: '每日 AI 新闻推送', hint: '每天 08:00，AI coding 与具身智能 3-5 条',
+    title: '每日 AI 新闻推送',
+    description: `关注当天 AI 领域的重要动态，侧重 AI coding 与具身智能方向。筛选 3-5 条有价值的信息，简要说明事件内容及值得关注的原因。结合 memory.md 里之前推送过的内容，尽量不要重复。`,
+    priority: 'normal', categoryName: '学习', kind: 'daily', hour: 8, minute: 0,
+  },
+  {
+    id: 'today-history', name: '历史上的今天', hint: '每天 08:30，科技/电影/音乐任选一则',
+    title: '历史上的今天',
+    description: `历史上的今天发生过什么有趣的事？从科技、电影、音乐等领域中挑一个，讲讲它的来龙去脉。控制在 200-300 字左右。`,
+    priority: 'normal', categoryName: '学习', kind: 'daily', hour: 8, minute: 30,
+  },
+  {
+    id: 'daily-knowledge', name: '学点小知识', hint: '每天 07:09，冷知识问答 200-300 字',
+    title: '学点小知识',
+    description: `从科学、历史、自然、动物、人体、食物、文化、日常生活等领域中随机选题，尽量不和之前的重复；先抛出一个引人好奇的问题，再给出通俗有趣的解答，像跟朋友聊天一样讲清楚来龙去脉，答案控制在 200-300 字。`,
+    priority: 'normal', categoryName: '学习', kind: 'daily', hour: 7, minute: 9,
+  },
+  {
+    id: 'competitor-ai-apps', name: '竞品动态调研', hint: '每天 07:09，AI 类 APP 过去 24 小时动态',
+    title: '竞品动态调研',
+    description: `搜集过去 24 小时内 AI 类 APP/客户端的动态，包括但不限于产品更新、功能变动、定价调整和市场动作等，按重要性从高到低排序，并标注信息来源。`,
+    priority: 'normal', categoryName: '数据', kind: 'daily', hour: 7, minute: 9,
+  },
+  {
+    id: 'chip-storage-news', name: '每日新闻推送', hint: '每天 07:09，芯片存储行业 5-8 条',
+    title: '每日新闻推送',
+    description: `搜集过去 24 小时内芯片存储行业的全球重要动态，筛选 5-8 条最有价值的信息，按重要性从高到低排序，并标注信息来源。`,
+    priority: 'normal', categoryName: '学习', kind: 'daily', hour: 7, minute: 9,
+  },
+  {
+    id: 'active-security-scan', name: '主动安全扫描', hint: '每天 09:00，扫描密钥/注入/路径穿越/依赖漏洞',
+    title: '主动安全扫描',
+    description: `对本仓库做一次主动安全扫描：检查硬编码密钥/凭证/Token、命令拼接与 SQL 拼接、不安全反序列化、路径穿越与越权读写、依赖中的已知高危漏洞。每条必须定位到具体文件行号；按可利用性判高/中/低；只给修复建议，不要改代码。输出开头一行统计，并按可利用性排序列出文件路径 + 行号 + 风险类型 + 一句话修复建议，与上次扫描对比标出新增项。`,
+    priority: 'high', categoryName: '复盘', kind: 'daily', hour: 9, minute: 0,
+  },
+  {
+    id: 'stale-branch-cleanup', name: '陈旧本地分支清理建议', hint: '每周一 09:30，只给建议不执行删除',
+    title: '陈旧本地分支清理建议',
+    description: `盘点本地 30 天没有提交活动的分支（远程分支一律不动），查清最后提交时间、是否已合入主干、是否有未推送提交；只给清理建议，绝对不要执行删除命令。已合入主干且无未推送提交的才建议删除，有未推送提交的一律建议保留。输出建议删除/建议保留两组，每条列分支名 + 最后提交时间 + 一句话理由。`,
+    priority: 'normal', categoryName: '跟进', kind: 'weekly', hour: 9, minute: 30, weekday: 1,
+  },
+  {
+    id: 'tech-hot-brief', name: '技术热点简报', hint: '每周一 08:30，GitHub 新项目/版本/行业动态',
+    title: '技术热点简报',
+    description: `扫描最近三天的技术热点：GitHub 上近期冒头的项目（看增速而非总 star 数）、常用技术栈的重要版本发布或重大特性、值得关注的行业动态或开源事件。全文 10 行以内；每个项目一句话说清它做什么、为什么突然火、和我的关系；没有值得看的内容直接说没有，不要凑数。按「新项目」「版本更新」「其他动态」分段，无内容写「本期无」。`,
+    priority: 'normal', categoryName: '学习', kind: 'weekly', hour: 8, minute: 30, weekday: 1,
+  },
 ];
 
 function parseStoreTime(s: string): Date | null {
