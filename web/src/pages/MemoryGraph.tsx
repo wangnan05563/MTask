@@ -715,9 +715,9 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
       if (cameraRestoreRaf) cancelAnimationFrame(cameraRestoreRaf);
       if (cameraRestoreTimer) window.clearTimeout(cameraRestoreTimer);
       window.removeEventListener('pagehide', onPageHide);
-      // 离开页面前最后保存一次视角（节流窗口内也强制写），供切回时还原
-      lastSaveRef.current = 0;
-      saveView(true);
+      // 这里不再强制保存相机：容器卸载时 Sigma 可能先触发 autoRescale，把 ratio 拉回全览，
+      // 会覆盖用户最后一次缩放。相机在 onCamera / 拖动结束 / 选中时已持续落盘；
+      // 选中项在 selectNode 中已强制落盘，卸载时只需移除监听并销毁实例。
       saveViewRef.current = null;
       sigma.getCamera().removeListener('updated', onCamera);
       hoveredRef.current = null;
