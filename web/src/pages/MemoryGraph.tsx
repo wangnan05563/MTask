@@ -625,9 +625,12 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
     restoreCamera();
     // T05790 复查：sigma 构造时 autoRescale 会在下一帧把相机拉回全览；恢复的缩放要等它跑完再写一次，
     // 否则刷新/切页后虽然节点和选中项都在，用户上次的放大视角却会被重置为 ratio=1。
+    // 定时句柄在 cleanup 中取消，避免 <160ms 内切页销毁 sigma 后仍回调 setState。
+    let cameraRestoreRaf = 0;
+    let cameraRestoreTimer = 0;
     if (canRestore) {
-      requestAnimationFrame(restoreCamera);
-      window.setTimeout(restoreCamera, 160);
+      cameraRestoreRaf = requestAnimationFrame(restoreCamera);
+      cameraRestoreTimer = window.setTimeout(restoreCamera, 160);
     }
     labelsAllRef.current = initCam.ratio <= LABEL_ALL_RATIO;
     // T05790 复查：Sigma 构造时 nodeReducer 已按 labelsAll=false 缓存过标签隐藏状态；
@@ -701,6 +704,8 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
     }
 
     return () => {
+      if (cameraRestoreRaf) cancelAnimationFrame(cameraRestoreRaf);
+      if (cameraRestoreTimer) window.clearTimeout(cameraRestoreTimer);
       window.removeEventListener('pagehide', onPageHide);
       // 离开页面前最后保存一次视角（节流窗口内也强制写），供切回时还原
       lastSaveRef.current = 0;
