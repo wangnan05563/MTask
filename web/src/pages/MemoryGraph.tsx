@@ -303,13 +303,15 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
   const livePhysicsRef = useRef(true);
 
   /** effect 内的 saveView 以 ref 暴露给事件回调，避免闭包捕获旧 state。 */
-  const saveViewRef = useRef<(() => void) | null>(null);
+  const saveViewRef = useRef<((force?: boolean) => void) | null>(null);
   /** 统一选中入口：镜像 ref + 触发 reducer 重算高亮（nodeReducer 闭包读 selectedRef）。 */
   const selectNode = useCallback((node: GraphNode | null) => {
     selectedRef.current = node;
     setSelected(node);
     sigmaRef.current?.refresh();
-    saveViewRef.current?.();
+    // T05790 复查：选中是离散操作，必须立即落盘；若沿用 400ms 节流，点完立刻切页时
+    // 可能只剩 cleanup/ pagehide 兜底，页面快速切换下会出现「选中项没保存」的偶发丢失。
+    saveViewRef.current?.(true);
   }, []);
 
   const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3000); };
@@ -350,8 +352,6 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
     if (!productKey) { setData(null); return; }
     stopReplay();
     setLoading(true);
-    selectedRef.current = null;
-    setSelected(null);
     try {
       const r = await api.get<GraphData>(`/memories/graph?productKey=${encodeURIComponent(productKey)}`);
       setData(r);
@@ -378,6 +378,15 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
     const savedIds = saved ? Object.keys(saved.positions) : [];
     const canRestore = !!saved && savedIds.length > 0
       && data.nodes.filter((n) => saved.positions[n.id]).length >= Math.ceil(data.nodes.length * 0.8);
+    // T05790 复查：选中项与相机/坐标解耦——即使节点集变化导致不能恢复坐标，
+    // 只要上次选中的节点仍存在，也应恢复详情面板，不能让「选过的记忆」随布局失效一起丢。
+    const savedSelected = saved?.selectedId
+      ? (data.nodes.find((n) => n.id === saved.selectedId) ?? null)
+      : null;
+    if (!savedSelected) {
+      selectedRef.current = null;
+      setSelected(null);
+    }
     for (const n of data.nodes) {
       // T05790-③ 有可复用视图时直接用上次的坐标，否则随机初始位置（FA2 assign 会覆盖为布局终位）
       const prev = canRestore ? saved!.positions[n.id] : null;
@@ -524,9 +533,9 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
 
     // T05790-③ 视图状态保存：相机 + 节点坐标 + 选中项，节流写入 sessionStorage。
     // 用 ref 暴露给 selectNode / 拖拽结束等外部回调；卸载前再强制写一次兜底。
-    const saveView = () => {
+    const saveView = (force = false) => {
       const now = performance.now();
-      if (now - lastSaveRef.current < 400) return; // 节流：拖拽/回放每帧触发，400ms 一次足够
+      if (!force && now - lastSaveRef.current < 400) return; // 节流：拖拽/回放每帧触发，400ms 一次足够
       lastSaveRef.current = now;
       const cam = sigma.getCamera().getState();
       const positions: Record<string, { x: number; y: number }> = {};
@@ -697,10 +706,9 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
     });
     sigma.on('clickStage', () => { selectNode(null); });
 
-    // T05790-③ 选中项恢复：可恢复视图时按 id 找回上次选中的节点，回填面板与 ref
-    if (canRestore && saved!.selectedId) {
-      const hit = data.nodes.find((n) => n.id === saved!.selectedId) ?? null;
-      if (hit) selectNode(hit); // 统一入口：写 ref + setSelected + sigma.refresh 高亮
+    // T05790-③ 选中项恢复：按 id 找回上次选中的节点，回填面板与 ref（不依赖坐标是否可恢复）
+    if (savedSelected) {
+      selectNode(savedSelected); // 统一入口：写 ref + setSelected + sigma.refresh 高亮
     }
 
     return () => {
@@ -709,7 +717,7 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
       window.removeEventListener('pagehide', onPageHide);
       // 离开页面前最后保存一次视角（节流窗口内也强制写），供切回时还原
       lastSaveRef.current = 0;
-      saveView();
+      saveView(true);
       saveViewRef.current = null;
       sigma.getCamera().removeListener('updated', onCamera);
       hoveredRef.current = null;
