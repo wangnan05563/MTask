@@ -244,10 +244,10 @@ export function TunnelPanel() {
         </div>
       </div>
 
-      <div data-t06005="row-config-provider" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.1fr) minmax(0, 0.9fr)', gap: 12, alignItems: 'start', marginTop: 12 }}>
+      <div data-t06005="row-config-provider" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12, alignItems: 'start', marginTop: 12 }}>
         <div data-t06005="config-card" style={{ ...card, marginBottom: 0, minWidth: 0 }}>
           <div style={{ fontWeight: 600, marginBottom: 10 }}>隧道配置</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
             <div>
               <label htmlFor="tunnel-provider" style={label}>提供方</label>
               <select id="tunnel-provider" value={provider} onChange={(e) => setProvider(e.target.value as typeof provider)} style={field}>
