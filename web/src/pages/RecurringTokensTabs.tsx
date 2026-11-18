@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, type TaskCategory } from '../api/client';
 import { askConfirm } from '../ui/dialogs'; // T01699：确认框归一（原生 confirm 阻塞渲染线程且样式不一致）
-import { AlertTriangle, ChevronDown, HelpCircle, LayoutTemplate, Pencil, Play, Save, X } from 'lucide-react';
+import { AlertTriangle, ChevronDown, HelpCircle, KeyRound, LayoutTemplate, Pencil, Play, Save, X } from 'lucide-react';
+import { SettingsHelpIcon } from '../ui/settingsHelp'; // T06019：子页说明文字改为语义图标
 import { RecurringSchedulePicker, defaultSchedule, ruleFromSchedule, scheduleFromRule, scheduleSummary, type RecurringSchedule } from './RecurringSchedulePicker';
 import { ProjectListHint, loadProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表统一容错层
 import { getLang, onLangChange, registerDict, setLang as setGlobalLang, t, term, useLang, type Lang } from '../i18n';
@@ -637,9 +638,16 @@ export function ApiTokensTab() {
 
   return (
     <div style={{ maxWidth: 760 }}>
-      <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 12 }}>
-        {t('供外部脚本调用 MTask REST API 的具名凭据（请求头 X-Access-Token）；在内网穿透开启时与主令牌等效。可随时停用或撤销。', '供外部脚本调用 MTask REST API 的具名凭据（请求头 X-Access-Token）；在内网穿透开启时与主令牌等效。可随时停用或撤销。')}
-        <b>{t('只读', '只读')}</b>{t('凭据仅放行 GET（写操作返回 403），适合给看板/统计类脚本——拿到 token 也改不动数据。', '凭据仅放行 GET（写操作返回 403），适合给看板/统计类脚本——拿到 token 也改不动数据。')}
+      <div style={{ marginBottom: 12 }}>
+        <SettingsHelpIcon
+          icon={KeyRound}
+          label={t('API 令牌', 'API 令牌')}
+          ariaDescription={`${t('供外部脚本调用 MTask REST API 的具名凭据（请求头 X-Access-Token）；在内网穿透开启时与主令牌等效。可随时停用或撤销。', '供外部脚本调用 MTask REST API 的具名凭据（请求头 X-Access-Token）；在内网穿透开启时与主令牌等效。可随时停用或撤销。')}${t('只读', '只读')}${t('凭据仅放行 GET（写操作返回 403），适合给看板/统计类脚本——拿到 token 也改不动数据。', '凭据仅放行 GET（写操作返回 403），适合给看板/统计类脚本——拿到 token 也改不动数据。')}`}
+          description={<>
+            {t('供外部脚本调用 MTask REST API 的具名凭据（请求头 X-Access-Token）；在内网穿透开启时与主令牌等效。可随时停用或撤销。', '供外部脚本调用 MTask REST API 的具名凭据（请求头 X-Access-Token）；在内网穿透开启时与主令牌等效。可随时停用或撤销。')}
+            <b>{t('只读', '只读')}</b>{t('凭据仅放行 GET（写操作返回 403），适合给看板/统计类脚本——拿到 token 也改不动数据。', '凭据仅放行 GET（写操作返回 403），适合给看板/统计类脚本——拿到 token 也改不动数据。')}
+          </>}
+        />
       </div>
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>

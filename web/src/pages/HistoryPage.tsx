@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { askConfirm } from '../ui/dialogs';
-import { Archive, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, FolderInput, RotateCcw, Search, X } from 'lucide-react';
+import { Archive, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, FolderInput, History, RotateCcw, Search, X } from 'lucide-react';
 import { relTime } from '../ui/format';
 import { useSessionState } from '../ui/session';
 import { SETTINGS_SEARCH_EVENT, peekSettingsSearchIntent, takeSettingsSearchIntent, type SettingsSearchIntentEventDetail } from '../ui/settingsSearch'; // T04099：命令面板跳转带关键词
 import { ProjectListHint, projectListPlaceholder, refreshProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
+import { SettingsHelpIcon } from '../ui/settingsHelp'; // T06019：子页说明文字改为语义图标
 
 /** 快照内任务（只读） */
 interface SnapTask {
@@ -244,10 +245,13 @@ export function HistoryPage() {
 
       {notice && <div style={{ position: 'fixed', top: 12, right: 16, zIndex: 200, padding: '6px 12px', borderRadius: 6, background: 'var(--card-bg)', border: '1px solid var(--accent)', fontSize: 'var(--fs-s)', color: 'var(--text)' }}>{notice}</div>}
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>
-          项目级组织过程资产沉淀——项目整体转为快照后从任务/计划菜单隐去；<strong style={{ color: 'var(--text)' }}>归档</strong>为软删除区，二者独立
-        </span>
+      <div style={{ marginBottom: 4 }}>
+        <SettingsHelpIcon
+          icon={History}
+          label="历史版本"
+          ariaDescription="项目级组织过程资产沉淀——项目整体转为快照后从任务/计划菜单隐去；归档为软删除区，二者独立。"
+          description={<>项目级组织过程资产沉淀——项目整体转为快照后从任务/计划菜单隐去；<strong style={{ color: 'var(--text)' }}>归档</strong>为软删除区，二者独立</>}
+        />
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: 10, margin: '12px 0' }}>

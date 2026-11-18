@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from 'react';
-import { Check, Link2, List as ListIcon, Network, Pencil, Plus, Save, Tag, Trash2, Undo2, X } from 'lucide-react';
+import { Check, Link2, List as ListIcon, Brain, Network, Pencil, Plus, Save, Tag, Trash2, Undo2, X } from 'lucide-react';
 import { api } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { HoverCard } from '../ui/HoverCard';
+import { SettingsHelpIcon } from '../ui/settingsHelp'; // T06019：子页说明文字改为语义图标
 import { MemoryGraph } from './MemoryGraph';
 
 /**
@@ -353,9 +354,13 @@ export function MemoryTab() {
         .memory-table th, .memory-table td { white-space: nowrap; }
         .memory-cell-text { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       `}</style>
-      <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 12 }}>
-        产品维度的 AI 长期记忆：同一产品下的多期项目共享记忆池，跨产品严格隔离。
-        {productKey && <span> <b>本页记忆仅属于产品「{productKey}」</b>，其它产品的记忆不会出现在此处。</span>}
+      <div style={{ marginBottom: 12 }}>
+        <SettingsHelpIcon
+          icon={Brain}
+          label="记忆管理"
+          ariaDescription="产品维度的 AI 长期记忆：同一产品下的多期项目共享记忆池，跨产品严格隔离。"
+          description={<>产品维度的 AI 长期记忆：同一产品下的多期项目共享记忆池，跨产品严格隔离。{productKey && <span> <b>本页记忆仅属于产品「{productKey}」</b>，其它产品的记忆不会出现在此处。</span>}</>}
+        />
       </div>
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>

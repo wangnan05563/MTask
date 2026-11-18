@@ -3,6 +3,7 @@ import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视
 import { api } from '../api/client';
 import { askConfirm } from '../ui/dialogs';
 import { Database, Download, FileUp, Pencil, Plus, RefreshCw, Search, Table2, Trash2, X } from 'lucide-react';
+import { SettingsHelpIcon } from '../ui/settingsHelp'; // T06019：子页说明文字改为语义图标
 
 /**
  * 数据库维护 Tab（设置 > 数据维护，位于「数据迁移」右侧）。
@@ -379,8 +380,13 @@ export function DbAdminTab() {
 
   return (
     <div>
-      <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 12 }}>
-        业务表在线增删改查。删除操作需确认码 <b>{CONFIRM_TOKEN}</b>；建议先「导出」备份再修改。
+      <div style={{ marginBottom: 12 }}>
+        <SettingsHelpIcon
+          icon={Database}
+          label="数据库维护"
+          ariaDescription={`业务表在线增删改查。删除操作需确认码 ${CONFIRM_TOKEN}；建议先「导出」备份再修改。`}
+          description={<>业务表在线增删改查。删除操作需确认码 <b>{CONFIRM_TOKEN}</b>；建议先「导出」备份再修改。</>}
+        />
       </div>
 
       {/* T01061-FR5.1：自动备份/恢复区——每日自动备份（保留 14 份），手动备份/恢复不停机 */}

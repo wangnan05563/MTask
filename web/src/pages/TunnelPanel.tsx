@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api, setAccessToken } from '../api/client';
 import { askConfirm } from '../ui/dialogs';
 import { Copy, Network, Pause, Play, Save, ExternalLink, RefreshCw, PlugZap, KeyRound } from 'lucide-react';
+import { SettingsHelpIcon } from '../ui/settingsHelp'; // T06019：子页说明文字改为语义图标
 
 /** T02149：tailscale_not_ready 的服务端 reason → 可操作指引文案（if/return 链，不留嵌套三元） */
 function tailscaleNotReadyHint(reason?: string): string {
@@ -181,8 +182,8 @@ export function TunnelPanel() {
   return (
     <div data-t06005="layout" style={{ maxWidth: '100%' }}>
       <style>{`@media (max-width: 900px) { [data-t06005="row-status-token"], [data-t06005="row-config-provider"] { grid-template-columns: 1fr !important; } }`}</style>
-      <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 12 }}>
-        将本机 Web 服务暴露到公网，手机/远程浏览器可通过隧道地址访问使用。支持 Cloudflare / cpolar / Tailscale。
+      <div style={{ marginBottom: 12 }}>
+        <SettingsHelpIcon icon={Network} label="内网穿透" ariaDescription="将本机 Web 服务暴露到公网，手机/远程浏览器可通过隧道地址访问使用。支持 Cloudflare / cpolar / Tailscale。" description="将本机 Web 服务暴露到公网，手机/远程浏览器可通过隧道地址访问使用。支持 Cloudflare / cpolar / Tailscale。" />
       </div>
 
       {/* T06005：运行状态与访问令牌同一水平行；下半部「隧道配置」与提供方动态参数同行 */}

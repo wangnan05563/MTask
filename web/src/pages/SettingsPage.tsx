@@ -3,10 +3,11 @@ import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视
 import { api, type TaskCategory } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { FONT_OPTIONS, FONT_SIZE_OPTIONS, useSettings, type ImportMode } from '../settings';
-import { AlignLeft, Ban, Download, ExternalLink, FileUp, FolderPlus, LayoutGrid, MonitorCog, Moon, Pencil, RefreshCw, RotateCcw, Save, ShieldCheck, Sun, Trash2 } from 'lucide-react';
+import { AlignLeft, ArrowLeftRight, Ban, Download, ExternalLink, FileUp, FolderPlus, LayoutGrid, MonitorCog, Moon, Pencil, RefreshCw, RotateCcw, Save, Settings2, ShieldCheck, Sun, Tags, Trash2 } from 'lucide-react';
 import { getLang, setLang, onLangChange, type Lang } from '../i18n'; // T01071-FR5.4：i18n 底座
 import { usePersistentState } from '../ui/session'; // T03271（UX-09③）：Tab 选中态跨页面/跨会话保持（沿用 T02977 口径）
 import { SETTINGS_TAB_LABELS, filterSettingsGroups, normalizeSettingsTab } from '../ui/settingsTabs'; // T03271（UX-09①②）：页签与分组单源
+import { SettingsHelpIcon } from '../ui/settingsHelp'; // T06019：子页说明文字改为语义图标
 import { updateCardStore, shownProgressOf, type UpdateCheckInfo } from '../stores/updateCardStore';
 
 /** T01060-FR4.1：强调色预设色板（与主题内置 accent 同源的六色系） */
@@ -56,14 +57,14 @@ export function SettingsPage() {
     return () => globalThis.removeEventListener('mtaskSettingsTab', onFocus);
   }, [setSt]);
   const [q, setQ] = useState('');
-  // T05815：设置菜单两种视图——detailed=明文详情（默认，保持历史布局），compact=简化图标（纯图标+悬浮提示）。
-  // 只改菜单项呈现，不改分组/页签层级；写入 localStorage，刷新与重启后保持用户选择。
+  // T06019：设置菜单默认以简洁图标呈现（仅图标 + 悬浮/点击回显名称），
+  // 沿用 T05815 的图标与状态样式；偏好仍可切回明文模式。
   const [menuMode, setMenuMode] = useState<'detailed' | 'compact'>(() => {
-    try { return localStorage.getItem('mtask.settingsMenuMode') === 'compact' ? 'compact' : 'detailed'; }
-    catch { return 'detailed'; }
+    try { return localStorage.getItem('mtask.settingsMenuMode.v2') === 'detailed' ? 'detailed' : 'compact'; }
+    catch { return 'compact'; }
   });
   useEffect(() => {
-    try { localStorage.setItem('mtask.settingsMenuMode', menuMode); } catch { /* 隐私模式/存储禁用时静默降级 */ }
+    try { localStorage.setItem('mtask.settingsMenuMode.v2', menuMode); } catch { /* 隐私模式/存储禁用时静默降级 */ }
   }, [menuMode]);
   const compactMenu = menuMode === 'compact';
   const groups = filterSettingsGroups(q);
@@ -277,7 +278,7 @@ function CategoriesTab() {
   return (
     <div style={{ maxWidth: 560 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-        <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }}>管理任务归类选项；删除分类后其下任务回到「未分类」。</div>
+        <SettingsHelpIcon icon={Tags} label="任务分类" ariaDescription="管理任务归类选项；删除分类后其下任务回到「未分类」。" description="管理任务归类选项；删除分类后其下任务回到「未分类」。" />
         <button onClick={() => void add()} title="新增分类 — 新建一个任务分类选项" aria-label="新增分类：新建任务分类选项" style={{ fontSize: 'var(--fs-m)', padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           <FolderPlus size={13} /> 新增分类
         </button>
@@ -376,8 +377,8 @@ function GeneralTab() {
         .settings-general-col { display: grid; gap: 18px; align-content: start; min-width: 0; }
         @media (max-width: 1200px) { .settings-general-grid { grid-template-columns: 1fr; gap: 0; } }
       `}</style>
-      <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 16 }}>
-        以下偏好会立即应用并自动保存，刷新或重开应用后保持。
+      <div style={{ marginBottom: 16 }}>
+        <SettingsHelpIcon icon={Settings2} label="通用设置" ariaDescription="以下偏好会立即应用并自动保存，刷新或重开应用后保持。" description="以下偏好会立即应用并自动保存，刷新或重开应用后保持。" />
       </div>
 
       <div className="settings-general-grid">
@@ -645,8 +646,13 @@ function MigrationTab() {
 
   return (
     <div style={{ maxWidth: 620 }}>
-      <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 14 }}>
-        用于<strong>换电脑或重装系统</strong>时迁移用户数据：先在旧机导出备份文件，再到新机安装本应用后导入即可。
+      <div style={{ marginBottom: 14 }}>
+        <SettingsHelpIcon
+          icon={ArrowLeftRight}
+          label="数据迁移"
+          ariaDescription="用于换电脑或重装系统时迁移用户数据：先在旧机导出备份文件，再到新机安装本应用后导入即可。"
+          description={<>用于<strong>换电脑或重装系统</strong>时迁移用户数据：先在旧机导出备份文件，再到新机安装本应用后导入即可。</>}
+        />
       </div>
 
       <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 14, marginBottom: 14, background: 'var(--card-bg)' }}>

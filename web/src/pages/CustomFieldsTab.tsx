@@ -9,8 +9,10 @@
  * 已落库的值全部变成指向空气的孤值。这里逐行编辑并保留 id，被引用的选项由服务端拒绝硬删（PM-203④）。
  */
 import { useEffect, useState } from 'react';
+import { ListPlus } from 'lucide-react';
 import { api, type CustomField, type CustomFieldType, type Project } from '../api/client';
 import { FIELD_SM, SELECT } from '../ui/primitives'; // PM-302 ① 单源 ui/primitives.ts
+import { SettingsHelpIcon } from '../ui/settingsHelp'; // T06019：子页说明文字改为语义图标
 
 const TYPE_LABEL: Record<CustomFieldType, string> = { text: '文本', number: '数字', date: '日期', select: '单选' };
 const PROJECT_KEY = 'mtask.customFields.projectId';
@@ -114,11 +116,7 @@ export function CustomFieldsTab() {
   return (
     <div style={{ maxWidth: 720 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
-        <div>
-          <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }}>
-            为选中项目增加文本 / 数字 / 日期 / 单选字段；只描述任务，不改变任务的 todo / done 状态。
-          </div>
-        </div>
+        <SettingsHelpIcon icon={ListPlus} label="自定义字段" ariaDescription="为选中项目增加文本 / 数字 / 日期 / 单选字段；只描述任务，不改变任务的 todo / done 状态。" description="为选中项目增加文本 / 数字 / 日期 / 单选字段；只描述任务，不改变任务的 todo / done 状态。" />
         <button onClick={startCreate} disabled={!projectId || busy}
           aria-label="新建自定义字段" title="在当前项目新建一个自定义字段"
           style={{ fontSize: 'var(--fs-m)', padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: projectId ? 'pointer' : 'default', whiteSpace: 'nowrap' }}>

@@ -14,7 +14,8 @@ import { api } from '../api/client';
 import { askConfirm } from '../ui/dialogs';
 import { HoverCard } from '../ui/HoverCard';
 import { ProjectListHint, useProjectList } from '../ui/projectList';
-import { CircleHelp, Eye, ListChecks, Plus, RefreshCw, Save, ShieldCheck, Trash2 } from 'lucide-react';
+import { CircleHelp, Eye, ListChecks, Plus, RefreshCw, Save, ScanLine, ShieldCheck, Trash2 } from 'lucide-react';
+import { SettingsHelpIcon } from '../ui/settingsHelp'; // T06019：子页说明文字改为语义图标
 
 interface ProbeView {
   available: boolean;
@@ -303,8 +304,13 @@ export function SonarSettingsTab() {
       `}</style>
 
       <div className="sonar-config-left" data-t05788="sonar-left" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>
-        SonarQube 连接参数与扫描环境。首版按 Community 版实现（用 <code>sonar.inclusions</code> 收窄增量），分支/PR 模式列为后续迭代。
+      <div style={{ marginBottom: 2 }}>
+        <SettingsHelpIcon
+          icon={ScanLine}
+          label="SonarQube"
+          ariaDescription="SonarQube 连接参数与扫描环境。首版按 Community 版实现（用 sonar.inclusions 收窄增量），分支/PR 模式列为后续迭代。"
+          description={<>SonarQube 连接参数与扫描环境。首版按 Community 版实现（用 <code>sonar.inclusions</code> 收窄增量），分支/PR 模式列为后续迭代。</>}
+        />
       </div>
 
       <HoverCard
