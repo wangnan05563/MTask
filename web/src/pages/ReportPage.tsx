@@ -884,25 +884,47 @@ function ReadyPlansBar({ plans }: { readonly plans: readonly ReadyPlanRow[] }) {
   );
 }
 
-/** T00816 / T02458 / T05792：工作台标题行 + 控制台全屏切换（无文字、带动画）。
- *  T05792：移除与左侧菜单重复的「AI 工作台」整行标题与其说明文字，仅保留必要的全屏切换操作区。 */
-function WorkbenchHeader({ consoleCollapsed, onToggleConsole }: {
+/** T06013：功能卡片标题行——标题在左，视图切换（图标）与全屏按钮依次靠右。 */
+function WorkbenchHeader({ consoleCollapsed, onToggleConsole, cardCount, favoriteCount, cardView, onCardView }: {
   readonly consoleCollapsed: boolean;
   readonly onToggleConsole: () => void;
+  readonly cardCount: number;
+  readonly favoriteCount: number;
+  readonly cardView: 'all' | 'favorite';
+  readonly onCardView: (view: 'all' | 'favorite') => void;
 }) {
+  const iconTab = (active: boolean): CSSProperties => ({
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 24,
+    borderRadius: 6, border: `1px solid ${active ? 'var(--accent)' : 'transparent'}`,
+    background: active ? 'var(--accent-soft)' : 'transparent',
+    color: active ? 'var(--accent)' : 'var(--text)', cursor: 'pointer', padding: 0,
+  });
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, marginBottom: 4 }}>
-      {/* 点击隐藏右侧控制台让本窗格全屏，再点还原；全屏中按钮仍在本窗格内可见，无需额外恢复入口 */}
-      <button
-        type="button"
-        onClick={onToggleConsole}
-        title={consoleCollapsed ? '还原 — 退出全屏，并排展示 AI 工作台与控制台' : '全屏 — 隐藏右侧 AI 控制台，让 AI 工作台占满整行'}
-        aria-label={consoleCollapsed ? '还原：退出全屏' : '全屏：隐藏 AI 控制台'}
-        className={`tbtn-anim${consoleCollapsed ? ' task-breathe' : ''}`}
-        style={{ display: 'inline-flex', alignItems: 'center', padding: 4, borderRadius: 6, cursor: 'pointer', background: 'var(--card-bg)', color: 'var(--text)' }}
-      >
-        {consoleCollapsed ? <PanelRightOpen size={14} /> : <Maximize size={14} />}
-      </button>
+    <div data-t06009="function-cards-header" style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '14px 0 0', padding: '0 2px 9px', borderBottom: '1px solid var(--border)' }}>
+      <LayoutGrid size={14} style={{ color: 'var(--accent)', flexShrink: 0 }} aria-hidden />
+      <span style={{ fontSize: 'var(--fs-l)', fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap' }}>功能卡片</span>
+      <span data-t06009="function-card-count" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{cardCount} 项能力</span>
+      <div style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        <div role="tablist" aria-label="功能卡片视图" style={{ display: 'inline-flex', alignItems: 'center', gap: 2, padding: 2, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface-2)' }}>
+          <button type="button" role="tab" data-t06008="view-all" aria-selected={cardView === 'all'} title={`全量卡片（${cardCount}）`} aria-label={`全量卡片（${cardCount}）`} onClick={() => onCardView('all')} style={iconTab(cardView === 'all')}>
+            <LayoutGrid size={13} />
+          </button>
+          <button type="button" role="tab" data-t06008="view-favorite" aria-selected={cardView === 'favorite'} title={`常用卡片（${favoriteCount}）`} aria-label={`常用卡片（${favoriteCount}）`} onClick={() => onCardView('favorite')} style={iconTab(cardView === 'favorite')}>
+            <Star size={13} />
+          </button>
+        </div>
+        {/* 点击隐藏右侧控制台让本窗格全屏，再点还原；全屏中按钮仍在本窗格内可见，无需额外恢复入口 */}
+        <button
+          type="button"
+          onClick={onToggleConsole}
+          title={consoleCollapsed ? '还原 — 退出全屏，并排展示 AI 工作台与控制台' : '全屏 — 隐藏右侧 AI 控制台，让 AI 工作台占满整行'}
+          aria-label={consoleCollapsed ? '还原：退出全屏' : '全屏：隐藏 AI 控制台'}
+          className={`tbtn-anim${consoleCollapsed ? ' task-breathe' : ''}`}
+          style={{ display: 'inline-flex', alignItems: 'center', padding: 4, borderRadius: 6, cursor: 'pointer', background: 'var(--card-bg)', color: 'var(--text)' }}
+        >
+          {consoleCollapsed ? <PanelRightOpen size={14} /> : <Maximize size={14} />}
+        </button>
+      </div>
     </div>
   );
 }
@@ -1494,13 +1516,6 @@ export function ReportPage() {
     }
     endCardDrag();
   };
-  const cardViewTabStyle = (active: boolean): CSSProperties => ({
-    display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 9px', borderRadius: 7,
-    border: `1px solid ${active ? 'var(--accent)' : 'transparent'}`,
-    background: active ? 'var(--accent-soft)' : 'transparent',
-    color: active ? 'var(--accent)' : 'var(--text)',
-    fontSize: 'var(--fs-xs)', fontWeight: active ? 600 : 400, cursor: 'pointer',
-  });
 
   // 工作面板开关回调（S3776：从 JSX 内联箭头下沉）
   const closePrdGen = () => setShowPrdGen(false);
@@ -1709,45 +1724,20 @@ export function ReportPage() {
           收起文档区后左侧主区隐藏，控制台 flex 自动占满整行，实现全屏浏览 AI 洞察 */}
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
         <div style={{ flex: 1, minWidth: 0, display: splitCollapsed ? 'none' : 'block' }}>
-      <WorkbenchHeader consoleCollapsed={consoleCollapsed} onToggleConsole={() => setConsoleCollapsed((v) => !v)} />
+      <WorkbenchHeader
+        consoleCollapsed={consoleCollapsed}
+        onToggleConsole={() => setConsoleCollapsed((v) => !v)}
+        cardCount={reportCards.length}
+        favoriteCount={favoriteCount}
+        cardView={effectiveCardView}
+        onCardView={setCardView}
+      />
 
       {/* T01058-FR1.3：「现在做这个」就绪任务推荐条——deps 前置均完成的执行行（有就绪项时置顶展示，点击定位任务） */}
       {projectId && <ReadyPlansBar plans={readyPlans} />}
 
       {/* T03176（D-14）：AI 不可用只提示一次（而非每张卡重复一遍），卡片本身保留可见但禁用 */}
       {aiDown && readiness && <AiUnavailableHint r={readiness} style={{ margin: '14px 0 0' }} />}
-
-      {/* T06009：左侧能力区补齐标题图标，与右侧「AI 控制台」标题行保持同一套图标/字重/间距语言；
-          其下能力卡片统一使用 30×30 图标容器、细边框与极轻投影，形成完整的「功能卡片」模块。 */}
-      <div data-t06009="function-cards-header" style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, margin: '14px 0 0', padding: '0 2px 9px', borderBottom: '1px solid var(--border)' }}>
-        <LayoutGrid size={14} style={{ color: 'var(--accent)', flexShrink: 0 }} aria-hidden />
-        <span style={{ fontSize: 'var(--fs-l)', fontWeight: 600, color: 'var(--text)' }}>功能卡片</span>
-        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>选择能力，点击卡片展开对应工作面板</span>
-        <span data-t06009="function-card-count" style={{ marginLeft: 'auto', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{reportCards.length} 项能力</span>
-      </div>
-
-      {/* T06008：全量/常用双视图 + 拖拽排序状态条。视图、收藏集合、顺序均持久化到 localStorage。 */}
-      <div data-t06008="card-view-bar" style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, margin: '10px 0 0' }}>
-        <div role="tablist" aria-label="功能卡片视图" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: 3, border: '1px solid var(--border)', borderRadius: 9, background: 'var(--surface-2)' }}>
-          <button
-            type="button" role="tab" data-t06008="view-all"
-            aria-selected={effectiveCardView === 'all'}
-            onClick={() => setCardView('all')}
-            style={cardViewTabStyle(effectiveCardView === 'all')}
-          >
-            全量卡片 <span style={{ opacity: 0.8 }}>{reportCards.length}</span>
-          </button>
-          <button
-            type="button" role="tab" data-t06008="view-favorite"
-            aria-selected={effectiveCardView === 'favorite'}
-            onClick={() => setCardView('favorite')}
-            style={cardViewTabStyle(effectiveCardView === 'favorite')}
-          >
-            常用卡片 <span style={{ opacity: 0.8 }}>{favoriteCount}</span>
-          </button>
-        </div>
-        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>拖拽卡片右上角手柄排序；星标固定到常用视图</span>
-      </div>
 
       {/* T00621：AI 能力入口五卡片同行（统一风格：图标 + 标题 + 描述 + 底部展开提示；S3776 数据驱动抽取） */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12, margin: '14px 0 0' }}>
