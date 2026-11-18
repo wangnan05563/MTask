@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { FIELD_BLOCK } from '../ui/primitives'; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
-import { Archive, ChevronDown, ChevronUp, Code2, Cpu, Copy, Eye, EyeOff, Loader2, Pencil, PlugZap, Plus, Power, RotateCcw, Save, Settings2, Star, X, Check, Zap } from 'lucide-react';
+import { Archive, ChevronDown, ChevronUp, Code2, Cpu, Copy, Eye, EyeOff, Loader2, Pencil, PlugZap, Plus, Power, RotateCcw, Save, Star, X, Check, Zap } from 'lucide-react';
 import { api, type AIProviderPreset, type AITool, type ConfigIssue } from '../api/client';
 import { UsagePanel } from './UsagePanel';
 import { askConfirm } from '../ui/dialogs';
@@ -73,11 +73,11 @@ function ModelCopyButton({ model, flash }: { readonly model: string | null; read
   };
   return (
     <button
-      className="abtn" onClick={copy}
+      className="abtn model-copy-btn" onClick={copy}
       disabled={!model}
       title={model ? `复制模型 — 复制当前选择的模型名称（${model}）` : '复制模型 — 当前未选择模型'}
       aria-label={copied ? '已复制模型名称' : '复制模型名称'}
-      style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', cursor: model ? 'pointer' : 'not-allowed', opacity: model ? 1 : 0.4, color: copied ? 'var(--success, var(--accent))' : undefined }}
+      style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', cursor: model ? 'pointer' : 'not-allowed', color: copied ? 'var(--success, var(--accent))' : undefined }}
     >
       {copied
         ? <Check size={13} className="copy-pop" style={{ display: 'inline-block', verticalAlign: '-2px' }} />
@@ -128,30 +128,6 @@ function ToolActionsCell({ tool, testing, probing, fetchingModels, testResult, p
           style={{ fontSize: 'var(--fs-s)', marginRight: 6, color: 'var(--accent)' }}
         >控制台</a>
       ) : null}
-      <button
-        className="tbtn-anim"
-        data-t05813="config-button"
-        onClick={() => onOpenEdit(tool)}
-        title="配置 — 打开该模型的配置表单"
-        aria-label="配置模型"
-        style={{
-          width: 32, height: 32, marginRight: 6, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-          background: 'transparent', border: '1px solid transparent', borderRadius: 8, cursor: 'pointer',
-          color: 'var(--text-secondary)', transition: 'background .15s ease, border-color .15s ease, color .15s ease',
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.background = 'var(--surface-2)';
-          e.currentTarget.style.borderColor = 'var(--border-strong)';
-          e.currentTarget.style.color = 'var(--text)';
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.background = 'transparent';
-          e.currentTarget.style.borderColor = 'transparent';
-          e.currentTarget.style.color = 'var(--text-secondary)';
-        }}
-      >
-        <Settings2 size={16} style={{ display: 'inline-block' }} />
-      </button>
       <button
         className="abtn" onClick={() => onOpenEdit(tool)}
         title="编辑 — 编辑该配置，保留原 API Key"
@@ -379,7 +355,7 @@ interface ToolRowProps {
  * 依据 name / type / endpoint 关键词匹配预制 id，命中本地打包图标才渲染；推断不出则不显示（不阻塞名称）。
  */
 function ToolVendorLogo({ tool }: { readonly tool: AITool }) {
-  const id = inferProviderId(`${tool.name} ${tool.type} ${tool.endpoint}`);
+  const id = inferProviderId({ name: tool.name, endpoint: tool.endpoint, model: tool.model ?? '' });
   const src = id ? LOCAL_PROVIDER_LOGOS[id] : undefined;
   if (!src) return null;
   return (
@@ -407,7 +383,7 @@ function ToolRow(props: ToolRowProps) {
   else if (props.overId === tool.id) dragClass = ' tool-over';
   return (
     <tr
-      className={`arena-row${flushClass}${dragClass}${pressOn ? ' item-pressing' : ''}`}
+      className={`arena-row ai-tool-row${flushClass}${dragClass}${pressOn ? ' item-pressing' : ''}`}
       onMouseDown={(e) => { if ((e.target as HTMLElement).closest('button, input, select, a, textarea, label, [data-noscale]')) { return; } pressTimer.current = globalThis.setTimeout(() => setPressOn(true), 200); }}
       onMouseUp={() => { clearTimeout(pressTimer.current); setPressOn(false); }}
       onMouseLeave={() => { clearTimeout(pressTimer.current); setPressOn(false); }}
@@ -1105,7 +1081,12 @@ export function AIToolsPage() {
         .tool-over { box-shadow: inset 0 3px 0 var(--accent); background: var(--accent-soft, rgba(9,105,218,.08)); }
         button.provider-preset { transition: transform .15s ease, border-color .15s ease, box-shadow .15s ease; }
         button.provider-preset:hover { transform: translateY(-2px) !important; border-color: var(--accent) !important; box-shadow: 0 5px 14px rgba(0,0,0,.10); }
-        button.provider-preset:active { transform: translateY(0) scale(.99) !important; }`}</style>
+        button.provider-preset:active { transform: translateY(0) scale(.99) !important; }
+        /* T06052：模型复制默认隐藏，鼠标悬停行/键盘焦点进入行时显示，保留原布局不跳动 */
+        .ai-tool-row .model-copy-btn { opacity: 0; visibility: hidden; transition: none; }
+        .ai-tool-row:hover .model-copy-btn,
+        .ai-tool-row:focus-within .model-copy-btn { opacity: 1; visibility: visible; }
+        .ai-tool-row .model-copy-btn:disabled { opacity: .4; }`}</style>
       {/* 工具栏（T00522 修正：op-host 宿主 + 筛选下拉/搜索框默认隐藏悬浮显示）
           T03162（U39/U06 回归用例）：op-host 首个可聚焦元素必须常驻可见且排在 op-hidden 之前——
           原实现 h3 后直接是三个 op-hidden 控件，纯键盘 Tab 掠过工具栏后整段筛选/搜索不可达。
