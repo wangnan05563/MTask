@@ -1,0 +1,1183 @@
+{
+  "requirements": [
+    {
+      "reqNo": "FR-1.1",
+      "title": "功能需求 1: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.1",
+      "content": "需求 1 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.2",
+      "title": "功能需求 2: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.2",
+      "content": "需求 2 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.3",
+      "title": "功能需求 3: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P1",
+      "sourceRef": "§1.3",
+      "content": "需求 3 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.4",
+      "title": "功能需求 4: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.4",
+      "content": "需求 4 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.5",
+      "title": "功能需求 5: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.5",
+      "content": "需求 5 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.6",
+      "title": "功能需求 6: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P1",
+      "sourceRef": "§1.6",
+      "content": "需求 6 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.7",
+      "title": "功能需求 7: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.7",
+      "content": "需求 7 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.8",
+      "title": "功能需求 8: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.8",
+      "content": "需求 8 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.9",
+      "title": "功能需求 9: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P1",
+      "sourceRef": "§1.9",
+      "content": "需求 9 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.10",
+      "title": "功能需求 10: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.10",
+      "content": "需求 10 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.11",
+      "title": "功能需求 11: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.11",
+      "content": "需求 11 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.12",
+      "title": "功能需求 12: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P1",
+      "sourceRef": "§1.12",
+      "content": "需求 12 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.13",
+      "title": "功能需求 13: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.13",
+      "content": "需求 13 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.14",
+      "title": "功能需求 14: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.14",
+      "content": "需求 14 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.15",
+      "title": "功能需求 15: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P1",
+      "sourceRef": "§1.15",
+      "content": "需求 15 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.16",
+      "title": "功能需求 16: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.16",
+      "content": "需求 16 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.17",
+      "title": "功能需求 17: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.17",
+      "content": "需求 17 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.18",
+      "title": "功能需求 18: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P1",
+      "sourceRef": "§1.18",
+      "content": "需求 18 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.19",
+      "title": "功能需求 19: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.19",
+      "content": "需求 19 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.20",
+      "title": "功能需求 20: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.20",
+      "content": "需求 20 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.21",
+      "title": "功能需求 21: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P1",
+      "sourceRef": "§1.21",
+      "content": "需求 21 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.22",
+      "title": "功能需求 22: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.22",
+      "content": "需求 22 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.23",
+      "title": "功能需求 23: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.23",
+      "content": "需求 23 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.24",
+      "title": "功能需求 24: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P1",
+      "sourceRef": "§1.24",
+      "content": "需求 24 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.25",
+      "title": "功能需求 25: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.25",
+      "content": "需求 25 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.26",
+      "title": "功能需求 26: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.26",
+      "content": "需求 26 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.27",
+      "title": "功能需求 27: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P1",
+      "sourceRef": "§1.27",
+      "content": "需求 27 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.28",
+      "title": "功能需求 28: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.28",
+      "content": "需求 28 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.29",
+      "title": "功能需求 29: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.29",
+      "content": "需求 29 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.30",
+      "title": "功能需求 30: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P1",
+      "sourceRef": "§1.30",
+      "content": "需求 30 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.31",
+      "title": "功能需求 31: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.31",
+      "content": "需求 31 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.32",
+      "title": "功能需求 32: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.32",
+      "content": "需求 32 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.33",
+      "title": "功能需求 33: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P1",
+      "sourceRef": "§1.33",
+      "content": "需求 33 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.34",
+      "title": "功能需求 34: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.34",
+      "content": "需求 34 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.35",
+      "title": "功能需求 35: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.35",
+      "content": "需求 35 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.36",
+      "title": "功能需求 36: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P1",
+      "sourceRef": "§1.36",
+      "content": "需求 36 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.37",
+      "title": "功能需求 37: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.37",
+      "content": "需求 37 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.38",
+      "title": "功能需求 38: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.38",
+      "content": "需求 38 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.39",
+      "title": "功能需求 39: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P1",
+      "sourceRef": "§1.39",
+      "content": "需求 39 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.40",
+      "title": "功能需求 40: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.40",
+      "content": "需求 40 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.41",
+      "title": "功能需求 41: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.41",
+      "content": "需求 41 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.42",
+      "title": "功能需求 42: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P1",
+      "sourceRef": "§1.42",
+      "content": "需求 42 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.43",
+      "title": "功能需求 43: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.43",
+      "content": "需求 43 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.44",
+      "title": "功能需求 44: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.44",
+      "content": "需求 44 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.45",
+      "title": "功能需求 45: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P1",
+      "sourceRef": "§1.45",
+      "content": "需求 45 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.46",
+      "title": "功能需求 46: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.46",
+      "content": "需求 46 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.47",
+      "title": "功能需求 47: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.47",
+      "content": "需求 47 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.48",
+      "title": "功能需求 48: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P1",
+      "sourceRef": "§1.48",
+      "content": "需求 48 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.49",
+      "title": "功能需求 49: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.49",
+      "content": "需求 49 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "FR-1.50",
+      "title": "功能需求 50: 派发入口与队列行为",
+      "type": "FR",
+      "priority": "P0",
+      "sourceRef": "§1.50",
+      "content": "需求 50 描述：实现 B0 主动派发与自动触发入口，并保证与队列、执行会话菜单的分工清晰。"
+    },
+    {
+      "reqNo": "NFR-1.1",
+      "title": "非功能需求 1: 可观测性与稳定性",
+      "type": "NFR",
+      "priority": "P1",
+      "sourceRef": "§2.1",
+      "content": "非功能需求 1：导入质量门稳定在 5 个里程碑、30~40 条可执行任务、单一 WBS。"
+    },
+    {
+      "reqNo": "NFR-1.2",
+      "title": "非功能需求 2: 可观测性与稳定性",
+      "type": "NFR",
+      "priority": "P1",
+      "sourceRef": "§2.2",
+      "content": "非功能需求 2：导入质量门稳定在 5 个里程碑、30~40 条可执行任务、单一 WBS。"
+    },
+    {
+      "reqNo": "NFR-1.3",
+      "title": "非功能需求 3: 可观测性与稳定性",
+      "type": "NFR",
+      "priority": "P1",
+      "sourceRef": "§2.3",
+      "content": "非功能需求 3：导入质量门稳定在 5 个里程碑、30~40 条可执行任务、单一 WBS。"
+    },
+    {
+      "reqNo": "NFR-1.4",
+      "title": "非功能需求 4: 可观测性与稳定性",
+      "type": "NFR",
+      "priority": "P1",
+      "sourceRef": "§2.4",
+      "content": "非功能需求 4：导入质量门稳定在 5 个里程碑、30~40 条可执行任务、单一 WBS。"
+    },
+    {
+      "reqNo": "NFR-1.5",
+      "title": "非功能需求 5: 可观测性与稳定性",
+      "type": "NFR",
+      "priority": "P1",
+      "sourceRef": "§2.5",
+      "content": "非功能需求 5：导入质量门稳定在 5 个里程碑、30~40 条可执行任务、单一 WBS。"
+    },
+    {
+      "reqNo": "AC-1",
+      "title": "验收标准 1: 质量门通过且可追溯",
+      "type": "AC",
+      "priority": "P0",
+      "sourceRef": "§3.1",
+      "content": "验收标准 1：导入预演无硬阻断，AC 全部映射到计划行。"
+    },
+    {
+      "reqNo": "AC-2",
+      "title": "验收标准 2: 质量门通过且可追溯",
+      "type": "AC",
+      "priority": "P0",
+      "sourceRef": "§3.2",
+      "content": "验收标准 2：导入预演无硬阻断，AC 全部映射到计划行。"
+    },
+    {
+      "reqNo": "AC-3",
+      "title": "验收标准 3: 质量门通过且可追溯",
+      "type": "AC",
+      "priority": "P0",
+      "sourceRef": "§3.3",
+      "content": "验收标准 3：导入预演无硬阻断，AC 全部映射到计划行。"
+    },
+    {
+      "reqNo": "AC-4",
+      "title": "验收标准 4: 质量门通过且可追溯",
+      "type": "AC",
+      "priority": "P0",
+      "sourceRef": "§3.4",
+      "content": "验收标准 4：导入预演无硬阻断，AC 全部映射到计划行。"
+    },
+    {
+      "reqNo": "AC-5",
+      "title": "验收标准 5: 质量门通过且可追溯",
+      "type": "AC",
+      "priority": "P0",
+      "sourceRef": "§3.5",
+      "content": "验收标准 5：导入预演无硬阻断，AC 全部映射到计划行。"
+    }
+  ],
+  "plans": [
+    {
+      "title": "M1 架构设计与数据模型",
+      "kind": "milestone",
+      "wbsCode": "M1",
+      "parentCode": "",
+      "phaseCode": "M1",
+      "priority": "P0",
+      "estimateDays": 5,
+      "taskType": "design",
+      "sourceSection": "§1.1",
+      "description": "里程碑 M1：架构设计与数据模型。完成定义：该阶段全部子任务完成，接口与数据契约通过联调，质量门无新增阻断。 验收口径：关联待办全部完成、计划进度由子项自动聚合、无孤儿需求与无未映射 AC。",
+      "reqNos": [],
+      "acceptanceRefs": []
+    },
+    {
+      "title": "M2 核心调度与适配实现",
+      "kind": "milestone",
+      "wbsCode": "M2",
+      "parentCode": "",
+      "phaseCode": "M2",
+      "priority": "P0",
+      "estimateDays": 5,
+      "taskType": "design",
+      "sourceSection": "§1.2",
+      "description": "里程碑 M2：核心调度与适配实现。完成定义：该阶段全部子任务完成，接口与数据契约通过联调，质量门无新增阻断。 验收口径：关联待办全部完成、计划进度由子项自动聚合、无孤儿需求与无未映射 AC。",
+      "reqNos": [],
+      "acceptanceRefs": []
+    },
+    {
+      "title": "M3 派发入口与交互",
+      "kind": "milestone",
+      "wbsCode": "M3",
+      "parentCode": "",
+      "phaseCode": "M3",
+      "priority": "P0",
+      "estimateDays": 5,
+      "taskType": "design",
+      "sourceSection": "§1.3",
+      "description": "里程碑 M3：派发入口与交互。完成定义：该阶段全部子任务完成，接口与数据契约通过联调，质量门无新增阻断。 验收口径：关联待办全部完成、计划进度由子项自动聚合、无孤儿需求与无未映射 AC。",
+      "reqNos": [],
+      "acceptanceRefs": []
+    },
+    {
+      "title": "M4 可观测与质量门",
+      "kind": "milestone",
+      "wbsCode": "M4",
+      "parentCode": "",
+      "phaseCode": "M4",
+      "priority": "P0",
+      "estimateDays": 5,
+      "taskType": "design",
+      "sourceSection": "§1.4",
+      "description": "里程碑 M4：可观测与质量门。完成定义：该阶段全部子任务完成，接口与数据契约通过联调，质量门无新增阻断。 验收口径：关联待办全部完成、计划进度由子项自动聚合、无孤儿需求与无未映射 AC。",
+      "reqNos": [],
+      "acceptanceRefs": []
+    },
+    {
+      "title": "M5 验收与回归",
+      "kind": "milestone",
+      "wbsCode": "M5",
+      "parentCode": "",
+      "phaseCode": "M5",
+      "priority": "P0",
+      "estimateDays": 5,
+      "taskType": "design",
+      "sourceSection": "§1.5",
+      "description": "里程碑 M5：验收与回归。完成定义：该阶段全部子任务完成，接口与数据契约通过联调，质量门无新增阻断。 验收口径：关联待办全部完成、计划进度由子项自动聚合、无孤儿需求与无未映射 AC。",
+      "reqNos": [],
+      "acceptanceRefs": []
+    },
+    {
+      "title": "M1.1 实现第 1 项交付物",
+      "kind": "normal",
+      "wbsCode": "M1.1",
+      "parentCode": "M1",
+      "phaseCode": "M1",
+      "priority": "P0",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.1",
+      "description": "实现第 1 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.1"
+      ],
+      "acceptanceRefs": [
+        "AC-2"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M1.2 实现第 2 项交付物",
+      "kind": "normal",
+      "wbsCode": "M1.2",
+      "parentCode": "M1",
+      "phaseCode": "M1",
+      "priority": "P0",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.2",
+      "description": "实现第 2 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.2"
+      ],
+      "acceptanceRefs": [
+        "AC-3"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M1.3 实现第 3 项交付物",
+      "kind": "normal",
+      "wbsCode": "M1.3",
+      "parentCode": "M1",
+      "phaseCode": "M1",
+      "priority": "P0",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.3",
+      "description": "实现第 3 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.3"
+      ],
+      "acceptanceRefs": [
+        "AC-4"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M1.4 实现第 4 项交付物",
+      "kind": "normal",
+      "wbsCode": "M1.4",
+      "parentCode": "M1",
+      "phaseCode": "M1",
+      "priority": "P1",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.4",
+      "description": "实现第 4 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.4"
+      ],
+      "acceptanceRefs": [
+        "AC-5"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M1.5 实现第 5 项交付物",
+      "kind": "normal",
+      "wbsCode": "M1.5",
+      "parentCode": "M1",
+      "phaseCode": "M1",
+      "priority": "P0",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.5",
+      "description": "实现第 5 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.5"
+      ],
+      "acceptanceRefs": [
+        "AC-1"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M1.6 实现第 6 项交付物",
+      "kind": "normal",
+      "wbsCode": "M1.6",
+      "parentCode": "M1",
+      "phaseCode": "M1",
+      "priority": "P0",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.6",
+      "description": "实现第 6 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.6"
+      ],
+      "acceptanceRefs": [
+        "AC-2"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M1.7 实现第 7 项交付物",
+      "kind": "normal",
+      "wbsCode": "M1.7",
+      "parentCode": "M1",
+      "phaseCode": "M1",
+      "priority": "P0",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.7",
+      "description": "实现第 7 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.7"
+      ],
+      "acceptanceRefs": [
+        "AC-3"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M2.1 实现第 8 项交付物",
+      "kind": "normal",
+      "wbsCode": "M2.1",
+      "parentCode": "M2",
+      "phaseCode": "M2",
+      "priority": "P1",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.8",
+      "description": "实现第 8 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.8"
+      ],
+      "acceptanceRefs": [
+        "AC-4"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M2.2 实现第 9 项交付物",
+      "kind": "normal",
+      "wbsCode": "M2.2",
+      "parentCode": "M2",
+      "phaseCode": "M2",
+      "priority": "P0",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.9",
+      "description": "实现第 9 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.9"
+      ],
+      "acceptanceRefs": [
+        "AC-5"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M2.3 实现第 10 项交付物",
+      "kind": "normal",
+      "wbsCode": "M2.3",
+      "parentCode": "M2",
+      "phaseCode": "M2",
+      "priority": "P0",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.10",
+      "description": "实现第 10 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.10"
+      ],
+      "acceptanceRefs": [
+        "AC-1"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M2.4 实现第 11 项交付物",
+      "kind": "normal",
+      "wbsCode": "M2.4",
+      "parentCode": "M2",
+      "phaseCode": "M2",
+      "priority": "P0",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.11",
+      "description": "实现第 11 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.11"
+      ],
+      "acceptanceRefs": [
+        "AC-2"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M2.5 实现第 12 项交付物",
+      "kind": "normal",
+      "wbsCode": "M2.5",
+      "parentCode": "M2",
+      "phaseCode": "M2",
+      "priority": "P1",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.12",
+      "description": "实现第 12 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.12"
+      ],
+      "acceptanceRefs": [
+        "AC-3"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M2.6 实现第 13 项交付物",
+      "kind": "normal",
+      "wbsCode": "M2.6",
+      "parentCode": "M2",
+      "phaseCode": "M2",
+      "priority": "P0",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.13",
+      "description": "实现第 13 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.13"
+      ],
+      "acceptanceRefs": [
+        "AC-4"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M2.7 实现第 14 项交付物",
+      "kind": "normal",
+      "wbsCode": "M2.7",
+      "parentCode": "M2",
+      "phaseCode": "M2",
+      "priority": "P0",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.14",
+      "description": "实现第 14 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.14"
+      ],
+      "acceptanceRefs": [
+        "AC-5"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M3.1 实现第 15 项交付物",
+      "kind": "normal",
+      "wbsCode": "M3.1",
+      "parentCode": "M3",
+      "phaseCode": "M3",
+      "priority": "P0",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.15",
+      "description": "实现第 15 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.15"
+      ],
+      "acceptanceRefs": [
+        "AC-1"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M3.2 实现第 16 项交付物",
+      "kind": "normal",
+      "wbsCode": "M3.2",
+      "parentCode": "M3",
+      "phaseCode": "M3",
+      "priority": "P1",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.16",
+      "description": "实现第 16 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.16"
+      ],
+      "acceptanceRefs": [
+        "AC-2"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M3.3 实现第 17 项交付物",
+      "kind": "normal",
+      "wbsCode": "M3.3",
+      "parentCode": "M3",
+      "phaseCode": "M3",
+      "priority": "P0",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.17",
+      "description": "实现第 17 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.17"
+      ],
+      "acceptanceRefs": [
+        "AC-3"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M3.4 实现第 18 项交付物",
+      "kind": "normal",
+      "wbsCode": "M3.4",
+      "parentCode": "M3",
+      "phaseCode": "M3",
+      "priority": "P0",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.18",
+      "description": "实现第 18 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.18"
+      ],
+      "acceptanceRefs": [
+        "AC-4"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M3.5 实现第 19 项交付物",
+      "kind": "normal",
+      "wbsCode": "M3.5",
+      "parentCode": "M3",
+      "phaseCode": "M3",
+      "priority": "P0",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.19",
+      "description": "实现第 19 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.19"
+      ],
+      "acceptanceRefs": [
+        "AC-5"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M3.6 实现第 20 项交付物",
+      "kind": "normal",
+      "wbsCode": "M3.6",
+      "parentCode": "M3",
+      "phaseCode": "M3",
+      "priority": "P1",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.20",
+      "description": "实现第 20 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.20"
+      ],
+      "acceptanceRefs": [
+        "AC-1"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M3.7 实现第 21 项交付物",
+      "kind": "normal",
+      "wbsCode": "M3.7",
+      "parentCode": "M3",
+      "phaseCode": "M3",
+      "priority": "P0",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.21",
+      "description": "实现第 21 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.21"
+      ],
+      "acceptanceRefs": [
+        "AC-2"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M4.1 实现第 22 项交付物",
+      "kind": "normal",
+      "wbsCode": "M4.1",
+      "parentCode": "M4",
+      "phaseCode": "M4",
+      "priority": "P0",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.22",
+      "description": "实现第 22 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.22"
+      ],
+      "acceptanceRefs": [
+        "AC-3"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M4.2 实现第 23 项交付物",
+      "kind": "normal",
+      "wbsCode": "M4.2",
+      "parentCode": "M4",
+      "phaseCode": "M4",
+      "priority": "P0",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.23",
+      "description": "实现第 23 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.23"
+      ],
+      "acceptanceRefs": [
+        "AC-4"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M4.3 实现第 24 项交付物",
+      "kind": "normal",
+      "wbsCode": "M4.3",
+      "parentCode": "M4",
+      "phaseCode": "M4",
+      "priority": "P1",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.24",
+      "description": "实现第 24 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.24"
+      ],
+      "acceptanceRefs": [
+        "AC-5"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M4.4 实现第 25 项交付物",
+      "kind": "normal",
+      "wbsCode": "M4.4",
+      "parentCode": "M4",
+      "phaseCode": "M4",
+      "priority": "P0",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.25",
+      "description": "实现第 25 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.25"
+      ],
+      "acceptanceRefs": [
+        "AC-1"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M4.5 实现第 26 项交付物",
+      "kind": "normal",
+      "wbsCode": "M4.5",
+      "parentCode": "M4",
+      "phaseCode": "M4",
+      "priority": "P0",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.26",
+      "description": "实现第 26 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.26"
+      ],
+      "acceptanceRefs": [
+        "AC-2"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M4.6 实现第 27 项交付物",
+      "kind": "normal",
+      "wbsCode": "M4.6",
+      "parentCode": "M4",
+      "phaseCode": "M4",
+      "priority": "P0",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.27",
+      "description": "实现第 27 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.27"
+      ],
+      "acceptanceRefs": [
+        "AC-3"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M5.1 实现第 28 项交付物",
+      "kind": "normal",
+      "wbsCode": "M5.1",
+      "parentCode": "M5",
+      "phaseCode": "M5",
+      "priority": "P1",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.28",
+      "description": "实现第 28 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.28"
+      ],
+      "acceptanceRefs": [
+        "AC-4"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M5.2 实现第 29 项交付物",
+      "kind": "normal",
+      "wbsCode": "M5.2",
+      "parentCode": "M5",
+      "phaseCode": "M5",
+      "priority": "P0",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.29",
+      "description": "实现第 29 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.29"
+      ],
+      "acceptanceRefs": [
+        "AC-5"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M5.3 实现第 30 项交付物",
+      "kind": "normal",
+      "wbsCode": "M5.3",
+      "parentCode": "M5",
+      "phaseCode": "M5",
+      "priority": "P0",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.30",
+      "description": "实现第 30 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.30"
+      ],
+      "acceptanceRefs": [
+        "AC-1"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M5.4 实现第 31 项交付物",
+      "kind": "normal",
+      "wbsCode": "M5.4",
+      "parentCode": "M5",
+      "phaseCode": "M5",
+      "priority": "P0",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.31",
+      "description": "实现第 31 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.31"
+      ],
+      "acceptanceRefs": [
+        "AC-2"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M5.5 实现第 32 项交付物",
+      "kind": "normal",
+      "wbsCode": "M5.5",
+      "parentCode": "M5",
+      "phaseCode": "M5",
+      "priority": "P1",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.32",
+      "description": "实现第 32 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.32"
+      ],
+      "acceptanceRefs": [
+        "AC-3"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "M5.6 实现第 33 项交付物",
+      "kind": "normal",
+      "wbsCode": "M5.6",
+      "parentCode": "M5",
+      "phaseCode": "M5",
+      "priority": "P0",
+      "estimateDays": 2,
+      "taskType": "impl",
+      "sourceSection": "§1.33",
+      "description": "实现第 33 项交付物：完成接口与数据契约，补充异常分支与回归用例；边界是不改动既有队列语义，完成定义是单测、API 冒烟与质量门全部通过。",
+      "reqNos": [
+        "FR-1.33"
+      ],
+      "acceptanceRefs": [
+        "AC-4"
+      ],
+      "dependsOn": []
+    }
+  ]
+}

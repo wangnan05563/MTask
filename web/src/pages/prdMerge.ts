@@ -57,6 +57,11 @@ export interface PrdParseResult {
   truncatedNote?: string;
   /** T02270 复议：长文档已分片解析并完整合并——信息性提示，不是有损警示（与 truncatedNote 互斥） */
   parseNote?: string;
+  /** 2026-11-18：本次解析实际走的路径——single 单轮 / skeleton 骨架 / chunked 分片；
+   *  chunked 仅超长文档或显式请求，不再作为单轮失败后的自动回退。 */
+  parsePath?: 'single' | 'skeleton' | 'chunked';
+  /** 2026-11-18：模型输出预算低于建议值时的提示（低预算会优先走骨架模式） */
+  budgetWarn?: string;
   /** T03730：HTML 输入中被跳过、无法转为正文的片段（内嵌页/图表/无 alt 图片等）——必须显式提示用户 */
   parseWarnings?: string[];
   /** T03700+：分片失败/中止时缺失的片（含原文），面板据此提供查看、复制与单片补解析 */

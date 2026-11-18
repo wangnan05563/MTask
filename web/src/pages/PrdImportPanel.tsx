@@ -571,6 +571,14 @@ async function parseOneFile(
   // T02270 复议：分片完整跑完是**无损**结果，按普通信息展示——不能混进上面的 ⚠，
   // 否则用户看到分片提示会误判成「又被砍到 20 条」。
   if (r.parseNote) aiImportStore.log(r.parseNote);
+  // 2026-11-18：解析路径与预算诊断——低预算模型会走骨架模式，必须在控制台可见，
+  // 否则用户只会看到「需求/计划变少」却不知道是模型输出上限造成的。
+  if (r.parsePath === 'skeleton') {
+    aiImportStore.log(`${file.name}：本次走骨架模式（5 个里程碑 + 30~40 条 normal），未使用分片解析。`, 'info');
+  } else if (r.parsePath === 'chunked') {
+    aiImportStore.log(`${file.name}：本次走分片解析（仅超长文档或显式请求），分片可能产生多套 WBS，请核对质量门。`, 'info');
+  }
+  if (r.budgetWarn) aiImportStore.log(`⚠ ${r.budgetWarn}`, 'error');
   // 2026-11-10 质量复核优化②：服务端跨片去重后仍有多套里程碑编号时，解析完就点名，
   // 不等到导入后靠人工看甘特才发现（本次复核实测 7 套并行 WBS）。
   if ((r.wbsGroups ?? 0) > 1) {

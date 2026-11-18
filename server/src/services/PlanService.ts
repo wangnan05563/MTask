@@ -28,7 +28,7 @@ import { touchCompletedAt } from './IterationService'; // T03186（PM-201④）�
 import { WebhookService } from './WebhookService'; // T03196（PM-401）：计划事件外发
 import { isRateLimitError, sleepMs, rateLimitBackoffMs } from '../util/rateLimit'; // T03700：限流识别与退避单源
 import { htmlToMarkdown, decodeHtmlBuffer } from './htmlDoc'; // T03730：HTML 版 PRD → 层级文本（零新依赖）
-import { dedupeDraftsByNormalizedTitle, detectWbsGroups, formatWbsNote, isGapFillPlan, normalizeWbsGroups, deriveWbsTree, structuralChildEdges, wbsCodeOf, parentCodeOf } from '../util/prdWbs'; // 2026-11-10：分片 WBS 归一化 / 补齐行判定（质量复核优化）+ 2026-11-17：结构树与 parentCode 口径
+import { dedupeDraftsByNormalizedTitle, detectWbsGroups, formatWbsNote, isGapFillPlan, normalizeWbsGroups, collapseRepeatedWbsGroups, deriveWbsTree, structuralChildEdges, wbsCodeOf, parentCodeOf } from '../util/prdWbs'; // 2026-11-10：分片 WBS 归一化 / 补齐行判定（质量复核优化）+ 2026-11-17：结构树与 parentCode 口径 + 2026-11-18：分片 WBS 全局折叠
 
 /** T01361：需求跟踪矩阵行（prd_requirements 全列 + 联表摘要）——具体化类型替代 Record<string, unknown>（Sonar S6551） */
 export interface RequirementRow {
@@ -132,6 +132,26 @@ const MAX_PARSE_ROWS = 300;
 const PRD_IMPORT_CARD = 'ai.prd_import';
 const PLAN_IMPORT_CARD = 'ai.plan_import';
 const PRD_PARSE_MIN_OUTPUT_TOKENS = 12_288;
+/** 2026-11-18：单轮 PRD 解析的推荐输出预算。低于该值时不再白跑一次长单轮，
+ *  直接走「骨架模式」；避免 30k 字符输出被截断后静默落到分片路径。 */
+const PRD_PARSE_OUTPUT_BUDGET_MIN = 16_000;
+ /** 2026-11-18：单轮硬覆盖预算。模型支持更高输出时一次吃饱；供应商拒收会由 AIService 回退到 minMaxTokens。 */
+const PRD_PARSE_SINGLE_MAX_TOKENS = 32_768;
+ /** 2026-11-18：骨架模式输出预算——只输出 5 个里程碑 + 30~40 条 normal 标题/关联，不写长描述。 */
+const PRD_PARSE_SKELETON_MAX_TOKENS = 16_384;
+ /** 2026-11-18：单次 PRD 解析的最终需求上限（FR/NFR/AC/EX 四类），防止分片把风险/开放项也算成需求。 */
+const PRD_PARSE_MAX_REQUIREMENTS = 65;
+ /** 2026-11-18：单次 PRD 解析的可执行 normal 上限。超过时先按优先级/关联度保留，再交给质量门复核。 */
+const PRD_PARSE_MAX_NORMALS = 45;
+/** 2026-11-18：PRD 解析失败的可执行错误码——路由层原样回传，前端据此提示「调模型」还是「改文档」。 */
+class PrdParseError extends Error {
+  code: string;
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = 'PrdParseError';
+    this.code = code;
+  }
+}
 /** T01156-4：PRD 解析超时下限。maxTokens 抬到 16K 后生成更耗时，工具默认 timeoutMs(60000) 必触顶 →
  *  「连接超时（超过 60000ms）」报错（与上一轮抬高预算是同一连锁反应）。显式给 300s 兜底。 */
 const PRD_PARSE_TIMEOUT_MS = 300_000;
@@ -709,10 +729,15 @@ function collectUncoveredReqNos(
 /** M6-6.1：可追溯性缺口 → 人话告警（全未关联 / 部分未关联两种情况文案不同）
  *  T03700+：只报编号会让用户无法跨次比对（编号每次解析都按出现顺序重排，缺口集合看起来「每次都不一样」），
  *  因此带出需求标题，并明确说明编号会重排。 */
-function buildCoverageWarn(draftCount: number, requirements: Array<{ reqNo: string; title: string }>, uncovered: string[]): string {
+function buildCoverageWarn(draftCount: number, requirements: Array<{ reqNo: string; title: string; priority?: string }>, uncovered: string[]): string {
   if (draftCount === 0 || requirements.length === 0) return '';
   if (uncovered.length === 0) return '';
   if (uncovered.length === requirements.length) return '本次解析的计划节点未关联到任何需求编号——可在矩阵面板中手动建立关联';
+  const priorityOf = new Map(requirements.map((r) => [r.reqNo, (r.priority ?? '').toLowerCase()]));
+  // 2026-11-18：P2/P3 未排期是范围闸门的正常结果，不是「不可追溯」，不要和 P0/P1 缺口混为一谈。
+  if (uncovered.every((no) => /p[23]/i.test(priorityOf.get(no) ?? ''))) {
+    return `有 ${uncovered.length} 条 P2/P3 需求按范围闸门未进入本期 WBS（仍保留在需求矩阵）——如需本期交付，请在矩阵面板手动关联计划`;
+  }
   const titleOf = new Map(requirements.map((r) => [r.reqNo, r.title]));
   const list = uncovered.slice(0, 8).map((no) => `${no}《${(titleOf.get(no) ?? '').slice(0, 16)}》`).join('、');
   const more = uncovered.length > 8 ? '…' : '';
@@ -962,6 +987,249 @@ function milestoneDurations(
   return out;
 }
 
+/** 2026-11-18：读取 PRD 解析所用模型的输出预算。用于导入前 preflight；
+ *  读不到按 0 处理（不阻断，只让调用方决定是否改走骨架模式）。 */
+function prdToolOutputBudget(toolId: string): number {
+  try {
+    const row = getDb().prepare('SELECT max_tokens FROM ai_tools WHERE id = ? AND COALESCE(archived, 0) = 0').get(toolId) as
+      { max_tokens?: number | null } | undefined;
+    return Math.max(0, Number(row?.max_tokens) || 0);
+  } catch {
+    return 0;
+  }
+}
+
+/** 2026-11-18：按需求类型做范围过滤。只丢掉模型显式标成 RISK/OPEN/REF/CONTEXT 的条目；
+ *  未标 type 的历史输出保持原样，避免把老模型的有效需求误杀。 */
+function filterPrdRequirements<T extends { reqNo: string; title: string; type?: string }>(requirements: T[]): T[] {
+  const nonScope = new Set(['RISK', 'OPEN', 'REF', 'CONTEXT', 'DECISION', 'BACKGROUND', 'QUESTION']);
+  return requirements.filter((r) => !(r.type && nonScope.has(r.type.toUpperCase())));
+}
+
+/** 2026-11-18：需求总量硬上限。AC 是最重要的验收依据，必须优先保留；
+ *  其余按 FR/NFR/EX + P0/P1 排序，超出部分不进入矩阵（但仍会由覆盖告警暴露）。 */
+function capPrdRequirements<T extends { reqNo: string; title: string; priority?: string; type?: string }>(requirements: T[]): T[] {
+  if (requirements.length <= PRD_PARSE_MAX_REQUIREMENTS) return requirements;
+  const rank = (r: T): number => {
+    const type = (r.type ?? '').toUpperCase();
+    const typeRank = type === 'AC' ? 0 : type === 'FR' ? 1 : type === 'NFR' ? 2 : type === 'EX' ? 3 : 4;
+    const priRank = /p0/i.test(r.priority ?? '') ? 0 : /p1/i.test(r.priority ?? '') ? 1 : 2;
+    return typeRank * 10 + priRank;
+  };
+  return [...requirements].sort((a, b) => rank(a) - rank(b)).slice(0, PRD_PARSE_MAX_REQUIREMENTS);
+}
+
+/** 2026-11-18：补齐模型常漏的结构字段。骨架模式只要求模型输出
+ *  wbsCode/parentCode/priority/title/kind/durationDays/reqNos/acceptanceRefs；
+ *  description/deliverable/sourceSection/taskType/estimateDays/dependsOn/complexity 一律由系统补，
+ *  既压缩模型输出，也保证质量门看到的是完整结构。 */
+function applyPrdPlanDefaults(drafts: PrdPlanDraft[]): void {
+  const usedCodes = new Set(drafts.map((d) => (d.wbsCode ?? '').trim()).filter(Boolean));
+  const nextMilestoneCode = (): string => {
+    for (let i = 1; i <= 99; i += 1) if (!usedCodes.has(`M${i}`)) { usedCodes.add(`M${i}`); return `M${i}`; }
+    return `M${drafts.length + 1}`;
+  };
+  let currentMilestone = '';
+  const siblingSeq = new Map<string, number>();
+  for (const d of drafts) {
+    const kind = resolvePrdKind(d.title, d.kind, d.wbsCode);
+    d.kind = kind;
+    if (kind === 'milestone') {
+      if (!d.wbsCode) d.wbsCode = nextMilestoneCode();
+      d.parentCode = '';
+      d.phaseCode = d.wbsCode;
+      if (!d.priority) d.priority = 'p0';
+      if (!d.deliverable) d.deliverable = d.title;
+      if (!d.estimateDays) d.estimateDays = d.durationDays;
+      const msDescLen = (d.description ?? '').replace(/\s/g, '').length;
+      if (msDescLen < 50) {
+        const req = (d.reqNos ?? []).slice(0, 4).join('、');
+        const suffix = `阶段目标：交付「${d.title}」；覆盖${req ? ` ${req}` : '本阶段相关需求'}；完成定义：阶段产物齐备并通过阶段评审，形成可复核记录。`;
+        d.description = [ (d.description ?? '').trim(), suffix ].filter(Boolean).join(' ');
+      }
+      currentMilestone = d.wbsCode || d.title;
+      continue;
+    }
+    const parent = (d.parentCode ?? '').trim()
+      || (d.wbsCode ?? '').trim().replace(/\.\d+$/, '')
+      || currentMilestone
+      || drafts.find((x) => resolvePrdKind(x.title, x.kind, x.wbsCode) === 'milestone')?.wbsCode
+      || 'M1';
+    if (!d.parentCode) d.parentCode = parent;
+    if (!d.phaseCode) d.phaseCode = parent;
+    if (!d.wbsCode) {
+      let n = (siblingSeq.get(parent) ?? 0) + 1;
+      let code = `${parent}.${n}`;
+      while (usedCodes.has(code)) {
+        n += 1;
+        code = `${parent}.${n}`;
+      }
+      siblingSeq.set(parent, n);
+      usedCodes.add(code);
+      d.wbsCode = code;
+    }
+    if (!d.priority) d.priority = 'p1';
+    if (!d.deliverable) d.deliverable = d.title;
+    if (!d.sourceSection) d.sourceSection = '§?';
+    if (!d.estimateDays) d.estimateDays = d.durationDays;
+    if (!d.complexity) d.complexity = 2;
+    if (!d.taskType) {
+      d.taskType = /测试|验收|回归/.test(d.title) ? 'test'
+        : /设计|架构|方案/.test(d.title) ? 'design'
+        : /前端|页面|界面|UI/i.test(d.title) ? 'frontend'
+        : /后端|接口|服务|调度/.test(d.title) ? 'backend'
+        : /部署|发布|上线|运维/.test(d.title) ? 'ops'
+        : 'enabler';
+    }
+    if (!d.dependsOn || d.dependsOn.length === 0) {
+      const prev = [...drafts].slice(0, drafts.indexOf(d)).reverse()
+        .find((x) => resolvePrdKind(x.title, x.kind, x.wbsCode) === 'normal' && (x.parentCode ?? '') === parent);
+      if (prev?.wbsCode) d.dependsOn = [prev.wbsCode];
+    }
+    // 2026-11-18：骨架模式不要求模型写 description；但质量门对 P0/P1 有「描述≥50字」硬闸门，
+    // 空描述会让整批导入被 blocked。这里确定性补「做什么/边界/完成定义」，不依赖模型二次输出。
+    const descLen = (d.description ?? '').replace(/\s/g, '').length;
+    if (descLen < 50) {
+      const req = (d.reqNos ?? []).slice(0, 4).join('、');
+      const ac = (d.acceptanceRefs ?? []).slice(0, 4).join('、');
+      const suffix = `做什么：${d.title}；边界：不扩展本期范围外功能，不改变既有生产口径；完成定义：交付${d.deliverable || '可验收结果'}${req ? `，关联 ${req}` : ''}${ac ? `，通过 ${ac}` : ''}，并有可复核证据。`;
+      d.description = [ (d.description ?? '').trim(), suffix ].filter(Boolean).join(' ');
+    }
+  }
+}
+
+/** 2026-11-18：分片/骨架后的全局收敛（确定性，不依赖模型二次输出）。
+ *  ① 只保留一套里程碑；② normal 超过上限时优先保留覆盖 AC/FR 的条目；
+ *  ③ 丢弃没有 milestone 归属的 normal（质量门会判孤儿，不如在解析阶段直接暴露）。 */
+function consolidatePrdPlanDrafts(drafts: PrdPlanDraft[]): PrdPlanDraft[] {
+  const kinds = drafts.map((d) => resolvePrdKind(d.title, d.kind, d.wbsCode));
+  const milestoneCodes = new Set(drafts.filter((_, i) => kinds[i] === 'milestone').map((d) => (d.wbsCode ?? '').trim()).filter(Boolean));
+  const normals = drafts.filter((_, i) => kinds[i] === 'normal' && !/p[23]/i.test(drafts[i].priority ?? ''));
+  if (normals.length === 0) return drafts.filter((_, i) => kinds[i] === 'milestone');
+  let kept = normals;
+  if (normals.length > PRD_PARSE_MAX_NORMALS) {
+    const rank = (d: PrdPlanDraft): number => {
+      const ac = (d.acceptanceRefs?.length ?? 0) > 0 ? 0 : 1;
+      const p = /p0/i.test(d.priority ?? '') ? 0 : /p1/i.test(d.priority ?? '') ? 1 : 2;
+      return ac * 10 + p;
+    };
+    kept = [...normals].sort((a, b) => rank(a) - rank(b)).slice(0, PRD_PARSE_MAX_NORMALS);
+  }
+  const keptSet = new Set(kept);
+  const out: PrdPlanDraft[] = [];
+  for (const d of drafts) {
+    const kind = resolvePrdKind(d.title, d.kind, d.wbsCode);
+    if (kind === 'milestone') { out.push(d); continue; }
+    // 本期质量门硬闸门：P2/P3 不进入排期（需求矩阵仍保留，后续批次再排）。
+    if (/p[23]/i.test(d.priority ?? '')) continue;
+    if (!keptSet.has(d)) continue;
+    const parent = (d.parentCode ?? '').trim();
+    if (milestoneCodes.size > 0 && parent && !milestoneCodes.has(parent)) {
+      // 父节点不存在：尝试按 wbsCode 前缀回收，否则丢弃（质量门不会再看到孤儿）
+      const prefix = (d.wbsCode ?? '').replace(/\.\d+$/, '');
+      if (milestoneCodes.has(prefix)) d.parentCode = prefix;
+      else if (!milestoneCodes.has(parent)) continue;
+    }
+    out.push(d);
+  }
+  return out;
+}
+
+/** 2026-11-18：单轮/骨架两条路径共用的收口——AC 兜底、全局收敛、反向覆盖。
+ *  注意：调用方必须先把 requirements 做类型过滤与 65 条上限。 */
+export function finalizePrdParseResult(
+  requirements: PrdParsePart['requirements'],
+  drafts: PrdPlanDraft[],
+  docText: string,
+): {
+  requirements: PrdParsePart['requirements'];
+  drafts: PrdPlanDraft[];
+  coverageWarn?: string;
+  uncoveredReqNos?: string[];
+  wbsGroups: number;
+} {
+  ensurePrdSourceRequirements(requirements, docText);
+  ensurePrdAcceptanceCoverage(requirements, drafts, docText);
+  let finalDrafts = consolidatePrdPlanDrafts(drafts);
+  // 2026-11-18：骨架路径也由模型生成 plan，实测会偶发输出两套并行 WBS（M1…M5 + P0/P1 标签族），
+  // 此时不能只靠「分片合并」里的折叠。收口统一做归一 + 折叠，保证单轮/骨架/分片都只有一套 WBS。
+  if (finalDrafts.length > 0) {
+    const normalized = normalizeWbsGroups(finalDrafts);
+    finalDrafts = normalized.drafts as PrdPlanDraft[];
+    const wbsInfo = detectWbsGroups(finalDrafts);
+    if (wbsInfo.groups > 1 || wbsInfo.milestones > 5) {
+      finalDrafts = collapseRepeatedWbsGroups(finalDrafts, 5).drafts as PrdPlanDraft[];
+    }
+  }
+  ensurePrdRequirementCoverage(requirements, finalDrafts);
+  const uncoveredReqNos = collectUncoveredReqNos(requirements, finalDrafts);
+  return {
+    requirements,
+    drafts: finalDrafts,
+    coverageWarn: buildCoverageWarn(finalDrafts.length, requirements, uncoveredReqNos),
+    uncoveredReqNos,
+    wbsGroups: detectWbsGroups(finalDrafts).groups,
+  };
+}
+
+/** 2026-11-18：骨架模式单轮——只建 5 个里程碑 + 30~40 条 normal 的骨架，
+ *  不要求模型写长描述/结构字段；用于「单轮输出被截断」或模型输出预算偏低时，
+ *  避免直接落到「每片各造一套 WBS」的分片路径。 */
+async function parsePrdSkeleton(
+  toolId: string,
+  docText: string,
+  signal: AbortSignal,
+  budgetWarn?: string,
+): Promise<{
+  requirements: PrdParsePart['requirements'];
+  drafts: PrdPlanDraft[];
+  coverageWarn?: string;
+  uncoveredReqNos?: string[];
+  truncatedNote?: string;
+  parseNote?: string;
+  budgetWarn?: string;
+  parsePath: 'skeleton';
+  wbsGroups?: number;
+} | null> {
+  const system = [
+    '你是 MTask 的 PRD WBS 骨架解析助手。只输出骨架，不写长描述。',
+    '输出一个 JSON 对象：',
+    '{"requirements":[{"reqNo":"REQ-001","title":"需求简述","type":"FR|NFR|AC|EX","priority":"P0|P1|P2|P3","sourceRef":"§章节"}],',
+    '"plans":[{"wbsCode":"M1","title":"阶段交付名","kind":"milestone","priority":"P0","durationDays":10},',
+    '{"wbsCode":"M1.1","parentCode":"M1","title":"动词开头的可交付任务","kind":"normal","priority":"P0|P1","durationDays":2,"reqNos":["REQ-001"],"acceptanceRefs":["AC-01"]}]}',
+    '硬性要求：',
+    '1. 只建一套 WBS，正好 5 个里程碑 M1…M5；每个里程碑 6~8 条 normal，总计 30~40 条；只允许 P0/P1 进入 plans。',
+    '2. requirements 只保留 FR/NFR/AC/EX 四类；RISK/OPEN/REF/CONTEXT 不生成需求；最多 65 条，AC 不得省略。',
+    '3. 每条 normal 只写一个可交付动作，标题 ≤24 字，不要求 description；系统会自动补完成定义。',
+    '4. 每条 FR/NFR/EX 至少被一条 normal 的 reqNos 覆盖；每条 AC 必须出现在某条 normal 的 acceptanceRefs 中。',
+    '5. 不要输出解释、Markdown 围栏、startDate、sourceSection、deliverable、dependsOn、taskType、complexity；只输出完整闭合的 JSON。',
+  ].join('\n');
+  const ai = await AIService.askJson(toolId, system, `【PRD 文档】\n${docText}`, (content) =>
+    parseJsonObjectWithRecovery(content, 'AI 未返回有效的 PRD 骨架结果（需 JSON 对象）'),
+    {
+      timeoutMs: PRD_PARSE_TIMEOUT_MS,
+      maxTokens: PRD_PARSE_SKELETON_MAX_TOKENS,
+      minMaxTokens: 4_096,
+      signal,
+      cardKey: PRD_IMPORT_CARD,
+      rateLimitBackoffMs: 15_000,
+      retrySystem: `${system}\n【骨架压缩重试】requirements ≤20 条、plans ≤25 条；只输出 reqNo/title/type 与 wbsCode/title/kind/reqNos，必须闭合。`,
+    },
+  );
+  if (!ai.ok) return null;
+  const obj = ai.data as Record<string, unknown>;
+  const requirements = capPrdRequirements(filterPrdRequirements(normalizeRequirements(Array.isArray(obj.requirements) ? obj.requirements : [])));
+  const drafts = normalizePrdPlans(Array.isArray(obj.plans) ? obj.plans : []);
+  if (requirements.length === 0 && drafts.length === 0) return null;
+  const final = finalizePrdParseResult(requirements, drafts, docText);
+  return {
+    ...final,
+    parsePath: 'skeleton',
+    parseNote: '单轮输出超限或模型输出预算偏低，已切换骨架模式（只生成 5 个里程碑与 30~40 条 normal 骨架，未使用分片解析）',
+    budgetWarn,
+  };
+}
+
 /** PRD 解析：原始计划条目 → 归一化计划草稿数组（reqNos 字符串过滤，durationDays≥1，status 固定为待办初始态）
  *  T01001：新增 kind 字段——AI 显式输出优先，否则按 WBS 层级推断里程碑。 */
 function normalizePrdPlans(raw: unknown[]): PrdPlanDraft[] {
@@ -1016,6 +1284,7 @@ function normalizePrdPlans(raw: unknown[]): PrdPlanDraft[] {
       estimateDays,
     });
   }
+  applyPrdPlanDefaults(drafts);
   ensurePrdPlanDepth(drafts);
   return drafts;
 }
@@ -2084,15 +2353,106 @@ function extractPrdAcceptanceCriteria(docText: string): Array<{ reqNo: string; t
   return out;
 }
 
-/** 2026-11-17：AC 覆盖兜底——把原文 AC 补成需求行；未被任何 normal 承接的 AC
- *  挂到最合适的验收/回归任务（没有则新建一条全量验收任务），保证「每条 AC 有计划承接」。 */
+/** 2026-11-18：从原文标题确定性补齐 FR/NFR 需求行。
+ *  低预算模型（如 4K 输出）在骨架模式下常只写 8~10 条需求，AC 虽由原文兜底，
+ *  但 FR 会整块丢失（实测同一份 PRD 只剩 38 条需求）。这里按 `#### FR-1.1` 标题抽取，
+ *  与模型已写标题做 bigram 相似判重，只补未覆盖项；不生成计划，只保证矩阵可追溯。 */
+function ensurePrdSourceRequirements(
+  requirements: PrdParsePart['requirements'],
+  docText: string,
+): void {
+  const modelTitles = requirements
+    .filter((r) => r.type !== 'AC')
+    .map((r) => titleBigrams(r.title));
+  const has = new Set(requirements.map((r) => normalizedReqNoKey(r.reqNo)));
+  let section = '';
+  let pending: { reqNo: string; title: string; sourceRef: string; priority: string; body: string[] } | null = null;
+  const flush = () => {
+    if (!pending) return;
+    const title = pending.title.replace(/[（(]\s*P[0-3]\s*[)）]/ig, '').trim();
+    const content = pending.body.join('\n').replace(/^[-*]\s*/gm, '').replace(/\*\*/g, '').trim();
+    const p = pending;
+    pending = null;
+    if (!title || has.has(normalizedReqNoKey(p.reqNo)) || requirements.length >= PRD_PARSE_MAX_REQUIREMENTS) return;
+    const grams = titleBigrams(title);
+    const dup = modelTitles.some((g) => gramOverlap(g, grams) >= 0.5);
+    if (dup) return;
+    requirements.push({
+      reqNo: p.reqNo,
+      title: title.length > 48 ? `${title.slice(0, 48)}…` : title,
+      content: content.slice(0, 600) || title,
+      sourceRef: p.sourceRef,
+      priority: p.priority,
+      type: p.reqNo.startsWith('NFR') ? 'NFR' : 'FR',
+    });
+    modelTitles.push(grams);
+    has.add(normalizedReqNoKey(p.reqNo));
+  };
+  for (const line of docText.split('\n')) {
+    const sec = /^\s*###\s+([0-9]+(?:\.[0-9]+)*)/.exec(line);
+    if (sec) { flush(); section = `§${sec[1]}`; }
+    const head = /^\s*####\s+(FR|NFR)-([0-9.]+)\s+(.*)$/i.exec(line);
+    if (head) {
+      flush();
+      const priority = /P([0-3])/.exec(head[3])?.[1] ?? '1';
+      pending = {
+        reqNo: `${head[1].toUpperCase()}-${head[2]}`,
+        title: head[3].trim(),
+        sourceRef: section || '§6',
+        priority: `p${priority}`,
+        body: [],
+      };
+      continue;
+    }
+    if (!pending) continue;
+    if (/^\s*(?:##|###|####)\s/.test(line)) { flush(); continue; }
+    if (pending.body.length < 8) pending.body.push(line);
+  }
+  flush();
+}
+
+function titleBigrams(raw: string): Set<string> {
+  const s = (raw ?? '')
+    .replace(/[“”"'`（）()【】\[\]、，,。.:：!?！？\-—_\s]/g, '')
+    .toLowerCase();
+  const out = new Set<string>();
+  const latin = s.match(/[a-z0-9]+/g) ?? [];
+  for (const w of latin) if (w.length >= 2) out.add(w);
+  for (let i = 0; i + 1 < s.length; i += 1) out.add(s.slice(i, i + 2));
+  return out;
+}
+
+function gramOverlap(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let n = 0;
+  for (const x of a) if (b.has(x)) n += 1;
+  return n / Math.min(a.size, b.size);
+}
+
+
 function ensurePrdAcceptanceCoverage(
   requirements: PrdParsePart['requirements'],
   drafts: PrdPlanDraft[],
   docText: string,
 ): void {
-  const acs = extractPrdAcceptanceCriteria(docText);
-  if (acs.length === 0) return;
+  // 2026-11-18：验收覆盖不能只看原文抽取的 AC-xx——分片/低预算模型会把 AC 写成
+  // REQ-045、type=AC 或 sourceRef=「验收标准」，原文抽不到时这些行就成了未映射孤儿。
+  // 这里把「原文 AC + 需求矩阵里的 AC 型行」合并去重，统一做映射兜底。
+  const acMap = new Map<string, PrdParsePart['requirements'][number]>();
+  for (const ac of extractPrdAcceptanceCriteria(docText)) {
+    const key = normalizedReqNoKey(ac.reqNo);
+    if (key) acMap.set(key, ac);
+  }
+  for (const r of requirements) {
+    const isAc = (r.type ?? '').toUpperCase() === 'AC'
+      || /^AC[-_.]?\d/i.test(r.reqNo ?? '')
+      || /验收标准/.test(r.sourceRef ?? '');
+    if (!isAc) continue;
+    const key = normalizedReqNoKey(r.reqNo);
+    if (key && !acMap.has(key)) acMap.set(key, r);
+  }
+  if (acMap.size === 0) return;
+  const acs = [...acMap.values()];
   const reqSet = new Set(requirements.map((r) => normalizedReqNoKey(r.reqNo)));
   for (const ac of acs) {
     // 用归一 key 判重：模型可能写 AC-1，原文表是 AC-01；直接比较 raw 会补出重复需求行。
@@ -2139,6 +2499,12 @@ function ensurePrdAcceptanceCoverage(
     drafts.push(target);
   }
   target.acceptanceRefs = Array.from(new Set([...(target.acceptanceRefs ?? []), ...unmapped]));
+  // 2026-11-18：全量验收任务是在 normalizePrdPlans 之后新建的，必须同步把 AC 写进 reqNos，
+  // 否则矩阵里 AC 有行、plan.req_ids 为空，反向覆盖仍报「AC 未映射」。
+  for (const no of unmapped) {
+    const key = normalizedReqNoKey(no);
+    if (key && !(target.reqNos ?? []).includes(key)) target.reqNos.push(key);
+  }
 }
 
 /** 2026-11-17：计划优先级 → 待办优先级。P0 映射 urgent、P1 映射 high，
@@ -2314,8 +2680,10 @@ function ensurePrdRequirementCoverage(
     for (const ref of p.reqNos ?? []) linked.add(normalizedReqNoKey(ref));
     for (const ref of p.acceptanceRefs ?? []) linked.add(normalizedReqNoKey(ref));
   }
-  const uncovered = requirements.filter((r) => r.type !== 'AC'
-    && /p[01]/i.test(r.priority ?? '')
+  // 2026-11-18：模型有时会把验收项写成 REQ-xxx + type=AC（不是原文的 AC-xx），
+  // ensurePrdAcceptanceCoverage 只兜原文抽取的 AC，这类行会漏成孤儿；这里一并按需求覆盖处理。
+  const uncovered = requirements.filter((r) =>
+    /p[01]/i.test(r.priority ?? '')
     && !!r.reqNo
     && !linked.has(normalizedReqNoKey(r.reqNo)));
   if (uncovered.length === 0) return;
@@ -3133,8 +3501,10 @@ export const PlanService = {
 
   /** PRD 解析：原始计划条目 → 归一化计划草稿数组（reqNos 字符串过滤，durationDays≥1，status 固定为待办初始态）——实现见模块底部 normalizePrdPlans */
 
-  /** T00662：AI 解析 PRD →（需求清单 + WBS 计划草稿，含需求关联）。 */
-  async aiParsePrd(toolId: string, docText: string): Promise<{
+  /** T00662：AI 解析 PRD →（需求清单 + WBS 计划草稿，含需求关联）。
+   *  2026-11-18：默认「单轮 → 骨架」两段式；分片只在文档超过 200k 字符时自动使用，
+   *  不再因单轮截断而静默回退到分片（分片会各自造 WBS，直接拉低结构质量）。 */
+  async aiParsePrd(toolId: string, docText: string, opts?: { allowChunked?: boolean }): Promise<{
     requirements: Array<{ reqNo: string; title: string; content: string; sourceRef: string; priority: string; type?: string; acceptanceRefs?: string[] }>;
     drafts: PrdPlanDraft[];
     coverageWarn?: string;
@@ -3153,6 +3523,10 @@ export const PlanService = {
     wbsGroups?: number;
     /** T05571：源文档条目补齐明细（原文有、解析结果无的 D/R/T/N/O/S/§x.y/Q-xx 编号）——前端播报补齐情况 */
     sourceEntryFilled?: Array<{ id: string; label: string; title: string; description: string; excerpt: string }>;
+    /** 2026-11-18：本次实际走的解析路径（single/skeleton/chunked），供前端/日志区分质量来源。 */
+    parsePath?: 'single' | 'skeleton' | 'chunked';
+    /** 2026-11-18：模型输出预算偏低的提示（preflight 结果，不是阻断错误）。 */
+    budgetWarn?: string;
   }> {
     const system = [
       '你是 MTask 的 PRD 结构解析助手。目标不是「把原文每个编号都变成任务」，而是先建立可交付的 WBS 骨架，再给骨架填执行卡。',
@@ -3196,60 +3570,75 @@ export const PlanService = {
       totalAc.abort();
     }, PRD_PARSE_TOTAL_TIMEOUT_MS);
     try {
-      // T02270 复议：长文档先跑单轮全模式必然截断（实测 147s 白跑 + 精简 19s），留给分片的预算只剩
-      // 104s，5 片跑不完就被总预算中止。这里直接走分片，把总预算全留给有效轮次。
-      if (docText.length > PRD_DIRECT_CHUNK_CHARS) {
+      const outputBudget = prdToolOutputBudget(toolId);
+      const budgetWarn = outputBudget > 0 && outputBudget < PRD_PARSE_OUTPUT_BUDGET_MIN
+        ? `当前模型输出预算 ${outputBudget} tokens，低于建议值 ${PRD_PARSE_OUTPUT_BUDGET_MIN}；长 PRD 单轮输出可能被截断，已优先使用骨架模式。建议在「模型管理」把 max_tokens 调到 16K~32K。`
+        : undefined;
+
+      // 仅超长文档（>200k 字符）直接分片：单轮输入本身已不可控；其余文档先走单轮/骨架。
+      if (docText.length > PRD_DIRECT_CHUNK_CHARS || opts?.allowChunked === true) {
         const direct = await this.aiParsePrdChunked(toolId, docText, system, totalAc.signal, deadlineAt);
-        if (direct) return direct;
+        if (direct) {
+          // 2026-11-18：分片模型仍可能整片退化成「0 里程碑 / 1 条计划」——这种结果虽然
+          // 结构上没有并行 WBS，却无法进入导入；此处按质量下限回退骨架，保证分片路径
+          // 与单轮/骨架共用同一条可用性底线（5 个里程碑、至少 20 条 normal）。
+          const directMs = direct.drafts.filter((d) => resolvePrdKind(d.title, d.kind, d.wbsCode) === 'milestone').length;
+          const directNormals = direct.drafts.filter((d) => resolvePrdKind(d.title, d.kind, d.wbsCode) === 'normal').length;
+          if (directMs < 5 || directNormals < 20) {
+            const skeleton = await parsePrdSkeleton(toolId, docText, totalAc.signal, budgetWarn);
+            if (skeleton) return skeleton;
+          }
+          return { ...direct, parsePath: 'chunked' as const, budgetWarn };
+        }
         if (totalTimedOut) {
           throw new Error(`PRD 解析超过 ${PRD_PARSE_TOTAL_TIMEOUT_MS / 1000}s 总预算已中止——请拆分文档或更换更快的模型后重试`);
         }
+        if (opts?.allowChunked === true) {
+          throw new PrdParseError('PRD_CHUNKED_PARSE_FAILED', '显式分片解析未产出结果——请检查分片内容或更换模型后重试');
+        }
       }
-      const ai = await AIService.askJson(toolId, system, `【PRD 文档】\n${docText}`, (content) =>
-        parseJsonObjectWithRecovery(content, 'AI 未返回有效的 PRD 解析结果（需 JSON 对象），请检查文档内容或更换模型'),
-        { timeoutMs: PRD_PARSE_TIMEOUT_MS, retrySystem: systemCompact, minMaxTokens: PRD_PARSE_MIN_OUTPUT_TOKENS, signal: totalAc.signal, cardKey: PRD_IMPORT_CARD, rateLimitBackoffMs: 15_000 },
-      );
-      // T02401-G：首轮被截断（askJson 已自动精简重试）或整体失败时，降级为「分片多轮解析」：
-      // 按标题边界把文档切成 ≤PRD_CHUNK_MAX 片、逐片提取后合并去重，用多轮小输出换完整明细。
-      // 分片只有 1 片（文档本就不长）或分片链路失败 → 回退原单轮结果/报错，小文档行为与旧版完全一致。
-      if (!ai.ok || ai.retried) {
-        const chunked = await this.aiParsePrdChunked(toolId, docText, system, totalAc.signal, deadlineAt).catch(() => null);
-        if (chunked) return chunked;
+
+      // 2026-11-18：默认不再在单轮失败后自动落分片。先给单轮一次高预算机会；
+      // 低预算模型直接走骨架，避免白跑 1~3 分钟后被截断。
+      let singleError = '';
+      const shouldTrySingle = !opts?.allowChunked && (outputBudget === 0 || outputBudget >= PRD_PARSE_OUTPUT_BUDGET_MIN);
+      if (shouldTrySingle) {
+        const ai = await AIService.askJson(toolId, system, `【PRD 文档】\n${docText}`, (content) =>
+          parseJsonObjectWithRecovery(content, 'AI 未返回有效的 PRD 解析结果（需 JSON 对象），请检查文档内容或更换模型'),
+          {
+            timeoutMs: PRD_PARSE_TIMEOUT_MS,
+            retrySystem: systemCompact,
+            maxTokens: PRD_PARSE_SINGLE_MAX_TOKENS,
+            minMaxTokens: PRD_PARSE_MIN_OUTPUT_TOKENS,
+            signal: totalAc.signal,
+            cardKey: PRD_IMPORT_CARD,
+            rateLimitBackoffMs: 15_000,
+          },
+        );
+        // retried=true 说明首轮已截断、第二次是精简模式：这不是可接受的高质量结果，转骨架。
+        if (ai.ok && !ai.retried) {
+          const obj = ai.data as Record<string, unknown>;
+          const requirements = capPrdRequirements(filterPrdRequirements(normalizeRequirements(Array.isArray(obj.requirements) ? obj.requirements : [])));
+          const drafts0 = normalizePrdPlans(Array.isArray(obj.plans) ? obj.plans : []);
+          if (requirements.length === 0 && drafts0.length === 0) throw new Error('AI 未能从 PRD 中解析出需求或计划，请确认文档内容或更换模型');
+          const final = finalizePrdParseResult(requirements, drafts0, docText);
+          return { ...final, parsePath: 'single' as const, budgetWarn };
+        }
+        singleError = ai.ok ? '首轮输出触发精简重试（可能已被截断）' : (ai.error ?? '单轮解析失败');
       }
+
       if (totalTimedOut) {
         throw new Error(`PRD 解析超过 ${PRD_PARSE_TOTAL_TIMEOUT_MS / 1000}s 总预算已中止——请拆分文档或更换更快的模型后重试`);
       }
-      if (!ai.ok) throw new Error(`AI 解析失败：${ai.error}`);
-      // T01156：精简重试一旦触发（且分片多轮不可用），说明首轮输出被截断（需求/计划数量可能被压缩），必须显式告知，不能静默丢需求
-      const truncatedNote = ai.retried
-        ? '首轮 AI 输出超长被截断，已自动启用精简模式重试（需求≤20、计划≤24，且需求 content/原文定位被清空）——若需求数量明显偏少，建议调大该工具的 max_tokens 或更换模型后重跑'
-        : '';
-      const obj = ai.data as Record<string, unknown>;
-      const rawReqs = Array.isArray(obj.requirements) ? obj.requirements : [];
-      const requirements = normalizeRequirements(rawReqs);
-      const rawPlans = Array.isArray(obj.plans) ? obj.plans : [];
-      const drafts0 = normalizePrdPlans(rawPlans);
-      ensurePrdPlanDepth(drafts0);
-      if (requirements.length === 0 && drafts0.length === 0) throw new Error('AI 未能从 PRD 中解析出需求或计划，请确认文档内容或更换模型');
-      // 2026-11-17：AC 确定性兜底——原文 §11 的 AC-xx 必须进入需求矩阵，且必须被任务承接。
-      ensurePrdAcceptanceCoverage(requirements, drafts0, docText);
-      ensurePrdRequirementCoverage(requirements, drafts0);
-      // 2026-11-17 结构优化：不再把未挂接需求自动补成计划行——补出来的「REQ-xxx 实现/验证」
-      // 是无结构、无验收的碎片任务（本次实测 33 条），只会稀释 WBS。未覆盖需求由质量门/覆盖告警暴露。
-      const drafts = drafts0;
-      const filledReqNos: string[] = [];
-      // 2026-11-17 结构优化：不再把 §x.y/Q/D/R/T/N/O/S 等引用编号补成计划行。
-      // 这些条目是上下文/决策/风险，不是工作项；补齐只会制造碎片任务（本次 PRD 实测 33 条无 child 边孤儿）。
-      // 反向覆盖仍按需求编号计算，交付物/引用覆盖率由质量门单独给出。
-      // T01156：反向覆盖检查（collectUncoveredReqNos / buildCoverageWarn）——需求清单中存在、
-      // 但未被任何 WBS 计划 reqNos 关联的需求编号即可追溯性缺口。
-      const uncoveredReqNos = collectUncoveredReqNos(requirements, drafts);
-      const coverageWarn = buildCoverageWarn(drafts.length, requirements, uncoveredReqNos);
-      return {
-        requirements, drafts, coverageWarn, uncoveredReqNos, truncatedNote,
-        autoFilledReqNos: filledReqNos.length > 0 ? filledReqNos : undefined,
-        wbsGroups: detectWbsGroups(drafts).groups,
-      };
+
+      const skeleton = await parsePrdSkeleton(toolId, docText, totalAc.signal, budgetWarn);
+      if (skeleton) return skeleton;
+      throw new PrdParseError(
+        'PRD_PARSE_TRUNCATED',
+        `单轮 PRD 解析输出超限${singleError ? `（${singleError}）` : ''}，骨架模式也未成功。`
+        + '请先在「模型管理」把该模型的 max_tokens 调到 16K~32K（或更换输出上限更高的模型）后重试；'
+        + '如需强制分片解析，请把文档拆小或显式调用分片通道——分片会降低 WBS 结构质量，系统不再自动回退。',
+      );
     } finally {
       clearTimeout(totalTimer);
     }
@@ -3379,18 +3768,22 @@ export const PlanService = {
     const deduped = dedupeDraftsByNormalizedTitle(merged.drafts);
     // T05573：多套并行 WBS 自动收敛——检测到多套时把后续套章号顺延到前一套最大章号之后
     const wbsNormalized = normalizeWbsGroups(deduped.drafts);
-    const wbsFinal = wbsNormalized.drafts;
-    const wbsInfo = detectWbsGroups(wbsFinal);
-    const wbsNote = wbsNormalized.groups > 1
+    // 2026-11-18：仅顺延章号不够（8 片 = 40 个里程碑），再按标题相似度折叠重复阶段到 ≤6 个，
+    // normal 按 parentCode / 最近前置里程碑重挂 Mx.y——这是分片结果能过「里程碑 ≤8」硬闸的关键。
+    const wbsCollapsed = collapseRepeatedWbsGroups(wbsNormalized.drafts, 6);
+    const wbsFinal = wbsCollapsed.drafts;
+    const preWbsInfo = detectWbsGroups(wbsFinal);
+    const collapseNote = wbsCollapsed.collapsedMilestones > 0
+      ? `；已折叠 ${wbsCollapsed.collapsedMilestones} 个重复里程碑（保留 ${wbsCollapsed.milestones} 个阶段）`
+      : '';
+    const wbsNote = (wbsNormalized.groups > 1
       ? `已自动收敛 ${wbsNormalized.groups} 套并行 WBS（${wbsNormalized.renumberedMilestones} 个里程碑、${wbsNormalized.renumberedNormals} 条明细章号顺延）；${deduped.merged > 0 ? `已按归一化标题合并 ${deduped.merged} 条同题计划` : ''}`
-      : formatWbsNote(wbsInfo.groups, wbsInfo.milestones, deduped.merged);
+      : formatWbsNote(preWbsInfo.groups, preWbsInfo.milestones, deduped.merged)) + collapseNote;
     // 2026-11-17 结构优化：不再把未挂接需求补成「REQ-xxx 实现/验证」计划行——
     // 这些行没有 wbsCode/parentCode/priority/验收，既造碎片又破坏 30~40 条粒度目标。
     const drafts = wbsFinal as PrdPlanDraft[];
     ensurePrdPlanDepth(drafts);
     const filledReqNos: string[] = [];
-    const uncoveredReqNos = collectUncoveredReqNos(merged.requirements, drafts);
-    const coverageWarn = buildCoverageWarn(drafts.length, merged.requirements, uncoveredReqNos);
     // T03700+：缺失片统一收集（失败 + 因预算中止而未跑的），并带上原文——前端据此展示/复制/单独补解析。
     const failedChunks: PrdFailedChunk[] = [];
     for (let i = 0; i < n; i += 1) {
@@ -3408,9 +3801,13 @@ export const PlanService = {
       });
     }
     const complete = !aborted && !signal?.aborted && failedChunks.length === 0;
-    // 2026-11-17：分片路径同样执行 AC 确定性兜底——否则长文档回退分片后仍会丢 AC 覆盖。
-    ensurePrdAcceptanceCoverage(merged.requirements, drafts, docText);
-    ensurePrdRequirementCoverage(merged.requirements, drafts);
+    // 2026-11-18：分片路径与单轮/骨架共用同一收口——源需求补齐、AC 兜底、P2/P3 范围过滤、
+    // normal 上限收敛与反向覆盖都走 finalizePrdParseResult，避免「分片结果绕过质量门」。
+    const finalized = finalizePrdParseResult(merged.requirements, drafts, docText);
+    const finalDrafts = finalized.drafts;
+    const wbsInfo = detectWbsGroups(finalDrafts);
+    const uncoveredReqNos = finalized.uncoveredReqNos ?? [];
+    const coverageWarn = finalized.coverageWarn ?? '';
     // T02270 复议：分片跑完是**无损**结果（明细比精简模式完整），走 parseNote 普通日志；
     // 只有真的没跑完（预算中止 / 存在失败片）才用 truncatedNote 触发 ⚠——否则用户无法区分「完整分片」与「有损降级」。
     // T03700：失败片显式列出片号与原因类别，缺失内容不静默。
@@ -3422,12 +3819,12 @@ export const PlanService = {
         ? ''
         : `文档较长且解析达到 ${PRD_PARSE_TOTAL_TIMEOUT_MS / 1000}s 总预算，已返回前 ${parts.length}/${n} 片合并结果——未解析的片已在下方「缺失分片」列出，可单独补解析或拆分文档后重试`;
     const parseNote = complete
-      ? `文档较长，已自动分 ${n} 片解析并合并去重（需求 ${merged.requirements.length} 条、计划 ${drafts.length} 条${filledReqNos.length > 0 ? `，其中自动补齐 ${filledReqNos.length} 条缺口需求` : ''}）`
+      ? `文档较长，已自动分 ${n} 片解析并合并去重（需求 ${merged.requirements.length} 条、计划 ${finalDrafts.length} 条${filledReqNos.length > 0 ? `，其中自动补齐 ${filledReqNos.length} 条缺口需求` : ''}）`
         + (wbsNote ? `；${wbsNote}` : '')
       : undefined;
     return {
       requirements: merged.requirements,
-      drafts,
+      drafts: finalDrafts,
       coverageWarn,
       uncoveredReqNos,
       truncatedNote,

@@ -828,7 +828,11 @@ planApi.post('/ai-parse-prd', raw({ type: () => true, limit: '30mb' }), (req, re
     })
     .catch((e: unknown) => {
       reportAiJob({ jobId, cardKey: 'ai.prd_import', status: 'error', mode: 'ai', startedAt: jobStartedAt });
-      res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+      const code = (e as { code?: unknown } | null)?.code;
+      res.status(400).json({
+        error: e instanceof Error ? e.message : String(e),
+        ...(typeof code === 'string' && code ? { code } : {}),
+      });
     });
 });
 

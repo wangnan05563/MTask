@@ -37,19 +37,27 @@ export function isGapFillPlan(p: { title?: string; description?: string; gapFill
 /** 阶段族：数字章号（1/2/5.3/M1）或标签族（P0/P1/EX/Q/F/R） */
 type PhaseKey = { kind: 'num'; n: number } | { kind: 'label'; label: string };
 
-function phaseKeyOf(title: string): PhaseKey | null {
+function phaseKeyOf(title: string, wbsCode?: string): PhaseKey | null {
   const t = (title ?? '').trim();
   // M1 / 1 / 1.1 / 5.3：取首段数字作为「同一族内的递增序」；M 前缀与裸数字视为同族
   const num = /^(?:M)?(\d+)(?:\s|\.|$)/i.exec(t);
   if (num) return { kind: 'num', n: Number(num[1]) };
   const label = /^(P0|P1|EX|Q|F|R)(?:[-\s.]|$)/i.exec(t);
   if (label) return { kind: 'label', label: label[1].toUpperCase() };
+  // 标题没有前缀时回落到显式 wbsCode：分片模型常把 P0-1/M1 写进字段而不是标题。
+  const code = (wbsCode ?? '').trim();
+  if (code) {
+    const cnum = /^(?:M)?(\d+)(?:\.|$)/i.exec(code);
+    if (cnum) return { kind: 'num', n: Number(cnum[1]) };
+    const clabel = /^(P0|P1|EX|Q|F|R)(?:[-\s.]|$)/i.exec(code);
+    if (clabel) return { kind: 'label', label: clabel[1].toUpperCase() };
+  }
   return null;
 }
 
 /** 多套 WBS 检测：数字章号回退，或阶段族切换（数字 ↔ P0/P1/EX/Q/F/R，标签族彼此切换）即新的一套。
  *  当前 PRD 的 1..8.2 / 5.3 / P0-1 / P1-2 / EX / Q / F / R-* 会被识别为多套，而不是只报 2 套。 */
-export function detectWbsGroups(items: ReadonlyArray<{ title: string; kind?: string }>): {
+export function detectWbsGroups(items: ReadonlyArray<{ title: string; kind?: string; wbsCode?: string }>): {
   groups: number;
   milestones: number;
   groupStartTitles: string[];
@@ -60,10 +68,10 @@ export function detectWbsGroups(items: ReadonlyArray<{ title: string; kind?: str
   let groups = 1;
   const groupStartTitles: string[] = [ms[0].title];
   const families: string[] = [];
-  let prev: PhaseKey | null = phaseKeyOf(ms[0].title ?? '');
+  let prev: PhaseKey | null = phaseKeyOf(ms[0].title ?? '', ms[0].wbsCode);
   families.push(prev ? (prev.kind === 'num' ? `num:${prev.n}` : `label:${prev.label}`) : 'unknown');
   for (let i = 1; i < ms.length; i += 1) {
-    const cur = phaseKeyOf(ms[i].title ?? '');
+    const cur = phaseKeyOf(ms[i].title ?? '', ms[i].wbsCode);
     let nextGroup = false;
     if (prev && cur) {
       if (prev.kind !== cur.kind) nextGroup = true;
@@ -232,6 +240,177 @@ export interface WbsNormalizeResult {
   renumberedMilestones: number;
 }
 
+function stripWbsPrefix(title: string): string {
+  const raw = (title ?? '').trim();
+  const stripped = raw
+    .replace(/^(?:M\d+(?:\.\d+)*|\d+(?:\.\d+)*|P[01]-\d+(?:\.\d+)*|P[01]|EX|Q|F|R-\d+(?:\.\d+)*)\s*[.、:：\-]?\s*/i, '')
+    .trim();
+  return stripped || raw;
+}
+
+/** 2026-11-18：标签族/无前缀里程碑的兜底归一——当章号算法无法重写（全部是 P0-1/P1-2/EX/Q/F/R
+ *  或无前缀标题）时，把整套里程碑强制排成 M1…Mn，normal 按最近前置里程碑挂到 Mx.y。
+ *  这不改变业务标题，只改编号；显式 wbsCode/parentCode/phaseCode 同步改写，避免标题与字段打架。 */
+function canonicalizeWbsGroups<T extends { title: string; kind?: string }>(
+  drafts: ReadonlyArray<T>,
+  groups: number,
+): WbsNormalizeResult {
+  let msSeq = 0;
+  let parent = '';
+  let child = 0;
+  let renumberedMs = 0;
+  let renumberedNorm = 0;
+  const out: WbsNormalizeResult['drafts'] = [];
+  for (const d of drafts) {
+    if (d.kind === 'milestone') {
+      msSeq += 1;
+      parent = `M${msSeq}`;
+      child = 0;
+      const title = `${parent} ${stripWbsPrefix(d.title)}`;
+      out.push({
+        ...d,
+        title,
+        wbsCode: parent,
+        parentCode: '',
+        phaseCode: parent,
+      } as WbsNormalizeResult['drafts'][number]);
+      renumberedMs += 1;
+      continue;
+    }
+    if (!parent) parent = 'M1';
+    child += 1;
+    const code = `${parent}.${child}`;
+    const title = `${code} ${stripWbsPrefix(d.title)}`;
+    out.push({
+      ...d,
+      title,
+      wbsCode: code,
+      parentCode: parent,
+      phaseCode: parent,
+    } as WbsNormalizeResult['drafts'][number]);
+    renumberedNorm += 1;
+  }
+  return { drafts: out, groups, renumberedNormals: renumberedNorm, renumberedMilestones: renumberedMs };
+}
+
+/**
+ * 2026-11-18：分片 WBS 的全局折叠——仅归一编号还不够：8 片各产 5 个里程碑时，
+ * 即使章号顺延成 M1…M40，质量门仍会因「里程碑 > 8」阻断。
+ * 本函数按里程碑标题的字符 bigram 相似度聚类（阈值 0.72），同一业务阶段只保留一个代表；
+ * 超过 maxMilestones 时，把尾部/最不相似的簇并入最相似的保留簇，再把所有 normal 按
+ * 原 parentCode（找不到则最近前置里程碑）重新挂到 M1…Mn，输出 Mx.y 连续编号。
+ *
+ * 只用于分片合并这种「同一文档被重复拆解」的场景；单轮解析不调用，避免误合并不同业务阶段。
+ */
+export interface WbsCollapseResult {
+  drafts: WbsNormalizeResult['drafts'];
+  collapsedMilestones: number;
+  milestones: number;
+}
+
+function titleBigrams(s: string): Set<string> {
+  const chars = [...s];
+  const out = new Set<string>();
+  if (chars.length <= 2) { if (s) out.add(s); return out; }
+  for (let i = 0; i < chars.length - 1; i += 1) out.add(chars[i] + chars[i + 1]);
+  return out;
+}
+
+function titleSimilarity(a: string, b: string): number {
+  if (!a || !b) return 0;
+  if (a === b || a.includes(b) || b.includes(a)) return 1;
+  const A = titleBigrams(a);
+  const B = titleBigrams(b);
+  if (A.size === 0 || B.size === 0) return 0;
+  let inter = 0;
+  for (const x of A) if (B.has(x)) inter += 1;
+  return (2 * inter) / (A.size + B.size);
+}
+
+export function collapseRepeatedWbsGroups<T extends {
+  title: string;
+  kind?: string;
+  wbsCode?: string;
+  parentCode?: string;
+}>(drafts: ReadonlyArray<T>, maxMilestones = 6): WbsCollapseResult {
+  const msIdx = drafts.map((d, i) => (d.kind === 'milestone' ? i : -1)).filter((i) => i >= 0);
+  if (msIdx.length === 0) return { drafts: [...drafts], collapsedMilestones: 0, milestones: 0 };
+  const bodyOf = (i: number): string => normalizePlanTitle(drafts[i].title ?? '') || stripWbsPrefix(drafts[i].title ?? '');
+  const clusters: Array<{ title: string; members: number[]; first: number }> = [];
+  for (const idx of msIdx) {
+    const body = bodyOf(idx);
+    let best = -1;
+    let bestSim = 0;
+    for (let c = 0; c < clusters.length; c += 1) {
+      const sim = titleSimilarity(body, clusters[c].title);
+      if (sim >= 0.72 && sim > bestSim) { best = c; bestSim = sim; }
+    }
+    if (best >= 0) clusters[best].members.push(idx);
+    else clusters.push({ title: body, members: [idx], first: idx });
+  }
+
+  // 超过上限时保留最早出现的 maxMilestones 个簇，其余按相似度并入保留簇；
+  // 若全不相似，兜底并入最后一个保留簇（分片重复场景下这是可接受的确定性收敛）。
+  const kept = clusters.slice(0, maxMilestones);
+  const dropped = clusters.slice(maxMilestones);
+  for (const c of dropped) {
+    let best = kept.length - 1;
+    let bestSim = -1;
+    for (let k = 0; k < kept.length; k += 1) {
+      const sim = titleSimilarity(c.title, kept[k].title);
+      if (sim > bestSim) { best = k; bestSim = sim; }
+    }
+    kept[best].members.push(...c.members);
+  }
+
+  const msToKept = new Map<number, number>();
+  kept.forEach((c, k) => { c.members.forEach((idx) => msToKept.set(idx, k)); });
+
+  // parentCode → 原里程碑下标；normal 优先按显式父编号归位，找不到再回退最近前置里程碑。
+  const codeToMs = new Map<string, number>();
+  for (const idx of msIdx) {
+    const code = wbsCodeOf(drafts[idx]);
+    if (code && !codeToMs.has(code)) codeToMs.set(code, idx);
+  }
+  const ownerOf = (normalIdx: number): number => {
+    const parent = parentCodeOf(drafts[normalIdx]);
+    if (parent && codeToMs.has(parent)) return codeToMs.get(parent)!;
+    for (let j = normalIdx - 1; j >= 0; j -= 1) if (drafts[j].kind === 'milestone') return j;
+    return msIdx[0];
+  };
+
+  const childCount = new Map<number, number>();
+  const out: WbsNormalizeResult['drafts'] = [];
+  kept.forEach((c, k) => {
+    const parent = `M${k + 1}`;
+    out.push({
+      ...drafts[c.first],
+      title: `${parent} ${stripWbsPrefix(drafts[c.first].title ?? '')}`,
+      wbsCode: parent,
+      parentCode: '',
+      phaseCode: parent,
+    } as WbsNormalizeResult['drafts'][number]);
+  });
+  for (let i = 0; i < drafts.length; i += 1) {
+    const d = drafts[i];
+    if (d.kind === 'milestone') continue;
+    const owner = ownerOf(i);
+    const k = msToKept.get(owner) ?? 0;
+    const parent = `M${k + 1}`;
+    const child = (childCount.get(k) ?? 0) + 1;
+    childCount.set(k, child);
+    const code = `${parent}.${child}`;
+    out.push({
+      ...d,
+      title: `${code} ${stripWbsPrefix(d.title ?? '')}`,
+      wbsCode: code,
+      parentCode: parent,
+      phaseCode: parent,
+    } as WbsNormalizeResult['drafts'][number]);
+  }
+  return { drafts: out, collapsedMilestones: msIdx.length - kept.length, milestones: kept.length };
+}
+
 /**
  * 输入约束：至少含 title 与 kind（检测 WBS 章号用）；其余字段原样透传，不修改入参。
  * 类型 T 的返回值用 WbsNormalizeResult['drafts']（宽松泛型），调用方自行 cast 回精确类型。
@@ -299,6 +478,9 @@ export function normalizeWbsGroups<T extends { title: string; kind?: string }>(d
     if (nextTitle !== title) renumberedNorm += 1;
     out.push(nextTitle !== title ? { ...d, title: nextTitle } : { ...d });
   }
+  // 2026-11-18：章号算法对 P0/P1/EX/Q/F/R 或无前缀里程碑无能为力（detect 已判多套但这里零改写），
+  // 改用强制 M1…Mn 的兜底归一，避免「检测到 2 套却收敛 0 个」。
+  if (renumberedMs === 0 && renumberedNorm === 0) return canonicalizeWbsGroups(drafts, groups);
   return { drafts: out, groups, renumberedNormals: renumberedNorm, renumberedMilestones: renumberedMs };
 }
 

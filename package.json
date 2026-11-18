@@ -1,6 +1,6 @@
 {
   "name": "mtask",
-  "version": "0.1.1117.265",
+  "version": "0.1.1117.269",
   "private": true,
   "main": "electron/main.js",
   "description": "AI 任务开发管理工具：项目维度任务管理 + AI 梳理 + 队列分发（Electron + React + Express + SQLite）",
@@ -78,6 +78,7 @@
     "verify:t02155-pdf-render": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t02155-pdf-render.mts",
     "verify:t02155-pdf-truncation": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t02155-pdf-truncation.mts",
     "verify:t02156-kickoff-brand": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t02156-kickoff-brand.mts",
+    "verify:prd-parse-golden": "node node_modules/tsx/dist/cli.mjs scripts/verify-prd-parse-golden.mts",
     "verify:t02157-report-period": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t02157-report-period.mts",
     "verify:t02162-cmdpalette-focus": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t02162-cmdpalette-focus.mts",
     "verify:t02166-kickoff-ai": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t02166-kickoff-ai.mts",
