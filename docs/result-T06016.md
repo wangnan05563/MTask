@@ -46,7 +46,7 @@ AI 工作台功能卡片原用单色线性图标，缺少一套可区分的彩�
 - 新增 `D:\code\otherProjects\MTask\web\src\ui\ReportCardIcon.tsx`：静态映射 11 个 key 到 `web/src/assets/report-icons/*.png`，统一输出 30×30 `<img>`（`alt=""`、`aria-hidden`、禁止拖拽）。
 - 修改 `D:\code\otherProjects\MTask\web\src\pages\ReportPage.tsx`：11 张卡片 `icon` 全部改为 `<ReportCardIcon name="..." />`；移除不再使用的 7 个 Lucide 图标导入；卡片图标容器由 `accent-soft` 背景 + 边框改为透明、无边框，避免与新图标的圆角色块叠成双边框。
 - 资源目录 `D:\code\otherProjects\MTask\web\src\assets\report-icons\`：11 张 512×512 透明 PNG（单张 79–135KB），由 `docs\t06016\icons\*-512.png` 复制接入。
-- 构建产物：`D:\code\otherProjects\MTask\web\dist\assets\index-q2vWHcoM.js`；已同步 `release\build-artifacts\web-dist`。
+- 构建产物：`D:\code\otherProjects\MTask\release\build-artifacts\web-dist\assets\index-q2vWHcoM.js`；后端产物 `release\build-artifacts\server-dist`；安装包 `D:\code\otherProjects\MTask\release\MTask Setup 0.1.1117.266.exe`。
 
 ## 设计系统
 - 单一圆角方块，占画布约 78%，四角色统一。
@@ -59,15 +59,16 @@ AI 工作台功能卡片原用单色线性图标，缺少一套可区分的彩�
 - 48px/32px 小尺寸预览可见，符号轮廓仍可区分；总览图 4×3 排版无缺项。
 - 生成方式：Agnes Image 2.5 Flash，逐张 2K 文生图；四边 flood fill 去背，Lanczos 输出 512；未使用全图近白置透明。
 - 设计映射与代码卡片 key 一一对应：`ai-import / offline / ai-live / prd-gen / prd-import / tc-gen / kickoff-ppt / summary-ppt / review-lecture / git-extract / sonar-scan`。
-- 构建：`npm run build` 通过（`tsc --noEmit` 通过，1842 modules），产物入口 `assets/index-q2vWHcoM.js`。
-- UI 实测（最新生产构建 + 独立预览服务 4174，API 代理到 39877）：
+- 构建：`npm run build:web` 通过（`tsc --noEmit` 通过，1842 modules，产物 `assets/index-q2vWHcoM.js`）；`npm run build:server` 通过（`tsc -p tsconfig.json` + skills synced）。
+- 安装版 UI 实测（重新打包 `MTask Setup 0.1.1117.266.exe` 并安装到 `F:\Program Files\MTask`）：
   - 页面加载 `assets/index-q2vWHcoM.js`，后端状态显示「后端已连接」；
   - `[data-t06009=card-icon] img` = 11，`svg` = 0，11 个 `src` 全不同；
   - 11 张图片 `complete=true`、`naturalWidth=512`、`naturalHeight=512`；
-  - 卡片标题完整覆盖 11 张能力卡；页面截图见 `docs\t06016\t06016-ui-icons-clean.png`。
-- 说明：当前运行中的已安装包 `F:\Program Files\MTask\resources\app.asar` 仍为 2026-11-17 旧包，安装版需重新打包/安装后才会显示新图标；源码、`web/dist` 与发布静态副本已完成替换。
+  - 卡片标题完整覆盖 11 张能力卡；安装版页面截图见 `docs\t06016\t06016-ui-icons-installed.png`。
+  - 安装版 `F:\Program Files\MTask\resources\app.asar` 已更新为 2026-11-18 11:38:04、143062558 bytes。
+- 预览验证留档：独立预览服务 4174（API 代理到 39877）同口径通过，截图见 `docs\t06016\t06016-ui-icons-clean.png`。
 
 ## 本次回写
 - 概念稿、3D 样机、11 张功能卡片图标及 512 适配版全部落地。
-- 11 张 512 PNG 已实际接入 AI 工作台卡片 UI，构建产物与发布静态副本已更新。
-- 设计说明、小尺寸可读性证据和实际页面截图已归档。
+- 11 张 512 PNG 已实际接入 AI 工作台卡片 UI；已重新打包安装并实测安装版显示新图标。
+- 设计说明、小尺寸可读性证据、预览截图和安装版截图已归档。
