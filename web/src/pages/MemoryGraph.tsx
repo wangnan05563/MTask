@@ -408,9 +408,10 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
     const sigma = new Sigma(graph, container, {
       settings: {
         // 自动把图包围盒铺满画布；stagePadding 保证节点/标签不被边框裁掉
-        // T05790 复查：恢复的视图已经有上次相机与坐标，禁用 autoRescale 防止构造时把相机覆盖回全览；
-        // 首次加载/重排布局仍开启，保持原有自动铺满行为。
-        autoRescale: !canRestore,
+        // T05790 复查修正：恢复视图时也必须开启 autoRescale——它会把布局坐标归一化到画布范围；
+        // 若恢复时关掉，保存的坐标（0~100）就失去归一化基准，相机 ratio=1 只能看到图中心的一小团。
+        // 恢复的相机在 Sigma 构造后由 setState 再写回（见下方 initCam），因此不会丢上次缩放。
+        autoRescale: true,
         autoRescaleContent: 'nodes',
         stagePadding: 56,
         // 默认只给大节点显示标签，避免十几个长标题叠在一起；缩放或 hover/选中后显示当前节点标签
@@ -418,6 +419,9 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
         labelDensity: 0.7,
         minCameraRatio: 0.08,
         maxCameraRatio: 8,
+        // T05790 复查：显式开启滚轮/双击缩放并让滚轮作用于图，避免不同 Sigma 版本默认值差异导致“放大不了”。
+        enableCameraZooming: true,
+        gestureTarget: 'graph',
         // 方案 A：保留 sigma 原生节点拖拽；T05790 在其上叠加一跳邻居回弹，不改变原生拖拽的稳定性
         enableNodeDrag: true,
         dragTimeout: 60,
@@ -617,8 +621,18 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
     const initCam = canRestore && saved!.camera
       ? { x: saved!.camera.x, y: saved!.camera.y, ratio: saved!.camera.ratio }
       : { x: 0.5, y: 0.5, ratio: 1 };
-    sigma.getCamera().setState(initCam);
+    const restoreCamera = () => sigma.getCamera().setState(initCam);
+    restoreCamera();
+    // T05790 复查：sigma 构造时 autoRescale 会在下一帧把相机拉回全览；恢复的缩放要等它跑完再写一次，
+    // 否则刷新/切页后虽然节点和选中项都在，用户上次的放大视角却会被重置为 ratio=1。
+    if (canRestore) {
+      requestAnimationFrame(restoreCamera);
+      window.setTimeout(restoreCamera, 160);
+    }
     labelsAllRef.current = initCam.ratio <= LABEL_ALL_RATIO;
+    // T05790 复查：Sigma 构造时 nodeReducer 已按 labelsAll=false 缓存过标签隐藏状态；
+    // 恢复的相机本身就是放大态时必须主动 refresh 一次，否则“放大后标题全显”不会生效。
+    if (labelsAllRef.current) sigma.refresh();
     // T05790 复查：恢复成功后冻结 FA2，保证切页返回时坐标/缩放/选中与离开时一致；
     // 未恢复（首次加载或显式重排）继续常开物理。
     livePhysicsRef.current = !canRestore;
@@ -683,8 +697,7 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
     // T05790-③ 选中项恢复：可恢复视图时按 id 找回上次选中的节点，回填面板与 ref
     if (canRestore && saved!.selectedId) {
       const hit = data.nodes.find((n) => n.id === saved!.selectedId) ?? null;
-      selectedRef.current = hit;
-      setSelected(hit);
+      if (hit) selectNode(hit); // 统一入口：写 ref + setSelected + sigma.refresh 高亮
     }
 
     return () => {

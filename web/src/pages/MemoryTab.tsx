@@ -4,6 +4,7 @@ import { api } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { HoverCard } from '../ui/HoverCard';
 import { SettingsHelpIcon } from '../ui/settingsHelp'; // T06019：子页说明文字改为语义图标
+import { useSessionState } from '../ui/session'; // T05790：图谱/列表视图与产品选择跨页面保持
 import { MemoryGraph } from './MemoryGraph';
 
 /**
@@ -134,7 +135,9 @@ function brief(text: string, max = 60): string {
 
 export function MemoryTab() {
   const [tags, setTags] = useState<ProductTag[]>([]);
-  const [productKey, setProductKey] = useState('');
+  // T05790：产品选择与列表/图谱视图写入 sessionStorage——切设置页签或顶层页面再回来时保持原视图与产品，
+  // 否则重新挂载会回到首产品 + 列表，看起来像“状态保持未生效”。
+  const [productKey, setProductKey] = useSessionState<string>('mtask.memoryTab.productKey', '');
   const [type, setType] = useState<'' | MemoryType>('');
   const [keyword, setKeyword] = useState('');
   const [includeInvalidated, setIncludeInvalidated] = useState(false);
@@ -158,7 +161,7 @@ export function MemoryTab() {
   // 行内编辑：同时只编辑一条，避免多行草稿状态互相覆盖
   const [editing, setEditing] = useState<{ id: string; type: MemoryType; title: string; content: string; tags: string } | null>(null);
   // T05738：视图切换——列表（管理/编辑）与图谱（关系可视化）共用同一份产品筛选
-  const [viewMode, setViewMode] = useState<'list' | 'graph'>('list');
+  const [viewMode, setViewMode] = useSessionState<'list' | 'graph'>('mtask.memoryTab.viewMode', 'list');
 
   const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3000); };
 
@@ -166,7 +169,7 @@ export function MemoryTab() {
     try {
       const list = await api.get<ProductTag[]>('/memories/product-tags');
       setTags(list);
-      setProductKey((cur) => cur || list[0]?.productKey || '');
+      setProductKey((cur) => (list.some((t) => t.productKey === cur) ? cur : (list[0]?.productKey || '')));
     } catch { /* 标签清单失败不阻塞页面 */ }
   }, []);
 
