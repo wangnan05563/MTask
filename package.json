@@ -150,6 +150,7 @@
     "verify:t05701-lecture-layout": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05701-lecture-layout.mts",
     "verify:t0570x-round2": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t0570x-round2.mts",
     "verify:t05790-memory-graph": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05790-memory-graph.mts",
+    "verify:t06016-icons": "python scripts/normalize-report-icons.py --check",
     "verify:t05791-backup-delete": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05791-backup-delete.mts",
     "verify:t05793-platform-brand": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05793-platform-brand.mts"
   },
