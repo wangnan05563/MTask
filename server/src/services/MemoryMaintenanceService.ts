@@ -18,6 +18,8 @@ export const MEMORY_CAPACITY_LIMIT = 200;
 export const MEMORY_ORGANIZE_INTERVAL_DAYS = 30;
 /** MEM-307：长期无人访问/已完结任务记忆的保留期（天），与 project 型 180 天口径一致 */
 export const MEMORY_STALE_RETENTION_DAYS = 180;
+/** T06071：external reference 的自动到期窗口（天）；user/feedback/project 不走该规则 */
+export const MEMORY_REFERENCE_TTL_DAYS = 365;
 
 const ORGANIZE_KIND = 'memory_organize';
 
@@ -29,22 +31,23 @@ export function enforceCapacity(productKey: string, now = new Date().toISOString
   const db = getDb();
   const pk = normalizeProductKey(productKey);
   if (!pk) return 0;
-  const total = (db.prepare('SELECT COUNT(*) AS c FROM memories WHERE product_key = ? AND invalidated_at IS NULL')
+  const total = (db.prepare('SELECT COUNT(*) AS c FROM memories WHERE product_key = ? AND invalidated_at IS NULL AND invalid_at IS NULL AND expired_at IS NULL')
     .get(pk) as { c: number }).c;
   const overflow = total - MEMORY_CAPACITY_LIMIT;
   if (overflow <= 0) return 0;
   // 淘汰目标是 access_count 最低/updated_at 最旧的 overflow 条——ORDER BY 必须是 ASC + LIMIT overflow；
   // 反向写成「跳过前 200 条」会把访问最多的行淘汰掉（实测踩坑，门脚本已锁定）。
   const extra = db.prepare(`SELECT id FROM memories
-    WHERE product_key = ? AND invalidated_at IS NULL
-    ORDER BY access_count ASC, updated_at ASC
+    WHERE product_key = ? AND invalidated_at IS NULL AND invalid_at IS NULL AND expired_at IS NULL
+    ORDER BY CASE WHEN type IN ('user','feedback') THEN 1 ELSE 0 END ASC,
+             access_count ASC, updated_at ASC
     LIMIT ?`).all(pk, overflow) as { id: string }[];
   if (!extra.length) return 0;
   const invalidate = db.prepare(
-    'UPDATE memories SET invalidated_at = ?, superseded_by = ? WHERE id = ? AND invalidated_at IS NULL',
+    'UPDATE memories SET invalidated_at = ?, invalid_at = ?, invalidated_reason = ?, superseded_by = ? WHERE id = ? AND invalidated_at IS NULL',
   );
   const tx = db.transaction(() => {
-    for (const row of extra) invalidate.run(now, 'capacity-overflow', row.id);
+    for (const row of extra) invalidate.run(now, now, 'capacity-overflow', 'capacity-overflow', row.id);
   });
   tx();
   notifyChange('memories');
@@ -56,6 +59,8 @@ export interface OrganizeResult {
   deduped: number;
   /** 长期无人访问失效数 */
   stale: number;
+  /** reference 超过 TTL 自动到期数（只写 expired_at，不软失效） */
+  expired: number;
   /** 已完结任务导出的到期记忆失效数 */
   archived: number;
 }
@@ -65,14 +70,15 @@ function invalidateMany(rows: { id: string }[], reason: string, now: string): nu
   if (!rows.length) return 0;
   const db = getDb();
   const stmt = db.prepare(
-    'UPDATE memories SET invalidated_at = ?, superseded_by = ? WHERE id = ? AND invalidated_at IS NULL',
+    'UPDATE memories SET invalidated_at = ?, invalid_at = ?, invalidated_reason = ?, superseded_by = ? WHERE id = ? AND invalidated_at IS NULL',
   );
+  let changed = 0;
   const tx = db.transaction(() => {
-    for (const r of rows) stmt.run(now, reason, r.id);
+    for (const r of rows) changed += stmt.run(now, now, reason, reason, r.id).changes;
   });
   tx();
   notifyChange('memories');
-  return rows.length;
+  return changed;
 }
 
 interface MemoryLite {
@@ -96,7 +102,7 @@ export function organizeMemories(now = new Date().toISOString()): OrganizeResult
 
   // ① 近重复（单产品上限 200，全量读取成本可控；按分组只保留一条）
   const active = db.prepare(`SELECT id, product_key, type, title, access_count, updated_at
-    FROM memories WHERE invalidated_at IS NULL`).all() as MemoryLite[];
+    FROM memories WHERE invalidated_at IS NULL AND invalid_at IS NULL AND expired_at IS NULL`).all() as MemoryLite[];
   const groups = new Map<string, MemoryLite[]>();
   for (const row of active) {
     const key = [row.product_key, row.type, row.title.trim().toLowerCase()].join('\u0000');
@@ -116,26 +122,45 @@ export function organizeMemories(now = new Date().toISOString()): OrganizeResult
   let deduped = 0;
   if (losers.length) {
     const stmt = db.prepare(
-      'UPDATE memories SET invalidated_at = ?, superseded_by = ? WHERE id = ? AND invalidated_at IS NULL',
+      'UPDATE memories SET invalidated_at = ?, invalid_at = ?, invalidated_reason = ?, superseded_by = ? WHERE id = ? AND invalidated_at IS NULL',
     );
     const tx = db.transaction(() => {
-      for (const r of losers) deduped += stmt.run(now, r.keep, r.id).changes;
+      for (const r of losers) deduped += stmt.run(now, now, 'superseded:title-dedup', r.keep, r.id).changes;
+    });
+    tx();
+    notifyChange('memories');
+  }
+
+  const referenceCutoff = new Date(new Date(now).getTime() - MEMORY_REFERENCE_TTL_DAYS * 86400000).toISOString();
+  let expired = 0;
+  const referenceRows = db.prepare(`SELECT id FROM memories
+    WHERE type = 'reference' AND invalidated_at IS NULL AND invalid_at IS NULL AND expired_at IS NULL
+      AND updated_at < ?`).all(referenceCutoff) as { id: string }[];
+  if (referenceRows.length) {
+    const stmt = db.prepare('UPDATE memories SET expired_at = ? WHERE id = ? AND expired_at IS NULL');
+    const tx = db.transaction(() => {
+      for (const r of referenceRows) expired += stmt.run(now, r.id).changes;
     });
     tx();
     notifyChange('memories');
   }
 
   const stale = invalidateMany(
-    db.prepare('SELECT id FROM memories WHERE invalidated_at IS NULL AND access_count = 0 AND updated_at < ?')
+    db.prepare(`SELECT id FROM memories
+      WHERE invalidated_at IS NULL AND invalid_at IS NULL AND expired_at IS NULL
+        AND access_count = 0 AND updated_at < ?
+        AND type NOT IN ('user','feedback')`)
       .all(cutoff) as { id: string }[], 'organize:stale', now,
   );
   const archived = invalidateMany(
     db.prepare(`SELECT m.id FROM memories m
       JOIN tasks t ON t.id = m.source_task_id
-      WHERE m.invalidated_at IS NULL AND t.status = 'done' AND m.updated_at < ?`)
+      WHERE m.invalidated_at IS NULL AND m.invalid_at IS NULL AND m.expired_at IS NULL
+        AND t.status = 'done' AND m.updated_at < ?
+        AND m.type NOT IN ('user','feedback')`)
       .all(cutoff) as { id: string }[], 'organize:task-archived', now,
   );
-  return { deduped, stale, archived };
+  return { deduped, stale, expired, archived };
 }
 
 /** 上次整理时间：取 memory_organize 遥测的最新一条（放在 ai_usage 里，重启后仍可判） */
@@ -159,7 +184,7 @@ export function maybeOrganizeMemories(now = new Date().toISOString()): { ran: bo
   try {
     recordUsage({
       kind: ORGANIZE_KIND, toolId: '', ok: true, startedAt: Date.now(),
-      cardKey: ORGANIZE_KIND, stage: `deduped=${result.deduped},stale=${result.stale},archived=${result.archived}`,
+      cardKey: ORGANIZE_KIND, stage: `deduped=${result.deduped},stale=${result.stale},expired=${result.expired},archived=${result.archived}`,
     });
   } catch { /* 遥测失败不影响整理结果 */ }
   return { ran: true, result };

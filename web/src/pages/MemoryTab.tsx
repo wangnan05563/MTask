@@ -21,7 +21,21 @@ const TYPE_LABELS: Record<MemoryType, string> = {
   user: '用户偏好', feedback: '反馈纠正', project: '项目事实', reference: '外部参考',
 };
 
+// T06071：与 server/src/util/memoryLayers.ts 同值；前端不能跨包 import，改动需两处同步
+const MEMORY_KINDS = ['semantic', 'episodic', 'procedural'] as const;
+type MemoryKind = (typeof MEMORY_KINDS)[number];
+const KIND_LABELS: Record<MemoryKind, string> = { semantic: '语义', episodic: '情景', procedural: '程序' };
+const MEMORY_SCOPES = ['product', 'project', 'task'] as const;
+type MemoryScope = (typeof MEMORY_SCOPES)[number];
+const SCOPE_LABELS: Record<MemoryScope, string> = { product: '产品级', project: '项目级', task: '任务级' };
+const MEMORY_AUTHORITIES = ['user', 'system', 'tool', 'inferred', 'external'] as const;
+type MemoryAuthority = (typeof MEMORY_AUTHORITIES)[number];
+const AUTHORITY_LABELS: Record<MemoryAuthority, string> = {
+  user: '用户', system: '系统', tool: '工具', inferred: '推断', external: '外部',
+};
+
 interface ProductTag { productKey: string; projectCount: number; memoryCount: number }
+interface MemoryCoverage { total: number; zeroAccess: number; zeroAccessPct: number; expired: number; invalidated: number }
 interface ProductProject { id: string; name: string; memory_auto_extract: number }
 interface PendingRow {
   id: string; title: string; content: string; type: MemoryType;
@@ -39,6 +53,14 @@ interface MemoryRow {
   tags: string | null;
   source_task_id: string | null;
   source_kind: string;
+  memory_kind?: MemoryKind;
+  scope?: MemoryScope;
+  authority?: MemoryAuthority;
+  valid_at?: string | null;
+  invalid_at?: string | null;
+  expired_at?: string | null;
+  revision?: number;
+  invalidated_reason?: string | null;
   confidence: number | null;
   access_count: number;
   created_at: string;
@@ -139,10 +161,13 @@ export function MemoryTab() {
   // 否则重新挂载会回到首产品 + 列表，看起来像“状态保持未生效”。
   const [productKey, setProductKey] = useSessionState<string>('mtask.memoryTab.productKey', '');
   const [type, setType] = useState<'' | MemoryType>('');
+  const [kind, setKind] = useState<'' | MemoryKind>('');
+  const [authority, setAuthority] = useState<'' | MemoryAuthority>('');
   const [keyword, setKeyword] = useState('');
   const [includeInvalidated, setIncludeInvalidated] = useState(false);
   const [rows, setRows] = useState<MemoryRow[]>([]);
   const [total, setTotal] = useState(0);
+  const [coverage, setCoverage] = useState<MemoryCoverage | null>(null);
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(false);
   // MEM-503/504：本产品下的项目（自动抽取开关）与待确认队列
@@ -159,7 +184,7 @@ export function MemoryTab() {
   const [newType, setNewType] = useState<MemoryType>('project');
   const [newTags, setNewTags] = useState('');
   // 行内编辑：同时只编辑一条，避免多行草稿状态互相覆盖
-  const [editing, setEditing] = useState<{ id: string; type: MemoryType; title: string; content: string; tags: string } | null>(null);
+  const [editing, setEditing] = useState<{ id: string; type: MemoryType; kind: MemoryKind; authority: MemoryAuthority; title: string; content: string; tags: string } | null>(null);
   // T05738：视图切换——列表（管理/编辑）与图谱（关系可视化）共用同一份产品筛选
   const [viewMode, setViewMode] = useSessionState<'list' | 'graph'>('mtask.memoryTab.viewMode', 'list');
 
@@ -179,6 +204,8 @@ export function MemoryTab() {
     try {
       const q = new URLSearchParams({ productKey, limit: '100' });
       if (type) q.set('type', type);
+      if (kind) q.set('memoryKind', kind);
+      if (authority) q.set('authority', authority);
       if (keyword.trim()) q.set('query', keyword.trim());
       if (includeInvalidated) q.set('includeInvalidated', '1');
       const r = await api.get<{ total: number; memories: MemoryRow[] }>(`/memories?${q.toString()}`);
@@ -187,7 +214,17 @@ export function MemoryTab() {
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e));
     } finally { setLoading(false); }
-  }, [productKey, type, keyword, includeInvalidated]);
+  }, [productKey, type, kind, authority, keyword, includeInvalidated]);
+
+  // T06071：产品级 zero-access 评估只读展示；筛选不影响口径，避免把筛后列表当成全量健康度。
+  const loadCoverage = useCallback(async () => {
+    if (!productKey) { setCoverage(null); return; }
+    try {
+      const q = new URLSearchParams({ productKey });
+      const r = await api.get<{ coverage: MemoryCoverage | null }>(`/memories/coverage?${q.toString()}`);
+      setCoverage(r.coverage);
+    } catch { setCoverage(null); }
+  }, [productKey]);
 
   // MEM-503/504：只列本产品标签下的项目——跨产品项目不出现在下拉里，从入口上杜绝越权操作
   const loadProjects = useCallback(async () => {
@@ -225,6 +262,7 @@ export function MemoryTab() {
 
   useEffect(() => { void loadTags(); }, [loadTags]);
   useEffect(() => { void loadRows(); }, [loadRows]);
+  useEffect(() => { void loadCoverage(); }, [loadCoverage]);
   useEffect(() => { void loadProjects(); }, [loadProjects]);
   useEffect(() => { void loadPending(); }, [loadPending]);
   useEffect(() => { void loadOrphans(); }, [loadOrphans]);
@@ -234,9 +272,10 @@ export function MemoryTab() {
     if (kind !== 'memories') return;
     void loadRows();
     void loadPending();
+    void loadCoverage();
     void loadTags();
     void loadOrphans();
-  }), [loadRows, loadPending, loadTags, loadOrphans]);
+  }), [loadRows, loadPending, loadCoverage, loadTags, loadOrphans]);
 
   /** MEM-107/F10：重命名（同事务三表齐改；新名已存在时为合并，后端会回 mergedIntoExisting） */
   async function renameTag(oldKey: string) {
@@ -319,7 +358,8 @@ export function MemoryTab() {
     if (!editing.title.trim() || !editing.content.trim()) return flash('标题与内容不能为空');
     try {
       await api.patch(`/memories/${editing.id}`, {
-        productKey, type: editing.type, title: editing.title, content: editing.content,
+        productKey, type: editing.type, memoryKind: editing.kind, authority: editing.authority,
+        title: editing.title, content: editing.content,
         tags: editing.tags.split(/[,，]/).map((s) => s.trim()).filter(Boolean),
       });
       flash('已更新');
@@ -390,6 +430,14 @@ export function MemoryTab() {
               <option value="">全部类型</option>
               {MEMORY_TYPES.map((k) => <option key={k} value={k}>{TYPE_LABELS[k]}</option>)}
             </select>
+            <select aria-label="记忆分层筛选" value={kind} onChange={(e) => setKind(e.target.value as '' | MemoryKind)} style={inputStyle}>
+              <option value="">全部分层</option>
+              {MEMORY_KINDS.map((k) => <option key={k} value={k}>{KIND_LABELS[k]}</option>)}
+            </select>
+            <select aria-label="记忆权威筛选" value={authority} onChange={(e) => setAuthority(e.target.value as '' | MemoryAuthority)} style={inputStyle}>
+              <option value="">全部权威</option>
+              {MEMORY_AUTHORITIES.map((k) => <option key={k} value={k}>{AUTHORITY_LABELS[k]}</option>)}
+            </select>
             <input aria-label="关键词筛选" value={keyword} onChange={(e) => setKeyword(e.target.value)}
               placeholder="标题/内容关键词" style={{ ...inputStyle, minWidth: 200 }} />
             <label style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -397,6 +445,13 @@ export function MemoryTab() {
               含已失效
             </label>
             <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{loading ? '加载中…' : `共 ${total} 条`}</span>
+            {coverage && (
+              <span title="产品内有效记忆的零访问评估；不随上方筛选变化"
+                style={{ fontSize: 'var(--fs-xs)', color: coverage.zeroAccessPct > 30 ? 'var(--warning, #d97706)' : 'var(--text-muted)' }}>
+                零访问 {coverage.zeroAccess}/{coverage.total}（{coverage.zeroAccessPct}%）
+                {coverage.expired ? ` · 到期 ${coverage.expired}` : ''}
+              </span>
+            )}
           </>
         )}
       </div>
@@ -510,8 +565,16 @@ export function MemoryTab() {
               <tr key={r.id}>
                 <td style={cell}>
                   <select aria-label="编辑类型" value={editing.type}
-                    onChange={(e) => setEditing({ ...editing, type: e.target.value as MemoryType })} style={{ ...inputStyle, width: '100%' }}>
+                    onChange={(e) => setEditing({ ...editing, type: e.target.value as MemoryType })} style={{ ...inputStyle, width: '100%', marginBottom: 4 }}>
                     {MEMORY_TYPES.map((k) => <option key={k} value={k}>{TYPE_LABELS[k]}</option>)}
+                  </select>
+                  <select aria-label="编辑分层" value={editing.kind}
+                    onChange={(e) => setEditing({ ...editing, kind: e.target.value as MemoryKind })} style={{ ...inputStyle, width: '100%', marginBottom: 4 }}>
+                    {MEMORY_KINDS.map((k) => <option key={k} value={k}>{KIND_LABELS[k]}</option>)}
+                  </select>
+                  <select aria-label="编辑权威" value={editing.authority}
+                    onChange={(e) => setEditing({ ...editing, authority: e.target.value as MemoryAuthority })} style={{ ...inputStyle, width: '100%' }}>
+                    {MEMORY_AUTHORITIES.map((k) => <option key={k} value={k}>{AUTHORITY_LABELS[k]}</option>)}
                   </select>
                 </td>
                 <td style={cell}>
@@ -535,20 +598,29 @@ export function MemoryTab() {
                 </td>
               </tr>
             ) : (
-              <tr key={r.id} style={{ opacity: r.invalidated_at ? 0.55 : 1 }}>
-                <td style={cell}>{TYPE_LABELS[r.type] ?? r.type}</td>
+              <tr key={r.id} style={{ opacity: r.invalidated_at || r.expired_at ? 0.55 : 1 }}>
+                <td style={cell}>
+                  <div>{TYPE_LABELS[r.type] ?? r.type}</div>
+                  <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+                    {KIND_LABELS[r.memory_kind ?? 'semantic']} · {AUTHORITY_LABELS[r.authority ?? 'system']}
+                  </div>
+                </td>
                 <td style={cell}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, color: 'var(--text)' }}>
                     <div style={{ flex: 1, minWidth: 0 }}><CellText text={r.title} cardW={420} /></div>
                     {r.need_review && <span style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--warning, #d97706)' }}>需复核</span>}
                     {r.invalidated_at && <span style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>已失效{r.superseded_by ? `（${r.superseded_by}）` : ''}</span>}
+                    {!r.invalidated_at && r.expired_at && <span style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--warning, #d97706)' }}>已到期</span>}
                   </div>
                   <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
                     <CellText text={r.content} cardW={480} />
                   </div>
                 </td>
                 <td style={cell}><CellText text={parseTags(r.tags).join('、')} cardW={280} /></td>
-                <td style={cell}>{r.project_id ? '本期特有' : '产品级共享'}</td>
+                <td style={cell}>
+                  <div>{SCOPE_LABELS[r.scope ?? (r.project_id ? 'project' : 'product')]}</div>
+                  <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>v{r.revision ?? 1}{r.invalidated_reason ? ` · ${r.invalidated_reason}` : ''}{!r.invalidated_reason && r.expired_at ? ' · expired' : ''}</div>
+                </td>
                 <td style={cell}><CellText text={`${r.source_task_id ?? '—'} · ${r.source_kind}`} cardW={320} /></td>
                 <td style={cell}>{r.access_count}</td>
                 <td style={cell}><CellText text={r.updated_at.slice(0, 16).replace('T', ' ')} empty="—" cardW={220} /></td>
@@ -556,7 +628,9 @@ export function MemoryTab() {
                   <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
                     <IconButton action="memory-edit" label="编辑" hint="在表格内修改这条记忆的类型、标题和内容"
                       icon={<Pencil size={15} />} onClick={() => setEditing({
-                        id: r.id, type: r.type, title: r.title, content: r.content, tags: parseTags(r.tags).join(','),
+                        id: r.id, type: r.type, kind: r.memory_kind ?? 'semantic',
+                        authority: r.authority ?? 'system',
+                        title: r.title, content: r.content, tags: parseTags(r.tags).join(','),
                       })} />
                     <IconButton action="memory-delete" label="删除" hint="移除该条记忆记录，此操作不可恢复" tone="danger"
                       icon={<Trash2 size={15} />} onClick={() => void removeMemory(r)} />

@@ -2,6 +2,9 @@ import { getDb } from '../db/connection';
 import { normalizeProductKey } from './productKey';
 import { notifyChange } from '../services/ChangeBus'; // T04171（F11）：确认/驳回改变记忆与待确认队列
 import type { MemoryType } from './memoryTypes'; // T04140：四型分类单源，不再就地重复定义
+import {
+  normalizeMemoryAuthority, normalizeMemoryKind, normalizeMemoryScope,
+} from './memoryLayers'; // T06071：待确认转正时补齐分层字段
 export type { MemoryType } from './memoryTypes';
 
 /**
@@ -78,11 +81,18 @@ export function resolvePendingMemory(
       return;
     }
     const now = new Date().toISOString();
+    const type = row.type as MemoryType;
+    const sourceKind = String(row.source_kind ?? 'auto');
+    const kind = normalizeMemoryKind(undefined, type);
+    const scopeKind = normalizeMemoryScope(undefined, row.project_id ? String(row.project_id) : null);
+    const authority = normalizeMemoryAuthority(undefined, sourceKind);
     db.prepare(`INSERT INTO memories
-      (id,product_key,project_id,type,title,content,source_task_id,source_kind,confidence,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
-      row.id, row.product_key, row.project_id ?? null, row.type, row.title, row.content,
-      row.source_task_id ?? null, row.source_kind ?? 'auto', row.confidence ?? null, now, now,
+      (id,product_key,project_id,type,memory_kind,scope,authority,valid_at,invalid_at,expired_at,revision,invalidated_reason,
+       title,content,source_task_id,source_kind,confidence,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      row.id, row.product_key, row.project_id ?? null, type, kind, scopeKind, authority,
+      now, null, null, 1, null, row.title, row.content,
+      row.source_task_id ?? null, sourceKind, row.confidence ?? null, now, now,
     );
     db.prepare('DELETE FROM memory_review_queue WHERE id = ?').run(pendingId);
   });

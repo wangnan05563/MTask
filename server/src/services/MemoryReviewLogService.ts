@@ -98,6 +98,7 @@ export function sampleMemoriesForReview(productKey: string, batchSize = REVIEW_B
   const batchId = `rev-${new Date().toISOString().replaceAll(/[-:T.Z]/g, '').slice(0, 14)}`;
   const rows = getDb().prepare(`SELECT id, type, title, content, source_kind, updated_at
     FROM memories WHERE product_key = ? AND invalidated_at IS NULL
+      AND invalid_at IS NULL AND expired_at IS NULL
     ORDER BY RANDOM() LIMIT ?`).all(pk, size) as ReviewSample['memories'];
   return { batchId, memories: rows };
 }

@@ -664,6 +664,19 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
       source_task_id   TEXT,
       source_kind      TEXT NOT NULL DEFAULT 'auto'
                          CHECK(source_kind IN ('auto','manual','user_said','tool_output','inferred')),
+      -- T06071（T06068 §9 Phase 0）：分层 + 作用域 + 权威 + 双时间轴。
+      -- 旧库由 ensureMemoryLayeringColumns() 幂等补列/回填；应用层继续用 memoryLayers.ts 兜住枚举。
+      memory_kind      TEXT NOT NULL DEFAULT 'semantic'
+                         CHECK(memory_kind IN ('semantic','episodic','procedural')),
+      scope            TEXT NOT NULL DEFAULT 'product'
+                         CHECK(scope IN ('product','project','task')),
+      authority        TEXT NOT NULL DEFAULT 'system'
+                         CHECK(authority IN ('user','system','tool','inferred','external')),
+      valid_at         TEXT,
+      invalid_at       TEXT,
+      expired_at       TEXT,
+      revision         INTEGER NOT NULL DEFAULT 1,
+      invalidated_reason TEXT,
       confidence       REAL,
       access_count     INTEGER NOT NULL DEFAULT 0,
       last_accessed_at TEXT,
@@ -1145,6 +1158,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   // T04891（裁决 A）：老库 memory_review_log 的 verdict CHECK 仍是 keep/reject，需整表重建
   // 扩为 PRD §5 三分类并迁移历史映射（SQLite 无法 ALTER CHECK）
   ensureReviewLogVerdictEnum();
+  // T06071（T06068 §9 Phase 0）：记忆分层/作用域/权威/双时间轴，老库幂等补列 + 回填 + 索引
+  ensureMemoryLayeringColumns();
 
   seedPromptCategories();
   // 移动端随手记默认归属项目（收件箱）：确定性 id，保证每次启动只创建一次
@@ -1214,6 +1229,58 @@ function ensureColumn(table: string, column: string, ddl: string): void {
   if (!cols.some((c) => c.name === column)) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
   }
+}
+
+/**
+ * T06071（T06068 §9 Phase 0）：记忆分层、作用域、权威与双时间轴。
+ *
+ * 兼容策略：旧库 ALTER 加列（不带 CHECK，SQLite 不能给已有表补 CHECK），
+ * 随后只回填 NULL 行，重复启动不会覆盖用户/服务后续写入的显式值。
+ * 新库由 CREATE TABLE 直接带默认值 + CHECK；查询侧仍以 memoryLayers.ts 兜底。
+ */
+function ensureMemoryLayeringColumns(): void {
+  const db = getDb();
+  ensureColumn('memories', 'memory_kind', 'memory_kind TEXT');
+  ensureColumn('memories', 'scope', 'scope TEXT');
+  ensureColumn('memories', 'authority', 'authority TEXT');
+  ensureColumn('memories', 'valid_at', 'valid_at TEXT');
+  ensureColumn('memories', 'invalid_at', 'invalid_at TEXT');
+  ensureColumn('memories', 'expired_at', 'expired_at TEXT');
+  ensureColumn('memories', 'revision', 'revision INTEGER NOT NULL DEFAULT 1');
+  ensureColumn('memories', 'invalidated_reason', 'invalidated_reason TEXT');
+
+  // 旧 type → 新分层；scope/authority 由现有字段推导；valid_at 以 created_at 为历史锚点。
+  db.exec(`UPDATE memories SET memory_kind = CASE
+      WHEN type = 'project' THEN 'episodic'
+      WHEN type = 'feedback' THEN 'procedural'
+      ELSE 'semantic' END
+    WHERE memory_kind IS NULL OR memory_kind = ''`);
+  db.exec(`UPDATE memories SET scope = CASE
+      WHEN project_id IS NULL THEN 'product' ELSE 'project' END
+    WHERE scope IS NULL OR scope = ''`);
+  db.exec(`UPDATE memories SET authority = CASE
+      WHEN source_kind IN ('user_said','manual') THEN 'user'
+      WHEN source_kind = 'tool_output' THEN 'tool'
+      WHEN source_kind = 'inferred' THEN 'inferred'
+      ELSE 'system' END
+    WHERE authority IS NULL OR authority = ''`);
+  db.exec(`UPDATE memories SET valid_at = created_at
+    WHERE valid_at IS NULL OR valid_at = ''`);
+  db.exec(`UPDATE memories SET invalid_at = invalidated_at
+    WHERE invalid_at IS NULL AND invalidated_at IS NOT NULL`);
+  db.exec(`UPDATE memories SET revision = 1 WHERE revision IS NULL OR revision < 1`);
+  db.exec(`UPDATE memories SET invalidated_reason = CASE
+      WHEN superseded_by = 'capacity-overflow' THEN 'capacity-overflow'
+      WHEN superseded_by = 'organize:stale' THEN 'organize:stale'
+      WHEN superseded_by = 'organize:task-archived' THEN 'organize:task-archived'
+      WHEN superseded_by IS NOT NULL THEN 'superseded'
+      ELSE 'legacy-invalidated' END
+    WHERE invalidated_at IS NOT NULL AND (invalidated_reason IS NULL OR invalidated_reason = '')`);
+
+  // 分层/作用域/有效期各一条索引；产品维度前缀保证作用域查询仍走索引。
+  db.exec("CREATE INDEX IF NOT EXISTS idx_memories_product_kind ON memories(product_key, memory_kind)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_memories_product_scope ON memories(product_key, scope)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_memories_product_validity ON memories(product_key, invalid_at, expired_at)");
 }
 
 /**

@@ -8,6 +8,11 @@ import { EXTRACTION_SYSTEM_PROMPT, runRulesExtraction, isExtractRunDone, type Ru
 import { v4 as uuid } from 'uuid';
 import { buildMemoryScopeWhere, type ActiveMemoryScope } from '../util/memoryScope';
 import { isMemoryType, type MemoryType } from '../util/memoryTypes';
+import {
+  MEMORY_AUTHORITY_LABELS, MEMORY_KIND_LABELS, MEMORY_SCOPE_LABELS,
+  type MemoryAuthority, type MemoryKind, type MemoryScopeKind,
+  normalizeMemoryAuthority, normalizeMemoryKind, normalizeMemoryScope,
+} from '../util/memoryLayers'; // T06071：分层/作用域/权威单源
 import { enforceCapacity } from './MemoryMaintenanceService'; // T04150（MEM-306/F9）：容量评估
 import { guardMemoryCandidate, type MemorySourceKind } from '../util/memoryGuard'; // T04151：手动保存的 PII 守卫
 import { notifyChange } from './ChangeBus'; // T04171（F11）：记忆写操作推 SSE，管理页实时刷新
@@ -163,6 +168,8 @@ export const MEMORY_QUERY_MAX_LIMIT = 20;
 const MEMORY_RANK_SQL = `(
   CASE type WHEN 'feedback' THEN 4 WHEN 'user' THEN 3 WHEN 'project' THEN 2 ELSE 1 END *
   CASE source_kind WHEN 'user_said' THEN 3 WHEN 'manual' THEN 3 WHEN 'auto' THEN 2 WHEN 'inferred' THEN 1 ELSE 0.5 END *
+  CASE memory_kind WHEN 'procedural' THEN 1.25 WHEN 'episodic' THEN 1.1 ELSE 1.0 END *
+  CASE authority WHEN 'user' THEN 1.2 WHEN 'tool' THEN 1.05 ELSE 1.0 END *
   CASE
     WHEN julianday('now') - julianday(COALESCE(last_accessed_at, updated_at)) <= 30 THEN 1.5
     WHEN julianday('now') - julianday(COALESCE(last_accessed_at, updated_at)) > 180 THEN 0.3
@@ -180,6 +187,18 @@ export interface MemoryRow {
   tags: string | null;
   source_task_id: string | null;
   source_kind: string;
+  /** T06071：语义/情景/程序分层 */
+  memory_kind: MemoryKind;
+  /** T06071：产品级/项目级/任务级作用域 */
+  scope: MemoryScopeKind;
+  /** T06071：用户/系统/工具/推断/外部权威 */
+  authority: MemoryAuthority;
+  /** T06071：双时间轴与修订号 */
+  valid_at: string | null;
+  invalid_at: string | null;
+  expired_at: string | null;
+  revision: number;
+  invalidated_reason: string | null;
   confidence: number | null;
   access_count: number;
   last_accessed_at: string | null;
@@ -196,8 +215,16 @@ export interface MemoryRow {
 
 export interface QueryMemoriesOptions {
   type?: string;
+  /** T06071：分层过滤（semantic/episodic/procedural） */
+  memoryKind?: string;
+  /** T06071：作用域过滤（product/project/task） */
+  scope?: string;
+  /** T06071：权威过滤（user/system/tool/inferred/external） */
+  authority?: string;
   /** 标题/内容模糊匹配（F13：tags 用 JSON 文本 LIKE，不走全文索引） */
   query?: string;
+  /** T06071：任务化召回的多词 OR 条件；与 query 取并集，单个词仍走 LIKE */
+  terms?: string[];
   tags?: string[];
   limit?: number;
   /** 管理页需要看到失效行（带 invalidated_at/superseded_by）；召回路径一律默认 false */
@@ -233,10 +260,35 @@ export function queryMemories(
     clauses.push('type = ?');
     params.push(opts.type);
   }
+  if (opts.memoryKind !== undefined) {
+    if (!['semantic', 'episodic', 'procedural'].includes(opts.memoryKind)) return rows;
+    clauses.push('memory_kind = ?');
+    params.push(opts.memoryKind);
+  }
+  if (opts.scope !== undefined) {
+    if (!['product', 'project', 'task'].includes(opts.scope)) return rows;
+    clauses.push('scope = ?');
+    params.push(opts.scope);
+  }
+  if (opts.authority !== undefined) {
+    if (!['user', 'system', 'tool', 'inferred', 'external'].includes(opts.authority)) return rows;
+    clauses.push('authority = ?');
+    params.push(opts.authority);
+  }
   const kw = (opts.query ?? '').trim();
-  if (kw) {
-    clauses.push("(title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\')");
-    params.push(`%${escapeLike(kw)}%`, `%${escapeLike(kw)}%`);
+  const terms = (opts.terms ?? []).map((t) => String(t ?? '').trim()).filter((t) => t.length >= 2).slice(0, 8);
+  // 关键词与任务化召回词项取并集：显式 query 不因 taskNo 附加而变成必须同时命中。
+  if (kw || terms.length) {
+    const ors: string[] = [];
+    if (kw) {
+      ors.push("title LIKE ? ESCAPE '\\'", "content LIKE ? ESCAPE '\\'");
+      params.push(`%${escapeLike(kw)}%`, `%${escapeLike(kw)}%`);
+    }
+    for (const term of terms) {
+      ors.push("title LIKE ? ESCAPE '\\'", "content LIKE ? ESCAPE '\\'");
+      params.push(`%${escapeLike(term)}%`, `%${escapeLike(term)}%`);
+    }
+    clauses.push(`(${ors.join(' OR ')})`);
   }
   for (const tag of (opts.tags ?? []).map((t) => t.trim()).filter(Boolean)) {
     clauses.push("tags LIKE ? ESCAPE '\\'");
@@ -250,7 +302,9 @@ export function queryMemories(
   const db = getDb();
   // MEM-305：project 型保留期 180 天，到期只标记「需复核」不删除；标记在查询时惰性计算（F9），
   // 时间锚用 updated_at 绝对日期，不依赖调度。排序侧已由 MEMORY_RANK_SQL 的 180 天衰减降权。
-  const sql = `SELECT id, product_key, project_id, type, title, content, tags, source_task_id,
+  const sql = `SELECT id, product_key, project_id, type, memory_kind, scope, authority,
+      valid_at, invalid_at, expired_at, revision, invalidated_reason,
+      title, content, tags, source_task_id,
       source_kind, confidence, access_count, last_accessed_at, created_at, updated_at,
       invalidated_at, superseded_by,
       ${MEMORY_RANK_SQL} AS rank_score,
@@ -311,7 +365,14 @@ export function queryForContext(
   let count = 0;
   let truncated = false;
   for (const r of rows) {
-    const tag = [r.type, r.source_kind, r.id].join('|') + (r.need_review ? '|需复核' : '');
+    const tag = [
+      r.type,
+      MEMORY_KIND_LABELS[r.memory_kind] ?? r.memory_kind,
+      MEMORY_SCOPE_LABELS[r.scope] ?? r.scope,
+      MEMORY_AUTHORITY_LABELS[r.authority] ?? r.authority,
+      r.source_kind,
+      r.id,
+    ].join('|') + (r.need_review ? '|需复核' : '');
     const line = `- [${tag}] ${escapeXml(r.title)}\n  ${escapeXml(r.content)}\n`;
     if (head.length + body.length + line.length + tail.length > MEMORY_CONTEXT_MAX_CHARS) {
       truncated = true;
@@ -387,6 +448,12 @@ export interface SaveMemoryInput {
   tags?: string[];
   sourceKind?: string;
   sourceTaskId?: string;
+  /** T06071：可选分层/作用域/权威；缺省按 type/source_kind/projectId 自动推导 */
+  memoryKind?: string;
+  memoryScope?: string;
+  authority?: string;
+  validAt?: string;
+  expiredAt?: string | null;
 }
 
 export type SaveMemoryResult =
@@ -407,6 +474,11 @@ export function saveMemory(input: SaveMemoryInput): SaveMemoryResult {
   const sourceKind = (MEMORY_SOURCE_KINDS as readonly string[]).includes(String(input.sourceKind))
     ? input.sourceKind as MemorySourceKind
     : 'manual';
+  const kind = normalizeMemoryKind(input.memoryKind, input.type);
+  const scopeKind = normalizeMemoryScope(input.memoryScope, input.scope.projectId ?? null);
+  const authority = normalizeMemoryAuthority(input.authority, sourceKind);
+  const validAt = String(input.validAt ?? '').trim() || new Date().toISOString();
+  const expiredAt = input.expiredAt ?? null;
   const id = `mem-${uuid()}`;
   const tags = Array.isArray(input.tags) && input.tags.length
     ? JSON.stringify(input.tags.map((t) => String(t).trim()).filter(Boolean).slice(0, 5))
@@ -422,9 +494,11 @@ export function saveMemory(input: SaveMemoryInput): SaveMemoryResult {
   }
   const now = new Date().toISOString();
   getDb().prepare(`INSERT INTO memories
-    (id,product_key,project_id,type,title,content,tags,source_task_id,source_kind,confidence,created_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-    id, input.scope.productKey, input.scope.projectId ?? null, input.type, title, content, tags,
+    (id,product_key,project_id,type,memory_kind,scope,authority,valid_at,invalid_at,expired_at,revision,invalidated_reason,
+     title,content,tags,source_task_id,source_kind,confidence,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    id, input.scope.productKey, input.scope.projectId ?? null, input.type, kind, scopeKind, authority,
+    validAt, null, expiredAt, 1, null, title, content, tags,
     input.sourceTaskId ?? null, sourceKind, 1, now, now,
   );
   notifyChange('memories');
@@ -443,7 +517,7 @@ export type MemoryMutationResult = { ok: true; id: string } | { ok: false; error
 export function updateMemory(
   id: string,
   scope: ActiveMemoryScope,
-  patch: { type?: string; title?: string; content?: string; tags?: string[] | null },
+  patch: { type?: string; title?: string; content?: string; tags?: string[] | null; memoryKind?: string; authority?: string },
 ): MemoryMutationResult {
   if (!findScopedMemory(id, scope)) return { ok: false, error: '记忆不存在或不属于该产品' };
   const sets: string[] = [];
@@ -452,6 +526,16 @@ export function updateMemory(
     if (!isMemoryType(patch.type)) return { ok: false, error: 'type 非法枚举' };
     sets.push('type = ?');
     params.push(patch.type);
+  }
+  if (patch.memoryKind !== undefined) {
+    if (!['semantic', 'episodic', 'procedural'].includes(patch.memoryKind)) return { ok: false, error: 'memoryKind 非法枚举' };
+    sets.push('memory_kind = ?');
+    params.push(patch.memoryKind);
+  }
+  if (patch.authority !== undefined) {
+    if (!['user', 'system', 'tool', 'inferred', 'external'].includes(patch.authority)) return { ok: false, error: 'authority 非法枚举' };
+    sets.push('authority = ?');
+    params.push(patch.authority);
   }
   if (patch.title !== undefined) {
     const title = String(patch.title).trim();
@@ -471,8 +555,9 @@ export function updateMemory(
       : JSON.stringify(patch.tags.map((t) => String(t).trim()).filter(Boolean).slice(0, 5)));
   }
   if (!sets.length) return { ok: false, error: '没有可更新字段' };
-  sets.push('updated_at = ?');
-  params.push(new Date().toISOString());
+  const now = new Date().toISOString();
+  sets.push('updated_at = ?', 'valid_at = ?', 'revision = revision + 1');
+  params.push(now, now);
   getDb().prepare(`UPDATE memories SET ${sets.join(', ')} WHERE id = ? AND product_key = ?`)
     .run(...params, id, scope.productKey);
   notifyChange('memories');
@@ -489,11 +574,76 @@ export function deleteMemory(id: string, scope: ActiveMemoryScope): MemoryMutati
 
 export interface ListMemoriesOptions {
   type?: string;
+  memoryKind?: string;
+  scope?: string;
+  authority?: string;
   query?: string;
+  terms?: string[];
   tags?: string[];
   includeInvalidated?: boolean;
   limit?: number;
   offset?: number;
+}
+
+/** T06071：产品层记忆健康度（zero-access 评估的稳定口径，只读、不触发访问计数）。 */
+export interface MemoryCoverage {
+  total: number;
+  zeroAccess: number;
+  zeroAccessPct: number;
+  expired: number;
+  invalidated: number;
+}
+
+export function getMemoryCoverage(scope: ActiveMemoryScope): MemoryCoverage {
+  const db = getDb();
+  const activeWhere = buildMemoryScopeWhere(scope);
+  const allWhere = buildMemoryScopeWhere(scope, { includeInvalidated: true });
+  const total = (db.prepare(`SELECT COUNT(*) AS c FROM memories WHERE ${activeWhere.sql}`)
+    .get(...activeWhere.params) as { c: number }).c;
+  const zeroAccess = (db.prepare(`SELECT COUNT(*) AS c FROM memories
+    WHERE ${activeWhere.sql} AND access_count = 0`).get(...activeWhere.params) as { c: number }).c;
+  const expired = (db.prepare(`SELECT COUNT(*) AS c FROM memories
+    WHERE ${allWhere.sql} AND expired_at IS NOT NULL`).get(...allWhere.params) as { c: number }).c;
+  const invalidated = (db.prepare(`SELECT COUNT(*) AS c FROM memories
+    WHERE ${allWhere.sql} AND (invalidated_at IS NOT NULL OR invalid_at IS NOT NULL)`).get(...allWhere.params) as { c: number }).c;
+  return {
+    total,
+    zeroAccess,
+    zeroAccessPct: total ? Math.round((zeroAccess / total) * 1000) / 10 : 0,
+    expired,
+    invalidated,
+  };
+}
+
+/**
+ * T06071（Phase 2）：任务化召回 query 构造。
+ *
+ * 输入任务标题/描述，抽取标题与描述中的专名/短语作为 OR 词项；只返回纯文本，
+ * 查询仍走 queryMemories（FTS/LIKE 与作用域门禁不在这里重复实现）。
+ */
+export function buildTaskRecallQuery(taskNo: string): { taskNo: string; terms: string[] } | null {
+  const ref = String(taskNo ?? '').trim();
+  if (!ref) return null;
+  const row = getDb().prepare('SELECT title, description FROM tasks WHERE task_no = ? OR id = ?')
+    .get(ref, ref) as { title?: string | null; description?: string | null } | undefined;
+  if (!row) return null;
+  const raw = `${row.title ?? ''}\n${row.description ?? ''}`
+    .replaceAll(/```[\s\S]*?```/g, ' ')
+    .replaceAll('#', ' ')
+    .replaceAll('*', ' ')
+    .replaceAll('`', ' ')
+    .replaceAll('>', ' ')
+    .replaceAll('[', ' ')
+    .replaceAll(']', ' ')
+    .replaceAll('(', ' ')
+    .replaceAll(')', ' ');
+  const segments = raw.split(/[\s,，。;；:：/\\!?！？、]+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 2 && /[\p{L}\p{N}]/u.test(t));
+  const terms = [...new Set([ref, ...segments.flatMap((t) => (
+    t.length <= 24 ? [t] : [t.slice(0, 14), t.slice(-14)]
+  ))])].filter((t) => t.length >= 2).slice(0, 8);
+  return { taskNo: ref, terms };
 }
 
 /**
@@ -514,10 +664,35 @@ export function listMemories(
     clauses.push('type = ?');
     params.push(opts.type);
   }
+  if (opts.memoryKind !== undefined) {
+    if (!['semantic', 'episodic', 'procedural'].includes(opts.memoryKind)) return { total: 0, rows: [] };
+    clauses.push('memory_kind = ?');
+    params.push(opts.memoryKind);
+  }
+  if (opts.scope !== undefined) {
+    if (!['product', 'project', 'task'].includes(opts.scope)) return { total: 0, rows: [] };
+    clauses.push('scope = ?');
+    params.push(opts.scope);
+  }
+  if (opts.authority !== undefined) {
+    if (!['user', 'system', 'tool', 'inferred', 'external'].includes(opts.authority)) return { total: 0, rows: [] };
+    clauses.push('authority = ?');
+    params.push(opts.authority);
+  }
   const kw = (opts.query ?? '').trim();
-  if (kw) {
-    clauses.push("(title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\')");
-    params.push(`%${escapeLike(kw)}%`, `%${escapeLike(kw)}%`);
+  const terms = (opts.terms ?? []).map((t) => String(t ?? '').trim()).filter((t) => t.length >= 2).slice(0, 8);
+  // 关键词与任务化召回词项取并集：显式 query 不因 taskNo 附加而变成必须同时命中。
+  if (kw || terms.length) {
+    const ors: string[] = [];
+    if (kw) {
+      ors.push("title LIKE ? ESCAPE '\\'", "content LIKE ? ESCAPE '\\'");
+      params.push(`%${escapeLike(kw)}%`, `%${escapeLike(kw)}%`);
+    }
+    for (const term of terms) {
+      ors.push("title LIKE ? ESCAPE '\\'", "content LIKE ? ESCAPE '\\'");
+      params.push(`%${escapeLike(term)}%`, `%${escapeLike(term)}%`);
+    }
+    clauses.push(`(${ors.join(' OR ')})`);
   }
   for (const tag of (opts.tags ?? []).map((t) => t.trim()).filter(Boolean)) {
     clauses.push("tags LIKE ? ESCAPE '\\'");
@@ -527,7 +702,9 @@ export function listMemories(
   const whereSql = clauses.join(' AND ');
   const total = (db.prepare(`SELECT COUNT(*) AS c FROM memories WHERE ${whereSql}`)
     .get(...params) as { c: number }).c;
-  const raw = db.prepare(`SELECT id, product_key, project_id, type, title, content, tags, source_task_id,
+  const raw = db.prepare(`SELECT id, product_key, project_id, type, memory_kind, scope, authority,
+      valid_at, invalid_at, expired_at, revision, invalidated_reason,
+      title, content, tags, source_task_id,
       source_kind, confidence, access_count, last_accessed_at, created_at, updated_at,
       invalidated_at, superseded_by,
       ${MEMORY_RANK_SQL} AS rank_score,

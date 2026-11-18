@@ -7,7 +7,7 @@ import {
 } from '../services/ProductTagService'; // T04154（PRD MEM-505/107/108）：标签重命名与孤儿清理入口
 import { appendReviewLog, listReviewLog, ruleRejectStats, sampleMemoriesForReview } from '../services/MemoryReviewLogService'; // T04158/T04164（MEM-604/F8）：评审记录与抽样
 import {
-  buildMemoryGraph, deleteMemory, listMemories, listPendingMemories, listProductTags,
+  buildMemoryGraph, buildTaskRecallQuery, deleteMemory, getMemoryCoverage, listMemories, listPendingMemories, listProductTags,
   queryForContext, queryMemories, saveMemory, similarMemories, updateMemory,
 } from '../services/MemoryService';
 
@@ -73,6 +73,17 @@ memoriesApi.get('/review-log', (req, res) => {
 
 memoriesApi.get('/review-log/stats', (_req, res) => {
   res.json({ ok: true, stats: ruleRejectStats() });
+});
+
+// T06071：产品级记忆健康度（zero-access 评估口径，只读，不计访问）。
+memoriesApi.get('/coverage', (req, res) => {
+  const scope = scopeOf({
+    productKey: req.query.productKey,
+    projectId: typeof req.query.projectId === 'string' ? req.query.projectId : undefined,
+  });
+  if (scope.kind === 'error') return fail(res, scope.error);
+  if (scope.kind === 'empty') return res.json({ ok: true, coverage: null, hint: scope.hint });
+  res.json({ ok: true, coverage: getMemoryCoverage(scope) });
 });
 
 // ---------- 语义判重候选检索（T04165）：FTS5 优先、LIKE 兜底 ----------
@@ -224,9 +235,14 @@ memoriesApi.get('/', (req, res) => {
   if (scope.kind === 'error') return fail(res, scope.error);
   if (scope.kind === 'empty') return res.json({ ok: true, total: 0, memories: [], hint: scope.hint });
   const q = req.query;
+  const taskRecall = typeof q.taskNo === 'string' ? buildTaskRecallQuery(q.taskNo) : null;
   const opts = {
     type: typeof q.type === 'string' ? q.type : undefined,
+    memoryKind: typeof q.memoryKind === 'string' ? q.memoryKind : undefined,
+    scope: typeof q.scope === 'string' ? q.scope : undefined,
+    authority: typeof q.authority === 'string' ? q.authority : undefined,
     query: typeof q.query === 'string' ? q.query : undefined,
+    terms: taskRecall?.terms,
     tags: typeof q.tag === 'string' ? [q.tag] : undefined,
     includeInvalidated: q.includeInvalidated === '1' || q.includeInvalidated === 'true',
     limit: Number(q.limit) || undefined,
@@ -251,6 +267,10 @@ memoriesApi.post('/', (req, res) => {
     tags: Array.isArray(req.body?.tags) ? req.body.tags : undefined,
     sourceKind: req.body?.sourceKind,
     sourceTaskId: req.body?.sourceTaskId,
+    memoryKind: req.body?.memoryKind,
+    memoryScope: req.body?.scope,
+    authority: req.body?.authority,
+    expiredAt: req.body?.expiredAt,
   });
   if (r.kind === 'error') return fail(res, r.error);
   if (r.kind === 'queued') return res.status(202).json({ ok: true, queued: true, id: r.id, piiKind: r.piiKind });
@@ -267,6 +287,8 @@ memoriesApi.patch('/:id', (req, res) => {
     title: req.body?.title,
     content: req.body?.content,
     tags: Array.isArray(req.body?.tags) ? req.body.tags : (req.body?.tags === null ? null : undefined),
+    memoryKind: req.body?.memoryKind,
+    authority: req.body?.authority,
   });
   if (!r.ok) return res.status(404).json({ error: r.error });
   res.json({ ok: true, id: r.id });
@@ -293,11 +315,16 @@ memoriesApi.get('/query', (req, res) => {
   if (scope.kind === 'error') return fail(res, scope.error);
   if (scope.kind === 'empty') return res.json({ ok: true, memories: [], hint: scope.hint });
   const q = req.query;
+  const taskRecall = typeof q.taskNo === 'string' ? buildTaskRecallQuery(q.taskNo) : null;
   res.json({
     ok: true,
     memories: queryMemories(scope, {
       type: typeof q.type === 'string' ? q.type : undefined,
+      memoryKind: typeof q.memoryKind === 'string' ? q.memoryKind : undefined,
+      scope: typeof q.scope === 'string' ? q.scope : undefined,
+      authority: typeof q.authority === 'string' ? q.authority : undefined,
       query: typeof q.query === 'string' ? q.query : undefined,
+      terms: taskRecall?.terms,
       tags: typeof q.tag === 'string' ? [q.tag] : undefined,
       limit: Number(q.limit) || undefined,
     }),

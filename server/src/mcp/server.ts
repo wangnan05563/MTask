@@ -40,7 +40,7 @@ import {
 import { exportBundle, importBundle, type ImportMode } from '../services/SettingsService';
 import * as TaskGit from '../services/taskGitLinks'; // 八期 T03349：AI 回写提交 ID 主通道（与 REST 手动绑定同一实现，仅 source 不同）
 import {
-  deleteMemory, listMemories, listPendingMemories, listProductTags,
+  buildTaskRecallQuery, deleteMemory, listMemories, listPendingMemories, listProductTags,
   queryForContext, queryMemories, saveMemory, updateMemory,
 } from '../services/MemoryService'; // T04151（PRD MEM-401/402/403）：记忆七件工具复用服务层
 import { resolveMemoryScope } from '../util/memoryScope'; // T04151：作用域解析与 REST 同源（C4 / MEM-302）
@@ -1865,13 +1865,24 @@ ${a.result}`;
       sourceKind: z.enum(['auto', 'manual', 'user_said', 'tool_output', 'inferred']).optional()
         .describe('溯源标记（默认 manual；用户明确要求记住用 user_said）'),
       sourceTaskId: z.string().optional().describe('来源任务编号（如 T04148）'),
+      memoryKind: z.enum(['semantic', 'episodic', 'procedural']).optional()
+        .describe('T06071 分层：semantic=稳定事实 / episodic=任务情景 / procedural=程序规则；缺省按 type 推导'),
+      scope: z.enum(['product', 'project', 'task']).optional()
+        .describe('T06071 作用域：product/project/task；缺省有 projectId 为 project，否则 product'),
+      authority: z.enum(['user', 'system', 'tool', 'inferred', 'external']).optional()
+        .describe('T06071 权威：user/system/tool/inferred/external；缺省按 sourceKind 推导'),
+      expiredAt: z.string().optional().describe('T06071 显式到期时间（ISO）；到期后不再召回但保留审计行'),
     },
   }, async (a) => {
     try {
       const scope = memoryScopeOf(a);
       if (scope.kind === 'error') return err(scope.error);
       if (scope.kind === 'empty') return ok(JSON.stringify({ ok: false, hint: scope.hint }), { ok: false, hint: scope.hint });
-      const r = saveMemory({ scope, type: a.type, title: a.title, content: a.content, tags: a.tags, sourceKind: a.sourceKind, sourceTaskId: a.sourceTaskId });
+      const r = saveMemory({
+        scope, type: a.type, title: a.title, content: a.content, tags: a.tags, sourceKind: a.sourceKind,
+        sourceTaskId: a.sourceTaskId, memoryKind: a.memoryKind, memoryScope: a.scope, authority: a.authority,
+        expiredAt: a.expiredAt ?? null,
+      });
       if (r.kind === 'error') return err(r.error);
       const payload = { ok: true, id: r.id, queued: r.kind === 'queued', piiKind: r.kind === 'queued' ? r.piiKind : undefined };
       return ok(json(payload), payload);
@@ -1884,7 +1895,11 @@ ${a.result}`;
     inputSchema: {
       ...MEMORY_SCOPE_SCHEMA,
       type: MEMORY_TYPE_Z.optional(),
+      memoryKind: z.enum(['semantic', 'episodic', 'procedural']).optional().describe('T06071 按分层过滤'),
+      scope: z.enum(['product', 'project', 'task']).optional().describe('T06071 按作用域过滤'),
+      authority: z.enum(['user', 'system', 'tool', 'inferred', 'external']).optional().describe('T06071 按权威过滤'),
       query: z.string().optional().describe('标题/内容关键词模糊匹配'),
+      taskNo: z.string().optional().describe('T06071 任务化召回：用任务标题/描述抽取词项构造 query，与 query 二选一或并用'),
       tag: z.string().optional().describe('单个标签精确匹配'),
       limit: z.number().int().min(1).max(20).optional().describe('条数（默认 10，硬上限 20）'),
       context: z.boolean().optional().describe('true=返回 <memory-context> 注入块而非原始行'),
@@ -1894,7 +1909,11 @@ ${a.result}`;
       const scope = memoryScopeOf(a);
       if (scope.kind === 'error') return err(scope.error);
       if (scope.kind === 'empty') return ok(JSON.stringify({ ok: true, memories: [], hint: scope.hint }), { ok: true, memories: [], hint: scope.hint });
-      const opts = { type: a.type, query: a.query, tags: a.tag ? [a.tag] : undefined, limit: a.limit };
+      const taskRecall = a.taskNo ? buildTaskRecallQuery(a.taskNo) : null;
+      const opts = {
+        type: a.type, memoryKind: a.memoryKind, scope: a.scope, authority: a.authority,
+        query: a.query, terms: taskRecall?.terms, tags: a.tag ? [a.tag] : undefined, limit: a.limit,
+      };
       if (a.context) {
         const ctx = queryForContext(scope, opts);
         return ok(json(ctx) + (ctx.block ? '' : '\n（本产品暂无记忆）'), ctx as unknown as Record<string, unknown>);
@@ -1910,7 +1929,11 @@ ${a.result}`;
     inputSchema: {
       ...MEMORY_SCOPE_SCHEMA,
       type: MEMORY_TYPE_Z.optional(),
+      memoryKind: z.enum(['semantic', 'episodic', 'procedural']).optional().describe('T06071 按分层过滤'),
+      scope: z.enum(['product', 'project', 'task']).optional().describe('T06071 按作用域过滤'),
+      authority: z.enum(['user', 'system', 'tool', 'inferred', 'external']).optional().describe('T06071 按权威过滤'),
       query: z.string().optional(),
+      taskNo: z.string().optional().describe('T06071 任务化召回词项（可选，与 query 并用）'),
       includeInvalidated: z.boolean().optional().describe('true=包含已软失效行（带 invalidated_at/superseded_by）'),
       limit: z.number().int().min(1).max(200).optional().describe('默认 50，上限 200'),
       offset: z.number().int().min(0).optional(),
@@ -1920,7 +1943,12 @@ ${a.result}`;
       const scope = memoryScopeOf(a);
       if (scope.kind === 'error') return err(scope.error);
       if (scope.kind === 'empty') return ok(JSON.stringify({ ok: true, total: 0, memories: [], hint: scope.hint }), { ok: true, total: 0, memories: [], hint: scope.hint });
-      const r = listMemories(scope, { type: a.type, query: a.query, includeInvalidated: a.includeInvalidated, limit: a.limit, offset: a.offset });
+      const taskRecall = a.taskNo ? buildTaskRecallQuery(a.taskNo) : null;
+      const r = listMemories(scope, {
+        type: a.type, memoryKind: a.memoryKind, scope: a.scope, authority: a.authority,
+        query: a.query, terms: taskRecall?.terms, includeInvalidated: a.includeInvalidated,
+        limit: a.limit, offset: a.offset,
+      });
       return ok(json(r), { ok: true, total: r.total, memories: r.rows });
     } catch (e) { return err((e as Error).message); }
   });
@@ -1935,13 +1963,18 @@ ${a.result}`;
       title: z.string().optional(),
       content: z.string().optional(),
       tags: z.array(z.string()).optional(),
+      memoryKind: z.enum(['semantic', 'episodic', 'procedural']).optional().describe('T06071 分层'),
+      authority: z.enum(['user', 'system', 'tool', 'inferred', 'external']).optional().describe('T06071 权威'),
     },
   }, async (a) => {
     try {
       const scope = memoryScopeOf(a);
       if (scope.kind === 'error') return err(scope.error);
       if (scope.kind === 'empty') return err(scope.hint);
-      const r = updateMemory(a.id, scope, { type: a.type, title: a.title, content: a.content, tags: a.tags });
+      const r = updateMemory(a.id, scope, {
+        type: a.type, title: a.title, content: a.content, tags: a.tags,
+        memoryKind: a.memoryKind, authority: a.authority,
+      });
       if (!r.ok) return err(r.error);
       return ok(json({ ok: true, id: r.id }), { ok: true, id: r.id });
     } catch (e) { return err((e as Error).message); }

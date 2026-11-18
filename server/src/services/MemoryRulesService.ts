@@ -4,6 +4,9 @@ import { isMemoryType } from '../util/memoryTypes';
 import { normalizeProductKey } from '../util/productKey';
 import { detectPiiKind, guardMemoryCandidate, type MemorySourceKind } from '../util/memoryGuard';
 import { applyRewriteBudget } from '../util/memoryRewrite'; // T04145：W1-W8 重写限次
+import {
+  normalizeMemoryAuthority, normalizeMemoryKind, normalizeMemoryScope,
+} from '../util/memoryLayers'; // T06071：分层/作用域/权威默认与校验
 
 /** T06069（T06068 P0）：抽取上下文取全量有效记忆，最多 200 条（与容量上限同量级）。 */
 export const EXISTING_MEMORY_LIMIT = 200;
@@ -74,7 +77,7 @@ W8 口径：content 按字符数计 30–120 字（不足 30 字的信息并入�
 # 第四步：禁止项
 不得编造、不得推断未明说属性、不得把请求本身抽成记忆、不得搬运既有记忆细节、不得输出语义等价的两条、不得输出解释文字。
 # 输出格式（严格 JSON，无 Markdown 包裹）
-{"memories":[{"action":"ADD|UPDATE|NOOP","id":"UPDATE 时填既有 id","invalidated_ids":["被否证 id"],"title":"≤20 字","content":"完整自足陈述句","type":"user|feedback|project|reference","tags":["≤5 个"],"confidence":0.0,"source_kind":"auto|manual|user_said|tool_output|inferred","project_id":null}],"dropped":[{"title":"被丢弃候选","reason":"Q1-Q7 编号或禁止项名称"}]}`;
+{"memories":[{"action":"ADD|UPDATE|NOOP","id":"UPDATE 时填既有 id","invalidated_ids":["被否证 id"],"title":"≤20 字","content":"完整自足陈述句","type":"user|feedback|project|reference","memory_kind":"semantic|episodic|procedural","scope":"product|project|task","authority":"user|system|tool|inferred|external","tags":["≤5 个"],"confidence":0.0,"source_kind":"auto|manual|user_said|tool_output|inferred","project_id":null}],"dropped":[{"title":"被丢弃候选","reason":"Q1-Q7 编号或禁止项名称"}]}`;
 
 /** 规范 §3.3：仅「根因 / 修复 / 验证」三段参与抽取；建议段（待办）默认不抽取，段缺失跳过不报错。 */
 const EXTRACT_SECTIONS = ['根因', '修复', '验证'];
@@ -122,6 +125,10 @@ export interface ExtractCandidate {
   title: string;
   content: string;
   type: string;
+  /** T06071：可选分层/作用域/权威；缺省按 type/source_kind/project_id 推导 */
+  memory_kind?: string;
+  scope?: string;
+  authority?: string;
   tags?: string[];
   confidence: number;
   source_kind?: string;
@@ -192,10 +199,11 @@ export async function runRulesExtraction(args: {
 
   // T06069：不再只取最近 50 条。容量上限 200，当前产品全量有效记忆均进入判定上下文，
   // 避免最早 12 条对模型不可见而重复 ADD；规模超限后可在调用侧换成相似 top-k。
-  const existing = db.prepare(`SELECT id, title, content, type FROM memories
-    WHERE product_key = ? AND invalidated_at IS NULL ORDER BY updated_at DESC LIMIT ?`).all(
+  const existing = db.prepare(`SELECT id, title, content, type, memory_kind, scope, authority FROM memories
+    WHERE product_key = ? AND invalidated_at IS NULL AND invalid_at IS NULL AND expired_at IS NULL
+    ORDER BY updated_at DESC LIMIT ?`).all(
     pk, EXISTING_MEMORY_LIMIT,
-  ) as { id: string; title: string; content: string; type: string }[];
+  ) as { id: string; title: string; content: string; type: string; memory_kind: string | null; scope: string | null; authority: string | null }[];
   const existingIds = new Set(existing.map((e) => e.id));
   const out = await args.askJson(EXTRACTION_SYSTEM_PROMPT, buildExtractionUserPrompt(sections, existing, now));
   const candidates = Array.isArray(out?.memories) ? out.memories : [];
@@ -244,6 +252,13 @@ export async function runRulesExtraction(args: {
       continue;
     }
     const projectScope = requestedProject || null;
+    // T06071：分层/作用域/权威由候选显式值优先，缺省按 type/source_kind/项目推导；
+    // scope=task 必须有来源任务，否则回退项目/产品级，避免产生无归属任务级记忆。
+    const kind = normalizeMemoryKind(c.memory_kind, c.type);
+    const authority = normalizeMemoryAuthority(c.authority, sourceKind);
+    const scopeKind = c.scope === 'task' && !args.taskId
+      ? normalizeMemoryScope(undefined, projectScope)
+      : normalizeMemoryScope(c.scope, projectScope);
 
     // PII：不入库、不静默丢弃，转待确认队列
     if (detectPiiKind(`${title} ${content}`)) {
@@ -281,24 +296,31 @@ export async function runRulesExtraction(args: {
     const applyCandidate = db.transaction(() => {
       if (updateTargetId) {
         const r = db.prepare(`UPDATE memories SET title = ?, content = ?, tags = ?, confidence = ?,
-          source_kind = ?, updated_at = ? WHERE id = ? AND product_key = ? AND invalidated_at IS NULL`)
-          .run(title, content, tags, Number(c.confidence), sourceKind, now, updateTargetId, pk);
+          source_kind = ?, memory_kind = ?, scope = ?, authority = ?,
+          valid_at = ?, invalid_at = NULL, expired_at = NULL, invalidated_reason = NULL,
+          revision = revision + 1, updated_at = ?
+          WHERE id = ? AND product_key = ? AND invalidated_at IS NULL`)
+          .run(title, content, tags, Number(c.confidence), sourceKind, kind, scopeKind, authority,
+            now, now, updateTargetId, pk);
         if (r.changes) { wroteUpdate = true; targetId = updateTargetId; }
       }
       if (!wroteUpdate) {
         db.prepare(`INSERT INTO memories
-          (id,product_key,project_id,type,title,content,tags,source_task_id,source_kind,confidence,created_at,updated_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-          fallbackId, pk, projectScope, c.type, title, content, tags,
+          (id,product_key,project_id,type,memory_kind,scope,authority,valid_at,invalid_at,expired_at,revision,invalidated_reason,
+           title,content,tags,source_task_id,source_kind,confidence,created_at,updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+          fallbackId, pk, projectScope, c.type, kind, scopeKind, authority,
+          now, null, null, 1, null, title, content, tags,
           args.taskId, sourceKind, Number(c.confidence), now, now,
         );
         targetId = fallbackId;
       }
       // 旧行只允许失效仍未失效的行；superseded_by 必须写实际目标 id，而不是固定拼 mem-task-i。
       for (const oldId of toInvalidate) {
-        const r = db.prepare(`UPDATE memories SET invalidated_at = ?, superseded_by = ?
+        const r = db.prepare(`UPDATE memories SET invalidated_at = ?, invalid_at = ?,
+          invalidated_reason = ?, superseded_by = ?, revision = revision + 1
           WHERE id = ? AND product_key = ? AND invalidated_at IS NULL`)
-          .run(now, targetId, oldId, pk);
+          .run(now, now, 'superseded', targetId, oldId, pk);
         invalidatedChanges += r.changes;
       }
     });

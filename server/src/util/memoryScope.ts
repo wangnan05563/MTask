@@ -65,6 +65,11 @@ export function buildMemoryScopeWhere(
     clauses.push('(project_id IS NULL OR project_id = ?)');
     params.push(scope.projectId);
   }
-  if (!opts.includeInvalidated) clauses.push('invalidated_at IS NULL');
+  if (!opts.includeInvalidated) {
+    // T06071：旧 invalidated_at 与新双时间轴同时生效；expired_at 是到期不再召回、仍可审计的第三种状态。
+    clauses.push('invalidated_at IS NULL');
+    clauses.push('invalid_at IS NULL');
+    clauses.push('expired_at IS NULL');
+  }
   return { sql: clauses.join(' AND '), params };
 }
