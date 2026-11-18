@@ -1169,8 +1169,13 @@ export function AIToolsPage() {
       {/* 列表：九列在窄窗口靠横向滚动保读，不靠压缩列宽把 Endpoint/备注挤成竖排（UX-03③）。
           滚动容器用原生 section + 可访问名，不再自造 region 角色，也不抢占 Tab 序；
           键盘用户 Tab 到行内按钮时浏览器会自动把该列滚动到可见区。 */}
+      {/* T06014：表头标签一律单行；「默认」列此前仅 31px 内容宽，两个汉字被挤成两行。 */}
+      <style>{`
+        .aitools-config-table th { white-space: nowrap; }
+        .aitools-config-table th[data-col="default-flag"] { min-width: 56px; }
+      `}</style>
       <section aria-label="配置记录表格（可横向滚动）" style={{ overflowX: 'auto' }}>
-      <table style={{ width: '100%', minWidth: 1000, borderCollapse: 'collapse', fontSize: 'var(--fs-l)' }}>
+      <table className="aitools-config-table" style={{ width: '100%', minWidth: 1000, borderCollapse: 'collapse', fontSize: 'var(--fs-l)' }}>
         <thead>
           <tr style={{ textAlign: 'left', color: 'var(--text-secondary)' }}>
             <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>名称</th>
@@ -1180,7 +1185,7 @@ export function AIToolsPage() {
             <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>默认模型</th>
             <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>API Key</th>
             <th style={{ padding: 8, borderBottom: '1px solid var(--border)', minWidth: 48, whiteSpace: 'nowrap' }}>状态</th>
-            <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>默认</th>
+            <th data-col="default-flag" style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>默认</th>
             <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>操作</th>
           </tr>
         </thead>
