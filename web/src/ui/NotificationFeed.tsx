@@ -97,6 +97,27 @@ export function NotificationFeed({ limit = 50, headerActions }: { readonly limit
       <style>{`
         .notify-feed-scroll { scrollbar-width: none; -ms-overflow-style: none; }
         .notify-feed-scroll::-webkit-scrollbar { display: none; }
+        /* T06017：通知消息悬浮时向前弹出，阴影分层模拟立体卡片；键盘聚焦同样生效。 */
+        .notify-event-row {
+          position: relative;
+          transform-origin: left center;
+          transition: transform .18s cubic-bezier(.22,.9,.3,1.18), box-shadow .18s ease, background-color .18s ease;
+        }
+        .notify-event-row svg { transition: transform .18s ease; }
+        .notify-event-row:hover, .notify-event-row:focus-visible,
+        button.row-title-btn.notify-event-row:hover:not(:disabled), button.row-title-btn.notify-event-row:focus-visible:not(:disabled) {
+          transform: perspective(900px) translate3d(5px,-2px,0) rotateX(1.2deg) scale(1.012) !important;
+          box-shadow: 0 12px 26px rgba(15,23,42,.16), 0 2px 6px rgba(15,23,42,.10) !important;
+          z-index: 3;
+        }
+        .notify-event-row:hover svg, .notify-event-row:focus-visible svg { transform: scale(1.08); }
+        @media (prefers-reduced-motion: reduce) {
+          .notify-event-row, .notify-event-row svg { transition: none; }
+          button.row-title-btn.notify-event-row:hover:not(:disabled), button.row-title-btn.notify-event-row:focus-visible:not(:disabled) {
+            transform: none !important;
+            box-shadow: none !important;
+          }
+        }
       `}</style>
       <div data-t06007="notification-header" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 2px 10px', flexShrink: 0 }}>
         <Bell size={15} style={{ color: 'var(--accent)' }} />
@@ -134,7 +155,7 @@ export function NotificationFeed({ limit = 50, headerActions }: { readonly limit
           return (
             <button
               key={it.id}
-              className="row-title-btn"
+              className="row-title-btn notify-event-row"
               onClick={() => gotoTask(it)}
               title={isSystem ? `${it.detail} — 系统告警，无需跳转` : `${it.detail} — 点击前往任务${it.task_no ? ` ${it.task_no}` : ''}`}
               style={{
