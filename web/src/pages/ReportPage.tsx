@@ -29,7 +29,8 @@ import { useCodeReviewLecture } from '../stores/codeReviewLectureStore'; // T028
 import { aiImportStore } from '../stores/aiImportStore'; // T01038：项目计划/PRD 导入运行态
 import { RunStatusBadge, type RunStatus } from '../ui/runStatus'; // T01038：统一运行状态徽标
 import { FlowButton } from '../ui/FlowButton'; // T01068-FR4.4：流光按钮（loading 态）
-import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileUp, FileStack, Loader2, X, RotateCcw, Zap, ListChecks, Presentation, FileChartColumn, ScrollText, FolderOpen, FolderGit2, ScanLine, LayoutGrid, Star, GripVertical } from 'lucide-react';
+import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileStack, Loader2, X, RotateCcw, Zap, FolderOpen, LayoutGrid, Star, GripVertical } from 'lucide-react';
+import { ReportCardIcon } from '../ui/ReportCardIcon'; // T06016：能力卡片彩色图标（512 缩放版）
 import { resetWorkbenchArtifacts, RESET_CONFIRM_CARD } from '../ui/consoleReset'; // T01042：卡片侧重置入口（与控制台重置共用核心）
 import { askConfirm } from '../ui/dialogs'; // T01042 建议：重置二次确认统一走对话框（Electron 下原生 confirm 不可靠）
 import { focusTaskByNo } from '../ui/focusTask'; // T01057 建议：就绪任务跳转按编号定位（跨项目可命中）
@@ -205,7 +206,7 @@ function ReportCard({ icon, title, desc, hint, aria, open, onToggle, onOpen, act
         aria-label={aria}
         style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', margin: 0, padding: 0, border: 'none', borderRadius: 10, background: 'transparent', cursor: blocked ? 'not-allowed' : 'pointer' }}
       />
-      <span data-t06009="card-icon" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 30, height: 30, borderRadius: 8, background: 'var(--accent-soft)', border: '1px solid var(--border)', flexShrink: 0 }}>{icon}</span>
+      <span data-t06009="card-icon" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 30, height: 30, borderRadius: 8, background: 'transparent', border: 'none', flexShrink: 0 }}>{icon}</span>
       <span style={{ flex: 1, minWidth: 0, paddingRight: hasCorner ? 104 : 0 }}>
         <span style={{ display: 'block', fontSize: 'var(--fs-l)', fontWeight: 600, color: 'var(--text)' }}>{title}</span>
         <span style={{ display: 'block', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4 }}>{desc}</span>
@@ -1351,32 +1352,32 @@ export function ReportPage() {
   const openSummaryTiming = () => { void startMaterialTiming('summary-ppt', projectId); };
 
   const reportCards: ReportCardCfg[] = [
-    { key: 'ai-import', needsAi: true, icon: <FileUp size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: 'AI 项目计划导入',
+    { key: 'ai-import', needsAi: true, icon: <ReportCardIcon name="ai-import" />, title: 'AI 项目计划导入',
       desc: '上传 Excel/需求文档，AI 解析为项目计划草稿（工期/依赖/负责人），确认后批量入库',
       hint: 'AI 项目计划导入 — 上传 Excel/需求文档，AI 解析为计划草稿并批量入库（本页直接执行）', aria: 'AI 项目计划导入',
       open: showAiImport,
       onReset: resetArtifacts,
       onToggle: () => togglePanel('aiImport') },
-    { key: 'offline', icon: <FileSpreadsheet size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: offlineReportLabel,
+    { key: 'offline', icon: <ReportCardIcon name="offline" />, title: offlineReportLabel,
       desc: '本地聚合本周期任务数据，按模板或标准版式直接合成文件（无需联网）；含模板管理与导入',
       hint: `${offlineReportLabel} — 本地聚合数据按模板合成报表（工作面板内含模板管理）`, aria: offlineReportLabel,
       open: showOffline,
       onOpen: openOfflineTiming,
       onToggle: () => togglePanel('offline') },
-    { key: 'ai-live', needsAi: true, icon: <Sparkles size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: aiReportLabel,
+    { key: 'ai-live', needsAi: true, icon: <ReportCardIcon name="ai-live" />, title: aiReportLabel,
       desc: <>结合真实任务数据调用 AI 生成洞察，按内置 skill「{SKILL_BY_FORMAT[format]}」版式智能合成</>,
       hint: `${aiReportLabel} — 结合真实数据由 AI 撰写洞察并按内置 skill 版式合成`, aria: aiReportLabel,
       open: showAiLive,
       onOpen: openAiReportTiming,
       onReset: resetArtifacts,
       onToggle: () => togglePanel('aiLive') },
-    { key: 'prd-gen', needsAi: true, icon: <Sparkles size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '原始需求生成 PRD',
+    { key: 'prd-gen', needsAi: true, icon: <ReportCardIcon name="prd-gen" />, title: '原始需求生成 PRD',
       desc: '上传原始需求（Word/Excel/Markdown/文本），内置技能结合源码上下文生成 PRD + 待确认问题，确认后录入 PRD 管理视图',
       hint: '原始需求生成 PRD — 上传原始需求文件，内置技能结合项目源码上下文生成标准化 PRD 与待确认问题，确认后录入 PRD 管理视图', aria: '原始需求生成 PRD',
       open: showPrdGen,
       onReset: resetArtifacts,
       onToggle: () => togglePanel('prdGen') },
-    { key: 'prd-import', needsAi: true, icon: <FileUp size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '从 PRD 导入项目计划',
+    { key: 'prd-import', needsAi: true, icon: <ReportCardIcon name="prd-import" />, title: '从 PRD 导入项目计划',
       desc: withScopeNote('AI 拆分 WBS + 逐条提取需求 → 生成计划与需求跟踪矩阵（可选同步待办任务）',
         multiProjectNote(`角标「已上传 PRD 文档」只列首个项目「${scopeName}」的文档；导入目标项目以面板内下拉为准`, projectIds.length)),
       hint: '从 PRD 导入项目计划 — 上传 PRD（Word/Excel/Markdown/文本/PDF），AI 拆分 WBS 并逐条提取需求，确认后导入计划与需求跟踪矩阵', aria: '从 PRD 导入项目计划',
@@ -1384,7 +1385,7 @@ export function ReportPage() {
       action: prdDocsAction,
       onReset: resetArtifacts,
       onToggle: () => togglePanel('prdImport') },
-    { key: 'tc-gen', needsAi: true, icon: <ListChecks size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '从 PRD 生成测试用例',
+    { key: 'tc-gen', needsAi: true, icon: <ReportCardIcon name="tc-gen" />, title: '从 PRD 生成测试用例',
       desc: '选择内部 PRD 或上传需求文档，内置技能拆分需求 + 分块生成用例 + 覆盖校验，草稿确认后入库（同一 PRD 重跑幂等）',
       hint: '从 PRD 生成测试用例 — 内部 PRD 文档或外部上传，内置技能 testcase-generate 结合项目源码上下文生成用例草稿，勾选确认后入库', aria: '从 PRD 生成测试用例',
       open: showTcGen,
@@ -1392,7 +1393,7 @@ export function ReportPage() {
       onToggle: () => togglePanel('tcGen') },
     // T02107（PRD FR-1.1/1.2）：第 7 张卡——数组尾部追加，标题/描述/hint 逐字取 PRD 口径，
     // 复用 ReportCard 与既有图标风格（色值只走 CSS 变量，不新造卡片组件）
-    { key: 'kickoff-ppt', needsAi: true, icon: <Presentation size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '启动会 PPT 生成',
+    { key: 'kickoff-ppt', needsAi: true, icon: <ReportCardIcon name="kickoff-ppt" />, title: '启动会 PPT 生成',
       desc: withScopeNote('按项目资料自动装配 Kickoff 材料（原生可编辑 .pptx）', scopeNoteOf('本卡片')),
       hint: '需 PRD/需求矩阵/计划至少各 1 条', aria: '启动会 PPT 生成',
       open: showKickoffPpt,
@@ -1401,7 +1402,7 @@ export function ReportPage() {
       onToggle: () => togglePanel('kickoffPpt') },
     // T02857（PRD-阶段性项目总结汇报PPT §3.1 FR-1.1）：第 8 张卡——文案逐字取 PRD 口径；
     // 与 kickoff 的单项目口径不同，本卡片的多项目合并产物是 T02190 的首个例外（A-6），范围默认跟随顶部选择器
-    { key: 'summary-ppt', needsAi: true, icon: <FileChartColumn size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '阶段总结 PPT 生成',
+    { key: 'summary-ppt', needsAi: true, icon: <ReportCardIcon name="summary-ppt" />, title: '阶段总结 PPT 生成',
       desc: withScopeNote('按汇报周期与项目范围自动装配阶段总结汇报材料（原生可编辑 .pptx）',
         multiProjectNote(`合并版：${projectIds.length} 个项目将在同一份 deck 内分区呈现`, projectIds.length)),
       hint: '周期内至少有 1 个项目有活动数据', aria: '阶段总结 PPT 生成',
@@ -1411,7 +1412,7 @@ export function ReportPage() {
       onToggle: () => togglePanel('summaryPpt') },
     // T02872（PRD §1 术语表「卡位冲突声明」）：本卡与总结汇报卡同争尾部位，PRD 已按落地时点定序——
     // 总结汇报先落地为第 8 张，本卡为第 9 张，标题逐字取 PRD §1 口径（T03300 起精简为「代码评审讲稿生成」），不改写、不顶替。
-    { key: 'review-lecture', needsAi: true, icon: <ScrollText size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: '代码评审讲稿生成',
+    { key: 'review-lecture', needsAi: true, icon: <ReportCardIcon name="review-lecture" />, title: '代码评审讲稿生成',
       desc: withScopeNote('按评审范围采集阶段性增量（Git Diff / Commit 日志），装配可直接照念的八段评审会议讲稿——左 diff、右讲稿、锚点可定位',
         multiProjectNote(`多项目：按「总-分-总」装配，每项目独立成章（${projectIds.length} 个项目）`, projectIds.length)),
       hint: '项目已配置工作空间路径，或可粘贴 patch 走降级通道', aria: '代码评审讲稿生成',
@@ -1422,7 +1423,7 @@ export function ReportPage() {
     // needsAi=false（纯 Git 只读取数与打包，不消耗模型额度），故不进 aiBlocked 那条链路。
     // 环境未就绪时卡片呈 blocked 视觉但**仍可展开**（用户要的就是面板里的绑定入口），
     // 文案用自有口径，不套 AiUnavailableHint（语义不同：那是额度/配置问题，这是工作空间问题）。
-    { key: 'git-extract', needsAi: false, icon: <FolderGit2 size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: 'Git 增量资产提取',
+    { key: 'git-extract', needsAi: false, icon: <ReportCardIcon name="git-extract" />, title: 'Git 增量资产提取',
       desc: withScopeNote('按勾选任务提取增量资产：源文件包（zip，保留目录结构）/ Excel 清单 / Markdown 清单——只读采集，不动被采集仓库',
         gitEnvText),
       hint: '任务需已回写 commit id；多项目必须同一工作空间；单次上限 2000 文件 / 50MB', aria: 'Git 增量资产提取',
@@ -1433,7 +1434,7 @@ export function ReportPage() {
     // T03377（八期 §3.4.2）：第 11 张卡——位置逐字按 PRD「插在 Git 增量资产提取之后」；
     // needsAi=false（扫描走本地 scanner 子进程，不消耗模型额度）；blocked 视觉与提取卡同语义：
     // 点击照常展开，因为修复入口（去设置页配 projectKey / 扫描器路径）就在面板里。
-    { key: 'sonar-scan', needsAi: false, icon: <ScanLine size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />, title: 'Sonar 质量扫描',
+    { key: 'sonar-scan', needsAi: false, icon: <ReportCardIcon name="sonar-scan" />, title: 'Sonar 质量扫描',
       desc: withScopeNote('对任务关联提交的内容快照发起 SonarQube 扫描：七阶段进度 + 按严重度分组结果 + 高危问题自动回写为待办子任务——只扫快照，不动工作树',
         sonarEnvText),
       hint: '需已配置服务器地址 / 扫描器 / Java 与项目 projectKey；单次并发上限默认 1（可调 2），超限不排队', aria: 'Sonar 质量扫描',
