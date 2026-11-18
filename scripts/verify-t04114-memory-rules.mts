@@ -94,7 +94,92 @@ check('INVALIDATE 旧行 invalidated_at 非空', !!oldRow?.invalidated_at, Strin
 check('INVALIDATE 旧行 superseded_by 指向新行', oldRow?.superseded_by === 'mem-t-inv-0', String(oldRow?.superseded_by));
 check('INVALIDATE 新行已入库', count('t-inv') === 1);
 
-// ⑥ C4：无 product_key 的查询必须报错，而不是返回全量
+// ⑥ T06069：UPDATE + invalidated_ids 组合路径。旧行必须指向实际更新目标 id，
+// 不能指向固定的 mem-<taskId>-<i>（UPDATE 不创建该行，旧实现会断链）。
+db.prepare(`INSERT INTO memories (id,product_key,project_id,type,title,content,source_kind,created_at,updated_at)
+  VALUES (?,?,?,?,?,?,?,?,?)`).run('mem-combo-old', 'p-combo', null, 'project', '旧组合结论', '旧内容', 'auto', now, now);
+db.prepare(`INSERT INTO memories (id,product_key,project_id,type,title,content,source_kind,created_at,updated_at)
+  VALUES (?,?,?,?,?,?,?,?,?)`).run('mem-combo-target', 'p-combo', null, 'project', '目标结论', '待更新', 'auto', now, now);
+r = await runRulesExtraction({
+  taskId: 't-combo', resultText: RESULT, productKey: 'p-combo',
+  askJson: async () => ({
+    memories: [cand({
+      action: 'UPDATE', id: 'mem-combo-target', title: '组合更新', content: '组合后的新结论',
+      invalidated_ids: ['mem-combo-old', 'not-exist', 'mem-combo-target'],
+    })],
+  }),
+});
+const comboOld = db.prepare('SELECT id,invalidated_at,superseded_by FROM memories WHERE id = ?').get('mem-combo-old') as
+  { id: string; invalidated_at: string | null; superseded_by: string | null } | undefined;
+const comboTarget = db.prepare('SELECT id,title,invalidated_at FROM memories WHERE id = ?').get('mem-combo-target') as
+  { id: string; title: string; invalidated_at: string | null } | undefined;
+check('UPDATE+INVALIDATE 旧行 superseded_by 指向实际目标 id',
+  comboOld?.superseded_by === 'mem-combo-target', String(comboOld?.superseded_by));
+check('UPDATE+INVALIDATE 目标行已更新且未失效',
+  comboTarget?.title === '组合更新' && comboTarget?.invalidated_at === null, JSON.stringify(comboTarget));
+check('UPDATE+INVALIDATE 替代链目标行真实存在',
+  !!db.prepare('SELECT 1 FROM memories WHERE id = ?').get(String(comboOld?.superseded_by)));
+check('invalidated_ids 中未知/自指向 id 被忽略并记 dropped',
+  r.dropped.some((d) => d.reason.includes('invalidated_ids')), JSON.stringify(r.dropped));
+
+// ⑦ T06069：事务回滚。用临时触发器让目标 INSERT 失败，旧行必须保持有效。
+db.prepare(`INSERT INTO memories (id,product_key,project_id,type,title,content,source_kind,created_at,updated_at)
+  VALUES (?,?,?,?,?,?,?,?,?)`).run('mem-tx-old', 'p-tx', null, 'project', '事务旧结论', '不得被失效', 'auto', now, now);
+db.exec(`CREATE TRIGGER tr_t06069_abort BEFORE INSERT ON memories
+  BEGIN SELECT RAISE(ABORT, 't06069-abort'); END;`);
+let txThrew = false;
+try {
+  await runRulesExtraction({
+    taskId: 't-tx', resultText: RESULT, productKey: 'p-tx',
+    askJson: async () => ({ memories: [cand({ invalidated_ids: ['mem-tx-old'], title: '事务新结论' })] }),
+  });
+} catch { txThrew = true; } finally {
+  db.exec('DROP TRIGGER IF EXISTS tr_t06069_abort');
+}
+const txOld = db.prepare('SELECT id,invalidated_at FROM memories WHERE id = ?').get('mem-tx-old') as
+  { id: string; invalidated_at: string | null } | undefined;
+check('目标写入失败时事务抛出', txThrew);
+check('目标写入失败时旧行未被失效（整体回滚）', txOld?.invalidated_at === null, String(txOld?.invalidated_at));
+check('目标写入失败时新行未落库', !db.prepare('SELECT 1 FROM memories WHERE id = ?').get('mem-t-tx-0'));
+
+// ⑧ T06069：候选未给 project_id 时默认当前任务项目；非法 project_id 直接 drop。
+db.prepare(`INSERT INTO projects (id,name,product_key,created_at,updated_at)
+  VALUES (?,?,?,?,?)`).run('proj-t06069', 'T06069 测试项目', 'p-proj', now, now);
+r = await runRulesExtraction({
+  taskId: 't-proj', resultText: RESULT, productKey: 'p-proj', projectId: 'proj-t06069',
+  askJson: async () => ({ memories: [cand({ title: '项目默认作用域' })] }),
+});
+const projRow = db.prepare('SELECT id,project_id FROM memories WHERE id = ?').get('mem-t-proj-0') as
+  { id: string; project_id: string | null } | undefined;
+check('未给 project_id 默认落当前任务项目', projRow?.project_id === 'proj-t06069', String(projRow?.project_id));
+r = await runRulesExtraction({
+  taskId: 't-proj-bad', resultText: RESULT, productKey: 'p-proj-bad',
+  askJson: async () => ({ memories: [cand({ project_id: 'missing-project', title: '非法项目候选' })] }),
+});
+check('非法 project_id 不落库', count('t-proj-bad') === 0);
+check('非法 project_id 记 dropped 原因', r.dropped.some((d) => d.reason.includes('project_id 不属于当前产品')),
+  JSON.stringify(r.dropped));
+
+// ⑨ T06069：幂等按「任务 + 结果哈希」。同结果第二次跳过；结果变化允许重跑。
+const RESULT2 = RESULT.replace('网关漏桶参数误配导致 429', '网关漏桶参数误配导致 429，已调整');
+r = await runRulesExtraction({
+  taskId: 't-idem', resultText: RESULT, productKey: 'p-idem',
+  askJson: async () => ({ memories: [cand({ title: '幂等结论', content: '同一结果的结论' })] }),
+});
+check('同任务同结果首次落库', r.stored === 1 && count('t-idem') === 1, `${r.stored}/${count('t-idem')}`);
+r = await runRulesExtraction({
+  taskId: 't-idem', resultText: RESULT, productKey: 'p-idem',
+  askJson: async () => ({ memories: [cand({ title: '不应落库', content: '同结果重跑候选' })] }),
+});
+check('同任务同结果第二次跳过', r.stored === 0 && r.dropped.some((d) => d.reason.includes('MEM-207')),
+  JSON.stringify(r.dropped));
+r = await runRulesExtraction({
+  taskId: 't-idem', resultText: RESULT2, productKey: 'p-idem',
+  askJson: async () => ({ memories: [cand({ title: '变更结论', content: '结果变化后的新结论' })] }),
+});
+check('同任务结果变化允许重跑', r.stored === 1 && count('t-idem') === 2, `${r.stored}/${count('t-idem')}`);
+
+// ⑩ C4：无 product_key 的查询必须报错，而不是返回全量
 const noScope = resolveMemoryScope({});
 check('C4 无作用域报错', noScope.kind === 'error' && noScope.error.includes('C4'));
 const emptyScope = resolveMemoryScope({ productKey: '' });

@@ -1,8 +1,50 @@
+import { createHash } from 'node:crypto';
 import { getDb } from '../db/connection';
 import { isMemoryType } from '../util/memoryTypes';
 import { normalizeProductKey } from '../util/productKey';
 import { detectPiiKind, guardMemoryCandidate, type MemorySourceKind } from '../util/memoryGuard';
 import { applyRewriteBudget } from '../util/memoryRewrite'; // T04145：W1-W8 重写限次
+
+/** T06069（T06068 P0）：抽取上下文取全量有效记忆，最多 200 条（与容量上限同量级）。 */
+export const EXISTING_MEMORY_LIMIT = 200;
+
+/** T06069：任务 + 结果哈希，作为抽取幂等键；不依赖 source_task_id 是否存在新行。 */
+export function memoryResultHash(resultText: string): string {
+  return createHash('sha256').update(String(resultText ?? ''), 'utf8').digest('hex').slice(0, 32);
+}
+
+/** 同任务同结果已成功抽取过则跳过；表缺失/旧库异常时返回 false，不阻断抽取。 */
+export function isExtractRunDone(taskId: string, resultText: string): boolean {
+  try {
+    const db = getDb();
+    return !!db.prepare(`SELECT 1 FROM memory_extract_runs
+      WHERE task_id = ? AND result_hash = ? AND status = 'done'`)
+      .get(taskId, memoryResultHash(resultText));
+  } catch {
+    return false;
+  }
+}
+
+/** 项目必须存在且 product_key 与当前产品一致；否则候选不得落库。 */
+function projectBelongsToProduct(db: ReturnType<typeof getDb>, projectId: string, productKey: string): boolean {
+  const row = db.prepare('SELECT product_key FROM projects WHERE id = ?').get(projectId) as
+    { product_key?: string | null } | undefined;
+  return !!row && normalizeProductKey(row.product_key ?? '') === productKey;
+}
+
+/** 同任务同序号默认 id 已被历史结果占用时，追加内容哈希/序号，避免跨结果重跑时主键冲突。 */
+function makeUniqueMemoryId(
+  db: ReturnType<typeof getDb>, taskId: string, index: number, content: string,
+): string {
+  const base = `mem-${taskId}-${index}`;
+  const exists = (id: string) => !!db.prepare('SELECT 1 FROM memories WHERE id = ?').get(id);
+  if (!exists(base)) return base;
+  const suffix = createHash('sha256').update(String(content ?? '')).digest('hex').slice(0, 8);
+  let candidate = `${base}-${suffix}`;
+  let n = 1;
+  while (exists(candidate)) candidate = `${base}-${suffix}-${n++}`;
+  return candidate;
+}
 
 /**
  * T04144（PRD MEM-202 / MEM-203 / MEM-206；规范 §3.3 / §6 / §8 / §9）：六段流程的规则引擎。
@@ -138,16 +180,23 @@ export async function runRulesExtraction(args: {
     stored: 0, queued: 0, updated: 0, invalidated: 0, dropped: [], skippedSections: skipped,
     noExtractableSection: sections.length === 0, rewrites: 0,
   };
-  // 段缺失时跳过而非报错（MEM-206）；也顺带保证幂等（同 source_task_id 已有记忆不重抽）
+  // 段缺失时跳过而非报错（MEM-206）；幂等按「任务 + 结果哈希」判定（T06069）：
+  // 同任务同结果只跑一次，同任务结果变化允许重跑；不再依赖 source_task_id 是否有新行。
   if (base.noExtractableSection) return base;
-  if (db.prepare('SELECT 1 FROM memories WHERE source_task_id = ? LIMIT 1').get(args.taskId)) {
+  const resultHash = memoryResultHash(args.resultText);
+  if (db.prepare(`SELECT 1 FROM memory_extract_runs
+    WHERE task_id = ? AND result_hash = ? AND status = 'done'`).get(args.taskId, resultHash)) {
     base.dropped.push({ title: args.taskId, reason: 'MEM-207 幂等跳过' });
     return base;
   }
 
+  // T06069：不再只取最近 50 条。容量上限 200，当前产品全量有效记忆均进入判定上下文，
+  // 避免最早 12 条对模型不可见而重复 ADD；规模超限后可在调用侧换成相似 top-k。
   const existing = db.prepare(`SELECT id, title, content, type FROM memories
-    WHERE product_key = ? AND invalidated_at IS NULL ORDER BY updated_at DESC LIMIT 50`).all(pk) as
-    { id: string; title: string; content: string; type: string }[];
+    WHERE product_key = ? AND invalidated_at IS NULL ORDER BY updated_at DESC LIMIT ?`).all(
+    pk, EXISTING_MEMORY_LIMIT,
+  ) as { id: string; title: string; content: string; type: string }[];
+  const existingIds = new Set(existing.map((e) => e.id));
   const out = await args.askJson(EXTRACTION_SYSTEM_PROMPT, buildExtractionUserPrompt(sections, existing, now));
   const candidates = Array.isArray(out?.memories) ? out.memories : [];
   const dropped = [...(Array.isArray(out?.dropped) ? out.dropped : [])];
@@ -179,42 +228,92 @@ export async function runRulesExtraction(args: {
     if (!(Number(c.confidence) >= MIN_CONFIDENCE)) { dropped.push({ title, reason: `C3 置信度<${MIN_CONFIDENCE}` }); continue; }
     if (!isMemoryType(c.type)) { dropped.push({ title, reason: 'type 非法枚举' }); continue; }
     if (content.length > MAX_CONTENT_CHARS) { dropped.push({ title, reason: '大块原文超长' }); continue; }
+
+    const sourceKind = (SOURCE_KINDS.includes(String(c.source_kind)) ? c.source_kind : 'auto') as MemorySourceKind;
+    // T06069：标签去空、去重、截断，避免 186 个标签/62 条的失控词表继续扩散。
+    const tags = Array.isArray(c.tags)
+      ? JSON.stringify([...new Set(c.tags.map((t) => String(t).trim()).filter(Boolean))].slice(0, 5))
+      : null;
+
+    // T06069：候选未给 project_id 时默认当前任务项目；显式值必须是当前产品下的真实项目。
+    const candidateProject = c.project_id === undefined || c.project_id === null
+      ? '' : String(c.project_id).trim();
+    const requestedProject = candidateProject || String(args.projectId ?? '').trim();
+    if (requestedProject && !projectBelongsToProduct(db, requestedProject, pk)) {
+      dropped.push({ title, reason: `project_id 不属于当前产品:${requestedProject}` });
+      continue;
+    }
+    const projectScope = requestedProject || null;
+
     // PII：不入库、不静默丢弃，转待确认队列
     if (detectPiiKind(`${title} ${content}`)) {
       guardMemoryCandidate({
-        id: `q-${args.taskId}-${i}`, productKey: pk, projectId: args.projectId ?? null,
+        id: `q-${args.taskId}-${i}`, productKey: pk, projectId: projectScope,
         title, content, type: c.type, sourceTaskId: args.taskId,
-        sourceKind: (SOURCE_KINDS.includes(String(c.source_kind)) ? c.source_kind : 'auto') as MemorySourceKind,
+        sourceKind: sourceKind,
         confidence: Number(c.confidence),
       });
       base.queued++;
       continue;
     }
-    const sourceKind = (SOURCE_KINDS.includes(String(c.source_kind)) ? c.source_kind : 'auto') as MemorySourceKind;
-    const tags = Array.isArray(c.tags) ? JSON.stringify(c.tags.slice(0, 5)) : null;
-    const projectScope = c.project_id ?? null;
 
-    // INVALIDATE：软失效被否证的既有记忆，保留审计链（不物理删除）
-    for (const oldId of (Array.isArray(c.invalidated_ids) ? c.invalidated_ids : [])) {
-      const r = db.prepare('UPDATE memories SET invalidated_at = ?, superseded_by = ? WHERE id = ? AND product_key = ?')
-        .run(now, `mem-${args.taskId}-${i}`, oldId, pk);
-      base.invalidated += r.changes;
+    // T06069：UPDATE 命中既有行时，实际替代者就是该行 id；ADD/失效退化时才使用新行 id。
+    const updateTargetId = c.action === 'UPDATE' && c.id && existingIds.has(String(c.id))
+      ? String(c.id) : null;
+    // 同任务同序号默认 id 可能已被历史结果占用（结果变更后重跑），这里提前算好唯一新 id。
+    const fallbackId = makeUniqueMemoryId(db, args.taskId, i, content);
+    let targetId = updateTargetId ?? fallbackId;
+
+    // invalidated_ids 白名单：只允许本次 existing 返回的 id，最多 2 条，不得指向当前 UPDATE 目标。
+    const rawInvalidated = Array.isArray(c.invalidated_ids)
+      ? c.invalidated_ids.map((id) => String(id).trim()).filter(Boolean) : [];
+    const uniqueInvalidated = [...new Set(rawInvalidated)];
+    const eligibleInvalidated = uniqueInvalidated.filter((id) => existingIds.has(id) && id !== targetId);
+    const toInvalidate = eligibleInvalidated.slice(0, 2);
+    const ignoredInvalidated = uniqueInvalidated.filter((id) => !toInvalidate.includes(id));
+    if (ignoredInvalidated.length) {
+      dropped.push({ title, reason: `invalidated_ids 未授权/指向目标/超上限，已忽略:${ignoredInvalidated.join(',')}` });
     }
-    if (c.action === 'UPDATE' && c.id) {
-      const r = db.prepare(`UPDATE memories SET title = ?, content = ?, tags = ?, confidence = ?,
-        source_kind = ?, updated_at = ? WHERE id = ? AND product_key = ?`)
-        .run(title, content, tags, Number(c.confidence), sourceKind, now, c.id, pk);
-      if (r.changes) { base.updated++; continue; }
-      // id 不存在时退化为 ADD，不静默丢候选
-    }
-    db.prepare(`INSERT INTO memories
-      (id,product_key,project_id,type,title,content,tags,source_task_id,source_kind,confidence,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-      `mem-${args.taskId}-${i}`, pk, projectScope, c.type, title, content, tags,
-      args.taskId, sourceKind, Number(c.confidence), now, now,
-    );
-    base.stored++;
+
+    // T06069：目标先落、旧行后失效，整段包在事务里；任何一步失败都回滚，避免半写。
+    let wroteUpdate = false;
+    let invalidatedChanges = 0;
+    const applyCandidate = db.transaction(() => {
+      if (updateTargetId) {
+        const r = db.prepare(`UPDATE memories SET title = ?, content = ?, tags = ?, confidence = ?,
+          source_kind = ?, updated_at = ? WHERE id = ? AND product_key = ? AND invalidated_at IS NULL`)
+          .run(title, content, tags, Number(c.confidence), sourceKind, now, updateTargetId, pk);
+        if (r.changes) { wroteUpdate = true; targetId = updateTargetId; }
+      }
+      if (!wroteUpdate) {
+        db.prepare(`INSERT INTO memories
+          (id,product_key,project_id,type,title,content,tags,source_task_id,source_kind,confidence,created_at,updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+          fallbackId, pk, projectScope, c.type, title, content, tags,
+          args.taskId, sourceKind, Number(c.confidence), now, now,
+        );
+        targetId = fallbackId;
+      }
+      // 旧行只允许失效仍未失效的行；superseded_by 必须写实际目标 id，而不是固定拼 mem-task-i。
+      for (const oldId of toInvalidate) {
+        const r = db.prepare(`UPDATE memories SET invalidated_at = ?, superseded_by = ?
+          WHERE id = ? AND product_key = ? AND invalidated_at IS NULL`)
+          .run(now, targetId, oldId, pk);
+        invalidatedChanges += r.changes;
+      }
+    });
+    applyCandidate();
+    base.invalidated += invalidatedChanges;
+    if (wroteUpdate) base.updated++; else base.stored++;
   }
+
+  // T06069：抽取成功（含 0 条/全 dropped）也记台账；同结果下次不再重跑，结果变化时哈希不同可重抽。
+  try {
+    db.prepare(`INSERT INTO memory_extract_runs
+      (id,task_id,result_hash,status,created_at,updated_at) VALUES (?,?,?,?,?,?)
+      ON CONFLICT(task_id,result_hash) DO UPDATE SET status = 'done', updated_at = excluded.updated_at`)
+      .run(`xr-${args.taskId}-${resultHash.slice(0, 12)}`, args.taskId, resultHash, 'done', now, now);
+  } catch { /* 台账失败不影响已落库结果；最坏情况是下次重跑一次 */ }
   base.dropped = dropped;
   return base;
 }

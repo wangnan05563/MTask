@@ -4,7 +4,7 @@ import { decideExtraction, type ExtractProjectState } from '../util/memoryExtrac
 import { checkAiReadiness } from './AiReadinessService';
 import { AIService } from './AIService'; // T04144：规则引擎的真实 askJson 通道
 import { ConfigService } from './ConfigService';
-import { EXTRACTION_SYSTEM_PROMPT, runRulesExtraction, type RulesOutput } from './MemoryRulesService';
+import { EXTRACTION_SYSTEM_PROMPT, runRulesExtraction, isExtractRunDone, type RulesOutput } from './MemoryRulesService';
 import { v4 as uuid } from 'uuid';
 import { buildMemoryScopeWhere, type ActiveMemoryScope } from '../util/memoryScope';
 import { isMemoryType, type MemoryType } from '../util/memoryTypes';
@@ -40,6 +40,11 @@ export function parseAiJson<T>(content: string): T {
   return JSON.parse(text) as T;
 }
 
+/** T06069：source_task_id 必须是任务 UUID，旧数据里的 `T05748` 这类任务号不得再进入抽取台账。 */
+function isTaskUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
 /** MEM-605：同产品抽取串行（进程内锁），避免并发抽取挤占 AI 配额；T04144 的真实抽取复用 */
 const runningKeys = new Set<string>();
 
@@ -59,6 +64,8 @@ function telemetry(taskId: string, stage: string, ok = true, error = ''): void {
  */
 async function runExtract(taskId: string, resultText: string): Promise<void> {
   try {
+    // T06069：只接受任务 UUID；非 UUID 不再写进 source_task_id（旧库出现过 T05748 这类任务号）。
+    if (!isTaskUuid(taskId)) { telemetry(taskId, 'invalid_task_id'); return; }
     const db = getDb();
     const task = db.prepare('SELECT project_id, handle_result FROM tasks WHERE id = ?').get(taskId) as
       | { project_id: string; handle_result: string | null }
@@ -73,7 +80,7 @@ async function runExtract(taskId: string, resultText: string): Promise<void> {
     const decision = decideExtraction({
       taskExists: !!task?.project_id,
       project: proj,
-      alreadyExtracted: !!db.prepare('SELECT 1 FROM memories WHERE source_task_id = ? LIMIT 1').get(taskId),
+      alreadyExtracted: isExtractRunDone(taskId, resultText),
     });
     if (decision.kind === 'skip') {
       // MEM-204：开关关闭/未绑产品/幂等均计遥测不静默；无归属任务与无项目仍静默（无可归属对象）

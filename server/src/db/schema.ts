@@ -679,6 +679,21 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
     CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_id);
     CREATE INDEX IF NOT EXISTS idx_memories_product_project ON memories(product_key, project_id);
 
+    -- T06069（T06068 P0）：抽取幂等台账。旧实现按 source_task_id 判幂等，
+    -- 一旦首轮只产生 UPDATE/NOOP 就没有新行，同任务再次回传会重抽；
+    -- 一旦产生任意一行，任务结论后续变更又永远不再抽取。改为「任务 + 结果哈希」：
+    -- 同任务同结果只跑一次，同任务不同结果允许重跑；source_task_id 只保留溯源语义。
+    CREATE TABLE IF NOT EXISTS memory_extract_runs (
+      id          TEXT PRIMARY KEY,
+      task_id     TEXT NOT NULL,
+      result_hash TEXT NOT NULL,
+      status      TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','done','failed')),
+      created_at  TEXT NOT NULL,
+      updated_at  TEXT NOT NULL,
+      UNIQUE(task_id, result_hash)
+    );
+    CREATE INDEX IF NOT EXISTS idx_memory_extract_runs_task ON memory_extract_runs(task_id, updated_at);
+
     -- T04137（PRD MEM-109 / §5）：PII 待确认队列。疑似敏感候选**不入库 memories、不静默丢弃**，
     -- 先写本表待人工确认；确认后转 memories 并删本行，驳回直接删本行。同样无外键。
     CREATE TABLE IF NOT EXISTS memory_review_queue (
