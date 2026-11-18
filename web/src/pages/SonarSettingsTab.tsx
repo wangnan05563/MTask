@@ -280,7 +280,7 @@ export function SonarSettingsTab() {
       data-t03371="sonar-tab"
       data-project-source={projectSource}
       className="sonar-config-grid"
-      style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.65fr) minmax(300px, 0.95fr)', gap: 16, alignItems: 'start' }}
+      style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 16, alignItems: 'start' }}
     >
       {/* T05773：响应式双栏——1024px 以下堆叠，左栏先于右栏，保持原有 Tab 焦点顺序。 */}
       <style>{`
