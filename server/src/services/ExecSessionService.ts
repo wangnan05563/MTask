@@ -11,7 +11,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { getDb } from '../db/connection';
 import { getSetting } from './AppSettings'; // T01270：停滞阈值读 app_settings（supervisor.sessionStaleMs）
 import { normalizePlatform } from '../util/platform'; // T01288：平台标识归一化（会话按平台唯一，防大小写分裂）
-import { TaskService } from './TaskService';
+import { AI_STATE_STALE_MS, TaskService } from './TaskService';
 import { armReady, dispatchTask } from './RelayDispatchService'; // T03175（AI-402③）：重派复用既有 RelayDispatch 派发与归位口径
 
 /** T01270（FR-1.3）：会话停滞默认阈值 10 分钟——超过无心跳即视为停滞（PRD FR-1.3） */
@@ -35,6 +35,8 @@ export interface ExecSessionRow {
   task_ids: string;
   status: string;
   progress: number;
+  /** T06056：1=平台显式上报过进度；0=仅创建/续心跳，面板据此显示「待上报」而非伪造 0% */
+  progress_reported: number;
   phase: string;
   last_heartbeat: string;
   started_at: string;
@@ -168,21 +170,40 @@ function parseTaskIds(raw: string): string[] {
   }
 }
 
-/** M6-6.1：会话状态/进度优先级链（完成 > 失败 > 心跳复活 stalled/failed > 保持；进度仅在未完成且显式上报时采用）。
- *  cur=null 表示新建会话（insert 分支）。update/insert 两分支共用，消除重复的优先级 if 链。 */
+/** M6-6.1：会话状态/进度优先级链（完成 > 失败 > 心跳复活 stalled/failed > 保持；
+ *  T06056：已有会话收到显式 pct 时必须更新进度——此前 update 分支无条件保留 cur.progress，
+ *  平台即使持续 ping 也会永远停在 0%，这是「进度 0%」的直接根因。
+ *  reported 单独记录「是否真的上报过」，避免把未知进度渲染成真实的 0%。 */
 function resolvedProgressState(
-  cur: { status: string; progress: number } | null,
+  cur: { status: string; progress: number; progress_reported: number } | null,
   finished: boolean,
   failedReported: boolean,
   pctProvided: boolean,
   pctValue: number,
-): { status: string; pct: number } {
-  if (finished) return { status: 'done', pct: 100 };
-  if (failedReported) return { status: 'failed', pct: cur ? cur.progress : 0 };
-  if (cur && (cur.status === 'stalled' || cur.status === 'failed')) return { status: 'active', pct: cur.progress };
-  if (cur) return { status: cur.status, pct: cur.progress };
-  if (pctProvided) return { status: 'active', pct: clampPct(pctValue) };
-  return { status: 'active', pct: 0 };
+): { status: string; pct: number; reported: number } {
+  const pct = clampPct(pctValue);
+  if (finished) return { status: 'done', pct: 100, reported: 1 };
+  if (failedReported) {
+    return {
+      status: 'failed',
+      pct: pctProvided ? pct : (cur?.progress ?? 0),
+      reported: pctProvided ? 1 : (cur?.progress_reported ?? 0),
+    };
+  }
+  if (cur && (cur.status === 'stalled' || cur.status === 'failed')) {
+    // 新心跳即复活；若同时带了 pct，进度一并前进（否则复活后仍显示旧进度）
+    return { status: 'active', pct: pctProvided ? pct : cur.progress, reported: pctProvided ? 1 : cur.progress_reported };
+  }
+  if (cur) {
+    // 同一会话的后续心跳：显式 pct 覆盖旧值，未带 pct 时保持旧值（阶段心跳不应把进度打回 0）
+    return {
+      status: cur.status,
+      pct: pctProvided ? pct : cur.progress,
+      reported: pctProvided ? 1 : cur.progress_reported,
+    };
+  }
+  if (pctProvided) return { status: 'active', pct, reported: 1 };
+  return { status: 'active', pct: 0, reported: 0 };
 }
 
 export const ExecSessionService = {
@@ -216,7 +237,7 @@ export const ExecSessionService = {
 
     // M6-6.1：状态/进度优先级链统一由 resolvedProgressState 计算（update/insert 共用）
     const state = resolvedProgressState(
-      existing ? { status: existing.status, progress: existing.progress } : null,
+      existing ? { status: existing.status, progress: existing.progress, progress_reported: existing.progress_reported } : null,
       finished, failedReported, pctProvided, typeof input.pct === 'number' ? input.pct : 0,
     );
 
@@ -228,10 +249,10 @@ export const ExecSessionService = {
       // 再次上报即证明该平台已重新执行；done 保持终态不可复活——重新执行必须换新会话标识。
       db.prepare(
         `UPDATE exec_sessions
-            SET task_ids = ?, status = ?, progress = ?, phase = ?, last_heartbeat = ?, finished_at = ?
+            SET task_ids = ?, status = ?, progress = ?, progress_reported = ?, phase = ?, last_heartbeat = ?, finished_at = ?
           WHERE id = ?`,
       ).run(
-        mergeTaskIds(existing.task_ids, task.id), state.status, state.pct, input.phase ?? existing.phase, now,
+        mergeTaskIds(existing.task_ids, task.id), state.status, state.pct, state.reported, input.phase ?? existing.phase, now,
         finished ? (existing.finished_at ?? now) : existing.finished_at, sessionRowId,
       );
     } else {
@@ -239,11 +260,11 @@ export const ExecSessionService = {
       // 初始状态与已完成会话行同口径：完成 > 失败 > 执行中；进度仅在未完成且显式上报时采用
       db.prepare(
         `INSERT INTO exec_sessions
-           (id, platform, session_id, task_ids, status, progress, phase, last_heartbeat, started_at, finished_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, platform, session_id, task_ids, status, progress, progress_reported, phase, last_heartbeat, started_at, finished_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         sessionRowId, platform, sessionId, JSON.stringify([task.id]),
-        state.status, state.pct,
+        state.status, state.pct, state.reported,
         input.phase ?? '', now, now, finished ? now : null,
       );
     }
@@ -293,14 +314,15 @@ export const ExecSessionService = {
       const sessionRowId = existing?.id ?? randomUUID();
       if (existing) {
         // 复用会话：并入本次认领的任务、刷新心跳；已 done/stalled 的会话被重新认领即回 active（PRD §8）
+        // T06056：重新认领视为新一轮执行，清空上一轮进度与「已上报」标记，避免旧 100% 残留在新任务卡片上。
         db.prepare(
-          "UPDATE exec_sessions SET task_ids = ?, status = 'active', last_heartbeat = ?, finished_at = NULL WHERE id = ?",
+          "UPDATE exec_sessions SET task_ids = ?, status = 'active', progress = 0, progress_reported = 0, last_heartbeat = ?, finished_at = NULL WHERE id = ?",
         ).run(mergeTaskIds(existing.task_ids, task.id), ts, sessionRowId);
       } else {
         db.prepare(
           `INSERT INTO exec_sessions
-             (id, platform, session_id, task_ids, status, progress, phase, last_heartbeat, started_at, finished_at)
-           VALUES (?, ?, ?, ?, 'active', 0, '', ?, ?, NULL)`,
+             (id, platform, session_id, task_ids, status, progress, progress_reported, phase, last_heartbeat, started_at, finished_at)
+           VALUES (?, ?, ?, ?, 'active', 0, 0, '', ?, ?, NULL)`,
         ).run(sessionRowId, platform, sessionId, JSON.stringify([task.id]), ts, ts);
       }
       // 原子认领：status=待办 + archived=0 一并约束——已完成/已归档任务即便 ai_state 为空也不该被拉走重跑（PRD §8 状态机）。
@@ -333,33 +355,62 @@ export const ExecSessionService = {
   },
 
   /**
-   * T01270（FR-1.3）：停滞兜底——把 last_heartbeat 超阈值（默认 10min，可配 `supervisor.sessionStaleMs`）
-   * 的 active 会话置 stalled。
+   * T01270（FR-1.3）：停滞兜底 + T06056 任务态交叉校准——把 last_heartbeat 超阈值
+   * （默认 10min，可配 `supervisor.sessionStaleMs`）的会话按关联任务状态校正：
+   *
+   * - active 且无「仍在 running 的任务」→ stalled（平台确实没有心跳）；
+   * - active/stalled 但仍有关联任务 running → 保持/恢复 active（外部 Agent 仍在跑，
+   *   只是还没来得及 ping；任务侧自身有 MTASK_AI_STATE_STALE_MS 兜底，不会永久 running）。
+   *
+   * 这样会话与任务两套状态机不再互相打架：此前 10 分钟无 ping 即判「等待中」，
+   * 而任务侧仍认为 running 长达 2 小时，面板就会把正在执行的卡片误报为等待。
    *
    * 设计取舍：
-   * - **探测优先**（对齐 TaskService.expireStaleRunning）：先用一次轻量 SELECT 判断有无超时会话
-   *   （走 idx_exec_platform_status），无则直接返回，避免每次 tick 都开写事务；
-   * - **只改会话状态，不动任务 ai_state**：任务侧超时由 TaskService.expireStaleRunning 兜底
-   *   （PRD FR-1.3 后半句），两者阈值语义不同（会话 10min 是「平台是否还在干活」，任务 1h 是
-   *   「Agent 是否已中断」），混用会让长任务被误判中断；
-   * - 停滞只是**观测信号**，M1 阶段不触发任何自动动作（P0 仅观测）；自愈路径在 reportProgress
-   *   里（stalled 会话收到新心跳即回 active，PRD §8 状态机）。
+   * - 只改会话状态，不动任务 ai_state（任务超时由 TaskService.expireStaleRunning 负责）；
+   * - 停滞只是观侧信号，不触发自动动作；恢复也仅由任务态或新心跳驱动。
    */
   expireStaleSessions(maxAgeMs?: number): number {
     const db = getDb();
     const staleMs = resolveStaleMs(maxAgeMs);
     const cutoff = new Date(Date.now() - staleMs).toISOString();
-    const probe = db.prepare(
-      "SELECT id FROM exec_sessions WHERE status = 'active' AND last_heartbeat < ? LIMIT 1",
-    ).get(cutoff) as { id: string } | undefined;
-    if (!probe) return 0;
-    const r = db.prepare(
-      "UPDATE exec_sessions SET status = 'stalled' WHERE status = 'active' AND last_heartbeat < ?",
-    ).run(cutoff);
-    if (r.changes > 0) {
-      console.warn(`[ExecSessionService] ${r.changes} 个执行会话超过 ${Math.round(staleMs / 60000)} 分钟无心跳，置 stalled（FR-1.3 停滞兜底）`);
+    // T06056：同一条 SQL 同时取「可能转停滞的 active」和「可能被误判、需回 active 的 stalled」。
+    const candidates = db.prepare(
+      "SELECT id, status, task_ids FROM exec_sessions WHERE status IN ('active','stalled') AND last_heartbeat < ?",
+    ).all(cutoff) as Array<{ id: string; status: string; task_ids: string }>;
+    if (candidates.length === 0) return 0;
+
+    // 任务侧仍在 running 且未超过自身的 2h 失联阈值——这是「外部 Agent 还在执行」的唯一可靠旁证。
+    const taskIds = [...new Set(candidates.flatMap((c) => parseTaskIds(c.task_ids)))];
+    const running = new Set<string>();
+    const taskCutoff = new Date(Date.now() - AI_STATE_STALE_MS).toISOString();
+    for (let i = 0; i < taskIds.length; i += 200) {
+      const chunk = taskIds.slice(i, i + 200);
+      const placeholders = chunk.map(() => '?').join(',');
+      const rows = db.prepare(
+        `SELECT id FROM tasks
+          WHERE ai_state = 'running'
+            AND id IN (${placeholders})
+            AND (CASE WHEN COALESCE(ai_state_at, '') <> '' THEN ai_state_at ELSE COALESCE(updated_at, '') END) >= ?`,
+      ).all(...chunk, taskCutoff) as Array<{ id: string }>;
+      for (const r of rows) running.add(r.id);
     }
-    return r.changes;
+
+    const stall = db.prepare("UPDATE exec_sessions SET status = 'stalled' WHERE id = ? AND status = 'active'");
+    const revive = db.prepare("UPDATE exec_sessions SET status = 'active' WHERE id = ? AND status = 'stalled'");
+    let stalled = 0;
+    let revived = 0;
+    for (const c of candidates) {
+      const hasRunningTask = parseTaskIds(c.task_ids).some((id) => running.has(id));
+      if (c.status === 'active' && !hasRunningTask) stalled += stall.run(c.id).changes;
+      else if (c.status === 'stalled' && hasRunningTask) revived += revive.run(c.id).changes;
+    }
+    if (stalled > 0) {
+      console.warn(`[ExecSessionService] ${stalled} 个执行会话超过 ${Math.round(staleMs / 60000)} 分钟无心跳且关联任务已非 running，置 stalled（FR-1.3 停滞兜底）`);
+    }
+    if (revived > 0) {
+      console.warn(`[ExecSessionService] ${revived} 个执行会话虽心跳超时，但关联任务仍在 running，恢复 active（T06056 任务态校准）`);
+    }
+    return stalled;
   },
 
   /**

@@ -520,6 +520,8 @@ export interface ExecSession {
   /** active 存活 | stalled 停滞 | done 完成 | failed | aborted */
   status: string;
   progress: number;
+  /** T06056：1=平台显式上报过进度；0/缺省=未上报（卡片显示「待上报」而不是伪造 0%） */
+  progress_reported?: number;
   phase: string;
   last_heartbeat: string;
   started_at: string;

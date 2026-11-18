@@ -45,7 +45,7 @@ function readSplitPct(): number {
 /** 看板列定义：状态键 + 列标题 + 语义色。未知状态会动态追加，避免会话凭空消失。 */
 const STATUS_COLUMNS: Array<{ key: string; label: string; color: string; tone: string }> = [
   { key: 'active', label: '进行中', color: 'var(--success)', tone: 'var(--accent-soft)' },
-  { key: 'stalled', label: '等待中', color: 'var(--warn)', tone: 'color-mix(in srgb, var(--warn) 10%, transparent)' },
+  { key: 'stalled', label: '已停滞', color: 'var(--warn)', tone: 'color-mix(in srgb, var(--warn) 10%, transparent)' },
   { key: 'failed', label: '失败', color: 'var(--danger)', tone: 'color-mix(in srgb, var(--danger) 10%, transparent)' },
   { key: 'done', label: '已完成', color: 'var(--text-muted)', tone: 'var(--surface-2)' },
   { key: 'aborted', label: '已中止', color: 'var(--text-muted)', tone: 'var(--surface-2)' },
@@ -331,7 +331,8 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
         @keyframes exec-running-flow { to { --exec-flow-angle: 360deg } }
         .exec-kanban-card { will-change: transform; }
         .exec-kanban-card:hover { border-color: var(--border-strong) !important; box-shadow: 0 4px 14px rgba(15,23,42,.08); }
-        /* T05766：只有进行中的会话显示绿色旋转流光边框；等待中/失败/完成保持静态边框。 */
+        /* T05766：只有进行中的会话显示绿色旋转流光边框；已停滞/失败/完成保持静态边框。
+           T06056：服务端已将「有关联任务 running 但心跳超时」的会话校准回 active，不再误报等待。 */
         .exec-card-running {
           position: relative;
           border-color: transparent !important;
@@ -522,6 +523,9 @@ function KanbanColumn({
 function SessionCard({ s, cardRef, enterAnimation = false }: { readonly s: ExecSession; readonly cardRef?: (el: HTMLDivElement | null) => void; readonly enterAnimation?: boolean }) {
   const meta = STATUS_META[s.status] ?? { label: s.status || '未知', color: 'var(--text-muted)' };
   const pct = Math.max(0, Math.min(100, Math.round(s.progress ?? 0)));
+  /** T06056：进度只在平台显式上报过、或已到终态时展示百分比；否则显示「待上报」，
+   *  避免刚 progress start 的 0 被用户误读成真实进度 0%。 */
+  const progressReported = s.progress_reported === 1 || pct > 0 || s.status === 'done';
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const needsAttention = REDISPATCHABLE.has(s.status);
@@ -636,10 +640,10 @@ function SessionCard({ s, cardRef, enterAnimation = false }: { readonly s: ExecS
       {s.phase && <div title={s.phase} style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>阶段：{s.phase}</div>}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <div style={{ flex: 1, height: 5, borderRadius: 999, background: 'var(--surface-2)', overflow: 'hidden' }}>
-          <div style={{ width: `${pct}%`, height: '100%', background: meta.color, transition: 'width .3s ease' }} />
+        <div title={progressReported ? `平台上报进度 ${pct}%` : '平台尚未上报进度（不按 0% 计）'} style={{ flex: 1, height: 5, borderRadius: 999, background: 'var(--surface-2)', overflow: 'hidden' }}>
+          <div style={{ width: `${progressReported ? pct : 0}%`, height: '100%', background: progressReported ? meta.color : 'var(--border-strong)', transition: 'width .3s ease' }} />
         </div>
-        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', minWidth: 32, textAlign: 'right' }}>{pct}%</span>
+        <span data-t06056="progress" title={progressReported ? `${pct}%` : '外部平台尚未上报真实进度'} style={{ fontSize: 'var(--fs-xs)', color: progressReported ? 'var(--text-muted)' : 'var(--warn)', minWidth: 44, textAlign: 'right' }}>{progressReported ? `${pct}%` : '待上报'}</span>
       </div>
 
       {s.tasks.length > 0 && (

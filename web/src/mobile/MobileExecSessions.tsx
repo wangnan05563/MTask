@@ -16,6 +16,8 @@ interface ExecSessionView {
   session_id: string | null;
   status: string;
   progress: number;
+  /** T06056：0/缺省=平台尚未上报真实进度 */
+  progress_reported?: number;
   phase: string;
   last_heartbeat: string;
   started_at: string;
@@ -23,7 +25,7 @@ interface ExecSessionView {
   tasks: { id: string; task_no: string | null; title: string }[];
 }
 
-const STATUS_LABEL: Record<string, string> = { active: '运行中', failed: '失败', stalled: '停滞', done: '已完成' };
+const STATUS_LABEL: Record<string, string> = { active: '运行中', failed: '失败', stalled: '已停滞', done: '已完成' };
 const STATUS_TONE: Record<string, BadgeTone> = { active: 'accent', failed: 'danger', stalled: 'danger', done: 'success' };
 
 /** 心跳相对时间（分钟粒度；超 10 分钟告警色语义由调用方判断） */
@@ -107,6 +109,8 @@ export function MobileExecSessions({ notify }: { readonly notify: (msg: string, 
       {sessions.length === 0 && <EmptyState icon={<Activity size={32} />} message="暂无执行会话" hint="AI 开始执行任务后会话会出现在这里" />}
       {sessions.map((s) => {
         const heartbeatStale = s.status === 'active' && Date.now() - new Date(s.last_heartbeat).getTime() > 10 * 60 * 1000;
+        const pct = Math.max(0, Math.min(100, Math.round(s.progress ?? 0)));
+        const progressReported = s.progress_reported === 1 || pct > 0 || s.status === 'done';
         return (
           <div key={s.id} style={cardStyle}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
@@ -114,7 +118,7 @@ export function MobileExecSessions({ notify }: { readonly notify: (msg: string, 
               <span style={{ fontSize: 'var(--fs-m)', fontWeight: 600 }}>{platformLabel(s.platform)}</span>
               {s.session_id && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{s.session_id.slice(0, 8)}</span>}
               <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-xs)', color: heartbeatStale ? 'var(--danger)' : 'var(--text-muted)' }}>
-                心跳 {relTime(s.last_heartbeat)}{heartbeatStale ? '（停滞?）' : ''}
+                心跳 {relTime(s.last_heartbeat)}{heartbeatStale ? '（延迟）' : ''}
               </span>
             </div>
             {s.phase && <div style={{ marginTop: 6, fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', wordBreak: 'break-word' }}>phase：{s.phase}</div>}
@@ -129,10 +133,10 @@ export function MobileExecSessions({ notify }: { readonly notify: (msg: string, 
               </div>
             )}
             <div style={{ marginTop: 8, height: 6, borderRadius: 3, background: 'var(--surface-2)', overflow: 'hidden' }}>
-              <div style={{ width: `${s.progress}%`, height: '100%', background: 'var(--accent)', borderRadius: 3 }} />
+              <div style={{ width: `${progressReported ? pct : 0}%`, height: '100%', background: 'var(--accent)', borderRadius: 3 }} />
             </div>
             <div style={{ display: 'flex', alignItems: 'center', marginTop: 4, gap: 6 }}>
-              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>进度 {s.progress}%</span>
+              <span style={{ fontSize: 'var(--fs-xs)', color: progressReported ? 'var(--text-muted)' : 'var(--warn)' }}>进度 {progressReported ? `${pct}%` : '待上报'}</span>
               {s.status === 'failed' && (
                 <button
                   onClick={() => void redispatch(s)}

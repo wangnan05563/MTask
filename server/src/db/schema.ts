@@ -521,6 +521,9 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
       task_ids       TEXT NOT NULL,
       status         TEXT NOT NULL DEFAULT 'active',
       progress       REAL DEFAULT 0,
+      -- T06056：progress 是否为平台显式上报。0=仅建立了会话、尚无真实进度，
+      -- 用于面板区分「真实 0%」与「未上报」，避免执行中被误读为进度 0%。
+      progress_reported INTEGER NOT NULL DEFAULT 0,
       phase          TEXT DEFAULT '',
       last_heartbeat TEXT NOT NULL,
       started_at     TEXT NOT NULL,
@@ -1037,6 +1040,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('tasks', 'monitor_preferred_platform', 'monitor_preferred_platform TEXT');
   ensureColumn('tasks', 'monitor_retry', 'monitor_retry INTEGER NOT NULL DEFAULT 0');
   ensureColumn('tasks', 'exec_session_id', 'exec_session_id TEXT');
+  // T06056：老库幂等补列——progress 是否由平台显式上报（0=未上报，面板显示「待上报」而非 0%）
+  ensureColumn('exec_sessions', 'progress_reported', 'progress_reported INTEGER NOT NULL DEFAULT 0');
   // 就绪任务拉取按 monitor_ready 过滤（mtask_list_ready_tasks），加索引避免全表扫描
   db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_monitor_ready ON tasks(monitor_ready)");
   // T00763：需求行关联的 PRD 文档 id（导入时若携带 PRD 原文则回填，供矩阵查看与 AI 上下文反查）
