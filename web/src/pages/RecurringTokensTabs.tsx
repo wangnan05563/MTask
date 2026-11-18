@@ -485,7 +485,7 @@ export function RecurringTab() {
         </div>
       )}
 
-      {editRule && <RecurringRuleEditor rule={editRule} projects={projects} categories={categories}
+      {editRule && <RecurringRuleEditor rule={editRule} projects={projectOptions} categories={categories}
         onClose={() => setEditRule(null)} onSaved={async () => { setEditRule(null); await load(); flash('规则已保存，新生成任务将使用新值'); }} />}
     </div>
   );
