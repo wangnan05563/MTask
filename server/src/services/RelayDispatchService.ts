@@ -38,6 +38,8 @@ export interface RelayDispatchResult {
   queueId?: string;
   jobId?: string;
   ticket?: string;
+  /** T06057：结构化失败原因；relay_not_configured=平台被声明为中继推送但缺 relayToolId，需引导配置 */
+  reason?: 'relay_not_configured';
   detail: string;
 }
 
@@ -78,9 +80,9 @@ function armTask(taskId: string, platform: string, state: RelayDispatchResult['s
 export async function dispatchTask(taskId: string, platform: string, toolIdOverride?: string): Promise<RelayDispatchResult> {
   const toolId = (toolIdOverride ?? getSetting(RELAY_TOOL_KEY) ?? '').trim();
   if (!toolId) {
-    const detail = `平台「${platform}」不支持 MCP 拉取，但未配置中继派发工具（${RELAY_TOOL_KEY}），任务保持就绪`;
+    const detail = `平台「${platform}」已声明为不支持 MCP 拉取（${RELAY_PLATFORMS_KEY}），但未配置中继派发工具（${RELAY_TOOL_KEY}）；请到「设置 → 监督与审计 → 中继通道」补充工具，或从 relayPlatforms 移除该平台以走 MCP 拉取。任务保持就绪`;
     logService.log('WARN', 'supervisor', detail);
-    return { ok: false, state: 'ready', detail };
+    return { ok: false, state: 'ready', reason: 'relay_not_configured', detail };
   }
 
   let queueId = '';

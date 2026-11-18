@@ -12,7 +12,7 @@ import { getDb } from '../db/connection';
 import { getSetting } from './AppSettings'; // T01270：停滞阈值读 app_settings（supervisor.sessionStaleMs）
 import { normalizePlatform } from '../util/platform'; // T01288：平台标识归一化（会话按平台唯一，防大小写分裂）
 import { AI_STATE_STALE_MS, TaskService } from './TaskService';
-import { armReady, dispatchTask } from './RelayDispatchService'; // T03175（AI-402③）：重派复用既有 RelayDispatch 派发与归位口径
+import { armReady, dispatchTask, isRelayPlatform } from './RelayDispatchService'; // T03175（AI-402③）：重派复用既有 RelayDispatch 派发与归位口径；T06057：非中继平台走 MCP 就绪池
 
 /** T01270（FR-1.3）：会话停滞默认阈值 10 分钟——超过无心跳即视为停滞（PRD FR-1.3） */
 const DEFAULT_SESSION_STALE_MS = 10 * 60 * 1000;
@@ -100,6 +100,8 @@ export interface RedispatchEntry {
   /** 已派发时回显 RelayDispatch 结果（成功/失败与 detail 都算「已尝试派发」） */
   state?: string;
   ok?: boolean;
+  /** T06057：中继配置缺失等结构化原因，前端据此给可操作指引 */
+  reason?: 'relay_not_configured';
   detail?: string;
 }
 
@@ -499,9 +501,19 @@ export const ExecSessionService = {
       if (!task) { entries.push({ taskId, taskNo: null, dispatched: false, skipped: 'not_found' }); continue; }
       if (task.archived) { entries.push({ taskId, taskNo: task.task_no, dispatched: false, skipped: 'archived' }); continue; }
       if (task.status !== 'todo') { entries.push({ taskId, taskNo: task.task_no, dispatched: false, skipped: 'not_todo' }); continue; }
+      // T06057：重试 ≠ 仅中继推送。workbuddy/qoder/doubao 等 MCP 拉取平台应归位就绪池，
+      // 由平台下一次拉取接走；此前无条件走 dispatchTask，未配 relayToolId 时会误报「不支持 MCP」。
+      if (!isRelayPlatform(row.platform)) {
+        armReady(taskId, row.platform);
+        entries.push({
+          taskId, taskNo: task.task_no, dispatched: true, state: 'ready', ok: true,
+          detail: `平台「${row.platform}」走 MCP 拉取，任务已归位就绪池，等待平台下次拉取`,
+        });
+        continue;
+      }
       const r = await dispatchTask(taskId, row.platform);
       if (!r.ok && r.state === 'ready' && !r.queueId) armReady(taskId, row.platform);
-      entries.push({ taskId, taskNo: task.task_no, dispatched: true, state: r.state, ok: r.ok, detail: r.detail });
+      entries.push({ taskId, taskNo: task.task_no, dispatched: true, state: r.state, ok: r.ok, reason: r.reason, detail: r.detail });
     }
     return { ok: entries.some((e) => e.dispatched && e.ok), platform: row.platform, entries };
   },

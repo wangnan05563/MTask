@@ -59,6 +59,8 @@ interface RedispatchEntry {
   skipped?: 'not_found' | 'archived' | 'not_todo';
   state?: string;
   ok?: boolean;
+  /** T06057：relay_not_configured=平台走中继但缺 supervisor.relayToolId，需引导到设置页配置 */
+  reason?: 'relay_not_configured';
   detail?: string;
 }
 interface RedispatchResponse {
@@ -545,6 +547,8 @@ function SessionCard({ s, cardRef, enterAnimation = false }: { readonly s: ExecS
       if (r.reason) { setNotice(`不可重派：${r.reason === 'status_not_redispatchable' ? '会话当前状态不允许（仅停滞/失败可重派）' : '会话不存在'}`); } else {
         const done = r.entries.filter((e) => e.dispatched && e.ok).map((e) => e.taskNo ?? e.taskId.slice(0, 8));
         const failed = r.entries.filter((e) => e.dispatched && !e.ok);
+        const configMissing = failed.filter((e) => e.reason === 'relay_not_configured');
+        const otherFailed = failed.filter((e) => e.reason !== 'relay_not_configured');
         const skipped = r.entries.filter((e) => !e.dispatched);
         const skippedLabels = skipped.map((e) => {
           if (e.skipped === 'archived') return '已归档';
@@ -553,7 +557,8 @@ function SessionCard({ s, cardRef, enterAnimation = false }: { readonly s: ExecS
         });
         setNotice([
           done.length ? `已重派 ${done.length} 条（${done.join('、')}）` : '',
-          failed.length ? `${failed.length} 条派发未成：${failed.map((e) => e.detail ?? e.state ?? '').join('；')}` : '',
+          configMissing.length ? `${configMissing.length} 条待配置中继工具：请到「设置 → 监督与审计 → 中继通道」配置 supervisor.relayToolId；任务已保留在就绪池` : '',
+          otherFailed.length ? `${otherFailed.length} 条派发未成：${otherFailed.map((e) => e.detail ?? e.state ?? '').join('；')}` : '',
           skipped.length ? `${skipped.length} 条跳过（${skippedLabels.join('、')}）` : '',
         ].filter(Boolean).join('｜') || '该会话没有可重派的任务');
       }
