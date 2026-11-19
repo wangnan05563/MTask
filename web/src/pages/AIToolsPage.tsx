@@ -7,6 +7,7 @@ import { askConfirm } from '../ui/dialogs';
 import { PinToggle } from '../ui/PinToggle';
 import { ProviderIcon, ProviderPresetGrid } from './AIProviderPresets';
 import { LOCAL_PROVIDER_LOGOS, inferProviderId } from '../ui/providerLogos';
+import { contextProfileFor, parseContextCapacity, withContextCapacity } from '../utils/modelContext';
 
 /** 配置记录表单草稿（apiKey 留空 = 编辑时保留原密钥） */
 interface ToolForm {
@@ -527,6 +528,8 @@ interface ToolFormDialogProps {
 function ToolFormDialog(props: ToolFormDialogProps) {
   const { form } = props;
   const panelRef = useRef<HTMLDivElement>(null);
+  const contextProfile = contextProfileFor({ name: form.name, model: form.model, endpoint: form.endpoint });
+  const contextCapacity = parseContextCapacity(form.modelNotes) || contextProfile?.tiers[1]?.label || '';
 
   // 遮罩点击关闭改为文档级事件委托：点击目标在面板外即视为点遮罩（与原 e.target === e.currentTarget 等价），
   // 这样全屏遮罩 div 本身无需挂鼠标事件，避免非交互元素挂交互 handler（S6848）
@@ -617,9 +620,36 @@ function ToolFormDialog(props: ToolFormDialogProps) {
               {props.formModels.map((m) => <option key={m} value={m} />)}
             </datalist>
           </div>
+          <div>
+            <label htmlFor="aitool-context-capacity" style={labelStyle}>上下文容量</label>
+            <select
+              id="aitool-context-capacity"
+              data-t06088="context-capacity-select"
+              style={fieldStyle}
+              value={contextCapacity}
+              disabled={!contextProfile}
+              onChange={(e) => props.onFieldChange({ modelNotes: withContextCapacity(form.modelNotes, e.target.value) })}
+              title={contextProfile ? `官方上限 ${contextProfile.officialLabel}：${contextProfile.source}` : '该模型未匹配到官方上下文规格'}
+            >
+              {!contextProfile && <option value="">官方未提供</option>}
+              {contextProfile?.tiers.map((tier, index) => (
+                <option key={tier.label} value={tier.label}>
+                  {tier.label}{index === 1 ? '（建议）' : ''}
+                </option>
+              ))}
+              {contextCapacity && !contextProfile?.tiers.some((tier) => tier.label === contextCapacity) && (
+                <option value={contextCapacity}>{contextCapacity}（已配置）</option>
+              )}
+            </select>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>
+              {contextProfile
+                ? `按官方上限 ${contextProfile.officialLabel} 预置低/中/高三挡；仅记录模型容量，不改变各功能现有上下文预算。`
+                : '该模型未匹配到官方上下文规格，不虚构档位；可在模型配置说明中人工备注。'}
+            </div>
+          </div>
           <div style={{ gridColumn: '1 / -1' }}>
             <label htmlFor="aitool-model-notes" style={labelStyle}>模型配置说明</label>
-            <input id="aitool-model-notes" style={fieldStyle} value={form.modelNotes} onChange={(e) => props.onFieldChange({ modelNotes: e.target.value })} placeholder="例如 上下文 64K，建议 temperature 0.2" />
+            <input id="aitool-model-notes" style={fieldStyle} value={form.modelNotes} onChange={(e) => props.onFieldChange({ modelNotes: e.target.value })} placeholder="例如 建议 temperature 0.2" />
           </div>
           <div>
             <label htmlFor="aitool-purpose" style={labelStyle}>用途</label>

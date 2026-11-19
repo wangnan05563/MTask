@@ -16,6 +16,7 @@ import { reportStream, useReportStream } from '../reportStream'; // T00838：停
 import { resetWorkbenchArtifacts, RESET_CONFIRM_CONSOLE, CONSOLE_RESET_EVENT } from '../ui/consoleReset'; // T01042：控制台/卡片共用重置核心
 import { askConfirm } from '../ui/dialogs'; // T01042 建议：重置二次确认统一走对话框（Electron 下原生 confirm 不可靠）
 import { LOCAL_PROVIDER_LOGOS, inferProviderId } from '../ui/providerLogos';
+import { contextBadgeFor } from '../utils/modelContext';
 
 const CATEGORIES = [
   { key: 'summary', label: '周期要点汇总' },
@@ -188,6 +189,7 @@ function ToolSelect({
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const selected = tools.find((t) => t.id === toolId) ?? null;
+  const selectedBadge = selected ? contextBadgeFor(selected) : null;
 
   // 收拢态文案与完整提示：先判断是否配置了可用工具，再区分是否已选中，避免用嵌套三元表达三重分支
   let label = '选择工具';
@@ -197,7 +199,7 @@ function ToolSelect({
     title = '未配置可用工具';
   } else if (selected) {
     label = modelName(selected);
-    title = `当前模型：${label}`;
+    title = `当前模型：${label}${selectedBadge ? ` · 上下文 ${selectedBadge.label}` : ''}`;
   }
 
   // 展开时点击外部关闭（文档级事件委托 + 容器包含性判断）
@@ -211,7 +213,7 @@ function ToolSelect({
   }, [open]);
 
   return (
-    <div ref={wrapRef} data-ai-console-model-select="1" style={{ position: 'relative', flex: '0 1 170px', minWidth: 140 }}>
+    <div ref={wrapRef} data-ai-console-model-select="1" style={{ position: 'relative', flex: '0 1 210px', minWidth: 170 }}>
       <button
         onClick={() => setOpen((o) => !o)}
         title={title}
@@ -226,6 +228,19 @@ function ToolSelect({
         <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'left' }}>
           {selected ? label : (tools.length === 0 ? label : '选择工具')}
         </span>
+        {selectedBadge && (
+          <span
+            data-t06088="context-capacity-badge"
+            title={selectedBadge.title}
+            style={{
+              flexShrink: 0, padding: '0 4px', borderRadius: 4, fontSize: 'var(--fs-xs)',
+              color: selectedBadge.configured ? 'var(--accent)' : 'var(--text-muted)',
+              border: '1px solid var(--border)', background: 'var(--surface-2)',
+            }}
+          >
+            {selectedBadge.label}
+          </span>
+        )}
         <ChevronDown size={12} style={{ flex: '0 0 auto' }} />
       </button>
       {open && (
@@ -239,25 +254,38 @@ function ToolSelect({
           }}
         >
           {tools.length === 0 && <div style={{ padding: 8, fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>{unavailableReason ? `（不可用：${unavailableReason}）` : '（未配置可用工具）'}</div>}
-          {tools.map((t) => (
-            <button
-              key={t.id}
-              role="option"
-              aria-selected={t.id === toolId}
-              data-ai-console-model-option={t.id}
-              onClick={() => { onChange(t.id); setOpen(false); }}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 7, width: '100%', textAlign: 'left', padding: '6px 8px', border: 'none',
-                background: t.id === toolId ? 'var(--surface-2)' : 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)', cursor: 'pointer',
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = t.id === toolId ? 'var(--surface-2)' : 'transparent'; }}
-            >
-              <ConsoleModelLogo tool={t} />
-              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{modelName(t)}</span>
-              {t.id === toolId && <span style={{ color: 'var(--accent)', fontSize: 'var(--fs-xs)' }}>当前</span>}
-            </button>
-          ))}
+          {tools.map((t) => {
+            const badge = contextBadgeFor(t);
+            return (
+              <button
+                key={t.id}
+                role="option"
+                aria-selected={t.id === toolId}
+                data-ai-console-model-option={t.id}
+                title={`模型：${modelName(t)}${badge ? ` · 上下文 ${badge.label}` : ''}`}
+                onClick={() => { onChange(t.id); setOpen(false); }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 7, width: '100%', textAlign: 'left', padding: '6px 8px', border: 'none',
+                  background: t.id === toolId ? 'var(--surface-2)' : 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)', cursor: 'pointer',
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = t.id === toolId ? 'var(--surface-2)' : 'transparent'; }}
+              >
+                <ConsoleModelLogo tool={t} />
+                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{modelName(t)}</span>
+                {badge && (
+                  <span
+                    data-t06088="context-capacity-badge"
+                    title={badge.title}
+                    style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}
+                  >
+                    {badge.label}
+                  </span>
+                )}
+                {t.id === toolId && <span style={{ color: 'var(--accent)', fontSize: 'var(--fs-xs)' }}>当前</span>}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>

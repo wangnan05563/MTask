@@ -10,6 +10,7 @@ import { ChevronDown } from 'lucide-react';
 import type { AITool } from '../api/client';
 import { LOCAL_PROVIDER_LOGOS, inferProviderId } from '../ui/providerLogos';
 import { FIELD_SM } from '../ui/primitives';
+import { contextBadgeFor } from '../utils/modelContext';
 
 const FALLBACK_LOGO = LOCAL_PROVIDER_LOGOS.openai;
 
@@ -46,6 +47,7 @@ export function QueueModelPicker({ tools, value, onChange }: QueueModelPickerPro
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const selected = useMemo(() => tools.find((t) => t.id === value) ?? null, [tools, value]);
+  const selectedBadge = selected ? contextBadgeFor(selected) : null;
 
   useEffect(() => {
     if (!open) return undefined;
@@ -64,13 +66,13 @@ export function QueueModelPicker({ tools, value, onChange }: QueueModelPickerPro
   }, [open]);
 
   return (
-    <div ref={rootRef} data-queue-model-picker="1" style={{ position: 'relative', flex: '1 1 220px', minWidth: 180, maxWidth: 260 }}>
+    <div ref={rootRef} data-queue-model-picker="1" style={{ position: 'relative', flex: '1 1 240px', minWidth: 200, maxWidth: 300 }}>
       <button
         type="button"
         aria-label="选择要交付的 AI 模型"
         aria-haspopup="listbox"
         aria-expanded={open}
-        title={selected ? `当前模型：${modelLabel(selected)}` : '选择 AI 模型'}
+        title={selected ? `当前模型：${modelLabel(selected)}${selectedBadge ? ` · 上下文 ${selectedBadge.label}` : ''}` : '选择 AI 模型'}
         onClick={() => setOpen((v) => !v)}
         style={{
           ...FIELD_SM,
@@ -87,6 +89,19 @@ export function QueueModelPicker({ tools, value, onChange }: QueueModelPickerPro
         <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {selected ? modelLabel(selected) : (tools.length ? '选择 AI 模型' : '暂无可用模型')}
         </span>
+        {selectedBadge && (
+          <span
+            data-t06088="context-capacity-badge"
+            title={selectedBadge.title}
+            style={{
+              flexShrink: 0, padding: '0 4px', borderRadius: 4, fontSize: 'var(--fs-xs)',
+              color: selectedBadge.configured ? 'var(--accent)' : 'var(--text-muted)',
+              border: '1px solid var(--border)', background: 'var(--surface-2)',
+            }}
+          >
+            {selectedBadge.label}
+          </span>
+        )}
         <ChevronDown size={13} style={{ flexShrink: 0, color: 'var(--text-muted)', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .12s ease' }} />
       </button>
       {open && (
@@ -110,6 +125,7 @@ export function QueueModelPicker({ tools, value, onChange }: QueueModelPickerPro
         >
           {tools.map((tool) => {
             const active = tool.id === value;
+            const badge = contextBadgeFor(tool);
             return (
               <button
                 key={tool.id}
@@ -117,7 +133,7 @@ export function QueueModelPicker({ tools, value, onChange }: QueueModelPickerPro
                 role="option"
                 aria-selected={active}
                 data-model-option={tool.id}
-                title={`模型：${modelLabel(tool)}`}
+                title={`模型：${modelLabel(tool)}${badge ? ` · 上下文 ${badge.label}` : ''}`}
                 onClick={() => { onChange(tool.id); setOpen(false); }}
                 style={{
                   width: '100%',
@@ -136,6 +152,15 @@ export function QueueModelPicker({ tools, value, onChange }: QueueModelPickerPro
                 <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {modelLabel(tool)}
                 </span>
+                {badge && (
+                  <span
+                    data-t06088="context-capacity-badge"
+                    title={badge.title}
+                    style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}
+                  >
+                    {badge.label}
+                  </span>
+                )}
                 {active && <span aria-hidden="true" style={{ color: 'var(--accent)', fontSize: 'var(--fs-xs)' }}>当前</span>}
               </button>
             );
