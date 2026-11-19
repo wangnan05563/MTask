@@ -1,199 +1,412 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, type Queue, type QueueJob, type Task, type AITool } from '../api/client';
-import { Plus, Minus, Pause, ListPlus, RotateCcw, Send, Eye, ChevronUp, Check, Copy, Layers, Loader2, Trash2, RefreshCw } from 'lucide-react';
-import { EmptyState } from '../ui/EmptyState'; // T01072-FR1.10：统一空态组件
-import { askConfirm } from '../ui/dialogs'; // T01298：删除队列/移除任务前确认
-
-/** T01066-FR1.8：并行任务池状态（running 槽位 + 上限 + 排队计数） */
-interface PoolStatus {
-  limit: number;
-  queued: number;
-  running: Array<{ id: string; task_no: string | null; title: string; ai_state_at: string; project_name: string }>;
-}
+/**
+ * 队列菜单（页面容器）：取数、调度、动作与提示；展示交给 queuePanels。
+ *
+ * 本轮重构要解决的四件事，逐一对应在下面的结构里：
+ *   1) 「不知道怎么操作」→ 顶部三步引导 + 空态直达动作 + 条带化文案（选任务→选工具→加入→发送）；
+ *   2) 「缺少队列消费监控」→ 队列消费监控面板（进度/成功率/耗时/吞吐/在途/分布），见 QueueMonitor；
+ *   3) 「无法按项目选任务」→ 编排区项目筛选 + 任务多选批量加入（队列内已存在任务自动禁选防重复执行）；
+ *   4) 「队列名称无法自定义」→ 新建时输入名称、建后 PATCH 重命名。
+ *
+ * 轮询口径（不要混用）：
+ *   - 任务项（本队列）：执行中 2s，空闲 8s（T03272 既有「执行中 2s」验收不变）
+ *   - 队列列表与汇总：15s（只为让下拉与总览不至于过期，不承担进度刷新）
+ *   - 并行任务池：15s（T03272 既有口径）
+ */
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AlertTriangle, ListOrdered, Pause, Pencil, Play, Plus, RotateCcw, Send, Trash2 } from 'lucide-react';
+import { api, type AITool, type Queue, type QueueJob, type QueueJobSummary, type Task } from '../api/client';
+import { askConfirm, askInput } from '../ui/dialogs';
+import { NoticeToast, useNotice } from '../ui/notice';
+import { useProjectList } from '../ui/projectList';
+import { BTN_DANGER_OUTLINE, BTN_DISABLED, BTN_PRIMARY, BTN_SECONDARY_MD } from '../ui/primitives';
+import { computeQueueMetrics, type JobFilter } from './queueMetrics';
+import {
+  JobTable, PoolPanel, QueueComposer, QueueEmptyState, QueueHeadline, QueueMonitor,
+  type PoolStatusView,
+} from './queuePanels';
 
 /** T03272（UX-12/D-10）：任务池 15s 自动刷新；队列任务项执行中 2s 刷新——两个口径分别验收 */
 const POOL_POLL_MS = 15000;
 const JOB_POLL_MS = 2000;
+/** 空闲时把本队列刷新降频：没有在途任务时 2s 一次纯属浪费 */
+const IDLE_POLL_MS = 8000;
+/** 队列列表与消费汇总（下拉/总览用，不承担进度刷新） */
+const LIST_POLL_MS = 15000;
+
+/** 首次进入的引导条已读标记（与 guides.tsx 的弹窗向导互补：这里是常驻条带，不遮挡操作） */
+const ONBOARD_KEY = 'mtask.queue.onboard.v1';
+
+function today(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function errText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+/** 发送按钮的禁用原因（按钮 title 与 aria-label 共用，避免两处文案漂移） */
+function sendHintOf(queue: Queue | null, pending: number, total: number): string {
+  if (!queue) return '先选择一个队列';
+  if (queue.status === 'running') return '队列正在发送中，等本批收口后可再次发送';
+  if (queue.paused) return '队列已暂停：先在工具条点「继续队列」';
+  if (total === 0) return '队列还没有任务项：先在「编排队列」选任务和 AI 工具加入';
+  if (pending === 0) return '没有待发送的任务项：全部已成功；可继续加入新任务';
+  return `把 ${pending} 个未成功任务项按顺序提交给 AI 工具`;
+}
 
 export function QueuePage() {
+  const { notice, flash, dismiss } = useNotice();
+
   const [queues, setQueues] = useState<Queue[]>([]);
+  const [summaryMap, setSummaryMap] = useState<Record<string, QueueJobSummary>>({});
+  const [queuesError, setQueuesError] = useState('');
+  const [loadingQueues, setLoadingQueues] = useState(true);
+
   const [active, setActive] = useState<Queue | null>(null);
+  const [activeError, setActiveError] = useState('');
+  const [refreshingActive, setRefreshingActive] = useState(false);
+  const [activeUpdatedAt, setActiveUpdatedAt] = useState<number | null>(null);
+
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [tasksLoading, setTasksLoading] = useState(false);
+  const [tasksError, setTasksError] = useState('');
+  const [projectId, setProjectId] = useState('');
+  const [taskKeyword, setTaskKeyword] = useState('');
+  const [pickedTaskIds, setPickedTaskIds] = useState<string[]>([]);
+
   const [tools, setTools] = useState<AITool[]>([]);
-  const [selectedTask, setSelectedTask] = useState('');
-  const [selectedTool, setSelectedTool] = useState('');
-  const [expandedJob, setExpandedJob] = useState<string | null>(null);
-  const [notice, setNotice] = useState('');
+  const [toolId, setToolId] = useState('');
+  const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  const flash = (msg: string) => {
-    setNotice(msg);
-    setTimeout(() => setNotice(''), 2500);
-  };
+  const [jobFilter, setJobFilter] = useState<JobFilter>('all');
+  const [jobKeyword, setJobKeyword] = useState('');
+  const [selectedJobs, setSelectedJobs] = useState<string[]>([]);
+  const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
 
-  // T01066-FR1.8：任务池状态轮询 + 上限调整 + 单任务暂停（移出分发池 = 搁置）
-  // T03272（UX-12）：任务池 15s 轮询口径与执行会话 ≤2s 口径分开定义，不混用同一常量
-  const [pool, setPool] = useState<PoolStatus | null>(null);
+  const [pool, setPool] = useState<PoolStatusView | null>(null);
   const [poolUpdatedAt, setPoolUpdatedAt] = useState<number | null>(null);
   const [poolRefreshing, setPoolRefreshing] = useState(false);
   const [poolError, setPoolError] = useState('');
-  const loadPool = useCallback(async (opts: { manual?: boolean } = {}) => {
-    const manual = Boolean(opts.manual);
-    if (manual) setPoolRefreshing(true);
+  const [poolOpen, setPoolOpen] = useState(false);
+
+  const [onboardOpen, setOnboardOpen] = useState(() => {
+    try { return localStorage.getItem(ONBOARD_KEY) !== '1'; } catch { return false; }
+  });
+
+  const projectView = useProjectList();
+  /** 轮询回调里读最新的选中 id：避免把 active 对象塞进定时器闭包导致「切队列后仍刷旧队列」 */
+  const activeIdRef = useRef<string | null>(null);
+  useEffect(() => { activeIdRef.current = active?.id ?? null; }, [active?.id]);
+
+  const activeJobs = active?.jobs ?? [];
+  const metrics = useMemo(() => computeQueueMetrics(activeJobs, now), [activeJobs, now]);
+  const inFlight = activeJobs.some((j) => j.status === 'sending' || j.status === 'queued');
+  const failedCount = activeJobs.filter((j) => j.status === 'failed' || j.status === 'timeout').length;
+  const pendingCount = activeJobs.filter((j) => j.status !== 'success').length;
+  const queuedTaskIds = useMemo(() => new Set(activeJobs.map((j) => j.task_id)), [activeJobs]);
+
+  // ───────── 取数 ─────────
+
+  const loadQueues = useCallback(async (opts: { silent?: boolean } = {}) => {
+    if (!opts.silent) setLoadingQueues(true);
     try {
-      const next = await api.get<PoolStatus>('/pool/status');
+      const [list, summary] = await Promise.all([
+        api.get<Queue[]>('/queues'),
+        api.get<QueueJobSummary[]>('/queues/summary'),
+      ]);
+      setQueues(list);
+      const map: Record<string, QueueJobSummary> = {};
+      for (const s of summary) map[s.id] = s;
+      setSummaryMap(map);
+      setQueuesError('');
+    } catch (e) {
+      // 失败保留上次数据：空下拉与「真的没有队列」不能同形（用户会误以为数据丢了）
+      setQueuesError(errText(e));
+    } finally {
+      if (!opts.silent) setLoadingQueues(false);
+    }
+  }, []);
+
+  const open = useCallback(async (id: string) => {
+    activeIdRef.current = id;
+    try {
+      const q = await api.get<Queue>(`/queues/${id}`);
+      // 切队列期间旧请求可能后到：只接受与当前选中一致的响应
+      if (activeIdRef.current !== id) return;
+      setActive(q);
+      setActiveError('');
+      setActiveUpdatedAt(Date.now());
+      setSelectedJobs([]);
+      setExpandedJobId(null);
+    } catch (e) {
+      setActiveError(errText(e));
+    }
+  }, []);
+
+  const refreshActive = useCallback(async (opts: { manual?: boolean } = {}) => {
+    const id = activeIdRef.current;
+    if (!id) return;
+    if (opts.manual) setRefreshingActive(true);
+    try {
+      const q = await api.get<Queue>(`/queues/${id}`);
+      if (activeIdRef.current !== id) return;
+      setActive(q);
+      setActiveError('');
+      setActiveUpdatedAt(Date.now());
+    } catch (e) {
+      setActiveError(errText(e));
+    } finally {
+      if (opts.manual) setRefreshingActive(false);
+    }
+  }, []);
+
+  const loadTasks = useCallback(async (pid: string) => {
+    setTasksLoading(true);
+    try {
+      const qs = new URLSearchParams({ archived: '0', status: 'todo', limit: '500' });
+      if (pid) qs.set('projectId', pid);
+      const list = await api.get<Task[]>(`/tasks?${qs.toString()}`);
+      setTasks(list);
+      setTasksError('');
+    } catch (e) {
+      setTasksError(errText(e));
+    } finally {
+      setTasksLoading(false);
+    }
+  }, []);
+
+  const loadPool = useCallback(async (opts: { manual?: boolean } = {}) => {
+    if (opts.manual) setPoolRefreshing(true);
+    try {
+      const next = await api.get<PoolStatusView>('/pool/status');
       setPool(next);
       setPoolUpdatedAt(Date.now());
       setPoolError('');
     } catch (e) {
-      // T03272③：失败保留上次成功数据（不 setPool(null)、不清 updatedAt），只明确报失败
-      setPoolError(e instanceof Error ? e.message : String(e));
+      setPoolError(errText(e));
     } finally {
-      if (manual) setPoolRefreshing(false);
+      if (opts.manual) setPoolRefreshing(false);
     }
   }, []);
+
+  // ───────── 首屏与自动选中 ─────────
+
   useEffect(() => {
+    void loadQueues();
     void loadPool();
-    const t = setInterval(() => void loadPool(), POOL_POLL_MS);
-    return () => clearInterval(t);
-  }, [loadPool]);
-  async function changePoolLimit(n: number) {
-    if (n < 1 || n > 10) return;
-    try { await api.put('/pool/limit', { limit: n }); await loadPool(); } catch (e) { flash(String((e as Error).message ?? e)); }
-  }
-  async function pauseRunning(taskId: string) {
-    try {
-      await api.post(`/tasks/${taskId}/shelve`, { shelved: true });
-      flash('已暂停：任务移出分发池（搁置），可在任务菜单搁置列表恢复');
-      void loadPool();
-    } catch (e) { flash(String((e as Error).message ?? e)); }
-  }
+  }, [loadQueues, loadPool]);
 
-  const load = useCallback(async () => {
-    setQueues(await api.get<Queue[]>('/queues'));
-    // M7-7.2：status=待办 服务端过滤 + 显式 limit=500（提交选单取最近 500 条待办；原为全量拉取后本地筛）
-    setTasks((await api.get<Task[]>('/tasks?archived=0&status=todo&limit=500')));
-    setTools(await api.get<AITool[]>('/aitools'));
-  }, []);
+  // 项目筛选一变就重取待办任务（后端 /tasks 支持 projectId；不重取会出现「下拉选了项目、列表还是全量」）
+  useEffect(() => {
+    void loadTasks(projectId);
+  }, [loadTasks, projectId]);
 
-  useEffect(() => { void load(); }, [load]);
-
-  const taskTitle = (job: QueueJob) => job.task_title ?? tasks.find((t) => t.id === job.task_id)?.title ?? job.task_id.slice(0, 8);
-  const toolName = (job: QueueJob) => job.tool_name ?? tools.find((t) => t.id === job.tool_id)?.name ?? job.tool_id.slice(0, 8);
-
-  async function open(id: string) {
-    setActive(await api.get<Queue>(`/queues/${id}`));
-  }
-
-  // 定时器句柄类型跟随 globalThis.setInterval 返回值：浏览器为 number、Node 类型环境为 Timeout，两者都兼容
-  const refreshTimer = useRef<ReturnType<typeof globalThis.setInterval> | null>(null);
-  /** 异步提交后定时刷新当前队列，直至无在途（sending/queued）Job，再提示完成 */
-  function startPolling(queueId: string) {
-    stopPolling();
-    refreshTimer.current = globalThis.setInterval(async () => {
+  useEffect(() => {
+    void (async () => {
       try {
-        const q = await api.get<Queue>(`/queues/${queueId}`);
-        setActive(q);
-        if (!q.jobs?.some((j) => j.status === 'sending' || j.status === 'queued')) {
-          stopPolling();
-          flash('队列已全部执行完成');
-        }
-      } catch {
-        stopPolling();
+        const list = await api.get<AITool[]>('/aitools');
+        setTools(list);
+        // 默认选「开发默认工具」，少一步操作；没有默认就用第一个，仍可改
+        setToolId((prev) => prev || list.find((t) => t.isDefaultDevelop)?.id || list[0]?.id || '');
+      } catch (e) {
+        flash(`AI 工具列表加载失败：${errText(e)}`, 'error');
       }
-    }, JOB_POLL_MS);
-  }
-  function stopPolling() {
-    if (refreshTimer.current != null) {
-      globalThis.clearInterval(refreshTimer.current);
-      refreshTimer.current = null;
+    })();
+  }, [flash]);
+
+  // 没有选中队列时自动落到第一个，避免「下拉有值但右侧空白」的错觉。
+  // 只判断 active 是否为空、**不判断 active 是否在 list 里**：新建队列时 open() 与列表刷新是并行的，
+  // 若以「不在列表」为条件，会在列表回来之前把刚建好的队列又切回第一个。
+  useEffect(() => {
+    if (queues.length === 0) {
+      if (active) setActive(null);
+      return;
     }
-  }
-  // 卸载时清理轮询定时器，避免切换页面后残留刷新
-  useEffect(() => () => stopPolling(), []);
+    if (!active) void open(queues[0].id);
+  }, [queues, active, open]);
+
+  // ───────── 轮询 ─────────
+
+  useEffect(() => {
+    if (!active) return;
+    const timer = setInterval(() => { void refreshActive(); }, inFlight ? JOB_POLL_MS : IDLE_POLL_MS);
+    return () => clearInterval(timer);
+  }, [active?.id, inFlight, refreshActive]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const timer = setInterval(() => { void loadQueues({ silent: true }); }, LIST_POLL_MS);
+    return () => clearInterval(timer);
+  }, [loadQueues]);
+
+  useEffect(() => {
+    const timer = setInterval(() => { void loadPool(); }, POOL_POLL_MS);
+    return () => clearInterval(timer);
+  }, [loadPool]);
+
+  // 有在途任务时本地每秒走表：让「已运行 0:42」持续跳动，而不必等下一次接口刷新
+  useEffect(() => {
+    if (!activeJobs.some((j) => j.status === 'sending')) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [activeJobs]);
+
+  // ───────── 队列动作 ─────────
 
   async function createQueue() {
-    const d = new Date();
-    const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    const q = await api.post<Queue>('/queues', { name: `${date} 开发队列`, date });
-    await open(q.id);
-    void load();
+    const date = today();
+    const name = await askInput({
+      title: '新建队列',
+      defaultValue: `${date} 开发队列`,
+      placeholder: '例如：票据系统 P0 修复队列',
+    });
+    if (name == null) return;
+    try {
+      const q = await api.post<Queue>('/queues', { name, date });
+      await Promise.all([open(q.id), loadQueues({ silent: true })]);
+      flash(`已创建队列「${q.name}」：接着在编排区选任务与工具`);
+    } catch (e) {
+      flash(`新建队列失败：${errText(e)}`, 'error');
+    }
   }
 
-  async function addJob() {
-    if (!active || !selectedTask || !selectedTool) return;
-    await api.post(`/queues/${active.id}/jobs`, { items: [{ taskId: selectedTask, toolId: selectedTool }] });
-    await open(active.id);
-    setSelectedTask(''); setSelectedTool('');
+  async function renameQueue() {
+    if (!active) return;
+    const name = await askInput({ title: '重命名队列', defaultValue: active.name });
+    if (name == null || name === active.name) return;
+    try {
+      const q = await api.patch<Queue>(`/queues/${active.id}`, { name });
+      setActive((prev) => (prev && prev.id === q.id ? { ...prev, name: q.name } : prev));
+      await loadQueues({ silent: true });
+      flash('队列已重命名');
+    } catch (e) {
+      flash(errText(e), 'error');
+    }
   }
 
-  async function send() {
+  async function togglePause() {
+    if (!active) return;
+    const next = !active.paused;
+    try {
+      await api.post(`/queues/${active.id}/pause`, { paused: next });
+      setActive((prev) => (prev ? { ...prev, paused: next ? 1 : 0 } : prev));
+      flash(next ? '队列已暂停：发送会被拒绝' : '队列已继续：可以再次发送');
+    } catch (e) {
+      flash(errText(e), 'error');
+    }
+  }
+
+  async function sendQueue() {
     if (!active) return;
     setBusy(true);
     try {
-      // 异步提交：受理即返回，后台 poller 收敛结果，前端定时刷新进度
-      await api.post<QueueJob[]>(`/queues/${active.id}/submit`);
-      await open(active.id);
-      flash('已提交队列（异步结果将自动刷新）');
-      startPolling(active.id);
+      // 异步提交：受理即返回，后台 poller 每 5s 收口，本页按 2s 刷新进度
+      await api.post(`/queues/${active.id}/submit`);
+      await Promise.all([open(active.id), loadQueues({ silent: true })]);
+      flash('已提交队列：结果由后台轮询收口，监控区会自动刷新');
     } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
+      flash(errText(e), 'error');
     } finally {
       setBusy(false);
     }
   }
 
-  /** 重试失败：将队列中 failed/timeout 的 Job 重置为 queued，供用户修改后可重新发送 */
   async function retryFailed() {
     if (!active) return;
     try {
       await api.post(`/queues/${active.id}/reset`);
       await open(active.id);
-      flash('已重置失败项，可重新发送队列');
+      flash('失败/超时项已重置为排队中，可再次发送');
     } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
+      flash(errText(e), 'error');
     }
   }
 
-  /** T01298：从队列移除单个任务项（sending 在途项由后端拒绝，前端也不展示入口） */
-  async function removeJob(job: QueueJob) {
-    if (!active) return;
-    if (!(await askConfirm(`从队列移除「${taskTitle(job)}」？移除后可重新加入。`))) return;
-    try {
-      await api.del(`/queues/${active.id}/jobs/${job.id}`);
-      await open(active.id);
-      flash('已从队列移除');
-    } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
-    }
-  }
-
-  /** T01298：删除整个队列（任务项随级联清理）；删除后回到未选中态 */
   async function deleteQueue() {
     if (!active) return;
-    if (!(await askConfirm(`删除队列「${active.name}」？队列内全部任务项将一并移除，不可恢复。`))) return;
+    if (!(await askConfirm(`删除队列「${active.name}」？队列内 ${activeJobs.length} 个任务项将一并移除，不可恢复。`))) return;
     try {
       await api.del(`/queues/${active.id}`);
-      stopPolling();
       setActive(null);
-      setExpandedJob(null);
-      void load();
+      await loadQueues({ silent: true });
       flash('队列已删除');
     } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
+      flash(errText(e), 'error');
     }
   }
 
-  /** FR5.1 采纳：保存 AI 文本到任务并置 done（仅保存文本，人工合并） */
+  async function addJobs() {
+    if (!active || pickedTaskIds.length === 0 || !toolId) return;
+    setAdding(true);
+    try {
+      await api.post(`/queues/${active.id}/jobs`, {
+        items: pickedTaskIds.map((taskId) => ({ taskId, toolId })),
+      });
+      const n = pickedTaskIds.length;
+      setPickedTaskIds([]);
+      await Promise.all([open(active.id), loadQueues({ silent: true })]);
+      flash(`已加入 ${n} 个任务项${active.status === 'finished' ? '，可直接再次发送（已成功的不会重复执行）' : ''}`);
+    } catch (e) {
+      flash(errText(e), 'error');
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  async function removeJob(job: QueueJob) {
+    if (!active) return;
+    const title = job.task_title ?? job.task_no ?? job.task_id.slice(0, 8);
+    if (!(await askConfirm(`从队列移除「${title}」？移除后可重新加入。`))) return;
+    try {
+      await api.del(`/queues/${active.id}/jobs/${job.id}`);
+      await Promise.all([open(active.id), loadQueues({ silent: true })]);
+      flash('已从队列移除');
+    } catch (e) {
+      flash(errText(e), 'error');
+    }
+  }
+
+  async function batchRemove() {
+    if (!active || selectedJobs.length === 0) return;
+    const removable = activeJobs.filter((j) => selectedJobs.includes(j.id) && j.status !== 'sending');
+    if (removable.length === 0) { flash('选中的任务项都在执行中，暂不可移除', 'error'); return; }
+    if (!(await askConfirm(`从队列移除选中的 ${removable.length} 个任务项？执行中的项会被跳过。`))) return;
+    setBusy(true);
+    try {
+      for (const job of removable) await api.del(`/queues/${active.id}/jobs/${job.id}`);
+      setSelectedJobs([]);
+      await Promise.all([open(active.id), loadQueues({ silent: true })]);
+      flash(`已移除 ${removable.length} 个任务项`);
+    } catch (e) {
+      flash(errText(e), 'error');
+      await open(active.id);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function retryJob(job: QueueJob) {
+    if (!active) return;
+    try {
+      await api.post(`/queues/${active.id}/jobs/${job.id}/retry`);
+      await open(active.id);
+      flash(`「${job.task_title ?? job.task_no ?? '任务项'}」已重置为排队中`);
+    } catch (e) {
+      flash(errText(e), 'error');
+    }
+  }
+
   async function adopt(job: QueueJob) {
     if (!job.response_payload) return;
     try {
       await api.post(`/tasks/${job.task_id}/adopt`, { content: job.response_payload });
-      await open(active!.id);
-      void load();
-      flash(`已采纳「${taskTitle(job)}」，任务置为完成`);
+      if (activeIdRef.current) await open(activeIdRef.current);
+      void loadQueues({ silent: true });
+      flash('已采纳：回执写入任务摘要，任务置为完成（仍可人工合并到代码）');
     } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
+      flash(errText(e), 'error');
     }
   }
 
@@ -201,288 +414,245 @@ export function QueuePage() {
     if (!job.response_payload) return;
     try {
       await navigator.clipboard.writeText(job.response_payload);
-      flash('已复制 AI 文本，请粘贴到目标位置人工合并');
+      flash('已复制 AI 回执，可粘贴到目标位置人工合并');
     } catch {
-      flash('复制失败，请手动选择文本');
+      flash('复制失败，请展开详情后手动选择文本', 'error');
     }
   }
 
-  const STATUS_COLOR: Record<string, string> = {
-    queued: 'var(--text-muted)', sending: 'var(--accent)', success: 'var(--success)', failed: 'var(--danger)', timeout: '#d97706',
-  };
+  async function changePoolLimit(n: number) {
+    if (n < 1 || n > 10) return;
+    try {
+      await api.put('/pool/limit', { limit: n });
+      await loadPool();
+    } catch (e) {
+      flash(errText(e), 'error');
+    }
+  }
+
+  async function pauseRunningTask(taskId: string) {
+    try {
+      await api.post(`/tasks/${taskId}/shelve`, { shelved: true });
+      flash('已暂停：任务移出分发池（搁置），可在「任务」菜单搁置列表恢复');
+      await loadPool();
+    } catch (e) {
+      flash(errText(e), 'error');
+    }
+  }
+
+  function dismissOnboard() {
+    setOnboardOpen(false);
+    try { localStorage.setItem(ONBOARD_KEY, '1'); } catch { /* 隐私模式：仅本次会话生效 */ }
+  }
+
+  // ───────── 渲染 ─────────
+
+  const sendDisabled = busy || !active || Boolean(active.paused) || active.status === 'running' || pendingCount === 0;
+  const sendHint = sendHintOf(active, pendingCount, activeJobs.length);
+  // 待发送项里只剩失败/超时时，「发送队列」实际是本批重发——文案说清楚，避免与「重试失败」混淆
+  const resendingOnly = pendingCount > 0 && pendingCount === failedCount;
+  const sendLabel = busy
+    ? '提交中…'
+    : resendingOnly
+      ? `重发未成功（${failedCount}）`
+      : `发送队列${pendingCount > 0 ? `（${pendingCount}）` : ''}`;
 
   return (
     <section>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-        <select value={active?.id ?? ''} onChange={(e) => e.target.value && void open(e.target.value)} aria-label="选择队列" style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
-          <option value="">选择队列…</option>
-          {queues.map((q) => <option key={q.id} value={q.id}>{q.name}（{q.status}）</option>)}
-        </select>
-        <button
-          onClick={() => void createQueue()}
-          title="新建今日队列 — 创建今天的开发队列并打开"
-          aria-label="新建今日队列：创建今天的开发队列并打开"
+      {/* 标题行：一句话说清这个菜单是干什么的 + 当前队列的关键计数 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
+        <h2 style={{ display: 'flex', alignItems: 'center', gap: 6, margin: 0, fontSize: 'var(--fs-title)', fontWeight: 700 }}>
+          <ListOrdered size={17} style={{ color: 'var(--accent)' }} /> 队列
+        </h2>
+        <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>
+          把「任务 + AI 工具」排成序列逐条交付，回执留档可采纳
+        </span>
+        <span style={{ flex: 1 }} />
+        {active && <QueueHeadline queue={active} metrics={metrics} />}
+      </div>
+
+      {/* 工具条 */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
+        <select
+          value={active?.id ?? ''}
+          onChange={(e) => { if (e.target.value) void open(e.target.value); }}
+          aria-label="选择队列"
+          title="切换当前队列"
+          disabled={loadingQueues && queues.length === 0}
+          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', minWidth: 200, cursor: 'pointer' }}
         >
-          + <Plus size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} /> 新建今日队列
+          <option value="">{loadingQueues && queues.length === 0 ? '加载中…' : queues.length === 0 ? '暂无队列' : '选择队列…'}</option>
+          {queues.map((q) => {
+            const s = summaryMap[q.id];
+            const tail = s ? ` · ${s.job_success}/${s.job_total}${s.job_failed + s.job_timeout > 0 ? ` · 失败 ${s.job_failed + s.job_timeout}` : ''}` : '';
+            return <option key={q.id} value={q.id}>{q.name}{tail}</option>;
+          })}
+        </select>
+
+        <button onClick={() => void createQueue()} title="新建队列 — 名称可自定义，默认「{日期} 开发队列」" aria-label="新建队列" style={BTN_PRIMARY}>
+          <Plus size={13} /> 新建队列
         </button>
-        {active && active.status !== 'running' && (
-          <button
-            onClick={() => void send()}
-            disabled={busy}
-            title={busy ? '发送中 — 正在发送队列到 AI 工具' : '发送队列 — 将队列交付 AI 处理并保存回执'}
-            aria-label={busy ? '发送中：正在发送队列到 AI 工具' : '发送队列：将队列交付 AI 处理并保存回执'}
-            style={{ background: 'var(--success)', color: 'var(--on-solid)', border: 'none', padding: '6px 14px', borderRadius: 6, cursor: 'pointer' }}
-          >
-            {busy ? '发送中…' : <><Send size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} /> 发送队列</>}
+
+        {active && (
+          <button onClick={() => void renameQueue()} title="重命名 — 修改当前队列的名称" aria-label="重命名队列" style={BTN_SECONDARY_MD}>
+            <Pencil size={12} /> 重命名
           </button>
         )}
-        {active && active.status !== 'running' && (
+
+        {active && (
           <button
-            onClick={() => void retryFailed()}
-            title="重试失败 — 将队列中失败/超时的任务重置为待发送"
-            aria-label="重试失败：将队列中失败/超时的任务重置为待发送"
-            style={{ background: 'transparent', border: '1px solid var(--border)', padding: '6px 10px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+            onClick={() => void togglePause()}
+            title={active.paused ? '继续队列 — 恢复后可再次发送' : '暂停队列 — 暂停后发送会被拒绝（不打断已在执行的任务）'}
+            aria-label={active.paused ? '继续队列' : '暂停队列'}
+            style={{ ...BTN_SECONDARY_MD, color: active.paused ? 'var(--accent)' : 'var(--text)' }}
           >
-            <RotateCcw size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} /> 重试失败
+            {active.paused ? <><Play size={12} /> 继续队列</> : <><Pause size={12} /> 暂停队列</>}
           </button>
         )}
-        {active && active.status !== 'running' && (
+
+        {active && (
+          <button
+            onClick={() => void sendQueue()}
+            disabled={sendDisabled}
+            title={sendHint}
+            aria-label={sendDisabled ? `发送队列不可用：${sendHint}` : '发送队列'}
+            style={{ ...BTN_PRIMARY, background: 'var(--success)', ...(sendDisabled ? BTN_DISABLED : undefined) }}
+          >
+            <Send size={13} /> {sendLabel}
+          </button>
+        )}
+
+        {active && failedCount > 0 && (
+          <button onClick={() => void retryFailed()} title={`重试失败 — 把 ${failedCount} 个失败/超时项重置为排队中`} aria-label="重试失败项" style={BTN_SECONDARY_MD}>
+            <RotateCcw size={12} /> 重试失败（{failedCount}）
+          </button>
+        )}
+
+        {active && (
           <button
             onClick={() => void deleteQueue()}
-            title="删除队列 — 删除当前队列及其全部任务项（不可恢复）"
-            aria-label="删除队列：删除当前队列及其全部任务项"
-            style={{ background: 'transparent', border: '1px solid var(--border)', padding: '6px 10px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--danger)' }}
+            disabled={active.status === 'running'}
+            title={active.status === 'running' ? '队列正在发送中，暂不可删除' : '删除队列 — 连同全部任务项一并移除（不可恢复）'}
+            aria-label="删除队列"
+            style={{ ...BTN_DANGER_OUTLINE, ...(active.status === 'running' ? BTN_DISABLED : undefined) }}
           >
-            <Trash2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} /> 删除队列
+            <Trash2 size={12} /> 删除队列
           </button>
         )}
-        {notice && <output className="flash-toast">{notice}</output>}
+
+        <span style={{ flex: 1 }} />
+        <NoticeToast notice={notice} onDismiss={dismiss} />
       </div>
 
-      {/* T01066-FR1.8：并行任务池——运行中槽位可视化（running/上限）+ 排队计数 + 单任务暂停（移出分发池=搁置） */}
-      <div style={{ border: '1px solid var(--accent)', borderRadius: 10, padding: 12, margin: '12px 0', background: 'var(--accent-soft)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 6 }}>
-            <Layers size={14} style={{ color: 'var(--accent)' }} /> 任务池
-          </div>
-          {/* 槽位格：实心=占用（running），空心=空闲 */}
-          <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }} title={pool ? `并行槽位：${pool.running.length}/${pool.limit}` : '并行槽位：尚未获取'}>
-            {pool && Array.from({ length: pool.limit }, (_, i) => (
-              <span key={i} style={{ width: 12, height: 12, borderRadius: '50%', border: '1px solid var(--accent)', background: i < pool.running.length ? 'var(--accent)' : 'transparent', display: 'inline-block' }} />
-            ))}
-            <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text)', marginLeft: 4 }}>{pool ? `${pool.running.length}/${pool.limit} 运行中` : '— 运行中'}</span>
-          </span>
-          <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>排队就绪 {pool ? `${pool.queued} 条` : '—'}</span>
-          <span style={{ flex: 1 }} />
-          {/* T03272（UX-12）：最后成功更新时间 + 手动刷新（立即发起、带加载态） */}
-          <span aria-live="polite" title="任务池最后一次成功刷新的时间（自动刷新 15 秒）" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-            {poolUpdatedAt ? `最后更新 ${new Date(poolUpdatedAt).toLocaleTimeString('zh-CN', { hour12: false })}` : '尚未获取'}
-          </span>
-          <button
-            onClick={() => void loadPool({ manual: true })}
-            disabled={poolRefreshing}
-            title="刷新任务池 — 立即重新获取（自动刷新 15 秒）"
-            aria-label={poolRefreshing ? '刷新中：正在重新获取任务池数据' : '刷新任务池：立即重新获取任务池数据'}
-            style={{ fontSize: 'var(--fs-xs)', padding: '3px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--text-secondary)', cursor: poolRefreshing ? 'wait' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}
-          >
-            <RefreshCw size={12} className={poolRefreshing ? 'aispin' : undefined} />
-            {poolRefreshing ? '刷新中…' : '刷新'}
-          </button>
-          {/* 并发上限调整（1~10，存 app_settings） */}
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
-            {'并行上限'}
-            <button onClick={() => void changePoolLimit((pool?.limit ?? 3) - 1)} disabled={!pool || pool.limit <= 1}
-              title="下调并行上限" aria-label="下调并行上限"
-              style={{ width: 22, height: 22, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 5, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer' }}><Minus size={12} aria-hidden /></button>
-            <b style={{ color: 'var(--accent)' }}>{pool?.limit ?? '—'}</b>
-            <button onClick={() => void changePoolLimit((pool?.limit ?? 3) + 1)} disabled={!pool || pool.limit >= 10}
-              title="上调并行上限" aria-label="上调并行上限"
-              style={{ width: 22, height: 22, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 5, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer' }}><Plus size={12} aria-hidden /></button>
-          </span>
-        </div>
-        {(pool?.running.length ?? 0) > 0 && (
-          <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {(pool?.running ?? []).map((r) => (
-              <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 'var(--fs-s)' }}>
-                <Loader2 size={12} className="aispin" style={{ color: 'var(--accent)', flexShrink: 0 }} />
-                <span style={{ color: 'var(--accent)', flexShrink: 0 }}>{r.task_no ?? '—'}</span>
-                <span style={{ color: 'var(--text)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${r.title}（${r.project_name}）`}>{r.title}</span>
-                <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{r.project_name} · 运行 {Math.max(1, Math.round((Date.now() - new Date(r.ai_state_at).getTime()) / 60000))} 分钟</span>
-                <button onClick={() => void pauseRunning(r.id)} title="暂停 — 将任务移出分发池（转为搁置）；已在 Agent 侧执行的动作无法强制中断"
-                  aria-label={`暂停任务 ${r.task_no ?? ''}`}
-                  style={{ fontSize: 'var(--fs-xs)', padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                  <Pause size={12} aria-hidden /> 暂停
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        {poolError && (
-          <output style={{ display: 'block', marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>
-            任务池刷新失败：{poolError}（保留{poolUpdatedAt ? '上次成功数据' : '上次获取结果'}，未清空）
-          </output>
-        )}
-        <div style={{ marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
-          暂停 = 移出分发池（转搁置，恢复请在任务菜单搁置列表操作）；Agent 侧已开始执行的动作不受影响。
-        </div>
-      </div>
-
-      {/* T01072-FR1.10：统一空态——无队列时动作直达新建 */}
-      {queues.length === 0 && (
-        <EmptyState
-          icon={<ListPlus size={18} />}
-          title="暂无开发队列"
-          hint="队列用于把任务批量交付 AI 工具并留存回执；新建今日队列后选择任务与 AI 工具即可加入。"
-          action={{ label: '新建今日队列', onClick: () => void createQueue() }}
-        />
+      {queuesError && (
+        <output style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, padding: '6px 10px', border: '1px solid var(--danger)', borderRadius: 8, fontSize: 'var(--fs-s)', color: 'var(--danger)' }}>
+          <AlertTriangle size={13} /> 队列列表加载失败：{queuesError}
+          <button onClick={() => void loadQueues()} style={{ ...BTN_SECONDARY_MD, borderColor: 'var(--danger)', color: 'var(--danger)' }}>重试</button>
+        </output>
       )}
+
+      {onboardOpen && (
+        <div style={{ marginBottom: 10, padding: '8px 12px', border: '1px solid var(--accent)', borderRadius: 8, background: 'var(--accent-soft)', display: 'flex', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 1 420px', minWidth: 240 }}>
+            <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, marginBottom: 2 }}>三步上手</div>
+            <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text)' }}>
+              ① 新建队列（名称可自定义）→ ② 在「编排队列」勾选待办任务、选 AI 工具并加入 → ③ 点「发送队列」。发送后监控区实时显示进度、耗时与失败项；跑完点行内「采纳」把回执写回任务。
+            </div>
+          </div>
+          <button onClick={dismissOnboard} style={{ ...BTN_SECONDARY_MD, flexShrink: 0 }} title="知道了 — 关闭本提示（以后不再自动出现）" aria-label="关闭三步上手提示">
+            知道了
+          </button>
+        </div>
+      )}
+
+      {loadingQueues && queues.length === 0 && (
+        <div style={{ padding: 20, fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>队列加载中…</div>
+      )}
+
+      {!loadingQueues && queues.length === 0 && <QueueEmptyState onCreate={() => void createQueue()} />}
 
       {active && (
         <>
-          <div style={{ display: 'flex', gap: 8, margin: '12px 0' }}>
-            <select value={selectedTask} onChange={(e) => setSelectedTask(e.target.value)} aria-label="选择待办任务" style={{ flex: 1, padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
-              <option value="">选择待办任务…</option>
-              {tasks.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}
-            </select>
-            <select value={selectedTool} onChange={(e) => setSelectedTool(e.target.value)} aria-label="选择 AI 工具" style={{ flex: 1, padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
-              <option value="">选择 AI 工具…</option>
-              {tools.map((t) => <option key={t.id} value={t.id}>{t.name}（{t.type}）</option>)}
-            </select>
-            <button
-              onClick={() => void addJob()}
-              title="加入队列 — 将选中的任务与 AI 工具加入当前队列"
-              aria-label="加入队列：将选中的任务与 AI 工具加入当前队列"
-              style={{ display: 'inline-flex', alignItems: 'center', padding: '2px 4px', gap: 4 }}
-            >
-              <ListPlus size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
-            </button>
-          </div>
+          {activeError && (
+            <output style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, fontSize: 'var(--fs-s)', color: 'var(--danger)' }}>
+              <AlertTriangle size={13} /> 队列详情刷新失败：{activeError}（保留上次数据）
+              <button onClick={() => void refreshActive({ manual: true })} style={{ ...BTN_SECONDARY_MD, borderColor: 'var(--danger)', color: 'var(--danger)' }}>重试</button>
+            </output>
+          )}
 
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-m)' }}>
-            <thead>
-              <tr style={{ textAlign: 'left', color: 'var(--text-secondary)' }}>
-                <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>#</th>
-                <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>任务</th>
-                <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>工具</th>
-                <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>状态</th>
-                <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>回执摘要</th>
-                <th style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(active.jobs ?? []).map((j) => (
-                <JobRow
-                  key={j.id}
-                  job={j}
-                  taskTitle={taskTitle(j)}
-                  toolName={toolName(j)}
-                  statusColor={STATUS_COLOR[j.status] ?? 'var(--text)'}
-                  expanded={expandedJob === j.id}
-                  onToggle={() => setExpandedJob(expandedJob === j.id ? null : j.id)}
-                  onAdopt={() => void adopt(j)}
-                  onCopy={() => void copy(j)}
-                  onDelete={() => void removeJob(j)}
-                />
-              ))}
-              {(active.jobs ?? []).length === 0 && (
-                <tr><td colSpan={6} style={{ padding: 16, color: 'var(--text-muted)', textAlign: 'center' }}>队列为空，从上方选择待办任务与 AI 工具加入</td></tr>
-              )}
-            </tbody>
-          </table>
+          <QueueMonitor
+            queue={active}
+            jobs={activeJobs}
+            now={now}
+            onRefresh={() => void refreshActive({ manual: true })}
+            refreshing={refreshingActive}
+            refreshError=""
+            updatedAt={activeUpdatedAt}
+            onSend={() => void sendQueue()}
+            sending={busy}
+          />
+
+          <div style={{ height: 10 }} />
+
+          <QueueComposer
+            queue={active}
+            projects={projectView.projects}
+            projectId={projectId}
+            onProjectChange={setProjectId}
+            tasks={tasks}
+            tasksLoading={tasksLoading}
+            tasksError={tasksError || (projectView.phase === 'error' ? projectView.error : '')}
+            onRetryTasks={() => { void loadTasks(projectId); if (projectView.phase === 'error') projectView.retry(); }}
+            taskKeyword={taskKeyword}
+            onTaskKeywordChange={setTaskKeyword}
+            pickedTaskIds={pickedTaskIds}
+            onToggleTask={(id) => setPickedTaskIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))}
+            onClearPicked={() => setPickedTaskIds([])}
+            queuedTaskIds={queuedTaskIds}
+            tools={tools}
+            toolId={toolId}
+            onToolChange={setToolId}
+            onAdd={() => void addJobs()}
+            adding={adding}
+          />
+
+          <div style={{ height: 10 }} />
+
+          <JobTable
+            allJobs={activeJobs}
+            filter={jobFilter}
+            onFilterChange={setJobFilter}
+            keyword={jobKeyword}
+            onKeywordChange={setJobKeyword}
+            selected={selectedJobs}
+            onToggleSelect={(id) => setSelectedJobs((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))}
+            onSelectAll={(ids) => setSelectedJobs([...ids])}
+            expandedJobId={expandedJobId}
+            onToggleExpand={(id) => setExpandedJobId((prev) => (prev === id ? null : id))}
+            onAdopt={(job) => void adopt(job)}
+            onCopy={(job) => void copy(job)}
+            onRemove={(job) => void removeJob(job)}
+            onRetry={(job) => void retryJob(job)}
+            onBatchRemove={() => void batchRemove()}
+            busy={busy}
+            now={now}
+          />
         </>
       )}
-    </section>
-  );
-}
 
-function JobRow(props: {
-  readonly job: QueueJob;
-  readonly taskTitle: string;
-  readonly toolName: string;
-  readonly statusColor: string;
-  readonly expanded: boolean;
-  readonly onToggle: () => void;
-  readonly onAdopt: () => void;
-  readonly onCopy: () => void;
-  readonly onDelete: () => void;
-}) {
-  const { job, taskTitle, toolName, statusColor, expanded, onToggle, onAdopt, onCopy, onDelete } = props;
-  const canAdopt = job.status === 'success' && !!job.response_payload;
-  const canRemove = job.status !== 'sending'; // T01298：在途项不可移除（后端同样拒绝）
-  return (
-    <>
-      <tr onClick={onToggle} style={{ cursor: 'pointer' }}>
-        <td style={{ padding: 8, borderBottom: '1px solid var(--surface-2)' }}>{job.order_index}</td>
-        <td style={{ padding: 8, borderBottom: '1px solid var(--surface-2)' }}>{taskTitle}</td>
-        <td style={{ padding: 8, borderBottom: '1px solid var(--surface-2)' }}>{toolName}</td>
-        <td style={{ padding: 8, borderBottom: '1px solid var(--surface-2)' }}>
-          <span style={{ color: statusColor }}>{job.status}</span>
-          {job.error && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>{job.error}</div>}
-        </td>
-        <td style={{ padding: 8, borderBottom: '1px solid var(--surface-2)', fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
-          {job.response_payload ? job.response_payload.slice(0, 60) : '-'}
-        </td>
-        <td style={{ padding: 8, borderBottom: '1px solid var(--surface-2)' }} onClick={(e) => e.stopPropagation()}>
-          <button
-            onClick={onToggle}
-            title={expanded ? '收起 — 收起该回执的展开详情' : '审阅 — 展开查看 AI 返回文本详情'}
-            aria-label={expanded ? '收起：收起该回执的展开详情' : '审阅：展开查看 AI 返回文本详情'}
-            style={{ fontSize: 'var(--fs-s)', marginRight: 6 }}
-          >
-            {expanded ? <ChevronUp size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} /> : <Eye size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />}
-          </button>
-          {canAdopt && (
-            <button
-              onClick={onAdopt}
-              title="采纳 — 采纳该 AI 结果并应用到任务"
-              aria-label="采纳：采纳该 AI 结果并应用到任务"
-              style={{ fontSize: 'var(--fs-s)', marginRight: 6, color: 'var(--success)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-            >
-              <Check size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
-            </button>
-          )}
-          {canAdopt && (
-            <button
-              onClick={onCopy}
-              title="复制 — 复制任务内容到剪贴板"
-              aria-label="复制：复制任务内容到剪贴板"
-              style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-            >
-              <Copy size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
-            </button>
-          )}
-          {canRemove && (
-            <button
-              onClick={onDelete}
-              title="移除 — 将该任务项从队列中移除（可重新加入）"
-              aria-label="移除：将该任务项从队列中移除"
-              style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px', color: 'var(--danger)' }}
-            >
-              <Trash2 size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
-            </button>
-          )}
-        </td>
-      </tr>
-      {expanded && (
-        <tr>
-          <td colSpan={6} style={{ padding: '8px 12px', background: 'var(--surface)' }}>
-            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-              <div style={{ flex: '1 1 40%', minWidth: 260 }}>
-                <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 4 }}>发送内容快照（request_payload）</div>
-                <pre style={{ margin: 0, padding: 8, background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 'var(--fs-s)', whiteSpace: 'pre-wrap', maxHeight: 200, overflow: 'auto' }}>
-                  {job.request_payload ?? '-'}
-                </pre>
-              </div>
-              <div style={{ flex: '1 1 40%', minWidth: 260 }}>
-                <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 4 }}>AI 返回文本（response_payload，待人工合并）</div>
-                <pre style={{ margin: 0, padding: 8, background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 'var(--fs-s)', whiteSpace: 'pre-wrap', maxHeight: 400, overflow: 'auto' }}>
-                  {job.response_payload ?? '-'}
-                </pre>
-              </div>
-            </div>
-          </td>
-        </tr>
-      )}
-    </>
+      {/* 并行任务池：与队列是两套并发，放在页面底部并默认收起，避免与「队列监控」混淆 */}
+      <PoolPanel
+        pool={pool}
+        updatedAt={poolUpdatedAt}
+        refreshing={poolRefreshing}
+        error={poolError}
+        open={poolOpen}
+        onToggle={() => setPoolOpen((v) => !v)}
+        onRefresh={() => void loadPool({ manual: true })}
+        onLimitChange={(n) => void changePoolLimit(n)}
+        onPauseTask={(id) => void pauseRunningTask(id)}
+        now={now}
+      />
+    </section>
   );
 }
