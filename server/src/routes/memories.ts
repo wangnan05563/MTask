@@ -7,7 +7,8 @@ import {
 } from '../services/ProductTagService'; // T04154（PRD MEM-505/107/108）：标签重命名与孤儿清理入口
 import { appendReviewLog, listReviewLog, ruleRejectStats, sampleMemoriesForReview } from '../services/MemoryReviewLogService'; // T04158/T04164（MEM-604/F8）：评审记录与抽样
 import {
-  buildMemoryGraph, buildTaskRecallQuery, deleteMemory, getMemoryCoverage, listMemories, listPendingMemories, listProductTags,
+  buildMemoryGraph, buildTaskRecallQuery, deleteMemory, evaluateRecallCoverage, getMemoryCoverage,
+  getZeroAccessSuggestions, listMemories, listPendingMemories, listProductTags,
   queryForContext, queryMemories, saveMemory, similarMemories, updateMemory,
 } from '../services/MemoryService';
 
@@ -84,6 +85,36 @@ memoriesApi.get('/coverage', (req, res) => {
   if (scope.kind === 'error') return fail(res, scope.error);
   if (scope.kind === 'empty') return res.json({ ok: true, coverage: null, hint: scope.hint });
   res.json({ ok: true, coverage: getMemoryCoverage(scope) });
+});
+
+// T06074：任务化召回的只读覆盖评估（不写访问计数），用于 zero-access 基线/压降决策。
+memoriesApi.get('/coverage/recall', (req, res) => {
+  const scope = scopeOf({
+    productKey: req.query.productKey,
+    projectId: typeof req.query.projectId === 'string' ? req.query.projectId : undefined,
+  });
+  if (scope.kind === 'error') return fail(res, scope.error);
+  if (scope.kind === 'empty') return res.json({ ok: true, report: null, hint: scope.hint });
+  const report = evaluateRecallCoverage(scope, {
+    sampleLimit: Number(req.query.sampleLimit) || undefined,
+    perTaskLimit: Number(req.query.perTaskLimit) || undefined,
+    targetPct: Number(req.query.targetPct) || undefined,
+  });
+  res.json({ ok: true, report });
+});
+
+// T06074：零访问类型感知复核建议（只读，不自动淘汰）。
+memoriesApi.get('/coverage/suggestions', (req, res) => {
+  const scope = scopeOf({
+    productKey: req.query.productKey,
+    projectId: typeof req.query.projectId === 'string' ? req.query.projectId : undefined,
+  });
+  if (scope.kind === 'error') return fail(res, scope.error);
+  if (scope.kind === 'empty') return res.json({ ok: true, suggestion: null, hint: scope.hint });
+  res.json({
+    ok: true,
+    suggestion: getZeroAccessSuggestions(scope, { candidateLimit: Number(req.query.limit) || undefined }),
+  });
 });
 
 // ---------- 语义判重候选检索（T04165）：FTS5 优先、LIKE 兜底 ----------
@@ -236,6 +267,7 @@ memoriesApi.get('/', (req, res) => {
   if (scope.kind === 'empty') return res.json({ ok: true, total: 0, memories: [], hint: scope.hint });
   const q = req.query;
   const taskRecall = typeof q.taskNo === 'string' ? buildTaskRecallQuery(q.taskNo) : null;
+  const maxPerTask = Number(q.maxPerTask);
   const opts = {
     type: typeof q.type === 'string' ? q.type : undefined,
     memoryKind: typeof q.memoryKind === 'string' ? q.memoryKind : undefined,
@@ -244,6 +276,10 @@ memoriesApi.get('/', (req, res) => {
     query: typeof q.query === 'string' ? q.query : undefined,
     terms: taskRecall?.terms,
     tags: typeof q.tag === 'string' ? [q.tag] : undefined,
+    // T06073：任务化召回默认同任务最多 2 条；显式 maxPerTask 可覆盖（0 = 关闭限流）。
+    maxPerTask: Number.isFinite(maxPerTask) ? Math.max(0, Math.floor(maxPerTask)) : (taskRecall ? 2 : undefined),
+    // T06073：ephemeral=1 是「临时会话」——只读召回，不写 access_count/last_accessed_at。
+    trackAccess: !(q.ephemeral === '1' || q.ephemeral === 'true'),
     includeInvalidated: q.includeInvalidated === '1' || q.includeInvalidated === 'true',
     limit: Number(q.limit) || undefined,
     offset: Number(q.offset) || undefined,

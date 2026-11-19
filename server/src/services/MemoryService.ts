@@ -227,6 +227,10 @@ export interface QueryMemoriesOptions {
   terms?: string[];
   tags?: string[];
   limit?: number;
+  /** T06073：同一 source_task_id 最多返回 N 条（0/缺省=不限）；用于任务化召回多样性限流 */
+  maxPerTask?: number;
+  /** T06073：false=只读召回，不递增 access_count（临时会话/覆盖评估必须传 false） */
+  trackAccess?: boolean;
   /** 管理页需要看到失效行（带 invalidated_at/superseded_by）；召回路径一律默认 false */
   includeInvalidated?: boolean;
 }
@@ -277,8 +281,30 @@ export function queryMemories(
   }
   const kw = (opts.query ?? '').trim();
   const terms = (opts.terms ?? []).map((t) => String(t ?? '').trim()).filter((t) => t.length >= 2).slice(0, 8);
+  const db = getDb();
+  // T06073：关键词/任务词项优先走 FTS5（BM25 相关度），零命中或 FTS 不可用时降级 LIKE。
+  // 中文 unicode61 分词较粗，每词加引号并做前缀匹配；LIKE 仍是子串语义，降级后行为与旧版一致。
+  let ftsHit = false;
+  const recallTerms = [...(kw ? [kw] : []), ...terms];
+  if (recallTerms.length) {
+    const ftsQuery = recallTerms
+      .map((t) => `"${t.replaceAll('"', '""')}"*`)
+      .join(' OR ');
+    try {
+      const ftsRows = db.prepare(
+        'SELECT rowid FROM memories_fts WHERE memories_fts MATCH ? LIMIT 500',
+      ).all(ftsQuery) as { rowid: number }[];
+      if (ftsRows.length) {
+        clauses.push(`memories.rowid IN (${ftsRows.map(() => '?').join(',')})`);
+        params.push(...ftsRows.map((r) => r.rowid));
+        ftsHit = true;
+      }
+    } catch {
+      // FTS5 表缺失/查询语法不兼容时静默降级——召回不能因索引层故障而失败
+    }
+  }
   // 关键词与任务化召回词项取并集：显式 query 不因 taskNo 附加而变成必须同时命中。
-  if (kw || terms.length) {
+  if ((kw || terms.length) && !ftsHit) {
     const ors: string[] = [];
     if (kw) {
       ors.push("title LIKE ? ESCAPE '\\'", "content LIKE ? ESCAPE '\\'");
@@ -299,7 +325,6 @@ export function queryMemories(
   // 再走下面的查询——否则淘汰永远要等下一次写入或月度整理才发生。
   try { enforceCapacity(scope.productKey); } catch { /* 淘汰失败时继续查询，不影响只读语义 */ }
 
-  const db = getDb();
   // MEM-305：project 型保留期 180 天，到期只标记「需复核」不删除；标记在查询时惰性计算（F9），
   // 时间锚用 updated_at 绝对日期，不依赖调度。排序侧已由 MEMORY_RANK_SQL 的 180 天衰减降权。
   const sql = `SELECT id, product_key, project_id, type, memory_kind, scope, authority,
@@ -313,9 +338,24 @@ export function queryMemories(
     WHERE ${clauses.join(' AND ')}
     ORDER BY rank_score DESC, COALESCE(last_accessed_at, updated_at) DESC, updated_at DESC
     LIMIT ?`;
-  const raw = db.prepare(sql).all(...params, limit) as (Omit<MemoryRow, 'need_review'> & { need_review: number })[];
-  const list: MemoryRow[] = raw.map((r) => ({ ...r, need_review: !!r.need_review }));
-  if (list.length) {
+  // T06073：同任务多样性限流在应用层做（SQL 里按 source_task_id 分组取前 N 会与排序权重耦合）。
+  // 多取 4 倍候选再过滤，避免前 N 条被同一任务占满后召回数量不足。
+  const perTaskLimit = Number.isFinite(opts.maxPerTask)
+    ? Math.min(Math.max(0, Math.floor(Number(opts.maxPerTask))), 10)
+    : 0;
+  const fetchLimit = perTaskLimit > 0 ? Math.min(limit * 4, MEMORY_QUERY_MAX_LIMIT * 4) : limit;
+  const raw = db.prepare(sql).all(...params, fetchLimit) as (Omit<MemoryRow, 'need_review'> & { need_review: number })[];
+  let list: MemoryRow[] = raw.map((r) => ({ ...r, need_review: !!r.need_review }));
+  if (perTaskLimit > 0) {
+    const seen = new Map<string, number>();
+    list = list.filter((r) => {
+      const key = r.source_task_id?.trim() || `memory:${r.id}`;
+      const next = (seen.get(key) ?? 0) + 1;
+      seen.set(key, next);
+      return next <= perTaskLimit;
+    }).slice(0, limit);
+  }
+  if (list.length && opts.trackAccess !== false) {
     const now = new Date().toISOString();
     const mark = db.prepare(
       `UPDATE memories SET access_count = access_count + 1, last_accessed_at = ?
@@ -367,11 +407,11 @@ export function queryForContext(
   for (const r of rows) {
     const tag = [
       r.type,
+      r.source_kind,
+      r.id,
       MEMORY_KIND_LABELS[r.memory_kind] ?? r.memory_kind,
       MEMORY_SCOPE_LABELS[r.scope] ?? r.scope,
       MEMORY_AUTHORITY_LABELS[r.authority] ?? r.authority,
-      r.source_kind,
-      r.id,
     ].join('|') + (r.need_review ? '|需复核' : '');
     const line = `- [${tag}] ${escapeXml(r.title)}\n  ${escapeXml(r.content)}\n`;
     if (head.length + body.length + line.length + tail.length > MEMORY_CONTEXT_MAX_CHARS) {
@@ -592,6 +632,10 @@ export interface MemoryCoverage {
   zeroAccessPct: number;
   expired: number;
   invalidated: number;
+  /** T06073：产品级摘要的分层/权威分布 */
+  kinds: Record<string, number>;
+  authorities: Record<string, number>;
+  needReview: number;
 }
 
 export function getMemoryCoverage(scope: ActiveMemoryScope): MemoryCoverage {
@@ -606,12 +650,171 @@ export function getMemoryCoverage(scope: ActiveMemoryScope): MemoryCoverage {
     WHERE ${allWhere.sql} AND expired_at IS NOT NULL`).get(...allWhere.params) as { c: number }).c;
   const invalidated = (db.prepare(`SELECT COUNT(*) AS c FROM memories
     WHERE ${allWhere.sql} AND (invalidated_at IS NOT NULL OR invalid_at IS NOT NULL)`).get(...allWhere.params) as { c: number }).c;
+  const kinds = (db.prepare(`SELECT memory_kind AS k, COUNT(*) AS c FROM memories
+    WHERE ${activeWhere.sql} GROUP BY memory_kind`).all(...activeWhere.params) as { k: string; c: number }[])
+    .reduce<Record<string, number>>((acc, r) => { acc[r.k] = r.c; return acc; }, {});
+  const authorities = (db.prepare(`SELECT authority AS k, COUNT(*) AS c FROM memories
+    WHERE ${activeWhere.sql} GROUP BY authority`).all(...activeWhere.params) as { k: string; c: number }[])
+    .reduce<Record<string, number>>((acc, r) => { acc[r.k] = r.c; return acc; }, {});
+  const needReview = (db.prepare(`SELECT COUNT(*) AS c FROM memories
+    WHERE ${activeWhere.sql} AND type = 'project'
+      AND julianday('now') - julianday(updated_at) > 180`).get(...activeWhere.params) as { c: number }).c;
   return {
     total,
     zeroAccess,
     zeroAccessPct: total ? Math.round((zeroAccess / total) * 1000) / 10 : 0,
     expired,
     invalidated,
+    kinds,
+    authorities,
+    needReview,
+  };
+}
+
+/* ================= T06074（zero-access 基线、只读覆盖评估与类型感知复核） ================= */
+
+export interface RecallCoverageSample {
+  taskNo: string;
+  title: string;
+  terms: string[];
+  hitCount: number;
+  memoryIds: string[];
+}
+
+export interface RecallCoverageReport {
+  productKey: string;
+  sampledTasks: number;
+  hitTasks: number;
+  hitRate: number;
+  uniqueHitMemories: number;
+  activeTotal: number;
+  zeroAccessBefore: number;
+  zeroAccessAfterProjection: number;
+  projectedZeroAccessPct: number;
+  targetPct: number;
+  targetReached: boolean;
+  samples: RecallCoverageSample[];
+  note: string;
+}
+
+/**
+ * T06074：任务化召回批量评估（只读）。
+ *
+ * 用产品内历史任务构造 query，逐条走 queryMemories 并强制 trackAccess=false——
+ * 评估不污染 access_count，因此可以在任意时点重复运行。`zeroAccessAfterProjection`
+ * 是「若这些命中被真实召回一次」的投影值，不代表已经写入访问计数。
+ */
+export function evaluateRecallCoverage(
+  scope: ActiveMemoryScope,
+  opts: { sampleLimit?: number; perTaskLimit?: number; targetPct?: number } = {},
+): RecallCoverageReport {
+  const db = getDb();
+  const sampleLimit = Math.min(Math.max(1, Math.floor(opts.sampleLimit ?? 20)), 100);
+  const perTaskLimit = Math.min(Math.max(1, Math.floor(opts.perTaskLimit ?? 2)), 10);
+  const targetPct = Math.min(Math.max(1, Number(opts.targetPct ?? 30)), 100);
+  const tasks = db.prepare(`SELECT t.task_no AS taskNo, t.title AS title
+    FROM tasks t JOIN projects p ON p.id = t.project_id
+    WHERE p.product_key = ? AND COALESCE(t.archived, 0) = 0
+    ORDER BY t.updated_at DESC LIMIT ?`).all(scope.productKey, sampleLimit) as { taskNo: string; title: string }[];
+  const samples: RecallCoverageSample[] = [];
+  const hitMemories = new Set<string>();
+  for (const task of tasks) {
+    const recall = buildTaskRecallQuery(task.taskNo);
+    if (!recall) continue;
+    const rows = queryMemories(scope, {
+      terms: recall.terms,
+      maxPerTask: perTaskLimit,
+      limit: 8,
+      trackAccess: false,
+    });
+    for (const row of rows) hitMemories.add(row.id);
+    samples.push({
+      taskNo: task.taskNo,
+      title: task.title,
+      terms: recall.terms,
+      hitCount: rows.length,
+      memoryIds: rows.slice(0, 3).map((r) => r.id),
+    });
+  }
+  const coverage = getMemoryCoverage(scope);
+  const projectedZero = Math.max(0, coverage.total - hitMemories.size);
+  const projectedPct = coverage.total ? Math.round((projectedZero / coverage.total) * 1000) / 10 : 0;
+  const hitTasks = samples.filter((s) => s.hitCount > 0).length;
+  return {
+    productKey: scope.productKey,
+    sampledTasks: samples.length,
+    hitTasks,
+    hitRate: samples.length ? Math.round((hitTasks / samples.length) * 1000) / 10 : 0,
+    uniqueHitMemories: hitMemories.size,
+    activeTotal: coverage.total,
+    zeroAccessBefore: coverage.zeroAccess,
+    zeroAccessAfterProjection: projectedZero,
+    projectedZeroAccessPct: projectedPct,
+    targetPct,
+    targetReached: projectedPct < targetPct,
+    samples,
+    note: '只读评估：trackAccess=false，不写 access_count；投影值仅供压降决策，需人工确认后再执行真实召回。',
+  };
+}
+
+export interface ZeroAccessGroup {
+  type: string;
+  memoryKind: string;
+  authority: string;
+  count: number;
+  oldestUpdatedAt: string | null;
+  action: 'keep' | 'review' | 'archive_candidate';
+  reason: string;
+}
+
+export interface ZeroAccessSuggestion {
+  totalZeroAccess: number;
+  groups: ZeroAccessGroup[];
+  candidates: Pick<MemoryRow, 'id' | 'type' | 'memory_kind' | 'authority' | 'title' | 'updated_at' | 'access_count'>[];
+}
+
+/**
+ * T06074：类型感知的零访问复核建议。
+ * 只给建议，不自动删除/失效；user/feedback 永远标 keep（用户偏好不能被“没人访问”杀掉）。
+ */
+export function getZeroAccessSuggestions(
+  scope: ActiveMemoryScope,
+  opts: { candidateLimit?: number } = {},
+): ZeroAccessSuggestion {
+  const db = getDb();
+  const where = buildMemoryScopeWhere(scope);
+  const candidateLimit = Math.min(Math.max(1, Math.floor(opts.candidateLimit ?? 20)), 100);
+  const rows = db.prepare(`SELECT type, memory_kind, authority, COUNT(*) AS c,
+      MIN(updated_at) AS oldest, MAX(updated_at) AS newest
+    FROM memories WHERE ${where.sql} AND access_count = 0
+    GROUP BY type, memory_kind, authority ORDER BY c DESC`).all(...where.params) as {
+    type: string; memory_kind: string; authority: string; c: number; oldest: string | null; newest: string | null;
+  }[];
+  const groups = rows.map((r) => {
+    let action: ZeroAccessGroup['action'] = 'review';
+    let reason = '长期未被召回，建议进入抽样复核';
+    if (r.type === 'user' || r.type === 'feedback') {
+      action = 'keep';
+      reason = '用户偏好/反馈纠正不因零访问淘汰，保留并优先在召回中加权';
+    } else if (r.type === 'reference') {
+      action = 'archive_candidate';
+      reason = '外部参考有明确时效，零访问且到期后应进入归档候选';
+    } else if (r.type === 'project') {
+      action = 'review';
+      reason = '项目情景需确认是否已完结/被替代，再决定归档或挂回任务';
+    }
+    return {
+      type: r.type, memoryKind: r.memory_kind, authority: r.authority,
+      count: r.c, oldestUpdatedAt: r.oldest, action, reason,
+    };
+  });
+  const candidates = db.prepare(`SELECT id, type, memory_kind, authority, title, updated_at, access_count
+    FROM memories WHERE ${where.sql} AND access_count = 0
+    ORDER BY updated_at ASC LIMIT ?`).all(...where.params, candidateLimit) as ZeroAccessSuggestion['candidates'];
+  return {
+    totalZeroAccess: groups.reduce((n, g) => n + g.count, 0),
+    groups,
+    candidates,
   };
 }
 

@@ -1902,6 +1902,8 @@ ${a.result}`;
       taskNo: z.string().optional().describe('T06071 任务化召回：用任务标题/描述抽取词项构造 query，与 query 二选一或并用'),
       tag: z.string().optional().describe('单个标签精确匹配'),
       limit: z.number().int().min(1).max(20).optional().describe('条数（默认 10，硬上限 20）'),
+      maxPerTask: z.number().int().min(0).max(10).optional().describe('T06073 同一来源任务最多返回条数；任务化召回缺省 2，0=关闭限流'),
+      ephemeral: z.boolean().optional().describe('T06073 临时会话：true=只读召回，不写 access_count/last_accessed_at'),
       context: z.boolean().optional().describe('true=返回 <memory-context> 注入块而非原始行'),
     },
   }, async (a) => {
@@ -1913,6 +1915,8 @@ ${a.result}`;
       const opts = {
         type: a.type, memoryKind: a.memoryKind, scope: a.scope, authority: a.authority,
         query: a.query, terms: taskRecall?.terms, tags: a.tag ? [a.tag] : undefined, limit: a.limit,
+        maxPerTask: a.maxPerTask ?? (taskRecall ? 2 : undefined),
+        trackAccess: !a.ephemeral,
       };
       if (a.context) {
         const ctx = queryForContext(scope, opts);

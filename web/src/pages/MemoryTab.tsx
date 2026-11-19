@@ -35,7 +35,27 @@ const AUTHORITY_LABELS: Record<MemoryAuthority, string> = {
 };
 
 interface ProductTag { productKey: string; projectCount: number; memoryCount: number }
-interface MemoryCoverage { total: number; zeroAccess: number; zeroAccessPct: number; expired: number; invalidated: number }
+interface MemoryCoverage {
+  total: number; zeroAccess: number; zeroAccessPct: number; expired: number; invalidated: number;
+  kinds?: Record<string, number>; authorities?: Record<string, number>; needReview?: number;
+}
+interface ReviewStat { hitRule: string; total: number; rejected: number; rejectRate: number }
+interface ReviewLogRow {
+  id: string; batch_id: string; memory_id: string; verdict: 'worth' | 'not_worth' | 'poor_writing';
+  hit_rule: string | null; reviewer: string | null; created_at: string;
+}
+interface RecallCoverageReport {
+  sampledTasks: number; hitTasks: number; hitRate: number; uniqueHitMemories: number;
+  activeTotal: number; zeroAccessBefore: number; zeroAccessAfterProjection: number;
+  projectedZeroAccessPct: number; targetPct: number; targetReached: boolean;
+  samples: { taskNo: string; title: string; hitCount: number }[];
+  note: string;
+}
+interface ZeroAccessSuggestion {
+  totalZeroAccess: number;
+  groups: { type: string; memoryKind: string; authority: string; count: number; action: string; reason: string }[];
+  candidates: { id: string; type: string; title: string; updated_at: string }[];
+}
 interface ProductProject { id: string; name: string; memory_auto_extract: number }
 interface PendingRow {
   id: string; title: string; content: string; type: MemoryType;
@@ -155,6 +175,22 @@ function brief(text: string, max = 60): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
+/** T06073：产品级摘要卡——数值 + 口径提示，避免把筛后列表统计误当全量健康度。 */
+function Metric({ label, value, hint, tone = 'default' }: {
+  label: string; value: ReactNode; hint: string; tone?: 'default' | 'warning';
+}) {
+  return (
+    <div style={{ border: '1px solid var(--surface-2)', borderRadius: 6, padding: '8px 10px', minWidth: 0 }}>
+      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 2 }}>{label}</div>
+      <div style={{
+        fontSize: 'var(--fs-s)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        color: tone === 'warning' ? 'var(--warning, #d97706)' : 'var(--text)',
+      }}>{value}</div>
+      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>{hint}</div>
+    </div>
+  );
+}
+
 export function MemoryTab() {
   const [tags, setTags] = useState<ProductTag[]>([]);
   // T05790：产品选择与列表/图谱视图写入 sessionStorage——切设置页签或顶层页面再回来时保持原视图与产品，
@@ -168,6 +204,18 @@ export function MemoryTab() {
   const [rows, setRows] = useState<MemoryRow[]>([]);
   const [total, setTotal] = useState(0);
   const [coverage, setCoverage] = useState<MemoryCoverage | null>(null);
+  // T06073：产品层治理——评审看板 / 变更审计 / 临时会话（只读召回）
+  const [reviewStats, setReviewStats] = useState<ReviewStat[]>([]);
+  const [reviewRows, setReviewRows] = useState<ReviewLogRow[]>([]);
+  const [auditRows, setAuditRows] = useState<MemoryRow[]>([]);
+  const [tempTaskNo, setTempTaskNo] = useState('');
+  const [tempKeyword, setTempKeyword] = useState('');
+  const [tempBlock, setTempBlock] = useState('');
+  const [tempMeta, setTempMeta] = useState('');
+  const [tempLoading, setTempLoading] = useState(false);
+  const [recallReport, setRecallReport] = useState<RecallCoverageReport | null>(null);
+  const [zeroSuggestion, setZeroSuggestion] = useState<ZeroAccessSuggestion | null>(null);
+  const [recallLoading, setRecallLoading] = useState(false);
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(false);
   // MEM-503/504：本产品下的项目（自动抽取开关）与待确认队列
@@ -202,7 +250,7 @@ export function MemoryTab() {
     if (!productKey) { setRows([]); setTotal(0); return; }
     setLoading(true);
     try {
-      const q = new URLSearchParams({ productKey, limit: '100' });
+      const q = new URLSearchParams({ productKey, limit: '100', ephemeral: '1' });
       if (type) q.set('type', type);
       if (kind) q.set('memoryKind', kind);
       if (authority) q.set('authority', authority);
@@ -260,6 +308,31 @@ export function MemoryTab() {
     } catch { /* 挂回下拉降级为空 */ }
   }, []);
 
+  // T06073：产品层治理数据（评审看板 + 变更审计），只读，不写访问计数。
+  const loadReviewBoard = useCallback(async () => {
+    try {
+      const [stats, logs] = await Promise.all([
+        api.get<{ stats: ReviewStat[] }>('/memories/review-log/stats'),
+        api.get<{ rows: ReviewLogRow[] }>('/memories/review-log?limit=20'),
+      ]);
+      setReviewStats(stats.stats ?? []);
+      setReviewRows(logs.rows ?? []);
+    } catch { /* 评审看板失败不阻塞管理页 */ }
+  }, []);
+
+  const loadAudit = useCallback(async () => {
+    if (!productKey) { setAuditRows([]); return; }
+    try {
+      const q = new URLSearchParams({ productKey, includeInvalidated: '1', limit: '100', ephemeral: '1' });
+      const r = await api.get<{ memories: MemoryRow[] }>(`/memories?${q.toString()}`);
+      setAuditRows((r.memories ?? []).filter((m) => m.invalidated_at || m.invalid_at || m.expired_at || m.invalidated_reason));
+    } catch { /* 审计视图失败不阻塞管理页 */ }
+  }, [productKey]);
+
+  useEffect(() => { void loadReviewBoard(); }, [loadReviewBoard]);
+  useEffect(() => { void loadAudit(); }, [loadAudit]);
+  useEffect(() => { setRecallReport(null); setZeroSuggestion(null); }, [productKey]);
+
   useEffect(() => { void loadTags(); }, [loadTags]);
   useEffect(() => { void loadRows(); }, [loadRows]);
   useEffect(() => { void loadCoverage(); }, [loadCoverage]);
@@ -267,6 +340,7 @@ export function MemoryTab() {
   useEffect(() => { void loadPending(); }, [loadPending]);
   useEffect(() => { void loadOrphans(); }, [loadOrphans]);
   useEffect(() => { void loadAllProjects(); }, [loadAllProjects]);
+
   // T04171（F11）：订阅记忆变更——MCP/Agent 写入、容量淘汰、月度整理后管理页即时刷新
   useEffect(() => api.openChangeStream((kind) => {
     if (kind !== 'memories') return;
@@ -275,7 +349,9 @@ export function MemoryTab() {
     void loadCoverage();
     void loadTags();
     void loadOrphans();
-  }), [loadRows, loadPending, loadCoverage, loadTags, loadOrphans]);
+    void loadAudit();
+    void loadReviewBoard();
+  }), [loadRows, loadPending, loadCoverage, loadTags, loadOrphans, loadAudit, loadReviewBoard]);
 
   /** MEM-107/F10：重命名（同事务三表齐改；新名已存在时为合并，后端会回 mergedIntoExisting） */
   async function renameTag(oldKey: string) {
@@ -377,6 +453,41 @@ export function MemoryTab() {
     } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
   }
 
+  /** T06073：临时会话——只读召回，ephemeral=1 不写 access_count；用于“先看看会带出什么”。 */
+  async function runTempRecall() {
+    if (!productKey) return flash('请先选择产品标签');
+    const taskNo = tempTaskNo.trim();
+    const keyword = tempKeyword.trim();
+    if (!taskNo && !keyword) return flash('请填任务号或关键词');
+    setTempLoading(true);
+    try {
+      const q = new URLSearchParams({ productKey, mode: 'context', ephemeral: '1', limit: '8' });
+      if (taskNo) q.set('taskNo', taskNo);
+      if (keyword) q.set('query', keyword);
+      const r = await api.get<{ block: string; count: number; truncated: boolean }>(`/memories?${q.toString()}`);
+      setTempBlock(r.block || '（无命中记忆）');
+      setTempMeta(`命中 ${r.count ?? 0} 条${r.truncated ? '，已按 2k token 预算截断' : ''}；本次不写访问计数`);
+    } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
+    finally { setTempLoading(false); }
+  }
+
+  /** T06074：只读评估任务化召回覆盖，并取零访问复核建议；不改变任何访问计数。 */
+  async function evaluateRecall() {
+    if (!productKey) return flash('请先选择产品标签');
+    setRecallLoading(true);
+    try {
+      const q = new URLSearchParams({ productKey, sampleLimit: '100', targetPct: '30' });
+      const [report, suggest] = await Promise.all([
+        api.get<{ report: RecallCoverageReport | null }>(`/memories/coverage/recall?${q.toString()}`),
+        api.get<{ suggestion: ZeroAccessSuggestion | null }>(`/memories/coverage/suggestions?productKey=${encodeURIComponent(productKey)}&limit=20`),
+      ]);
+      setRecallReport(report.report);
+      setZeroSuggestion(suggest.suggestion);
+      flash('已评估：只读统计，未写入访问计数');
+    } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
+    finally { setRecallLoading(false); }
+  }
+
   return (
     <div className="memory-admin-page" style={{ maxWidth: 1180 }}>
       <style>{`
@@ -467,6 +578,148 @@ export function MemoryTab() {
 
       {/* 列表视图主体（自动抽取 / 待确认 / 新增 / 表格 / 孤立标签） */}
       {viewMode === 'list' && (<>
+      {/* T06073：产品层记忆摘要——只读健康度、分层/权威分布，不随列表筛选变化 */}
+      <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginBottom: 12, background: 'var(--card-bg)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
+          <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600 }}>记忆摘要</div>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>产品级只读口径 · 不随筛选变化</div>
+        </div>
+        {coverage ? (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(132px, 1fr))', gap: 8 }}>
+            <Metric label="有效记忆" value={coverage.total} hint="排除失效/到期行" />
+            <Metric label="零访问" value={`${coverage.zeroAccess}（${coverage.zeroAccessPct}%）`}
+              hint="从未被召回的记忆" tone={coverage.zeroAccessPct > 30 ? 'warning' : 'default'} />
+            <Metric label="需复核" value={coverage.needReview ?? 0} hint="project 型超过 180 天" />
+            <Metric label="到期 / 失效" value={`${coverage.expired} / ${coverage.invalidated}`} hint="到期与软失效行" />
+            <Metric label="分层分布"
+              value={MEMORY_KINDS.map((k) => `${KIND_LABELS[k]} ${coverage.kinds?.[k] ?? 0}`).join(' · ')}
+              hint="semantic / episodic / procedural" />
+            <Metric label="权威分布"
+              value={MEMORY_AUTHORITIES.map((k) => `${AUTHORITY_LABELS[k]} ${coverage.authorities?.[k] ?? 0}`).join(' · ')}
+              hint="user / system / tool / inferred / external" />
+          </div>
+        ) : <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>暂无覆盖度数据</div>}
+      </div>
+
+      {/* T06074：zero-access 基线、任务化召回投影与类型感知复核建议（只读） */}
+      <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginBottom: 12, background: 'var(--card-bg)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+          <div>
+            <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600 }}>召回覆盖评估</div>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+              用产品内历史任务构造 query，只读统计命中覆盖；不写 access_count，不改变长期记忆。
+            </div>
+          </div>
+          <button type="button" onClick={() => void evaluateRecall()} disabled={recallLoading}
+            style={{ ...inputStyle, cursor: recallLoading ? 'wait' : 'pointer', borderColor: 'var(--accent)', color: 'var(--accent)' }}>
+            {recallLoading ? '评估中…' : '评估召回覆盖'}
+          </button>
+        </div>
+        {recallReport ? (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
+              <Metric label="基线零访问" value={`${recallReport.zeroAccessBefore}/${recallReport.activeTotal}`} hint={`目标线 <${recallReport.targetPct}%`} />
+              <Metric label="召回投影" value={`${recallReport.zeroAccessAfterProjection}/${recallReport.activeTotal}（${recallReport.projectedZeroAccessPct}%）`}
+                hint={recallReport.targetReached ? '投影值已达目标线' : '仍高于目标线，需人工裁决'}
+                tone={recallReport.targetReached ? 'default' : 'warning'} />
+              <Metric label="任务命中" value={`${recallReport.hitTasks}/${recallReport.sampledTasks}`} hint={`命中率 ${recallReport.hitRate}%`} />
+              <Metric label="唯一命中记忆" value={recallReport.uniqueHitMemories} hint="投影覆盖的记忆数" />
+            </div>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 8 }}>{recallReport.note}</div>
+            {recallReport.samples.length > 0 && (
+              <div style={{ marginTop: 8, maxHeight: 150, overflow: 'auto', fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>
+                {recallReport.samples.slice(0, 8).map((s) => (
+                  <div key={s.taskNo}>{s.taskNo} · {s.title} · 命中 {s.hitCount}</div>
+                ))}
+              </div>
+            )}
+          </>
+        ) : (
+          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>点击「评估召回覆盖」生成基线/投影报告。</div>
+        )}
+        {zeroSuggestion && zeroSuggestion.groups.length > 0 && (
+          <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--surface-2)' }}>
+            <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, marginBottom: 4 }}>零访问复核建议（不自动淘汰）</div>
+            {zeroSuggestion.groups.slice(0, 6).map((g) => (
+              <div key={`${g.type}-${g.memoryKind}-${g.authority}`} style={{ display: 'flex', gap: 8, fontSize: 'var(--fs-xs)', padding: '2px 0' }}>
+                <span style={{ flexShrink: 0, minWidth: 120 }}>{TYPE_LABELS[g.type as MemoryType] ?? g.type} · {KIND_LABELS[g.memoryKind as MemoryKind] ?? g.memoryKind}</span>
+                <span style={{ flexShrink: 0 }}>{g.count} 条 · {g.action}</span>
+                <span style={{ color: 'var(--text-muted)' }}>{g.reason}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* T06073：临时会话——只读召回，不写长期记忆/访问计数 */}
+      <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginBottom: 14, background: 'var(--card-bg)' }}>
+        <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600, marginBottom: 2 }}>临时会话召回</div>
+        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
+          只读预览会带出的记忆，不写 access_count，也不会新增/修改长期记忆；用于调提示词或排查召回命中。
+        </div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          <input aria-label="临时召回任务号" value={tempTaskNo} onChange={(e) => setTempTaskNo(e.target.value)}
+            placeholder="任务号（如 T06073）" style={{ ...inputStyle, width: 180 }} />
+          <input aria-label="临时召回关键词" value={tempKeyword} onChange={(e) => setTempKeyword(e.target.value)}
+            placeholder="或关键词（标题/内容）" style={{ ...inputStyle, minWidth: 220 }} />
+          <button type="button" onClick={() => void runTempRecall()} disabled={tempLoading}
+            style={{ ...inputStyle, cursor: tempLoading ? 'wait' : 'pointer', borderColor: 'var(--accent)', color: 'var(--accent)' }}>
+            {tempLoading ? '召回中…' : '只读召回'}
+          </button>
+        </div>
+        {tempMeta && <div style={{ marginTop: 8, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{tempMeta}</div>}
+        {tempBlock && (
+          <pre aria-label="临时召回结果" style={{
+            marginTop: 8, marginBottom: 0, maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap',
+            fontSize: 'var(--fs-xs)', lineHeight: 1.5, padding: 10, borderRadius: 6,
+            background: 'var(--surface-2)', color: 'var(--text-secondary)',
+          }}>{tempBlock}</pre>
+        )}
+      </div>
+
+      {/* T06073：评审看板 + 变更审计——产品层治理入口，均可审计 */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12, marginBottom: 14 }}>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, background: 'var(--card-bg)' }}>
+          <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600, marginBottom: 2 }}>评审看板</div>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
+            样本 {reviewRows.length} 条 · 判据拒杀率超过 40% 时应重写规则
+          </div>
+          {reviewStats.length === 0 ? (
+            <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>暂无评审样本；可在待确认队列或批次评审中录入。</div>
+          ) : reviewStats.slice(0, 6).map((s) => (
+            <div key={s.hitRule} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 'var(--fs-s)', padding: '3px 0' }}>
+              <span>{s.hitRule}</span>
+              <span style={{ color: s.rejectRate > 0.4 ? 'var(--warning, #d97706)' : 'var(--text-muted)' }}>
+                {s.rejected}/{s.total} · {(s.rejectRate * 100).toFixed(1)}%
+              </span>
+            </div>
+          ))}
+          {reviewRows.length > 0 && (
+            <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--surface-2)', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+              最近：{reviewRows.slice(0, 4).map((r) => `${r.verdict}${r.hit_rule ? `(${r.hit_rule})` : ''}`).join(' · ')}
+            </div>
+          )}
+        </div>
+
+        <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, background: 'var(--card-bg)' }}>
+          <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600, marginBottom: 2 }}>变更审计</div>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
+            失效/到期行不物理删除，保留 revision、原因与替代链；共 {auditRows.length} 条。
+          </div>
+          {auditRows.length === 0 ? (
+            <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>暂无失效/到期记录。</div>
+          ) : auditRows.slice(0, 8).map((r) => (
+            <div key={r.id} style={{ padding: '3px 0', fontSize: 'var(--fs-s)', display: 'flex', gap: 8 }}>
+              <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.title}</span>
+              <span style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+                v{r.revision ?? 1} · {r.invalidated_reason ?? (r.expired_at ? 'expired' : 'invalid')}
+                {r.superseded_by ? ` → ${r.superseded_by}` : ''}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+
       {/* MEM-504：项目级自动抽取开关（只列本产品项目，跨产品入口不存在） */}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', fontSize: 'var(--fs-s)' }}>
         <span style={{ color: 'var(--text-secondary)' }}>自动抽取（项目级）：</span>
