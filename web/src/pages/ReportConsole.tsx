@@ -15,6 +15,7 @@ import { codeReviewLectureStore } from '../stores/codeReviewLectureStore'; // T0
 import { reportStream, useReportStream } from '../reportStream'; // T00838：停止按钮需订阅周报流状态
 import { resetWorkbenchArtifacts, RESET_CONFIRM_CONSOLE, CONSOLE_RESET_EVENT } from '../ui/consoleReset'; // T01042：控制台/卡片共用重置核心
 import { askConfirm } from '../ui/dialogs'; // T01042 建议：重置二次确认统一走对话框（Electron 下原生 confirm 不可靠）
+import { LOCAL_PROVIDER_LOGOS, inferProviderId } from '../ui/providerLogos';
 
 const CATEGORIES = [
   { key: 'summary', label: '周期要点汇总' },
@@ -149,10 +150,29 @@ const SUMMARY_PPT_TAB = '__summaryppt__';
 const REVIEW_LECTURE_TAB = '__reviewlecture__';
 
 /**
- * 自定义 AI 工具选择器：收拢时仅显示已选工具的「模型名」（节省单行空间），
- * 展开下拉列表时展示每个工具的完整信息「名称（类型）· 模型名」。
- * 原生 <select> 选中值与下拉项文案共用同一文本，无法两态区分，故自绘。
+ * AI 控制台模型选择器：收拢态与展开项都只显示「厂商 logo + 模型名」，
+ * 不展示厂商全称与工具类型；无匹配厂商时统一用 OpenAI 图标兜底。
  */
+function ConsoleModelLogo({ tool, size = 14 }: { readonly tool: AITool; readonly size?: number }) {
+  const provider = inferProviderId({ name: tool.name, endpoint: tool.endpoint, model: tool.model ?? '' });
+  const src = (provider ? LOCAL_PROVIDER_LOGOS[provider] : undefined) ?? LOCAL_PROVIDER_LOGOS.openai;
+  return (
+    <img
+      data-ai-console="model-vendor-logo"
+      src={src}
+      alt=""
+      width={size}
+      height={size}
+      referrerPolicy="no-referrer"
+      style={{ width: size, height: size, flex: `0 0 ${size}px`, objectFit: 'contain' }}
+    />
+  );
+}
+
+function modelName(tool: AITool): string {
+  return tool.model?.trim() || '未配模型';
+}
+
 function ToolSelect({
   tools,
   toolId,
@@ -170,14 +190,14 @@ function ToolSelect({
   const selected = tools.find((t) => t.id === toolId) ?? null;
 
   // 收拢态文案与完整提示：先判断是否配置了可用工具，再区分是否已选中，避免用嵌套三元表达三重分支
-  let modelLabel = '选择工具';
-  let fullTitle = '选择 AI 工具';
+  let label = '选择工具';
+  let title = '选择 AI 工具';
   if (tools.length === 0) {
-    modelLabel = '未配置工具';
-    fullTitle = '未配置可用工具';
+    label = '未配置工具';
+    title = '未配置可用工具';
   } else if (selected) {
-    modelLabel = selected.model ?? '';
-    fullTitle = `${selected.name}（${selected.type}）· ${selected.model ?? ''}`;
+    label = modelName(selected);
+    title = `当前模型：${label}`;
   }
 
   // 展开时点击外部关闭（文档级事件委托 + 容器包含性判断）
@@ -191,24 +211,27 @@ function ToolSelect({
   }, [open]);
 
   return (
-    <div ref={wrapRef} style={{ position: 'relative', flex: '0 1 150px', minWidth: 120 }}>
+    <div ref={wrapRef} data-ai-console-model-select="1" style={{ position: 'relative', flex: '0 1 170px', minWidth: 140 }}>
       <button
         onClick={() => setOpen((o) => !o)}
-        title={fullTitle}
-        aria-label={selected ? `AI 工具：${selected.name}（${selected.type}）· ${selected.model}` : 'AI 工具：选择用于分析的工具'}
+        title={title}
+        aria-label={selected ? `AI 工具：${label}` : 'AI 工具：选择用于分析的工具'}
         style={{
-          display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 8px', width: '100%',
+          display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 8px', width: '100%',
           border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', cursor: 'pointer',
           background: 'var(--card-bg)', color: 'var(--text)',
         }}
       >
+        {selected ? <ConsoleModelLogo tool={selected} /> : <img src={LOCAL_PROVIDER_LOGOS.openai} alt="" width={14} height={14} style={{ width: 14, height: 14, flex: '0 0 14px', objectFit: 'contain', opacity: 0.6 }} />}
         <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'left' }}>
-          {selected ? selected.model : modelLabel}
+          {selected ? label : (tools.length === 0 ? label : '选择工具')}
         </span>
         <ChevronDown size={12} style={{ flex: '0 0 auto' }} />
       </button>
       {open && (
         <div
+          role="listbox"
+          aria-label="AI 模型列表"
           style={{
             position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 30,
             background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6,
@@ -219,15 +242,20 @@ function ToolSelect({
           {tools.map((t) => (
             <button
               key={t.id}
+              role="option"
+              aria-selected={t.id === toolId}
+              data-ai-console-model-option={t.id}
               onClick={() => { onChange(t.id); setOpen(false); }}
               style={{
-                display: 'block', width: '100%', textAlign: 'left', padding: '6px 8px', border: 'none',
+                display: 'flex', alignItems: 'center', gap: 7, width: '100%', textAlign: 'left', padding: '6px 8px', border: 'none',
                 background: t.id === toolId ? 'var(--surface-2)' : 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)', cursor: 'pointer',
               }}
               onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = t.id === toolId ? 'var(--surface-2)' : 'transparent'; }}
             >
-              {t.name}（{t.type}）· {t.model}
+              <ConsoleModelLogo tool={t} />
+              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{modelName(t)}</span>
+              {t.id === toolId && <span style={{ color: 'var(--accent)', fontSize: 'var(--fs-xs)' }}>当前</span>}
             </button>
           ))}
         </div>
