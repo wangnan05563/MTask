@@ -85,6 +85,14 @@ export function receiptWarnings(job: Pick<QueueJobRow, 'request_payload' | 'resp
       blocking: true,
     });
   }
+  if (/检索(结果|返回)?.{0,40}(广告页|无任何关联|无关联|无关|不相关|无法提取有效|未获取到|均.{0,8}广告)|未获取到.{0,20}(新闻|资讯|内容)|缺失内容|更换检索策略|需重新.{0,12}(检索|执行)/.test(text)) {
+    out.push({
+      code: 'stale',
+      label: '检索结果与任务无关',
+      detail: '回执明确说明检索结果与任务无关/未获取到内容，任务实际未完成；采纳前应人工核对',
+      blocking: true,
+    });
+  }
   if (/YOUR_[A-Z_]{3,}|替换\s*YOUR|<\s*token\s*>|请填入?[^\n]{0,12}(Key|密钥|Token)/i.test(text)) {
     out.push({ code: 'placeholder', label: '含待填密钥/占位符', detail: '回执含 YOUR_*、<token> 等占位符，不是可直接使用的结论', blocking: true });
   }
