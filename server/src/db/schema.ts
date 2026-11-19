@@ -1153,6 +1153,26 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   // 老库 queue_jobs 的 task_id/tool_id 外键缺 ON DELETE CASCADE，删除关联任务/工具/项目时
   // 会被外键约束阻断（500）。SQLite 不支持 ALTER 外键，需整表重建，按幂等方式检测后执行
   ensureQueueJobsCascade();
+  // T06076：队列回执采纳标记——记录「这条回执已写入任务处理结果」的时刻。
+  // 必须放在 ensureQueueJobsCascade 之后：老库整表重建只复制固定列，先加会被重建丢掉。
+  ensureColumn('queue_jobs', 'adopted_at', "adopted_at TEXT DEFAULT ''");
+  // 采纳前快照（status/handle_result/ai_state 的 JSON）——撤回采纳时原样恢复，避免误采纳不可逆
+  ensureColumn('queue_jobs', 'adopt_snapshot', "adopt_snapshot TEXT DEFAULT ''");
+  // T06076 历史兼容：旧入口曾经只把回执写进 handle_result（或写错到 ai_summary），没有 adopted_at。
+  // 只在「任务处理结果与回执正文逐字一致」时回填，避免把误写到 ai_summary 的旧记录当成已采纳。
+  db.exec(`
+    UPDATE queue_jobs
+       SET adopted_at = COALESCE(finished_at, sent_at, '')
+     WHERE COALESCE(adopted_at, '') = ''
+       AND status = 'success'
+       AND length(trim(COALESCE(response_payload, ''))) > 0
+       AND EXISTS (
+         SELECT 1 FROM tasks t
+          WHERE t.id = queue_jobs.task_id
+            AND replace(replace(trim(COALESCE(t.handle_result, '')), char(10), ''), char(13), '')
+              = replace(replace(trim(COALESCE(queue_jobs.response_payload, '')), char(10), ''), char(13), '')
+       )
+  `);
   // T01872：需求编号项目内唯一——数据库层兜底约束（存量重复时只告警不建索引，见函数注释）
   ensurePrdReqNoUnique();
   // T04891（裁决 A）：老库 memory_review_log 的 verdict CHECK 仍是 keep/reject，需整表重建

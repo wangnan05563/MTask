@@ -23,6 +23,8 @@ export interface GuideEntry {
   /** 已读状态 localStorage 键（清缓存后恢复初始引导） */
   readonly seenKey: string;
   readonly steps: readonly GuideStep[];
+  /** 是否在首次进入该菜单时自动弹出；false 表示只由导航「向导」按钮手动唤起。默认 true */
+  readonly autoOpen?: boolean;
 }
 
 /** 轻量「功能磁贴」演示视觉：无动画，罗列本步涉及的功能要点 */
@@ -226,22 +228,39 @@ const QUEUE_STEPS: GuideStep[] = [
   {
     title: '认识「队列」',
     icon: Compass,
-    desc: '把「任务 + AI 工具」排成执行序列，由系统按序自动驱动。',
+    desc: '把「任务 + AI 工具」排成执行序列，由系统按序自动驱动并留存回执。',
     points: [
-      '「新建今日队列」创建今天的开发队列并打开',
-      '「加入队列」把选中的任务与 AI 工具送入当前队列',
-      '队列按序执行：适合把一批机械性任务（批量回传 / 批量处理）交给 AI 跑',
+      '「新建队列」名称可自定义（默认「{日期} 开发队列」），建好后也能用「重命名」改',
+      '队列是「推送式」：MTask 主动提交给 AI 工具；外部 Agent 自己来领任务的那套并发在页面底部「并行任务池」',
+      '队列跑完还能继续加任务再发一次：已成功的项不会重复执行，只有新加的排队项会被提交',
+      '「暂停队列」只拦发送、不打断已在执行的任务；需要停单条请看任务池里的「暂停（搁置）」',
     ],
-    visual: <><Chips items={[chip(<CalendarClock size={13} />, '今日队列'), chip(<ListTodo size={13} />, '任务 + 工具'), chip(<Rocket size={13} />, '按序执行')]} /><QueueRunDemo /></>,
+    visual: <><Chips items={[chip(<CalendarClock size={13} />, '可自定义名称'), chip(<ListTodo size={13} />, '任务 + 工具'), chip(<Rocket size={13} />, '按序执行')]} /><QueueRunDemo /></>,
+  },
+  {
+    title: '编排与消费监控',
+    icon: Activity,
+    desc: '先按项目挑任务，再把执行过程看清——这是本轮重构的两个重点。',
+    points: [
+      '编排区按「项目」筛选待办任务，支持搜索与批量勾选，一次加入多条（已在队列的任务会自动禁选，避免重复执行）',
+      '页面顶部三步条（选任务 → 选工具 → 加入队列）与工具条按钮即完整操作路径，不熟悉时照着走一遍即可',
+      '监控区回答四个问题：跑到哪了（进度/在途）、跑得怎么样（成功率/平均与最长耗时）、卡在哪条（在途明细与已等待时长）、谁在拖（按工具/项目分布）',
+      '执行中 2 秒刷新、空闲 8 秒；队列列表 15 秒汇总刷新，监控卡片也可手动「刷新」',
+    ],
+    visual: <><Chips items={[chip(<ListTodo size={13} />, '按项目筛选'), chip(<Activity size={13} />, '消费监控'), chip(<RefreshCw size={13} />, '自动刷新')]} /></>,
   },
   {
     title: '结果采纳与重试',
     icon: RefreshCw,
     desc: '队列跑完不等于结束——采纳结果才算闭环。',
     points: [
-      '「采纳」把 AI 结果应用到对应任务（采纳前可先查看内容）',
-      '「重试失败」把队列中失败 / 超时的任务重置为待发送，再次执行',
-      '「复制」可把任务内容取出到剪贴板，便于人工介入处理',
+      '点任务项展开可看「发送内容快照」与「AI 返回文本」，先审阅再决定是否采纳',
+      '「采纳」把回执写入任务「处理结果」并把任务置为完成、AI 状态标为已读（只保存文本，仍需人工合并到代码）；采纳后行内显示「已采纳」，刷新后仍在',
+      '采纳前若回执带「质量待核」（自述无实时数据 / 占位内容 / 任务要求来源但无链接），会先列出风险，确认后才写入——普通 LLM 不联网，时效类结论务必人工核对',
+      '队列成功只产出回执：任务保持待办、AI 状态标「未读」；默认不再自动置完成，采纳才是闭环',
+      '已采纳可点行内「撤回」：恢复采纳前的处理结果与任务状态；采纳后手改过结果会拒绝自动覆盖',
+      '「重试失败（n）」整队重置失败/超时项；行内「重试」只重置单条；两者都会变成排队中，下次发送重新执行',
+      '「复制」把回执取到剪贴板便于人工介入；「移除」从队列删掉单条，批量勾选后可一次移除多条',
     ],
     visual: <RetryDemo />,
   },
@@ -320,7 +339,8 @@ export const GUIDES: Readonly<Record<string, GuideEntry>> = {
   plan: { title: '项目管理 · 使用向导', seenKey: GUIDE_SEEN_KEY, steps: PROJECT_GUIDE_STEPS },
   report: { title: 'AI 工作台 · 使用向导', seenKey: 'mtask.guide.seen.report', steps: REPORT_STEPS },
   history: { title: '历史资产 · 使用向导', seenKey: 'mtask.guide.seen.history', steps: HISTORY_STEPS },
-  queue: { title: '队列 · 使用向导', seenKey: 'mtask.guide.seen.queue', steps: QUEUE_STEPS },
+  // 队列菜单页内已有常驻「三步上手」条，首次进入不再自动弹窗，避免两套引导同屏遮挡
+  queue: { title: '队列 · 使用向导', seenKey: 'mtask.guide.seen.queue', steps: QUEUE_STEPS, autoOpen: false },
   'exec-sessions': { title: '执行会话 · 使用向导', seenKey: 'mtask.guide.seen.exec-sessions', steps: EXEC_SESSIONS_STEPS },
   settings: { title: '设置 · 使用向导', seenKey: 'mtask.guide.seen.settings', steps: SETTINGS_STEPS },
 };

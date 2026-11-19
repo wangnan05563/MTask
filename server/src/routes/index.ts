@@ -1731,7 +1731,7 @@ api.post('/tasks/:id/adopt', (req, res) => {
   const { content } = req.body ?? {};
   if (!content || typeof content !== 'string') return res.status(400).json({ error: 'content 必填' });
   try {
-    res.json(TaskService.adoptContent(req.params.id, content));
+    res.json(QueueService.adoptTaskContent(req.params.id, content));
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
@@ -1970,16 +1970,39 @@ api.get('/queues', (_req, res) => {
   res.json(QueueService.list());
 });
 
+// 队列消费汇总（列表卡片进度条的数据源）。
+// 必须定义在 `/queues/:id` 之前：Express 按注册顺序匹配，否则 "summary" 会被当成队列 id。
+api.get('/queues/summary', (_req, res) => {
+  res.json(QueueService.summary());
+});
+
 api.get('/queues/:id', (req, res) => {
   const queue = QueueService.getById(req.params.id);
   if (!queue) return res.status(404).json({ error: '队列不存在' });
-  res.json({ ...queue, jobs: QueueService.listJobsDetailed(req.params.id) });
+  // T06076：回执质量提示随详情一起下发，前端据此显示「质量待核」并在采纳前确认
+  const jobs = QueueService.listJobsDetailed(req.params.id).map((j) => ({
+    ...j,
+    quality_warnings: QueueService.receiptWarnings(j),
+  }));
+  res.json({ ...queue, jobs });
 });
 
 api.post('/queues', (req, res) => {
   const { name, date } = req.body ?? {};
   if (!name || !date) return res.status(400).json({ error: 'name 与 date 必填' });
   res.status(201).json(QueueService.create(name, date));
+});
+
+// 队列重命名：名称自定义的另一半——新建时前端默认给「{日期} 开发队列」，用户可改成自己的语义名
+api.patch('/queues/:id', (req, res) => {
+  const name = String(req.body?.name ?? '').trim();
+  if (!name) return res.status(400).json({ error: '队列名称不能为空' });
+  if (name.length > 60) return res.status(400).json({ error: '队列名称不能超过 60 字' });
+  try {
+    res.json(QueueService.rename(req.params.id, name));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
 });
 
 api.post('/queues/:id/jobs', (req, res) => {
@@ -2034,6 +2057,25 @@ api.post('/queues/:id/pause', (req, res) => {
   try {
     QueueService.setPaused(req.params.id, Boolean(req.body?.paused));
     res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// T06076：队列回执采纳——写入任务「处理结果」+ 持久标记队列行已采纳（幂等）。
+// force=true 表示用户已看过质量提示并确认仍要采纳（自述非实时/占位/任务要求来源但无链接）。
+api.post('/queues/:id/jobs/:jobId/adopt', (req, res) => {
+  try {
+    res.json(QueueService.adoptJob(req.params.id, req.params.jobId, req.body?.force === true));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// T06076：撤回采纳——恢复采纳前的处理结果与任务状态（处理结果被改过则拒绝覆盖）。
+api.post('/queues/:id/jobs/:jobId/unadopt', (req, res) => {
+  try {
+    res.json(QueueService.unadoptJob(req.params.id, req.params.jobId));
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
@@ -3402,6 +3444,28 @@ api.get('/settings/ai-summary-inbox', (_req, res) => {
 api.post('/settings/ai-summary-inbox', (req, res) => {
   setSetting('report.aiSummaryToInbox', req.body?.enabled ? '1' : '0');
   res.json({ ok: true, enabled: Boolean(req.body?.enabled) });
+});
+
+// ---------- T06076：队列成功后是否自动把任务标完成 ----------
+// 默认关闭：回执只是候选结果，采纳后才算完成；保留开关给习惯旧行为的用户。
+api.get('/settings/queue-auto-complete', (_req, res) => {
+  res.json({ enabled: getSetting('queue.autoCompleteTask') === '1' });
+});
+api.post('/settings/queue-auto-complete', (req, res) => {
+  setSetting('queue.autoCompleteTask', req.body?.enabled ? '1' : '0');
+  res.json({ ok: true, enabled: Boolean(req.body?.enabled) });
+});
+
+// ---------- T06076：队列任务联网检索模式 ----------
+// auto=仅时效性任务自动检索（默认）；always=每次都检索；off=关闭。
+api.get('/settings/queue-web-search', (_req, res) => {
+  res.json({ mode: getSetting('queue.webSearch') || 'auto' });
+});
+api.post('/settings/queue-web-search', (req, res) => {
+  const mode = req.body?.mode;
+  if (mode !== 'off' && mode !== 'auto' && mode !== 'always') return res.status(400).json({ error: 'mode 需为 off/auto/always' });
+  setSetting('queue.webSearch', mode);
+  res.json({ ok: true, mode });
 });
 
 // ---------- 设置中心：数据迁移（换机重装用） ----------

@@ -307,6 +307,7 @@ function buildTaskPrompt(context: TaskContext): string {
     context.aiSummary ? `【AI 梳理摘要】\n${context.aiSummary}` : '',
     context.workspacePath ? `【工作空间】${context.workspacePath}` : '',
     context.prdContext ? `【PRD 需求上下文】\n${context.prdContext}` : '',
+    context.webContext ? `【联网检索结果】\n${context.webContext}` : '',
     '【执行要求】',
     '1. 只改与任务相关的文件；不要提交、不要推送、不要改生产配置。',
     '2. 完成后按 Markdown 输出：## 根因 / ## 影响范围 / ## 修复 / ## 验证 / ## 本次回写。',

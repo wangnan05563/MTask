@@ -14,7 +14,8 @@ import { isRateLimitError, sleepMs } from '../util/rateLimit'; // T03700：限�
 import { recordUsage } from '../util/aiUsageRecord'; // T03296：写入单源下沉 util，直连适配器的卡可复用同一口径
 import { classifyItems, type BatchCategory, type BatchItem, type BatchPriority, type ClassifyItemsResult } from './classifyBatch'; // T03297：批量分类分批调用与结果合并
 import { buildOptimizePrompt } from './optimizePrompt'; // T04808：提示词构造单源（含「仅标题」分支）
-import { armTaskReady, armTaskRunning } from './taskArming'; // T05747：B0 异步失败/超时 → A 就绪池（纯 SQL 单源，避免与 Relay 循环依赖）
+import { armTaskReady, armTaskRunning } from './taskArming'; // T05747：B0 异步失败
+import { buildQueueWebContext } from './WebSearchService'; // T06076：队列任务轻量联网检索/超时 → A 就绪池（纯 SQL 单源，避免与 Relay 循环依赖）
 
 /** 模型未配置时的统一提示，保持与产品语境一致的表达 */
 const MODEL_UNCONFIGURED = '所选模型未配置，请先在「模型管理」为该工具填写默认模型';
@@ -629,11 +630,14 @@ export const AIService = {
     timeoutMs?: number,
     signal?: AbortSignal, // T00838：可选中止信号——周报生成可被「停止」按钮中断
     cardKey?: string, // T03243（AI-102④）：通用 stream 通道显式归属卡片，回看时可按卡取实际值
+    /** 输出预算下限：工具里配得更低时托底抬到本值，避免长正文被 max_tokens 截断（讲稿逐节正文需要） */
+    minMaxTokens?: number,
   ): Promise<StreamResult & { chars: number; durationMs: number }> {
     const { type, config } = runtimeWithModel(toolId);
     const adapter = getAdapter(type);
     // 长耗时流式调用同样由调用方传入更大的超时，避免中途被掐断
-    const effective = timeoutMs == null ? config : { ...config, timeoutMs };
+    const budget = minMaxTokens == null ? undefined : Math.max(config.maxTokens ?? 0, minMaxTokens);
+    const effective = { ...config, ...(timeoutMs == null ? {} : { timeoutMs }), ...(budget == null ? {} : { maxTokens: budget }) };
     const startedAt = Date.now();
     let chars = 0;
     const wrapped = (text: string) => { chars += text.length; onDelta(text); };
@@ -798,6 +802,8 @@ export const AIService = {
       const project = db.prepare('SELECT name, workspace_path FROM projects WHERE id = ?').get(task.project_id) as { name: string; workspace_path: string | null } | undefined;
       // T00763：队列发送同样自动携带关联 PRD 上下文
       const prd = resolvePrdContext({ taskId: task.id });
+      // T06076：时效性任务自动检索公开网页，结果注入提示词并由模型保留来源链接
+      const webContext = await buildQueueWebContext(task.title, task.description);
       const context = {
         taskId: task.id,
         title: task.title,
@@ -805,6 +811,7 @@ export const AIService = {
         aiSummary: task.ai_summary ?? undefined,
         projectName: project?.name ?? '',
         prdContext: formatPrdContext(prd),
+        webContext: webContext || undefined,
         workspacePath: project?.workspace_path || undefined, // T00771
       };
       // 发送前固化上下文快照（FR4.4）
@@ -824,6 +831,8 @@ export const AIService = {
       const project = db.prepare('SELECT name, workspace_path FROM projects WHERE id = ?').get(task.project_id) as { name: string; workspace_path: string | null } | undefined;
       // T00763：异步提交同样自动携带关联 PRD 上下文
       const prd = resolvePrdContext({ taskId: task.id });
+      // T06076：与 buildSender 同口径，提交前完成检索并注入
+      const webContext = await buildQueueWebContext(task.title, task.description);
       const context = {
         taskId: task.id,
         title: task.title,
@@ -831,6 +840,7 @@ export const AIService = {
         aiSummary: task.ai_summary ?? undefined,
         projectName: project?.name ?? '',
         prdContext: formatPrdContext(prd),
+        webContext: webContext || undefined,
         workspacePath: project?.workspace_path || undefined, // T00771
       };
       // 与 buildSender 一致：提交前固化上下文快照，避免任务被改导致回执错位

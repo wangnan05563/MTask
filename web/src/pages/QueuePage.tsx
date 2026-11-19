@@ -13,7 +13,7 @@
  *   - 并行任务池：15s（T03272 既有口径）
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { AlertTriangle, ListOrdered, Pause, Pencil, Play, Plus, RotateCcw, Send, Trash2 } from 'lucide-react';
+import { AlertTriangle, ListOrdered, Pause, Pencil, Play, Plus, RotateCcw, Search, Send, Trash2 } from 'lucide-react';
 import { api, type AITool, type Queue, type QueueJob, type QueueJobSummary, type Task } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { HoverCard } from '../ui/HoverCard';
@@ -138,10 +138,29 @@ export function QueuePage() {
     try { return localStorage.getItem(ONBOARD_KEY) !== '1'; } catch { return false; }
   });
 
+  /** 队列成功后自动完成任务：默认关闭，回执只是候选结果，采纳后才算完成 */
+  const [autoComplete, setAutoComplete] = useState(false);
+  const [autoCompleteBusy, setAutoCompleteBusy] = useState(false);
+  const [webSearchMode, setWebSearchMode] = useState<'off' | 'auto' | 'always'>('auto');
+  const [webSearchBusy, setWebSearchBusy] = useState(false);
+
   const projectView = useProjectList();
   /** 轮询回调里读最新的选中 id：避免把 active 对象塞进定时器闭包导致「切队列后仍刷旧队列」 */
   const activeIdRef = useRef<string | null>(null);
   useEffect(() => { activeIdRef.current = active?.id ?? null; }, [active?.id]);
+
+  useEffect(() => {
+    let alive = true;
+    Promise.all([
+      api.get<{ enabled: boolean }>('/settings/queue-auto-complete'),
+      api.get<{ mode: 'off' | 'auto' | 'always' }>('/settings/queue-web-search'),
+    ]).then(([auto, search]) => {
+      if (!alive) return;
+      setAutoComplete(Boolean(auto.enabled));
+      if (search.mode === 'off' || search.mode === 'auto' || search.mode === 'always') setWebSearchMode(search.mode);
+    }).catch(() => { /* 读取失败保持默认：自动完成关闭、检索 auto，不阻断队列页 */ });
+    return () => { alive = false; };
+  }, []);
 
   const activeJobs = active?.jobs ?? [];
   const metrics = useMemo(() => computeQueueMetrics(activeJobs, now), [activeJobs, now]);
@@ -175,7 +194,7 @@ export function QueuePage() {
   const open = useCallback(async (id: string) => {
     activeIdRef.current = id;
     try {
-      const q = await api.get<Queue>(`/queues/${id}`);
+      const q = await api.get<Queue>(`/queues/${id}?t=${Date.now()}`);
       // 切队列期间旧请求可能后到：只接受与当前选中一致的响应
       if (activeIdRef.current !== id) return;
       setActive(q);
@@ -193,7 +212,7 @@ export function QueuePage() {
     if (!id) return;
     if (opts.manual) setRefreshingActive(true);
     try {
-      const q = await api.get<Queue>(`/queues/${id}`);
+      const q = await api.get<Queue>(`/queues/${id}?t=${Date.now()}`);
       if (activeIdRef.current !== id) return;
       setActive(q);
       setActiveError('');
@@ -441,12 +460,34 @@ export function QueuePage() {
   }
 
   async function adopt(job: QueueJob) {
-    if (!job.response_payload) return;
+    if (!active || !job.response_payload) return;
+    const warns = job.quality_warnings ?? [];
+    if (warns.length > 0) {
+      const detail = warns.map((w) => `· ${w.label}：${w.detail}`).join('\n');
+      if (!window.confirm(`该回执有 ${warns.length} 项质量提示：\n${detail}\n\n仍要写入任务「处理结果」吗？`)) return;
+    }
     try {
-      await api.post(`/tasks/${job.task_id}/adopt`, { content: job.response_payload });
+      const r = await api.post<{ already: boolean; task: { task_no?: string | null; handle_result?: string } }>(
+        `/queues/${active.id}/jobs/${job.id}/adopt`,
+        { force: warns.length > 0 },
+      );
       if (activeIdRef.current) await open(activeIdRef.current);
       void loadQueues({ silent: true });
-      flash('已采纳：回执写入任务摘要，任务置为完成（仍可人工合并到代码）');
+      const no = r.task?.task_no ?? job.task_no ?? '任务';
+      flash(r.already ? `「${no}」的回执此前已采纳（处理结果未重复覆盖）` : `已采纳：回执写入「${no}」的处理结果，AI 状态已读`);
+    } catch (e) {
+      flash(errText(e), 'error');
+    }
+  }
+
+  async function unadopt(job: QueueJob) {
+    if (!active) return;
+    if (!window.confirm(`撤回「${job.task_no ?? job.task_title ?? '该任务'}」的采纳？将恢复采纳前的处理结果与任务状态。`)) return;
+    try {
+      await api.post(`/queues/${active.id}/jobs/${job.id}/unadopt`, {});
+      if (activeIdRef.current) await open(activeIdRef.current);
+      void loadQueues({ silent: true });
+      flash(`已撤回采纳：${job.task_no ?? '任务'} 的处理结果与状态已恢复`);
     } catch (e) {
       flash(errText(e), 'error');
     }
@@ -487,6 +528,41 @@ export function QueuePage() {
     try { localStorage.setItem(ONBOARD_KEY, '1'); } catch { /* 隐私模式：仅本次会话生效 */ }
   }
 
+  async function toggleAutoComplete() {
+    if (autoCompleteBusy) return;
+    const next = !autoComplete;
+    setAutoCompleteBusy(true);
+    try {
+      await api.post('/settings/queue-auto-complete', { enabled: next });
+      setAutoComplete(next);
+      flash(next
+        ? '已开启：队列回执成功后会直接把任务标为完成（不再等待采纳）'
+        : '已关闭：队列回执只标记「待采纳」，任务保持待办，采纳后才完成');
+    } catch (e) {
+      flash(errText(e), 'error');
+    } finally {
+      setAutoCompleteBusy(false);
+    }
+  }
+
+  async function changeWebSearch(mode: 'off' | 'auto' | 'always') {
+    if (webSearchBusy || mode === webSearchMode) return;
+    setWebSearchBusy(true);
+    try {
+      await api.post('/settings/queue-web-search', { mode });
+      setWebSearchMode(mode);
+      flash(mode === 'off'
+        ? '已关闭联网检索：队列回执只依据任务上下文'
+        : mode === 'always'
+          ? '已开启联网检索：每个队列任务发送前都会检索公开网页'
+          : '联网检索已设为自动：只对最新/实时/资讯/政策/行情等时效性任务检索');
+    } catch (e) {
+      flash(errText(e), 'error');
+    } finally {
+      setWebSearchBusy(false);
+    }
+  }
+
   // ───────── 渲染 ─────────
 
   const sendDisabled = busy || !active || Boolean(active.paused) || active.status === 'running' || pendingCount === 0;
@@ -519,7 +595,7 @@ export function QueuePage() {
           <option value="">{loadingQueues && queues.length === 0 ? '加载中…' : queues.length === 0 ? '暂无队列' : '选择队列…'}</option>
           {queues.map((q) => {
             const s = summaryMap[q.id];
-            const tail = s ? ` · ${s.job_success}/${s.job_total}${s.job_failed + s.job_timeout > 0 ? ` · 失败 ${s.job_failed + s.job_timeout}` : ''}` : '';
+            const tail = s ? ` · ${s.job_success}/${s.job_total}${s.job_failed + s.job_timeout > 0 ? ` · 失败 ${s.job_failed + s.job_timeout}` : ''}${(s.job_unadopted ?? 0) > 0 ? ` · 待采纳 ${s.job_unadopted}` : ''}` : '';
             return <option key={q.id} value={q.id}>{q.name}{tail}</option>;
           })}
         </select>
@@ -586,6 +662,30 @@ export function QueuePage() {
         <NoticeToast notice={notice} onDismiss={dismiss} />
       </div>
 
+      {/* 队列设置：两个会影响「回执如何产出/如何完成」的全局开关 */}
+      <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10, padding: '7px 10px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface-2)', fontSize: 'var(--fs-s)' }}>
+        <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>队列设置</span>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: autoCompleteBusy ? 'wait' : 'pointer' }} title="开启后，回执成功即把任务标为完成；默认关闭，采纳后才完成">
+          <input type="checkbox" checked={autoComplete} disabled={autoCompleteBusy} onChange={() => void toggleAutoComplete()} />
+          成功后自动完成任务
+        </label>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }} title="发送前检索公开网页并注入提示词；默认只对时效性任务检索">
+          <Search size={12} style={{ color: 'var(--text-muted)' }} />
+          联网检索
+          <select
+            value={webSearchMode}
+            disabled={webSearchBusy}
+            onChange={(e) => void changeWebSearch(e.target.value as 'off' | 'auto' | 'always')}
+            style={{ padding: '3px 6px', fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--text)' }}
+          >
+            <option value="auto">自动（时效性任务）</option>
+            <option value="off">关闭</option>
+            <option value="always">每次发送</option>
+          </select>
+        </label>
+        <span style={{ color: 'var(--text-muted)' }}>默认只标「待采纳」，采纳后才写入处理结果</span>
+      </div>
+
       {queuesError && (
         <output style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, padding: '6px 10px', border: '1px solid var(--danger)', borderRadius: 8, fontSize: 'var(--fs-s)', color: 'var(--danger)' }}>
           <AlertTriangle size={13} /> 队列列表加载失败：{queuesError}
@@ -598,7 +698,7 @@ export function QueuePage() {
           <div style={{ flex: '1 1 420px', minWidth: 240 }}>
             <div style={{ fontSize: 'var(--fs-s)', fontWeight: 600, marginBottom: 2 }}>三步上手</div>
             <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text)' }}>
-              ① 新建队列（名称可自定义）→ ② 在「编排队列」勾选待办任务、选 AI 工具并加入 → ③ 点「发送队列」。发送后监控区实时显示进度、耗时与失败项；跑完点行内「采纳」把回执写回任务。
+              ① 新建队列（名称可自定义）→ ② 在「编排队列」勾选待办任务、选 AI 工具并加入 → ③ 点「发送队列」。发送后监控区实时显示进度、耗时与失败项；跑完点行内「采纳」把回执写入任务「处理结果」并置为已读。
             </div>
           </div>
           <button onClick={dismissOnboard} style={{ ...BTN_SECONDARY_MD, flexShrink: 0 }} title="知道了 — 关闭本提示（以后不再自动出现）" aria-label="关闭三步上手提示">
@@ -672,6 +772,7 @@ export function QueuePage() {
             expandedJobId={expandedJobId}
             onToggleExpand={(id) => setExpandedJobId((prev) => (prev === id ? null : id))}
             onAdopt={(job) => void adopt(job)}
+            onUnadopt={(job) => void unadopt(job)}
             onCopy={(job) => void copy(job)}
             onRemove={(job) => void removeJob(job)}
             onRetry={(job) => void retryJob(job)}

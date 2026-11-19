@@ -472,6 +472,14 @@ export interface AIProviderPreset {
   description: string;
 }
 
+/** T06076：服务端回执质量提示 */
+export interface ReceiptWarning {
+  code: 'stale' | 'no_source' | 'placeholder';
+  label: string;
+  detail: string;
+  blocking: boolean;
+}
+
 export interface QueueJob {
   id: string;
   queue_id: string;
@@ -486,11 +494,15 @@ export interface QueueJob {
   sent_at?: string | null;
   /** 收口时刻（success/failed/timeout 才有） */
   finished_at?: string | null;
-  /** 异步提交时刻（超时判定基准） */
-  submitted_at?: string | null;
   /** 异步受理标识（B0 / CLI / 中继类工具） */
   ticket?: string | null;
-  /** 队列详情接口 JOIN 附带（可能为 null） */
+  /** 异步提交时刻（超时判定基准） */
+  submitted_at?: string | null;
+  /** T06076：回执已采纳（写入任务处理结果）的时刻；空 = 未采纳 */
+  adopted_at?: string | null;
+  /** T06076：回执质量提示（服务端随队列详情下发） */
+  quality_warnings?: ReceiptWarning[];
+  /** 队列详情接口 JOIN 附带（可能为 null：任务/工具已被删除） */
   task_title?: string | null;
   task_no?: string | null;
   task_priority?: string | null;
@@ -508,6 +520,7 @@ export interface QueueJobSummary {
   job_failed: number;
   job_timeout: number;
   job_pending: number;
+  job_unadopted: number;
   last_activity_at: string | null;
 }
 

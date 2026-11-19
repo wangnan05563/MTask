@@ -8,7 +8,7 @@ import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   Activity, AlertTriangle, Braces, Check, ChevronDown, ChevronUp, Clock, Copy,
   Eye, FileText, FolderKanban, Gauge, Layers, ListPlus, Loader2, Pause, Plus, RefreshCw, RotateCcw,
-  Search, Trash2,
+  Search, Trash2, Undo2,
 } from 'lucide-react';
 import type { AITool, Project, Queue, QueueJob, Task } from '../api/client';
 import { Badge, type BadgeTone } from '../ui/Badge';
@@ -450,6 +450,7 @@ export interface JobTableProps {
   readonly expandedJobId: string | null;
   readonly onToggleExpand: (id: string) => void;
   readonly onAdopt: (job: QueueJob) => void;
+  readonly onUnadopt: (job: QueueJob) => void;
   readonly onCopy: (job: QueueJob) => void;
   readonly onRemove: (job: QueueJob) => void;
   readonly onRetry: (job: QueueJob) => void;
@@ -469,7 +470,7 @@ const FILTERS: Array<{ key: JobFilter; label: string }> = [
 export function JobTable(props: JobTableProps) {
   const {
     allJobs, filter, onFilterChange, keyword, onKeywordChange, selected, onToggleSelect, onSelectAll,
-    expandedJobId, onToggleExpand, onAdopt, onCopy, onRemove, onRetry, onBatchRemove, busy, now,
+    expandedJobId, onToggleExpand, onAdopt, onUnadopt, onCopy, onRemove, onRetry, onBatchRemove, busy, now,
   } = props;
 
   const visible = filterJobs(allJobs, filter, keyword);
@@ -585,6 +586,7 @@ export function JobTable(props: JobTableProps) {
                 onToggleSelect={onToggleSelect}
                 onToggleExpand={onToggleExpand}
                 onAdopt={onAdopt}
+                onUnadopt={onUnadopt}
                 onCopy={onCopy}
                 onRemove={onRemove}
                 onRetry={onRetry}
@@ -605,15 +607,18 @@ interface JobRowProps {
   readonly onToggleSelect: (id: string) => void;
   readonly onToggleExpand: (id: string) => void;
   readonly onAdopt: (job: QueueJob) => void;
+  readonly onUnadopt: (job: QueueJob) => void;
   readonly onCopy: (job: QueueJob) => void;
   readonly onRemove: (job: QueueJob) => void;
   readonly onRetry: (job: QueueJob) => void;
 }
 
 function JobRow(props: JobRowProps) {
-  const { job, now, checked, expanded, onToggleSelect, onToggleExpand, onAdopt, onCopy, onRemove, onRetry } = props;
+  const { job, now, checked, expanded, onToggleSelect, onToggleExpand, onAdopt, onUnadopt, onCopy, onRemove, onRetry } = props;
   const meta = jobStatusMeta(job.status);
-  const canAdopt = job.status === 'success' && Boolean(job.response_payload);
+  const canAdopt = job.status === 'success' && Boolean(job.response_payload) && !job.adopted_at;
+  const canCopy = job.status === 'success' && Boolean(job.response_payload);
+  const adopted = Boolean(job.adopted_at);
   const canRemove = job.status !== 'sending';
   const canRetry = job.status === 'failed' || job.status === 'timeout';
   const elapsed = job.status === 'sending' ? jobElapsedMs(job, now) : null;
@@ -663,6 +668,20 @@ function JobRow(props: JobRowProps) {
               {job.error}
             </div>
           )}
+          {(job.quality_warnings?.length ?? 0) > 0 && (
+            <div
+              title={(job.quality_warnings ?? []).map((w) => `${w.label}：${w.detail}`).join('\n')}
+              style={{ fontSize: 'var(--fs-xs)', color: 'var(--warning, #c80)', whiteSpace: 'nowrap', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}
+            >
+              <AlertTriangle size={10} style={{ verticalAlign: '-1px', marginRight: 2 }} />
+              质量待核（{job.quality_warnings!.length}）
+            </div>
+          )}
+          {adopted && (
+            <div title={`已采纳：回执已写入任务「处理结果」（${fmtClock(job.adopted_at)}）`} style={{ fontSize: 'var(--fs-xs)', color: 'var(--success)', whiteSpace: 'nowrap' }}>
+              <Check size={10} style={{ verticalAlign: '-1px', marginRight: 2 }} />已采纳
+            </div>
+          )}
         </td>
         <td style={{ padding: '5px 4px', fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
           {job.status === 'sending' ? (elapsed == null ? '—' : `${fmtElapsed(elapsed)}…`) : fmtCost(cost)}
@@ -682,11 +701,17 @@ function JobRow(props: JobRowProps) {
             </button>
             {canAdopt && (
               <button onClick={() => onAdopt(job)} style={{ ...BTN_ICON, padding: '2px 4px', color: 'var(--success)', borderColor: 'var(--success)' }}
-                title="采纳 — 把回执写入任务摘要并把任务置为完成（仅保存文本，人工合并）" aria-label="采纳回执">
+                title="采纳 — 把回执写入任务「处理结果」并把任务置为完成（仅保存文本，人工合并）" aria-label="采纳回执">
                 <Check size={13} />
               </button>
             )}
-            {canAdopt && (
+            {adopted && (
+              <button onClick={() => onUnadopt(job)} style={{ ...BTN_ICON, padding: '2px 4px', color: 'var(--text-secondary)' }}
+                title="撤回采纳 — 恢复采纳前的处理结果与任务状态（处理结果被改过则拒绝）" aria-label="撤回采纳">
+                <Undo2 size={13} />
+              </button>
+            )}
+            {canCopy && (
               <button onClick={() => onCopy(job)} style={{ ...BTN_ICON, padding: '2px 4px' }} title="复制回执到剪贴板" aria-label="复制回执">
                 <Copy size={13} />
               </button>
@@ -714,10 +739,11 @@ function JobRow(props: JobRowProps) {
               <Meta label="受理时刻" value={fmtClock(job.submitted_at)} />
               <Meta label="收口时刻" value={fmtClock(job.finished_at)} />
               {job.ticket && <Meta label="回执 ticket" value={job.ticket} mono />}
+              {job.adopted_at && <Meta label="采纳时刻" value={fmtClock(job.adopted_at)} />}
             </div>
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
               <Snapshot title="发送内容快照（request_payload）" text={job.request_payload} mode="json" />
-              <Snapshot title="AI 返回文本（response_payload，待人工合并）" text={job.response_payload} tall mode="markdown" />
+              <Snapshot title="AI 返回文本（response_payload，采纳后写入任务「处理结果」）" text={job.response_payload} tall mode="markdown" />
             </div>
           </td>
         </tr>

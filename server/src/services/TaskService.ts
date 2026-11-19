@@ -678,6 +678,7 @@ function recordResultHistory(db: ReturnType<typeof getDb>, taskId: string, prevR
 function aiStateEventDetail(next: string): string {
   if (next === 'unread') return 'AI 处理完成';
   if (next === 'failed') return 'AI 处理失败';
+  if (next === '') return 'AI 结果已读';
   return `AI 状态：${next}`;
 }
 
@@ -1455,20 +1456,23 @@ export const TaskService = {
   },
 
   /**
-   * FR5.1 采纳：将用户审阅后的 AI 文本保存到任务 ai_summary，并将任务置为 done。
+   * FR5.1 采纳：把用户审阅后的队列回执写入任务「处理结果」，并将任务置为 done。
    * 采纳语义 = 仅保存文本待人工合并，不自动写入代码（FR4.4/FR5.1）。
+   *
+   * T06076 复现：旧实现写的是 ai_summary，导致任务详情「处理结果」页签恒空——
+   * 回执是**处理结论**，归属 handle_result；ai_summary 只承载「生成总结摘要」的产物。
+   * 走 update() 而不是裸 SQL：结果历史留档、任务事件、计划↔待办联动、记忆抽取
+   * 都挂在这一个副作用出口上，绕过它会让「采纳完成」与关联计划进度脱节。
    */
   adoptContent(id: string, content: string): TaskView {
     // 可选链一步覆盖「未传内容」与「空白内容」，与原 !content || !content.trim() 语义一致
     if (!content?.trim()) throw new Error('采纳内容不能为空');
-    if (!this.getById(id)) throw new Error('任务不存在');
-    const db = getDb();
-    // T02164：采纳写入的同样是摘要，必须一起记生成时刻——否则摘要视图有正文却显示「未标注」，
-    // 更新时间与时效提示双双失效。取同一时刻，避免两个字段差出毫秒级「摘要已旧」误报。
-    const t = now();
-    db.prepare('UPDATE tasks SET ai_summary = ?, ai_summary_at = ?, status = ?, updated_at = ? WHERE id = ?')
-      .run(content, t, 'done', t, id);
-    return this.getById(id)!;
+    const task = this.getById(id);
+    if (!task) throw new Error('任务不存在');
+    const patch: TaskPatch = { handle_result: content, status: 'done' };
+    // 用户已审阅并采纳 = 回执已读：收口 unread，也收口 running（否则会出现 done + AI 运行中的互斥态）
+    if (task.ai_state === 'unread' || task.ai_state === 'running') patch.ai_state = '';
+    return this.update(id, patch);
   },
 
   /** T02164：保存「生成总结摘要」的结果并记录生成时刻。
