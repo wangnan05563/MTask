@@ -118,7 +118,7 @@ export function receiptWarnings(job: Pick<QueueJobRow, 'request_payload' | 'resp
   // 来源必须来自发送时注入的检索结果；模型改写仓库名/路径同样视为不可核验。
   // 即使任务没写「来源」二字，只要回执引用了链接，链接也必须能对回检索结果。
   if (webSources.length > 0 && /https?:\/\//i.test(text)) {
-    const normalize = (url: string) => url.replace(/[.,;:!?]+$/, '').replace(/\/$/, '').toLowerCase();
+    const normalize = (url: string) => url.replace(/[.,;:!?)\]}）】。，、；："'”’]+$/g, '').replace(/\/$/, '').toLowerCase();
     const allowed = new Set(webSources.map(normalize));
     const cited = [...new Set((text.match(/https?:\/\/[^\s)\]>"']+/g) ?? []).map(normalize))];
     const unknown = cited.filter((url) => !allowed.has(url));
@@ -185,7 +185,7 @@ export function receiptWarnings(job: Pick<QueueJobRow, 'request_payload' | 'resp
   if (countRange || countExact) {
     const entries = text.split(/\r?\n/)
       .map((line) => line.trim())
-      .filter((line) => /^[-*]\s+|^\*\*\d+[.、)]|^\d+[.、)]|^[①②③④⑤⑥⑦⑧⑨⑩]/.test(line));
+      .filter((line) => /^[-*]\s+|^\*\*\d+[.、)]|^\d+[.、)]|^[①②③④⑤⑥⑦⑧⑨⑩]|^\*\*第\d+条|^第\d+条/.test(line));
     const min = countRange ? Number(countRange[1]) : Number(countExact![1]);
     const max = countRange ? Number(countRange[2]) : min;
     if (entries.length < min || entries.length > max) {
