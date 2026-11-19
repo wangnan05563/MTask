@@ -1167,6 +1167,76 @@ function fillPlanSourceSectionsFromRequirements(
   }
 }
 
+/** 2026-11-19：模型会为了“每条需求都有计划”自行生成一批「需求追溯与覆盖核对」卡，
+ *  这些卡不是交付物，且会把 normal 条数撑爆。解析收口前先移除，统一交给系统覆盖兜底重建。 */
+function dropPrdCoveragePlans(drafts: PrdCoveragePlan[]): number {
+  let removed = 0;
+  for (let i = drafts.length - 1; i >= 0; i -= 1) {
+    const d = drafts[i];
+    if (resolvePrdKind(d.title, d.kind, d.wbsCode) !== 'normal') continue;
+    if (!/需求追溯与覆盖核对/.test(d.title)) continue;
+    drafts.splice(i, 1);
+    removed += 1;
+  }
+  return removed;
+}
+
+/** 2026-11-19：系统兜底生成的覆盖核对卡也可能多于所需（模型先写了一部分、系统再补一部分）。
+ *  按每条最多 6 个关联的容量重新分组，保留前 N 张并删除多余卡，避免 normal 超过质量门上限。 */
+function compactPrdCoveragePlans(drafts: PrdCoveragePlan[], requirements: PrdRequirementLite[]): number {
+  const coverage = drafts.filter((d) =>
+    resolvePrdKind(d.title, d.kind, d.wbsCode) === 'normal'
+    && /需求追溯与覆盖核对/.test(d.title));
+  if (coverage.length <= 1) return 0;
+  const refs: string[] = [];
+  const seen = new Set<string>();
+  const acRefs = new Set<string>();
+  for (const p of coverage) {
+    for (const no of p.reqNos ?? []) {
+      const key = normalizedReqNoKey(no);
+      if (key && !seen.has(key)) { seen.add(key); refs.push(key); }
+    }
+    for (const no of p.acceptanceRefs ?? []) {
+      const key = normalizedReqNoKey(no);
+      if (key) acRefs.add(key);
+      if (key && !seen.has(key)) { seen.add(key); refs.push(key); }
+    }
+  }
+  if (refs.length === 0) return 0;
+  const needed = Math.ceil(refs.length / PRD_COVERAGE_GROUP_SIZE);
+  if (needed >= coverage.length) return 0;
+  const sorted = [...coverage].sort((a, b) => {
+    const ac = (a.wbsCode ?? '').localeCompare(b.wbsCode ?? '', undefined, { numeric: true });
+    if (ac !== 0) return ac;
+    return a.title.localeCompare(b.title);
+  });
+  const keep = sorted.slice(0, needed);
+  for (const p of sorted.slice(needed)) {
+    const idx = drafts.indexOf(p);
+    if (idx >= 0) drafts.splice(idx, 1);
+  }
+  const reqByKey = new Map(requirements.map((r) => [normalizedReqNoKey(r.reqNo ?? ''), r]));
+  for (let i = 0; i < keep.length; i += 1) {
+    const p = keep[i];
+    const group = refs.slice(i * PRD_COVERAGE_GROUP_SIZE, (i + 1) * PRD_COVERAGE_GROUP_SIZE);
+    p.reqNos = group;
+    const acs = group.filter((no) => acRefs.has(no));
+    p.acceptanceRefs = acs.length > 0 ? acs : undefined;
+    p.sourceSection = undefined;
+    const labels = group.map((no) => {
+      const req = reqByKey.get(no);
+      return `${no}《${(req?.title ?? '').slice(0, 18)}》`;
+    }).join('、');
+    if (p.description) {
+      p.description = p.description.replace(
+        /逐条核对以下需求是否已有计划\/待办承接：[^。]*。/,
+        `逐条核对以下需求是否已有计划/待办承接：${labels}。`,
+      );
+    }
+  }
+  return coverage.length - keep.length;
+}
+
 export function finalizePrdParseResult(
   requirements: PrdParsePart['requirements'],
   drafts: PrdPlanDraft[],
@@ -1179,6 +1249,9 @@ export function finalizePrdParseResult(
   wbsGroups: number;
 } {
   ensurePrdSourceRequirements(requirements, docText);
+  // 2026-11-19：模型自造的「需求追溯与覆盖核对」卡先移除，避免把 normal 总数撑过质量门；
+  // 真正的未覆盖需求由 ensurePrdAcceptanceCoverage / ensurePrdRequirementCoverage 统一兜底。
+  dropPrdCoveragePlans(drafts);
   ensurePrdAcceptanceCoverage(requirements, drafts, docText);
   let finalDrafts = consolidatePrdPlanDrafts(drafts);
   // 2026-11-18：骨架路径也由模型生成 plan，实测会偶发输出两套并行 WBS（M1…M5 + P0/P1 标签族），
@@ -1192,6 +1265,7 @@ export function finalizePrdParseResult(
     }
   }
   ensurePrdRequirementCoverage(requirements, finalDrafts);
+  compactPrdCoveragePlans(finalDrafts, requirements);
   fillPlanSourceSectionsFromRequirements(requirements, finalDrafts);
   // 2026-11-18：解析预览阶段就把里程碑工期收敛为「子项合计」，否则质量门会持续报工期不符。
   const planDurations = milestoneDurations(
@@ -1336,7 +1410,8 @@ async function parsePrdSkeleton(
     '2. 每条 normal 只写一个可交付动作，标题 ≤24 字，不要求 description；系统会自动补完成定义。',
     '3. reqNos 只能引用下方【需求清单】里的 reqNo，每个 normal 只挂直接承接的 1~3 条；AC 必须放进 acceptanceRefs。',
     '4. 禁止把全部未覆盖需求堆到同一条测试任务；无法确定 sourceSection 时留空，禁止写 §?。',
-    '5. 不要输出解释、Markdown 围栏、startDate、deliverable、dependsOn、taskType、complexity；只输出完整闭合 JSON。',
+    '5. **禁止生成“需求追溯/覆盖核对/矩阵核对”类任务**：这类任务不是交付物，系统会在解析后统一兜底；不要为了“每条需求都有计划”而增加核对卡。',
+    '6. 不要输出解释、Markdown 围栏、startDate、deliverable、dependsOn、taskType、complexity；只输出完整闭合 JSON。',
   ].join('\n');
   const reqList = requirements.map((r) => ({ reqNo: r.reqNo, title: r.title, type: r.type, priority: r.priority }));
   const planAi = await AIService.askJson(toolId, planSystem, `【PRD 文档】\n${docText}\n【需求清单】\n${JSON.stringify(reqList)}`, (content) =>
@@ -4068,13 +4143,14 @@ export const PlanService = {
       '3. **每个 normal 任务必须是一个可交付动作**：标题以动词开头（设计/实现/改造/联调/验证/补测/上线），写清对象与范围；description ≥50 字，必须包含「做什么 + 边界/不做什么 + 完成定义」；不得只写「实现某功能」「开发某模块」。**每个里程碑至少拆到 6 条**；如果你只写出 3~4 条，说明粒度过粗或漏项，必须继续拆到 30~40 条总量。',
       '4. **结构字段必须齐全**：wbsCode（M1/M1.1）、parentCode（明细指向所属里程碑 code）、phaseCode（同 parentCode）、priority（P0/P1；本期禁止 P2/P3 进入 plans）、sourceSection（对应 PRD 章节）、deliverable（可验收产物）、acceptanceRefs（该任务承接的 AC-xx 验收编号，**不是 REQ-xxx**）、dependsOn（前置任务 wbsCode，数组）、estimateDays（1~5 的整数）、taskType、complexity（1~5）。',
       '5. **范围闸门**：只把 P0/P1 放进 plans；P2/P3 只提取 requirements，**不得生成任何 plan，包括里程碑**。PRD §12 明确 P2/P3 的批量、多平台、平台 token 等内容一律不排进当前 WBS；若某个功能只在 P2/P3，只在 requirements 里保留。',
-      '6. **需求关联**：每个 normal 任务只挂它直接实现/验证的 1~3 个 REQ 编号（reqNos）；禁止一个任务挂 4 个以上 REQ，禁止把全部需求挂到里程碑。每条 FR/NFR/EX 至少被一条 normal 任务覆盖；**每条 AC-xx 必须出现在某条 normal 的 acceptanceRefs 中**；最后一条「全量验收与回归」任务可以承接剩余 AC。',
+      '6. **需求关联**：每个 normal 任务只挂它直接实现/验证的 1~3 个 REQ 编号（reqNos）；禁止一个任务挂 4 个以上 REQ，禁止把全部需求挂到里程碑。每条 FR/NFR/EX 尽量被一条 normal 任务覆盖；**每条 AC-xx 必须出现在某条 normal 的 acceptanceRefs 中**；最后一条「全量验收与回归」任务可以承接剩余 AC。无法自然归属的需求不要新建核对任务，解析后由系统统一兜底。',
       '7. **依赖**：同一里程碑下按执行顺序给 dependsOn 填前一条任务的 wbsCode；跨里程碑只填真实前置。不得编造依赖。',
       '8. **禁止重复**：同一功能/同一交付物只能出现一次；原文在多个章节重复描述时合并为一条任务，在 sourceSection 里列出多个章节。',
       '9. **不要输出 startDate**；status 一律 "todo"；durationDays 与 estimateDays 保持一致，按工作日计。',
       '10. **输出规模**：requirements 最多 65 条（FR/NFR/AC/EX 全量，AC 不得省略）；plans 必须实际输出 5 个里程碑 + 30~40 条 normal（不是建议，是硬性验收；系统不会替你补齐缺口行）；title ≤30 字。每条 plan 必须写 priority（P0/P1，不得省略/留空）和 wbsCode/parentCode（normal 必须指到所属里程碑）。只输出 JSON 对象本身，不要解释或 Markdown 围栏；必须完整闭合。',
       '11. **AC 强制提取**：PRD 的验收标准章节（通常为 §11）里每条 AC-xx 都必须单独输出为一条 requirement：reqNo 严格沿用原文 AC-xx，type="AC"，content 保留 Given/When/Then，sourceRef 指向验收章节，priority 按它约束的功能优先级（无明确优先级用 P1）。禁止把 AC 合并成一条，禁止只引用不建条目。',
       '12. **输出长度控制（必须遵守，否则会触发截断/分片并破坏 WBS）**：requirements 的 content ≤80 字；每个 plan 的 description 50~90 字；title ≤24 字；每个 normal 的 reqNos ≤2 个、acceptanceRefs ≤3 个（全量验收任务除外）；不要输出解释、不要重复原文长段落。',
+      '13. **禁止生成需求追溯/覆盖核对/矩阵核对类计划**：这类任务不是交付物，只会虚增 normal 条数；系统会在解析完成后按需求覆盖情况统一生成兜底卡。模型只输出实现、联调、测试、验收等真实交付任务。',
     ].join('\n');
     // T00707：首轮若被截断/解析失败，重试改用精简提示词（压缩到更小规模，确保能完整闭合）
     const systemCompact = [
