@@ -79,7 +79,7 @@ const ROOT = path.resolve(__dirname, '..');
   }
 
   // 参数为本仓库固定字面量 + npm script 透传的已知 flag，无外部用户输入进入命令行
-  const cmd = ['electron-builder', '--win', `-c.buildVersion=${version}`, `--config.directories.output=${outDir}`, ...builderArgs].join(' ');
+  const cmd = ['electron-builder', '--win', `-c.buildVersion=${version}`, `--config.directories.output=${outDir}`, ...builderArgs.filter((a) => !a.startsWith('--config.directories.output='))].join(' ');
   console.log(`[dist] ${cmd}`);
   const child = spawn(cmd, { cwd: ROOT, shell: true, stdio: 'inherit', env: buildChildEnv() });
 
