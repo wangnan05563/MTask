@@ -13,6 +13,7 @@ import {
 import type { AITool, Project, Queue, QueueJob, Task } from '../api/client';
 import { Badge, type BadgeTone } from '../ui/Badge';
 import { EmptyState } from '../ui/EmptyState';
+import { HoverCard } from '../ui/HoverCard';
 import { Markdown } from '../ui/Markdown';
 import { BTN_DISABLED, BTN_ICON, BTN_PRIMARY, BTN_SECONDARY, BTN_SECONDARY_MD, FIELD_QUIET, FIELD_SM, PILL, PRIORITY_TOKEN } from '../ui/primitives';
 import { fmtElapsed } from '../ui/runStatus';
@@ -309,18 +310,18 @@ export function QueueComposer(props: QueueComposerProps) {
         </div>
       )}
 
-      <div style={{ ...rowStyle, marginBottom: 8 }}>
+      <div style={{ ...rowStyle, marginBottom: 8, gap: 6, flexWrap: 'wrap' }}>
         <select
           value={projectId}
           onChange={(e) => onProjectChange(e.target.value)}
           aria-label="按项目筛选待办任务"
           title="按项目筛选：只列出该项目下的待办任务（切换项目不会清空已选，可跨项目编排同一队列）"
-          style={{ ...FIELD_SM, minWidth: 170, cursor: 'pointer' }}
+          style={{ ...FIELD_SM, minWidth: 138, flex: '0 1 150px', cursor: 'pointer' }}
         >
           <option value="">全部项目</option>
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
-        <div style={{ ...rowStyle, flex: '1 1 180px', gap: 4, minWidth: 160 }}>
+        <div style={{ ...rowStyle, flex: '1 1 190px', gap: 4, minWidth: 170, maxWidth: 300 }}>
           <Search size={12} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
           <input
             value={taskKeyword}
@@ -330,12 +331,47 @@ export function QueueComposer(props: QueueComposerProps) {
             style={{ ...FIELD_QUIET, flex: '1 1 auto', minWidth: 0 }}
           />
         </div>
-        <span style={hintStyle}>
+        <select
+          value={toolId}
+          onChange={(e) => onToolChange(e.target.value)}
+          aria-label="选择要交付的 AI 工具"
+          title="选择 AI 工具 — 队列会把每个任务连同上下文提交给该工具"
+          style={{ ...FIELD_SM, flex: '1 1 220px', minWidth: 180, maxWidth: 260, cursor: 'pointer' }}
+        >
+          <option value="">选择 AI 工具…</option>
+          {tools.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name}（{t.type}）{t.model ? ` · ${t.model}` : ' · 未配模型'}
+            </option>
+          ))}
+        </select>
+        <HoverCard
+          card={`加入队列 | ${canAdd ? `提交已选 ${pickedTaskIds.length} 条任务到当前队列` : '先勾选任务并选择 AI 工具'}`}
+          ariaLabel="加入队列"
+          cardW={280}
+          cardH={44}
+          openDelay={160}
+          style={{ flexShrink: 0 }}
+        >
+          <button
+            onClick={onAdd}
+            disabled={!canAdd}
+            title={canAdd ? `把已选的 ${pickedTaskIds.length} 条任务加入当前队列` : '请先勾选任务并选择 AI 工具'}
+            aria-label={canAdd ? `加入队列，已选 ${pickedTaskIds.length} 条` : '加入队列不可用：请先勾选任务并选择 AI 工具'}
+            style={{
+              ...BTN_PRIMARY, ...(canAdd ? undefined : BTN_DISABLED), width: 34, height: 30,
+              padding: 0, justifyContent: 'center', flexShrink: 0,
+            }}
+          >
+            {adding ? <Loader2 size={14} className="aispin" /> : <Plus size={15} />}
+          </button>
+        </HoverCard>
+        <span style={{ ...hintStyle, flexShrink: 0 }}>
           {tasksLoading ? '加载中…' : `待办 ${visibleTasks.length} 条`}
           {projectId && !tasksLoading ? ` · ${projects.find((p) => p.id === projectId)?.name ?? ''}` : ''}
         </span>
         {pickedTaskIds.length > 0 && (
-          <button onClick={onClearPicked} style={{ ...BTN_SECONDARY, fontSize: 'var(--fs-xs)' }} title="清空已选任务">
+          <button onClick={onClearPicked} style={{ ...BTN_SECONDARY, fontSize: 'var(--fs-xs)', flexShrink: 0 }} title="清空已选任务">
             清空已选（{pickedTaskIds.length}）
           </button>
         )}
@@ -389,33 +425,6 @@ export function QueueComposer(props: QueueComposerProps) {
             </label>
           );
         })}
-      </div>
-
-      <div style={{ ...rowStyle, marginTop: 8, gap: 8 }}>
-        <select
-          value={toolId}
-          onChange={(e) => onToolChange(e.target.value)}
-          aria-label="选择要交付的 AI 工具"
-          title="选择 AI 工具 — 队列会把每个任务连同上下文提交给该工具"
-          style={{ ...FIELD_SM, flex: '1 1 200px', minWidth: 180, cursor: 'pointer' }}
-        >
-          <option value="">选择 AI 工具…</option>
-          {tools.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.name}（{t.type}）{t.model ? ` · ${t.model}` : ' · 未配模型'}
-            </option>
-          ))}
-        </select>
-        <button
-          onClick={onAdd}
-          disabled={!canAdd}
-          title={canAdd ? `把已选的 ${pickedTaskIds.length} 条任务加入当前队列` : '请先勾选任务并选择 AI 工具'}
-          aria-label="加入队列"
-          style={{ ...BTN_PRIMARY, ...(canAdd ? undefined : BTN_DISABLED) }}
-        >
-          {adding ? <Loader2 size={13} className="aispin" /> : <Plus size={13} />}
-          {adding ? '加入中…' : `加入队列${pickedTaskIds.length > 0 ? `（${pickedTaskIds.length}）` : ''}`}
-        </button>
       </div>
       {tools.length === 0 && (
         <div style={{ ...hintStyle, marginTop: 6 }}>还没有 AI 工具：先到「模型」菜单添加并配置模型，否则发送会因未配模型而失败。</div>
