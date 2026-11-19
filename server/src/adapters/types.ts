@@ -124,6 +124,34 @@ export interface StreamResult {
   usage?: TokenUsage;
 }
 
+/**
+ * 队列任务的系统提示词：有联网检索上下文时按「资讯研究」执行，避免资讯任务被
+ * 通用开发提示词带成“实现思路/代码/风险”式回执；无检索时保持原开发口径。
+ * T06076 实测：同一份检索结果 + 开发提示词会产出无来源的泛化内容，资讯提示词可稳定
+ * 产出 3 条要点 + 真实链接，并通过回执质量门。
+ */
+export function systemPromptFor(context: TaskContext): string {
+  if (context.webContext) {
+    return [
+      '你是 MTask 的资讯研究执行者。请严格依据【联网检索结果】整理资讯，不得使用检索结果之外的记忆补写。',
+      '输出要求：',
+      '1. 第一行给出一句话总览（日期 + 主题）。',
+      '2. 列出恰好 3 条要点；每条包含「发生了什么 / 对本项目的意义」，并在该条末尾附来源链接。',
+      '3. 只能引用【联网检索结果】中出现的标题和 URL；不得编造新闻、日期或链接。',
+      '4. 检索结果不足 3 条时，明确写「仅获取到 N 条」并说明缺口，不得补写。',
+      '5. 不要输出代码、实现思路、寒暄或“知识截止”说明。',
+    ].join('\n');
+  }
+  return [
+    '你是 MTask 的开发任务执行者。请根据任务信息产出可直接交付的开发成果文本。',
+    '输出要求：',
+    '1. 给出实现思路（简短）',
+    '2. 给出完整代码/配置/操作步骤（可复制）',
+    '3. 列出关键风险与验证方式',
+    '只输出最终成果，不要寒暄。',
+  ].join('\n');
+}
+
 export interface AIAdapter {
   readonly type: string;
   testConnection(config: ToolConfig): Promise<{ ok: boolean; message: string }>;

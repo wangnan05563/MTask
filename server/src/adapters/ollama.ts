@@ -1,6 +1,6 @@
 import type { AIAdapter, TaskContext, ToolConfig, JobResult, AdapterType, ModelsResult, StreamResult } from './types';
 import { withTimeout, formatHttpError, normalizeModels, readStreamLines, probeOkMessage, modelDispatcher } from './netutil';
-import { streamTruncatedError } from './types'; // T00779：流式截断统一错误文案
+import { streamTruncatedError, systemPromptFor } from './types'; // T00779：流式截断统一错误文案
 
 interface ChatResp {
   message?: { content?: string };
@@ -53,10 +53,8 @@ export class OllamaAdapter implements AIAdapter {
       context.prdContext ? `【PRD 需求上下文】${context.prdContext}` : '', // T00763
       context.webContext ? `【联网检索结果】\n${context.webContext}` : '', // T06076
       context.workspacePath ? `【工作空间】${context.workspacePath}（项目上下文根路径）` : '', // T00771
-      '',
-      '你是 MTask 的开发任务执行者。请产出可直接交付的开发成果文本：实现思路(简短)、完整代码/配置/操作步骤(可复制)、关键风险与验证方式。只输出最终成果。',
     ].filter(Boolean).join('\n');
-    return this.chat('', user, config);
+    return this.chat(systemPromptFor(context), user, config);
   }
 
   /** 通用单轮对话：复用 /api/chat，供 send 与提示词优化等场景共用 */

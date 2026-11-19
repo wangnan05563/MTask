@@ -1,6 +1,6 @@
 import type { AIAdapter, TaskContext, ToolConfig, JobResult, AdapterType, ModelsResult, StreamResult, TokenUsage } from './types';
 import { withTimeout, formatHttpError, normalizeModels, readStreamLines, TIMEOUT_CODE, extractVendorError, statusHint, probeOkMessage, modelDispatcher } from './netutil';
-import { streamTruncatedError, outputStoppedError, describeError } from './types'; // T00779：流式截断统一错误文案
+import { streamTruncatedError, outputStoppedError, describeError, systemPromptFor } from './types'; // T00779：流式截断统一错误文案
 
 interface ChatCompletionResp {
   choices?: { message?: { content?: string; reasoning_content?: string }; finish_reason?: string }[];
@@ -198,14 +198,7 @@ export class OpenAICompatAdapter implements AIAdapter {
   }
 
   async send(context: TaskContext, config: ToolConfig): Promise<JobResult> {
-    const system = [
-      '你是 MTask 的开发任务执行者。请根据任务信息产出可直接交付的开发成果文本。',
-      '输出要求：',
-      '1. 给出实现思路（简短）',
-      '2. 给出完整代码/配置/操作步骤（可复制）',
-      '3. 列出关键风险与验证方式',
-      '只输出最终成果，不要寒暄。',
-    ].join('\n');
+    const system = systemPromptFor(context);
     const user = [
       `【项目】${context.projectName}`,
       `【任务】${context.title}`,
