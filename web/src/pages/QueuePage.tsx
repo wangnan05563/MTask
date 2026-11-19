@@ -69,6 +69,7 @@ interface QueueToolButtonProps {
 
 function QueueToolButton({ label, hint, icon, onClick, disabled, ariaLabel, style }: QueueToolButtonProps) {
   const [pressed, setPressed] = useState(false);
+  const [hovered, setHovered] = useState(false);
   const card = `${label} — ${hint}`;
   return (
     <HoverCard card={card} ariaLabel={`${label}：${hint}`} cardW={260} cardH={44} openDelay={150} style={{ flexShrink: 0 }}>
@@ -79,11 +80,15 @@ function QueueToolButton({ label, hint, icon, onClick, disabled, ariaLabel, styl
         aria-label={ariaLabel ?? `${label}：${hint}`}
         onPointerDown={() => setPressed(true)}
         onPointerUp={() => setPressed(false)}
-        onPointerLeave={() => setPressed(false)}
-        onBlur={() => setPressed(false)}
+        onPointerEnter={() => setHovered(true)}
+        onPointerLeave={() => { setHovered(false); setPressed(false); }}
+        onBlur={() => { setHovered(false); setPressed(false); }}
         style={{
           ...BTN_ICON, ...style, width: 32, height: 32, padding: 0, justifyContent: 'center',
-          transition: 'transform 150ms ease', transform: pressed ? 'scale(0.92)' : 'scale(1)',
+          transition: 'transform 150ms ease, box-shadow 150ms ease, filter 150ms ease',
+          transform: pressed ? 'scale(0.92)' : 'scale(1)',
+          filter: hovered && !disabled ? 'brightness(0.96)' : undefined,
+          boxShadow: hovered && !disabled ? '0 0 0 2px var(--accent-soft)' : undefined,
         }}
       >
         {icon}
