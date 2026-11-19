@@ -19,6 +19,8 @@ interface ToolForm {
   apiKey: string;
   model: string;
   modelNotes: string;
+  /** 最大输出 token（字符串便于表单编辑；保存时校验并转数字） */
+  maxTokens: string;
   purpose: 'organize' | 'develop';
   enabled: boolean;
   remark: string;
@@ -38,7 +40,7 @@ const labelStyle: CSSProperties = { fontSize: 'var(--fs-s)', color: 'var(--text-
 function emptyForm(defaultType: string): ToolForm {
   return {
     name: '', type: defaultType, providerType: '', endpoint: '', apiKey: '',
-    model: '', modelNotes: '', purpose: 'develop', enabled: true, remark: '', consoleUrl: '', presetId: '',
+    model: '', modelNotes: '', maxTokens: '4096', purpose: 'develop', enabled: true, remark: '', consoleUrl: '', presetId: '',
   };
 }
 
@@ -652,6 +654,23 @@ function ToolFormDialog(props: ToolFormDialogProps) {
             <input id="aitool-model-notes" style={fieldStyle} value={form.modelNotes} onChange={(e) => props.onFieldChange({ modelNotes: e.target.value })} placeholder="例如 建议 temperature 0.2" />
           </div>
           <div>
+            <label htmlFor="aitool-max-tokens" style={labelStyle}>最大输出 tokens</label>
+            <input
+              id="aitool-max-tokens"
+              style={fieldStyle}
+              type="number"
+              min={256}
+              max={65536}
+              step={1024}
+              value={form.maxTokens}
+              onChange={(e) => props.onFieldChange({ maxTokens: e.target.value })}
+              placeholder="4096"
+            />
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>
+              单次输出上限，不是上下文窗口；长文档解析建议 16K~32K。修改后需重新解析才会使用新预算。
+            </div>
+          </div>
+          <div>
             <label htmlFor="aitool-purpose" style={labelStyle}>用途</label>
             <select id="aitool-purpose" style={fieldStyle} value={form.purpose} onChange={(e) => props.onFieldChange({ purpose: e.target.value as ToolForm['purpose'] })}>
               <option value="organize">整理</option>
@@ -796,6 +815,7 @@ export function AIToolsPage() {
       apiKey: '',
       model: preset.default_model,
       modelNotes: preset.description,
+      maxTokens: '4096',
       purpose: 'develop',
       enabled: true,
       remark: '',
@@ -812,6 +832,7 @@ export function AIToolsPage() {
     setForm({
       name: t.name, type: t.type, providerType: t.provider_type ?? '', endpoint: t.endpoint, apiKey: '',
       model: t.model ?? '', modelNotes: t.model_notes ?? '',
+      maxTokens: String(t.max_tokens ?? 4096),
       purpose: t.purpose === 'organize' ? 'organize' : 'develop',
       enabled: t.enabled, remark: t.remark ?? '', consoleUrl: t.console_url ?? '', presetId: '',
     });
@@ -862,6 +883,10 @@ export function AIToolsPage() {
     if (!form || saving) return;
     if (!form.name.trim()) return flash('名称必填');
     if (!form.endpoint.trim()) return flash('Endpoint 必填');
+    const maxTokens = Number(form.maxTokens);
+    if (!Number.isInteger(maxTokens) || maxTokens < 256 || maxTokens > 65536) {
+      return flash('最大输出 tokens 需为 256~65536 的整数');
+    }
     const payload: Record<string, unknown> = {
       name: form.name.trim(),
       type: form.type,
@@ -869,6 +894,7 @@ export function AIToolsPage() {
       endpoint: form.endpoint.trim(),
       model: form.model.trim() || undefined,
       modelNotes: form.modelNotes,
+      maxTokens,
       purpose: form.purpose,
       enabled: form.enabled,
       remark: form.remark,

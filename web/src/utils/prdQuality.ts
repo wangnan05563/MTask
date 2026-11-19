@@ -374,7 +374,7 @@ export function buildSourceCoverage(
   const docText = sources.map((s) => s.text ?? '').join('\n');
   const resultText = [
     ...reqs.map((r) => `${r.sourceRef ?? ''} ${r.title ?? ''} ${r.content ?? ''}`),
-    ...plans.map((p) => `${p.title ?? ''} ${p.description ?? ''}`),
+    ...plans.map((p) => `${p.title ?? ''} ${p.description ?? ''} ${p.sourceSection ?? ''}`),
   ].join('\n');
 
   const specs: Array<{ label: string; re: RegExp; soft?: boolean }> = [
@@ -461,7 +461,9 @@ export function evaluateImportReadiness(
     const withParent = normals.filter((p) => !!p.parentCode || (p.wbsCode ?? '').includes('.')).length;
     if (withParent === 0) errors.push('0 条真实父子依赖——任务没有挂到任何里程碑，无法按阶段推进');
   }
-  const acReqs = reqs.filter((r) => r.type === 'AC' || /^AC[-_.]?\d/i.test(r.reqNo ?? '') || /验收标准/.test(r.sourceRef ?? ''));
+  // P2/P3 验收项按范围闸门不进入本期计划；它们未映射不是质量缺陷，不能阻断本期导入。
+  const acReqs = reqs.filter((r) => !/p[23]/i.test(r.priority ?? '')
+    && (r.type === 'AC' || /^AC[-_.]?\d/i.test(r.reqNo ?? '') || /验收标准/.test(r.sourceRef ?? '')));
   if (acReqs.length > 0) {
     const mapped = new Set<string>();
     for (const p of plans) {
@@ -475,6 +477,37 @@ export function evaluateImportReadiness(
   }
   const p2p3 = plans.filter((p) => /p[23]/i.test(p.priority ?? ''));
   if (p2p3.length > 0) errors.push(`P2/P3 条目 ${p2p3.length} 条进入了本次排期（如「${p2p3[0].title}」）——请取消勾选或拆到后续批次`);
+  // 2026-11-18：覆盖兜底/骨架模式容易把多条需求堆到一条测试卡；这些不阻断，但必须在导入前可见。
+  // 关联数按 reqNos ∪ acceptanceRefs 计——只数 reqNos 会漏掉「1 条 REQ + 6 条 AC」的假轻载。
+  const heavyReqRows = normals.filter((p) => new Set([
+    ...(p.reqNos ?? []).map((x) => normalizeReqRefKey(x)),
+    ...(p.acceptanceRefs ?? []).map((x) => normalizeReqRefKey(x)),
+  ].filter(Boolean)).size > 6);
+  if (heavyReqRows.length > 0) {
+    warnings.push(`有 ${heavyReqRows.length} 条任务关联需求超过 6 条（如「${heavyReqRows[0].title}」关联 ${new Set([...(heavyReqRows[0].reqNos ?? []), ...(heavyReqRows[0].acceptanceRefs ?? [])]).size} 条）——建议拆分或迁移到语义相近的任务`);
+  }
+  const longNormalRows = normals.filter((p) => (p.description ?? '').replace(/\s/g, '').length > 800);
+  if (longNormalRows.length > 0) {
+    warnings.push(`有 ${longNormalRows.length} 条任务描述超过 800 字（如「${longNormalRows[0].title}」）——建议把长需求原文留在矩阵，执行卡只保留直接相关的 4~6 条`);
+  }
+  const reqTitleGroups = new Map<string, string[]>();
+  for (const r of reqs) {
+    const key = (r.title ?? '').replace(/\s/g, '').toLowerCase();
+    if (!key) continue;
+    const list = reqTitleGroups.get(key) ?? [];
+    list.push(r.reqNo);
+    reqTitleGroups.set(key, list);
+  }
+  const duplicateReqTitles = [...reqTitleGroups.entries()].filter(([, nos]) => new Set(nos).size > 1);
+  if (duplicateReqTitles.length > 0) {
+    warnings.push(`有 ${duplicateReqTitles.length} 组需求标题重复（如 ${duplicateReqTitles[0][1].slice(0, 3).join('、')}）——建议 AC 标题加“验收标准：”前缀或合并重复行`);
+  }
+  const explicitDurations = normals
+    .map((p) => Number(p.durationDays))
+    .filter((d) => Number.isFinite(d) && d > 0);
+  if (normals.length >= 10 && explicitDurations.length === normals.length && new Set(explicitDurations).size === 1) {
+    warnings.push(`可执行任务 ${normals.length} 条全部为 ${explicitDurations[0]} 天——工期没有体现复杂度差异，建议按 complexity/任务类型拆分 1~5 天`);
+  }
   const readiness: ImportReadiness = errors.length > 0 ? 'blocked' : warnings.length > 0 ? 'needs_review' : 'ready';
   return { readiness, errors, warnings };
 }
