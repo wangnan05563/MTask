@@ -21,6 +21,7 @@ import {
   computeQueueMetrics, filterJobs, fmtClock, fmtCost, jobCostMs, jobElapsedMs, matchesJobFilter,
   type JobFilter, type QueueMetrics,
 } from './queueMetrics';
+import { QueueModelPicker } from './QueueModelPicker';
 
 /** Job 状态的单源文案与配色（表格、监控、移动端文案口径都以这里为准） */
 const JOB_STATUS_META: Record<string, { label: string; tone: BadgeTone; color: string }> = {
@@ -331,20 +332,7 @@ export function QueueComposer(props: QueueComposerProps) {
             style={{ ...FIELD_QUIET, flex: '1 1 auto', minWidth: 0 }}
           />
         </div>
-        <select
-          value={toolId}
-          onChange={(e) => onToolChange(e.target.value)}
-          aria-label="选择要交付的 AI 工具"
-          title="选择 AI 工具 — 队列会把每个任务连同上下文提交给该工具"
-          style={{ ...FIELD_SM, flex: '1 1 220px', minWidth: 180, maxWidth: 260, cursor: 'pointer' }}
-        >
-          <option value="">选择 AI 工具…</option>
-          {tools.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.name}（{t.type}）{t.model ? ` · ${t.model}` : ' · 未配模型'}
-            </option>
-          ))}
-        </select>
+        <QueueModelPicker tools={tools} value={toolId} onChange={onToolChange} />
         <HoverCard
           card={`加入队列 | ${canAdd ? `提交已选 ${pickedTaskIds.length} 条任务到当前队列` : '先勾选任务并选择 AI 工具'}`}
           ariaLabel="加入队列"
