@@ -482,9 +482,33 @@ export interface QueueJob {
   request_payload: string | null;
   response_payload: string | null;
   error: string | null;
+  /** 进入发送态的时刻（耗时统计起点） */
+  sent_at?: string | null;
+  /** 收口时刻（success/failed/timeout 才有） */
+  finished_at?: string | null;
+  /** 异步提交时刻（超时判定基准） */
+  submitted_at?: string | null;
+  /** 异步受理标识（B0 / CLI / 中继类工具） */
+  ticket?: string | null;
   /** 队列详情接口 JOIN 附带（可能为 null） */
   task_title?: string | null;
+  task_no?: string | null;
+  task_priority?: string | null;
+  task_status?: string | null;
+  task_project_id?: string | null;
+  task_project_name?: string | null;
   tool_name?: string | null;
+}
+
+/** GET /queues/summary：每个队列的消费汇总（列表进度条数据源） */
+export interface QueueJobSummary {
+  id: string;
+  job_total: number;
+  job_success: number;
+  job_failed: number;
+  job_timeout: number;
+  job_pending: number;
+  last_activity_at: string | null;
 }
 
 export interface Queue {
