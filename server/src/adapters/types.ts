@@ -129,17 +129,75 @@ export interface StreamResult {
  * 通用开发提示词带成“实现思路/代码/风险”式回执；无检索时保持原开发口径。
  * T06076 实测：同一份检索结果 + 开发提示词会产出无来源的泛化内容，资讯提示词可稳定
  * 产出 3 条要点 + 真实链接，并通过回执质量门。
+ * T06058/T06059/T06060 实测：不同资讯任务的条数、分段、行数与侧重点差别很大，
+ * 固定“恰好 3 条”会压掉任务本身要求；因此把任务描述当作格式最高优先级。
  */
+function taskContractFor(context: TaskContext): string[] {
+  const text = `${context.title}\n${context.description}`;
+  const rules: string[] = [];
+  const lineLimit = text.match(/全文\s*(\d+)\s*行以内/);
+  if (lineLimit) rules.push(`全文不超过 ${lineLimit[1]} 行（按非空行计数，含分段标题；宁少勿多）。`);
+
+  const sectionMatch = text.match(/按((?:[「“][^」”]+[」”][、，,]?)+)分段/);
+  if (sectionMatch) {
+    const names = [...sectionMatch[1].matchAll(/[「“]([^」”]+)[」”]/g)].map((m) => m[1]);
+    if (names.length) {
+      rules.push(`必须原样使用以下分段标题逐段输出：${names.join(' / ')}；某段没有符合条件的内容就写「本期无」，不得改用其他分段名。`);
+      if (names.includes('版本更新')) {
+        rules.push('「发布 / 上线 / 新版本 / Introducing / 正式推出」类信息必须放在「版本更新」段，不得归入「其他动态」。');
+        rules.push('只要检索结果中存在发布类条目，「版本更新」段就必须逐条列出，不得写「本期无」；「其他动态」不得再重复这些发布类条目。');
+      }
+      if (names.includes('新项目')) {
+        rules.push('「新项目」段只能列 GitHub 仓库（URL 形如 github.com/owner/repo），不得把协议、博客文章或一般行业动态归入新项目。');
+      }
+    }
+  }
+
+  const range = text.match(/(\d+)\s*[-~至]\s*(\d+)\s*条/);
+  if (range) {
+    rules.push(`条目数量必须在 ${range[1]}–${range[2]} 条之间，不得少于 ${range[1]} 条或多于 ${range[2]} 条。`);
+    rules.push(`若高相关条目不足 ${range[1]} 条，必须补入检索结果中同领域、来源可靠的条目并标注相关性较弱；不得因某条官方页面「暂无摘要」就丢弃，少于 ${range[1]} 条即不合格。`);
+  } else {
+    const exact = text.match(/(?:整理|筛选|输出|列出)\s*(\d+)\s*条/);
+    if (exact) rules.push(`条目数量必须恰好 ${exact[1]} 条。`);
+  }
+
+  const focus = text.match(/侧重\s*([^。；\n]+)/);
+  if (focus) rules.push(`内容侧重：${focus[1]}；检索结果没有覆盖该方向时明确说明，不得用无关内容代替。`);
+
+  if (/每个项目一句话/.test(text)) {
+    rules.push('每个项目只用一句话，依次说清：它做什么、为什么突然火、和我的关系。');
+  }
+  if (/没有值得看的内容直接说没有|不要凑数/.test(text)) {
+    rules.push('没有符合条件的内容就直接写「本期无」或说明没有，不得凑数。');
+  }
+  if (/不要重复|避免重复/.test(text)) {
+    rules.push('避免重复描述同一事件；只从检索结果中挑选不同事件。');
+  }
+  if (/当天|今日|今天|每日|当日/.test(text)) {
+    rules.push('优先只选任务日期当天的内容；当天不足时，必须逐条标注实际发布日期并说明哪些不是当天，不得把前一日内容写成「今日」。');
+  }
+
+  if (rules.length) rules.push('任务描述中的条数、分段、行数、侧重点都是硬约束，不得套用通用 3 条模板。');
+  rules.push('数字、日期、公司名、链接必须与【联网检索结果】原文一致；不得换算、四舍五入、放大或缩小数量（例如 thousands 不得写成数万，99 不得写成约 990）。');
+  rules.push('来源链接必须整段复制检索结果中的 URL；GitHub 链接的 owner/repo 必须逐字核对，不得改写、缩写或替换仓库名。');
+  return rules;
+}
+
 export function systemPromptFor(context: TaskContext): string {
   if (context.webContext) {
+    const contract = taskContractFor(context);
+    const numbered = contract.map((rule, i) => `${i + 3}. ${rule}`);
     return [
       '你是 MTask 的资讯研究执行者。请严格依据【联网检索结果】整理资讯，不得使用检索结果之外的记忆补写。',
       '输出要求：',
-      '1. 第一行给出一句话总览（日期 + 主题）。',
-      '2. 列出恰好 3 条要点；每条包含「发生了什么 / 对本项目的意义」，并在该条末尾附来源链接。',
-      '3. 只能引用【联网检索结果】中出现的标题和 URL；不得编造新闻、日期或链接。',
-      '4. 检索结果不足 3 条时，明确写「仅获取到 N 条」并说明缺口，不得补写。',
-      '5. 不要输出代码、实现思路、寒暄或“知识截止”说明。',
+      '1. 先读懂【任务】与【描述】中的格式、条数、分段、行数、侧重点；任务要求优先于本提示的默认格式。',
+      '2. 每条信息必须写明「发生了什么 / 为什么值得关注或对本项目的影响」，并在该条末尾附来源链接。',
+      ...numbered,
+      `${numbered.length + 3}. 只能引用【联网检索结果】中出现的标题和 URL；不得编造新闻、日期或链接。`,
+      `${numbered.length + 4}. 检索结果不足或没有符合任务方向的内容时，明确写「仅获取到 N 条」或「本期无」，不得补写、不得凑数。`,
+      `${numbered.length + 5}. 任务未指定条数或格式时，默认输出 3 条要点，第一行为一句话总览。`,
+      `${numbered.length + 6}. 不要输出代码、实现思路、寒暄或“知识截止”说明。`,
     ].join('\n');
   }
   return [

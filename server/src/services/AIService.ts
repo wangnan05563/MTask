@@ -816,7 +816,7 @@ export const AIService = {
       };
       // 发送前固化上下文快照（FR4.4）
       db.prepare('UPDATE queue_jobs SET request_payload = ? WHERE id = ?')
-        .run(QueueService.snapshotTaskContext(task, project?.name ?? ''), job.id);
+        .run(QueueService.snapshotTaskContext(task, project?.name ?? '', webContext), job.id);
       const result = await adapter.send(context, config);
       return { ok: result.ok, content: result.content, error: result.error };
     };
@@ -845,7 +845,7 @@ export const AIService = {
       };
       // 与 buildSender 一致：提交前固化上下文快照，避免任务被改导致回执错位
       db.prepare('UPDATE queue_jobs SET request_payload = ? WHERE id = ?')
-        .run(QueueService.snapshotTaskContext(task, project?.name ?? ''), job.id);
+        .run(QueueService.snapshotTaskContext(task, project?.name ?? '', webContext), job.id);
       const { type, config } = runtimeWithModel(job.tool_id);
       const adapter = getAdapter(type);
       // T05796：CLI 由 MTask 直接 spawn；先按 Relay 同一口径把任务置 running 出池，

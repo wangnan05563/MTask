@@ -11,6 +11,8 @@
  * 只读取公开搜索结果，不登录、不抓取需要授权的页面。
  */
 import { getSetting } from './AppSettings';
+import { execFileSync } from 'node:child_process';
+import { ProxyAgent } from 'undici';
 
 export interface WebSearchItem {
   title: string;
@@ -286,17 +288,32 @@ export function buildRelevanceTerms(title: string, description: string): string[
  * 不再把描述前 140 字直接拼进 query。
  */
 export function buildSearchQuery(title: string, description: string): string {
+  const taskText = `${title}\n${description}`;
   const cleanTitle = title
     .replace(/^[【[]?T\d{5}[】\]]?/i, '')
     .replace(/【[^】]*】/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-  const date = extractDateToken(`${title}\n${description}`);
+  const date = extractDateToken(taskText);
   const terms = buildRelevanceTerms(title, description);
-  const isNews = /新闻|资讯|动态|日报|周报|早报|晚报/.test(`${title}\n${description}`);
+  const isNews = /新闻|资讯|动态|日报|周报|早报|晚报|简报/.test(taskText);
+  // T06060：GitHub 冒头/增速/新项目类任务，直接查 trending/new projects/releases，
+  // 不再退化成“GitHub star 新闻”这种会被 star 总量榜单淹没的查询。
+  const githubHot = /GitHub/i.test(taskText) && /冒头|新项目|star|star 数|趋势|trending|增速/i.test(taskText);
+  const techHot = /技术热点|技术栈|版本发布|重大特性|开源事件|release/i.test(taskText);
   // 「AI」是泛词，已有 AI coding / 具身智能等具体词时不再单列，避免稀释 query
   const specific = terms.filter((t) => t !== 'AI');
-  const core = specific.length ? specific.slice(0, 6).join(' ') : (terms.includes('AI') ? 'AI' : cleanTitle);
+  let core = specific.length ? specific.slice(0, 6).join(' ') : (terms.includes('AI') ? 'AI' : '');
+  if (githubHot) {
+    core = 'GitHub 热门项目 新项目 版本发布 开源';
+  } else if (techHot) {
+    core = '技术热点 版本发布 开源';
+  } else if (!specific.length && isNews) {
+    // T06058 这类“今日资讯阅读”没有领域词：用 AI 行业资讯兜底，
+    // 不能把“今日资讯阅读（日期）”本身当查询词。
+    core = 'AI 行业资讯';
+  }
+  if (!core) core = cleanTitle;
   const suffix = isNews ? ' 新闻' : '';
   const query = `${core}${suffix}${date ? ` ${date}` : ''}`.trim();
   return query.slice(0, 180);
@@ -304,18 +321,60 @@ export function buildSearchQuery(title: string, description: string): string {
 
 /** 英文检索查询：给 Bing/DDG 一个不被中文泛结果淹没的入口 */
 export function buildEnglishQuery(title: string, description: string): string {
+  const taskText = `${title}\n${description}`;
+  const githubHot = /GitHub/i.test(taskText) && /冒头|新项目|star|star 数|趋势|trending|增速/i.test(taskText);
+  const techHot = /技术热点|技术栈|版本发布|重大特性|开源事件|release/i.test(taskText);
+  if (githubHot) {
+    const date = extractDateToken(taskText);
+    return `GitHub trending repositories new projects releases open source news${date ? ` ${date}` : ''}`.trim().slice(0, 180);
+  }
+  if (techHot) {
+    const date = extractDateToken(taskText);
+    return `technology news releases open source${date ? ` ${date}` : ''}`.trim().slice(0, 180);
+  }
   const terms = buildRelevanceTerms(title, description)
     .map((t) => EN_MAP[t] || (/^[A-Za-z]/.test(t) && t.length >= 3 ? t : ''))
     .filter(Boolean);
-  const date = extractDateToken(`${title}\n${description}`);
+  const date = extractDateToken(taskText);
   const core = terms.slice(0, 5).join(' ') || 'AI';
   return `${core} news${date ? ` ${date}` : ''}`.trim().slice(0, 180);
 }
 
-async function fetchText(url: string, timeoutMs = 10000): Promise<string> {
+let cachedProxyUrl: string | undefined;
+let proxyDispatcher: ProxyAgent | null = null;
+
+/** 读取本机代理：设置项 > 环境变量 > Windows 系统代理；GitHub 在部分网络下只能经代理访问 */
+function webProxyUrl(): string {
+  if (cachedProxyUrl !== undefined) return cachedProxyUrl;
+  const configured = (getSetting('queue.webSearchProxy') || '').trim();
+  if (configured) return (cachedProxyUrl = configured);
+  const env = (process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy || '').trim();
+  if (env) return (cachedProxyUrl = env);
+  if (process.platform === 'win32') {
+    try {
+      const out = execFileSync('reg', [
+        'query',
+        'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings',
+        '/v',
+        'ProxyServer',
+      ], { encoding: 'utf8', windowsHide: true, timeout: 3000 });
+      const raw = (out.match(/ProxyServer\s+REG_SZ\s+(\S+)/i)?.[1] ?? '').trim();
+      if (raw) {
+        const https = raw.match(/https=([^;]+)/i)?.[1];
+        const value = (https || raw).replace(/^["']|["']$/g, '');
+        return (cachedProxyUrl = /^http[s]?:\/\//i.test(value) ? value : `http://${value}`);
+      }
+    } catch { /* 读取失败则按直连处理 */ }
+  }
+  return (cachedProxyUrl = '');
+}
+
+async function fetchText(url: string, timeoutMs = 10000, viaProxy = false): Promise<string> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
+    const proxy = viaProxy ? webProxyUrl() : '';
+    if (proxy && !proxyDispatcher) proxyDispatcher = new ProxyAgent(proxy);
     const res = await fetch(url, {
       signal: ctrl.signal,
       headers: {
@@ -323,6 +382,7 @@ async function fetchText(url: string, timeoutMs = 10000): Promise<string> {
         'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.6',
         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       },
+      ...(proxy && proxyDispatcher ? { dispatcher: proxyDispatcher } : {}),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.text();
@@ -388,6 +448,47 @@ async function searchAuthoritativeFeeds(
   }
   const ranked = rankWebSearchItems(items, terms, referenceDate, { maxAgeDays, referenceDate });
   return { items: ranked.items, errors };
+}
+
+/**
+ * T06060：GitHub 上「冒头」的项目看的是近期增速，不是总 star。
+ * GitHub Trending 页面直接给出「stars this week」，比通用搜索更容易拿到真实新项目；
+ * 解析失败/限流时静默返回空，不阻断队列发送。
+ */
+async function searchGithubTrending(maxItems = 3): Promise<WebSearchItem[]> {
+  // GitHub 偶发 429/连接抖动；空结果不缓存，短暂退避后重试一次，
+  // 避免「新项目」段因为一次抓取失败整段变成“本期无”。
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const html = await fetchText('https://github.com/trending?since=weekly', 12000, true);
+      const articles = [...html.matchAll(/<article class="Box-row">([\s\S]*?)<\/article>/g)];
+      const out: WebSearchItem[] = [];
+      for (const article of articles) {
+        const body = article[1];
+        const hrefMatch = body.match(/<h2[^>]*>[\s\S]*?<a[^>]*href="\/([^"/]+)\/([^"/]+)"[^>]*>([\s\S]*?)<\/a>/i);
+        if (!hrefMatch) continue;
+        const owner = hrefMatch[1];
+        const repo = hrefMatch[2];
+        if (!/^[A-Za-z0-9_.-]+$/.test(owner) || !/^[A-Za-z0-9_.-]+$/.test(repo)) continue;
+        const title = stripHtml(hrefMatch[3]).replace(/\s+/g, ' ').trim() || `${owner}/${repo}`;
+        const descMatch = body.match(/<p class="col-9[^"]*"[^>]*>([\s\S]*?)<\/p>/i);
+        const desc = stripHtml(descMatch?.[1] ?? '');
+        const stars = body.match(/([\d,]+)\s+stars this week/i)?.[1] ?? '';
+        const snippet = `${desc}${stars ? ` · 本周新增 ${stars} stars` : ''}`.slice(0, 500);
+        out.push({
+          title,
+          url: `https://github.com/${owner}/${repo}`,
+          snippet,
+          source: 'GitHub Trending',
+          score: 90,
+        });
+        if (out.length >= maxItems) break;
+      }
+      if (out.length > 0) return out;
+    } catch { /* 重试一次；仍失败则返回空，不阻断队列 */ }
+    if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 600));
+  }
+  return [];
 }
 
 async function searchBing(query: string): Promise<WebSearchItem[]> {
@@ -595,15 +696,19 @@ export function buildNoSourceContext(queries: string[], dateToken = '', errors: 
  */
 export async function buildQueueWebContext(title: string, description: string): Promise<string> {
   if (!shouldSearchQueueTask(title, description)) return '';
+  const taskText = `${title}\n${description}`;
   const terms = buildRelevanceTerms(title, description);
-  const dateToken = extractDateToken(`${title}\n${description}`);
-  const isNews = /新闻|资讯|动态|日报|周报|早报|晚报/.test(`${title}\n${description}`);
-  const isToday = /当天|今日|今天|每日|当日/.test(`${title}\n${description}`);
+  const dateToken = extractDateToken(taskText);
+  const isNews = /新闻|资讯|动态|日报|周报|早报|晚报|简报/.test(taskText);
+  const isToday = /当天|今日|今天|每日|当日/.test(taskText);
   // 「当天/每日」只看 2 天窗口；一般新闻看 7 天；普通任务不做时间过滤
   const maxAgeDays = isNews ? (isToday ? 2 : 7) : 0;
   const primary = buildSearchQuery(title, description);
   const english = buildEnglishQuery(title, description);
   if (!primary && !english) return '';
+  // T06060：GitHub 冒头项目要增速榜，单独拉 Trending 页面，和通用搜索并行。
+  const githubHot = /GitHub/i.test(taskText) && /冒头|新项目|star|star 数|趋势|trending|增速/i.test(taskText);
+  const techHot = /技术热点|技术栈|版本发布|重大特性|开源事件|release/i.test(taskText);
 
   const queries = [...new Set([primary, english].filter(Boolean))];
   // 权威源定向补检：通用搜索被广告站占据时，直接查官方博客/研究站点
@@ -615,13 +720,22 @@ export async function buildQueueWebContext(title: string, description: string): 
   const errors: string[] = [];
   // 权威 RSS 与通用搜索并行：RSS 快且可核验，通用搜索只做兜底
   const feedPromise = searchAuthoritativeFeeds(terms, maxAgeDays, dateToken);
+  const githubPromise = githubHot
+    ? searchGithubTrending(2).catch(() => [] as WebSearchItem[])
+    : Promise.resolve([] as WebSearchItem[]);
   // 三条查询并行，最多等一轮网络超时；只有主查询允许 DDG 兜底，控制队列等待时间
   const searchPromise = Promise.allSettled(
     queryList.map((q, i) => searchWeb(q, terms, maxAgeDays, dateToken, i === 0)),
   );
-  const [feedResult, searchResults] = await Promise.all([feedPromise, searchPromise]);
-  merged.push(...feedResult.items);
+  const [feedResult, searchResults, githubItems] = await Promise.all([feedPromise, searchPromise, githubPromise]);
+  merged.push(...feedResult.items.map((it) => ({
+    ...it,
+    // T06060：任务明确要「版本发布/重大特性」时，官方发布类条目要压过泛行业观察，
+    // 否则 Gemini 这类发布稿会被 GitHub 动态挤到第 6 条之外。
+    score: (it.score ?? 0) + (techHot && /introducing|release|发布|版本|重大特性/i.test(`${it.title} ${it.snippet}`) ? 12 : 0),
+  })));
   errors.push(...feedResult.errors);
+  merged.push(...githubItems);
   for (const settled of searchResults) {
     if (settled.status === 'rejected') {
       errors.push(settled.reason instanceof Error ? settled.reason.message : String(settled.reason));

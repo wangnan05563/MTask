@@ -43,7 +43,7 @@ export interface QueueJobRow {
 
 /** 回执质量提示：自述非实时 / 任务要求来源但正文无链接 / 占位内容 */
 export interface ReceiptWarning {
-  code: 'stale' | 'no_source' | 'placeholder';
+  code: 'stale' | 'no_source' | 'placeholder' | 'format';
   label: string;
   detail: string;
   /** 阻断采纳：必须显式 force 才能写入 */
@@ -100,8 +100,11 @@ export function receiptWarnings(job: Pick<QueueJobRow, 'request_payload' | 'resp
     out.push({ code: 'placeholder', label: '疑似占位内容', detail: '回执含 TODO/待补充/未生成等占位词，可能不是完整结论', blocking: true });
   }
   let description = '';
+  let webSources: string[] = [];
   try {
-    description = String((JSON.parse(job.request_payload ?? '{}') as { description?: unknown }).description ?? '');
+    const payload = JSON.parse(job.request_payload ?? '{}') as { description?: unknown; webSources?: unknown };
+    description = String(payload.description ?? '');
+    if (Array.isArray(payload.webSources)) webSources = payload.webSources.filter((url): url is string => typeof url === 'string');
   } catch { /* request_payload 不是 JSON 时只看回执本身 */ }
   const wantsSource = /来源|出处|引用|链接|标注/.test(description);
   if (wantsSource && !/https?:\/\//i.test(text)) {
@@ -111,6 +114,88 @@ export function receiptWarnings(job: Pick<QueueJobRow, 'request_payload' | 'resp
       detail: '任务描述要求标注来源，回执正文没有任何 http(s) 链接，来源不可核验',
       blocking: true,
     });
+  }
+  // 来源必须来自发送时注入的检索结果；模型改写仓库名/路径同样视为不可核验。
+  // 即使任务没写「来源」二字，只要回执引用了链接，链接也必须能对回检索结果。
+  if (webSources.length > 0 && /https?:\/\//i.test(text)) {
+    const normalize = (url: string) => url.replace(/[.,;:!?]+$/, '').replace(/\/$/, '').toLowerCase();
+    const allowed = new Set(webSources.map(normalize));
+    const cited = [...new Set((text.match(/https?:\/\/[^\s)\]>"']+/g) ?? []).map(normalize))];
+    const unknown = cited.filter((url) => !allowed.has(url));
+    if (unknown.length > 0) {
+      out.push({
+        code: 'no_source',
+        label: '来源链接不在检索结果',
+        detail: `回执引用了未注入的来源：${unknown.slice(0, 3).join('、')}；链接必须原样复制检索结果，不得改写仓库名或路径`,
+        blocking: true,
+      });
+    }
+  }
+  // T06060/T06059：任务给出了硬格式（分段/行数），回执不能只“看起来像资讯”。
+  const sectionMatch = description.match(/按((?:[「“][^」”]+[」”][、，,]?)+)分段/);
+  if (sectionMatch) {
+    const names = [...sectionMatch[1].matchAll(/[「“]([^」”]+)[」”]/g)].map((m) => m[1]);
+    const missing = names.filter((name) => !text.includes(name));
+    if (missing.length > 0) {
+      out.push({
+        code: 'format',
+        label: '未按任务要求分段',
+        detail: `任务要求分段：${names.join(' / ')}；回执缺少：${missing.join(' / ')}`,
+        blocking: true,
+      });
+    }
+    if (names.includes('新项目')) {
+      const section = text.match(/新项目([\s\S]*?)(?=版本更新|其他动态|$)/)?.[1] ?? '';
+      if (section && !/https?:\/\/github\.com\/[^/\s]+\/[^/\s]+/i.test(section)) {
+        out.push({
+          code: 'format',
+          label: '新项目段缺少 GitHub 仓库',
+          detail: '任务要求 GitHub 上冒头的项目，「新项目」段必须列出 github.com/owner/repo 形式的仓库链接',
+          blocking: true,
+        });
+      }
+    }
+    if (names.includes('版本更新')) {
+      const section = text.match(/版本更新([\s\S]*?)(?=其他动态|$)/)?.[1] ?? '';
+      const hasReleaseSource = webSources.some((url) => /introducing|release|new-model|announcement/i.test(url));
+      if (section && /本期无/.test(section) && hasReleaseSource) {
+        out.push({
+          code: 'format',
+          label: '版本更新段误报本期无',
+          detail: '检索结果中存在发布类条目，但「版本更新」写本期无；发布类条目应归入该段',
+          blocking: true,
+        });
+      }
+    }
+  }
+  const lineLimit = description.match(/全文\s*(\d+)\s*行以内/);
+  if (lineLimit) {
+    const nonEmptyLines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).length;
+    if (nonEmptyLines > Number(lineLimit[1])) {
+      out.push({
+        code: 'format',
+        label: '超出任务行数限制',
+        detail: `任务要求全文不超过 ${lineLimit[1]} 行，回执非空行数为 ${nonEmptyLines}`,
+        blocking: true,
+      });
+    }
+  }
+  const countRange = description.match(/(\d+)\s*[-~至]\s*(\d+)\s*条/);
+  const countExact = countRange ? null : description.match(/(?:整理|筛选|输出|列出)\s*(\d+)\s*条/);
+  if (countRange || countExact) {
+    const entries = text.split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => /^[-*]\s+|^\*\*\d+[.、)]|^\d+[.、)]|^[①②③④⑤⑥⑦⑧⑨⑩]/.test(line));
+    const min = countRange ? Number(countRange[1]) : Number(countExact![1]);
+    const max = countRange ? Number(countRange[2]) : min;
+    if (entries.length < min || entries.length > max) {
+      out.push({
+        code: 'format',
+        label: '条目数量不符合任务要求',
+        detail: `任务要求 ${countRange ? `${min}–${max}` : min} 条，回执识别到 ${entries.length} 条`,
+        blocking: true,
+      });
+    }
   }
   return out;
 }
@@ -607,7 +692,7 @@ export const QueueService = {
   },
 
   /** 快照任务上下文到 request_payload（发送前固化，避免任务被改导致回执错位） */
-  snapshotTaskContext(task: TaskView, projectName: string): string {
+  snapshotTaskContext(task: TaskView, projectName: string, webContext = ''): string {
     return JSON.stringify({
       taskId: task.id,
       title: task.title,
@@ -615,6 +700,8 @@ export const QueueService = {
       aiSummary: task.ai_summary,
       projectName,
       priority: task.priority,
+      // 用于回执来源链接核验：只允许引用发送时注入的检索结果
+      webSources: [...new Set((webContext.match(/https?:\/\/[^\s)\]>"']+/g) ?? []).map((url) => url.replace(/[.,;:!?]+$/, '')))],
     }, null, 2);
   },
 };

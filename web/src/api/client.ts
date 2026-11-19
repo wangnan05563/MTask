@@ -474,7 +474,7 @@ export interface AIProviderPreset {
 
 /** T06076：服务端回执质量提示 */
 export interface ReceiptWarning {
-  code: 'stale' | 'no_source' | 'placeholder';
+  code: 'stale' | 'no_source' | 'placeholder' | 'format';
   label: string;
   detail: string;
   blocking: boolean;
