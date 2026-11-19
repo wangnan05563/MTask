@@ -12,13 +12,14 @@
  *   - 队列列表与汇总：15s（只为让下拉与总览不至于过期，不承担进度刷新）
  *   - 并行任务池：15s（T03272 既有口径）
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { AlertTriangle, ListOrdered, Pause, Pencil, Play, Plus, RotateCcw, Send, Trash2 } from 'lucide-react';
 import { api, type AITool, type Queue, type QueueJob, type QueueJobSummary, type Task } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
+import { HoverCard } from '../ui/HoverCard';
 import { NoticeToast, useNotice } from '../ui/notice';
 import { useProjectList } from '../ui/projectList';
-import { BTN_DANGER_OUTLINE, BTN_DISABLED, BTN_PRIMARY, BTN_SECONDARY_MD } from '../ui/primitives';
+import { BTN_DANGER_OUTLINE, BTN_DISABLED, BTN_ICON, BTN_PRIMARY, BTN_SECONDARY_MD } from '../ui/primitives';
 import { computeQueueMetrics, type JobFilter } from './queueMetrics';
 import {
   JobTable, PoolPanel, QueueComposer, QueueEmptyState, QueueHeadline, QueueMonitor,
@@ -53,6 +54,42 @@ function sendHintOf(queue: Queue | null, pending: number, total: number): string
   if (total === 0) return '队列还没有任务项：先在「编排队列」选任务和 AI 工具加入';
   if (pending === 0) return '没有待发送的任务项：全部已成功；可继续加入新任务';
   return `把 ${pending} 个未成功任务项按顺序提交给 AI 工具`;
+}
+
+/** T06079：队列工具条图标按钮——统一 HoverCard 气泡、点击缩放动效与禁用态。 */
+interface QueueToolButtonProps {
+  readonly label: string;
+  readonly hint: string;
+  readonly icon: ReactNode;
+  readonly onClick: () => void;
+  readonly disabled?: boolean;
+  readonly ariaLabel?: string;
+  readonly style?: CSSProperties;
+}
+
+function QueueToolButton({ label, hint, icon, onClick, disabled, ariaLabel, style }: QueueToolButtonProps) {
+  const [pressed, setPressed] = useState(false);
+  const card = `${label} — ${hint}`;
+  return (
+    <HoverCard card={card} ariaLabel={`${label}：${hint}`} cardW={260} cardH={44} openDelay={150} style={{ flexShrink: 0 }}>
+      <button
+        onClick={onClick}
+        disabled={disabled}
+        title={card}
+        aria-label={ariaLabel ?? `${label}：${hint}`}
+        onPointerDown={() => setPressed(true)}
+        onPointerUp={() => setPressed(false)}
+        onPointerLeave={() => setPressed(false)}
+        onBlur={() => setPressed(false)}
+        style={{
+          ...BTN_ICON, ...style, width: 32, height: 32, padding: 0, justifyContent: 'center',
+          transition: 'transform 150ms ease', transform: pressed ? 'scale(0.92)' : 'scale(1)',
+        }}
+      >
+        {icon}
+      </button>
+    </HoverCard>
+  );
 }
 
 export function QueuePage() {
@@ -449,13 +486,6 @@ export function QueuePage() {
 
   const sendDisabled = busy || !active || Boolean(active.paused) || active.status === 'running' || pendingCount === 0;
   const sendHint = sendHintOf(active, pendingCount, activeJobs.length);
-  // 待发送项里只剩失败/超时时，「发送队列」实际是本批重发——文案说清楚，避免与「重试失败」混淆
-  const resendingOnly = pendingCount > 0 && pendingCount === failedCount;
-  const sendLabel = busy
-    ? '提交中…'
-    : resendingOnly
-      ? `重发未成功（${failedCount}）`
-      : `发送队列${pendingCount > 0 ? `（${pendingCount}）` : ''}`;
 
   return (
     <section>
@@ -489,37 +519,44 @@ export function QueuePage() {
           })}
         </select>
 
-        <button onClick={() => void createQueue()} title="新建队列 — 名称可自定义，默认「{日期} 开发队列」" aria-label="新建队列" style={BTN_PRIMARY}>
-          <Plus size={13} /> 新建队列
-        </button>
+        <QueueToolButton
+          label="新建队列"
+          hint="创建新的任务队列"
+          icon={<Plus size={16} />}
+          onClick={() => void createQueue()}
+          style={BTN_PRIMARY}
+        />
 
         {active && (
-          <button onClick={() => void renameQueue()} title="重命名 — 修改当前队列的名称" aria-label="重命名队列" style={BTN_SECONDARY_MD}>
-            <Pencil size={12} /> 重命名
-          </button>
+          <QueueToolButton
+            label="重命名"
+            hint="修改队列显示名称"
+            icon={<Pencil size={15} />}
+            onClick={() => void renameQueue()}
+            style={BTN_SECONDARY_MD}
+          />
         )}
 
         {active && (
-          <button
+          <QueueToolButton
+            label={active.paused ? '继续队列' : '暂停队列'}
+            hint={active.paused ? '恢复发送待执行任务' : '停止处理待执行任务'}
+            icon={active.paused ? <Play size={15} /> : <Pause size={15} />}
             onClick={() => void togglePause()}
-            title={active.paused ? '继续队列 — 恢复后可再次发送' : '暂停队列 — 暂停后发送会被拒绝（不打断已在执行的任务）'}
-            aria-label={active.paused ? '继续队列' : '暂停队列'}
             style={{ ...BTN_SECONDARY_MD, color: active.paused ? 'var(--accent)' : 'var(--text)' }}
-          >
-            {active.paused ? <><Play size={12} /> 继续队列</> : <><Pause size={12} /> 暂停队列</>}
-          </button>
+          />
         )}
 
         {active && (
-          <button
+          <QueueToolButton
+            label="发送队列"
+            hint="提交待执行任务"
+            icon={<Send size={15} />}
             onClick={() => void sendQueue()}
             disabled={sendDisabled}
-            title={sendHint}
-            aria-label={sendDisabled ? `发送队列不可用：${sendHint}` : '发送队列'}
+            ariaLabel={sendDisabled ? `发送队列不可用：${sendHint}` : '发送队列：提交待执行任务'}
             style={{ ...BTN_PRIMARY, background: 'var(--success)', ...(sendDisabled ? BTN_DISABLED : undefined) }}
-          >
-            <Send size={13} /> {sendLabel}
-          </button>
+          />
         )}
 
         {active && failedCount > 0 && (
@@ -529,15 +566,15 @@ export function QueuePage() {
         )}
 
         {active && (
-          <button
+          <QueueToolButton
+            label="删除队列"
+            hint={active.status === 'running' ? '发送中暂不可删除' : '永久删除队列及数据'}
+            icon={<Trash2 size={15} />}
             onClick={() => void deleteQueue()}
             disabled={active.status === 'running'}
-            title={active.status === 'running' ? '队列正在发送中，暂不可删除' : '删除队列 — 连同全部任务项一并移除（不可恢复）'}
-            aria-label="删除队列"
+            ariaLabel={active.status === 'running' ? '删除队列不可用：队列正在发送中' : '删除队列：永久删除队列及数据'}
             style={{ ...BTN_DANGER_OUTLINE, ...(active.status === 'running' ? BTN_DISABLED : undefined) }}
-          >
-            <Trash2 size={12} /> 删除队列
-          </button>
+          />
         )}
 
         <span style={{ flex: 1 }} />
