@@ -10,7 +10,8 @@ import { ReportPage } from './pages/ReportPage';
 import { PlanPage } from './pages/PlanPage';
 import { NotifyBell } from './ui/NotifyBell'; // T01064-FR1.4：全局通知中心
 import { focusTaskByNo } from './ui/focusTask'; // T01057 建议：通知点击跨项目定位（写齐 focusId/项目/tab）
-import { api, setAccessToken } from './api/client';
+import { api, apiBase, setAccessToken } from './api/client';
+import { HoverCard } from './ui/HoverCard'; // T06084：后端连接状态悬浮显示地址与端口
 import { desktopApi } from './ui/desktop'; // T02976：菜单通道下载进度的桌面桥（浏览器环境无此桥）
 import { MarkdownStyles } from './ui/Markdown';
 import { CommandPalette } from './pages/CommandPalette';
@@ -275,6 +276,7 @@ function Shell() {
     statusColor = 'var(--danger)';
     statusText = '● 后端未连接（请先启动 server）';
   }
+  const backendInfo = backendAddressInfo(apiBase);
 
   // T02977 复验补：文案/百分比收进 updateProgressView（与设置页卡片同一单源），这里只管布局与按钮
   const dlView = dlToast ? updateProgressView(dlToast) : null;
@@ -452,11 +454,21 @@ function Shell() {
         <NotifyBell />
         {/* 后端连接状态：随 serverOk 动态更新，常驻菜单行最右侧。
             色值与文案按三态（未知/正常/异常）显式计算，避免 JSX 中嵌套三元 */}
-        <span
-          style={{ fontSize: 'var(--fs-s)', marginLeft: 'auto', color: statusColor }}
+        <HoverCard
+          card={backendInfo}
+          ariaLabel="后端连接地址"
+          cardW={380}
+          cardH={48}
+          openDelay={180}
+          style={{ marginLeft: 'auto', flexShrink: 0 }}
         >
-          {statusText}
-        </span>
+          <span
+            title={backendInfo}
+            style={{ fontSize: 'var(--fs-s)', color: statusColor, cursor: 'help' }}
+          >
+            {statusText}
+          </span>
+        </HoverCard>
         {/* T00706：常驻「向导」按钮（菜单行最右）——参考项目管理向导（T00665）。
             T00735：去掉呼吸动画（task-breathe）改为静态、并去掉文字仅保留图标——
             项目管理页曾出现「全局 + 页内」两个向导按钮，统一保留本按钮（页内重复项已删除） */}
@@ -561,6 +573,22 @@ function Shell() {
       {guide && <PageGuideDialog open={guideOpen} onClose={closeGuide} title={guide.title} steps={guide.steps} />}
     </div>
   );
+}
+
+/**
+ * T06084：把 API base 归一成「后台地址 · 接口前缀」，供连接状态悬浮提示使用。
+ * 浏览器形态 base 是 http(s)://host:port/api，能直接读出地址、端口与前缀；
+ * Electron 的 api:// 自定义协议没有端口，原样展示协议地址，不伪造端口。
+ */
+function backendAddressInfo(base: string): string {
+  try {
+    const u = new URL(base);
+    if (u.protocol === 'http:' || u.protocol === 'https:') {
+      const path = u.pathname.replace(/\/+$/, '') || '/';
+      return `后台地址：${u.origin} · 接口前缀：${path}`;
+    }
+  } catch { /* 非标准 URL 走原样兜底 */ }
+  return `后台地址：${base}`;
 }
 
 /**
