@@ -10,6 +10,7 @@ import { streamEvents, GATE_BUSY_MSG } from '../api/sse';
 import { describeStreamFailure } from '../api/streamError'; // T03999：传输层断连不再只透出裸文案
 import { reportStream, useReportStream, type ReportProvenanceView, type ReportArtifactView, type AiRunUsageView, type AiRunDeviationView } from '../reportStream';
 import { ReportConsole } from './ReportConsole';
+import { withContextCapacity } from '../utils/modelContext';
 import { AiPlanImportPanel } from './AiPlanImportPanel';
 import { PrdImportPanel } from './PrdImportPanel'; // T00662：从 PRD 导入项目计划
 import { PrdGenPanel } from './PrdGenPanel'; // T00769：原始需求生成 PRD
@@ -29,7 +30,7 @@ import { useCodeReviewLecture } from '../stores/codeReviewLectureStore'; // T028
 import { aiImportStore } from '../stores/aiImportStore'; // T01038：项目计划/PRD 导入运行态
 import { RunStatusBadge, type RunStatus } from '../ui/runStatus'; // T01038：统一运行状态徽标
 import { FlowButton } from '../ui/FlowButton'; // T01068-FR4.4：流光按钮（loading 态）
-import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileStack, Loader2, X, RotateCcw, Zap, FolderOpen, LayoutGrid, Star, GripVertical } from 'lucide-react';
+import { Download, Trash2, Upload, Sparkles, PanelRightOpen, Maximize, FileSpreadsheet, FileStack, Loader2, X, RotateCcw, Zap, FolderOpen, LayoutGrid, Star, GripVertical, ChevronDown } from 'lucide-react';
 import { ReportCardIcon } from '../ui/ReportCardIcon'; // T06016：能力卡片彩色图标（512 缩放版）
 import { resetWorkbenchArtifacts, RESET_CONFIRM_CARD } from '../ui/consoleReset'; // T01042：卡片侧重置入口（与控制台重置共用核心）
 import { askConfirm } from '../ui/dialogs'; // T01042 建议：重置二次确认统一走对话框（Electron 下原生 confirm 不可靠）
@@ -199,11 +200,19 @@ function ReportCard({ icon, title, hint, aria, open, onToggle, onOpen, action, s
         type="button"
         onClick={act}
         aria-disabled={blocked || undefined}
-        title={hint}
+        aria-expanded={blocked ? undefined : open}
+        title={open ? `点击收起：${title}` : hint}
         aria-label={aria}
         style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', margin: 0, padding: 0, border: 'none', borderRadius: 10, background: 'transparent', cursor: blocked ? 'not-allowed' : 'pointer' }}
       />
       <span data-t06009="card-icon" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 30, height: 30, borderRadius: 8, background: 'transparent', border: 'none', flexShrink: 0 }}>{icon}</span>
+      {/* 展开态给一个可见的收起提示：铺满卡片的按钮重复点击会折叠，没有指示时容易误以为「点了没反应」 */}
+      {open && !blocked && (
+        <span data-t06009="card-collapse-hint" aria-hidden title="点击卡片收起面板"
+          style={{ position: 'absolute', bottom: 6, right: 8, display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', pointerEvents: 'none' }}>
+          收起<ChevronDown size={12} style={{ transform: 'rotate(180deg)' }} />
+        </span>
+      )}
       <span style={{ flex: 1, minWidth: 0 }}>
         <span data-t06015="card-title" style={{ display: 'block', fontSize: 'var(--fs-l)', fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap', lineHeight: 1.4 }}>{title}</span>
         {hasCorner && (
@@ -1570,6 +1579,22 @@ export function ReportPage() {
     void loadAiTools();
   }, [loadTemplates, loadAiTools]);
 
+  /** T06088：控制台模型选择旁切换上下文容量，原位更新并立即持久化，避免重拉列表重置当前选择。 */
+  async function changeAiToolContext(targetId: string, capacity: string) {
+    const target = aiTools.find((t) => t.id === targetId);
+    if (!target) return;
+    const previous = target.model_notes;
+    const modelNotes = withContextCapacity(previous, capacity);
+    setAiTools((prev) => prev.map((t) => (t.id === targetId ? { ...t, model_notes: modelNotes } : t)));
+    try {
+      await api.patch(`/aitools/${targetId}`, { modelNotes });
+      flash(`已将「${target.name}」上下文容量切换为 ${capacity}`);
+    } catch (e) {
+      setAiTools((prev) => prev.map((t) => (t.id === targetId ? { ...t, model_notes: previous } : t)));
+      flash(`上下文容量保存失败，已回退：${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
   /** 生成报表并下载（后端按周期聚合任务数据，xlsx/docx） */
   async function generate() {
     const t0 = Date.now();
@@ -1877,7 +1902,7 @@ export function ReportPage() {
       </div>
         </div>
         <aside style={consoleAsideStyle(consoleCollapsed, splitCollapsed)}>
-          <ReportConsole tools={aiTools} toolId={aiToolId} onToolIdChange={setAiToolId} period={period} projectIds={projectIds} scopeLabel={scopeLabel} streaming={aiStreaming} logs={aiLogs} streamText={aiStreamText}
+          <ReportConsole tools={aiTools} toolId={aiToolId} onToolIdChange={setAiToolId} onToolContextChange={(id, capacity) => void changeAiToolContext(id, capacity)} period={period} projectIds={projectIds} scopeLabel={scopeLabel} streaming={aiStreaming} logs={aiLogs} streamText={aiStreamText}
             unavailableReason={aiDown ? (readiness?.reason ?? '') : ''}
             onCollapse={() => setSplitCollapsed((v) => !v)} collapsed={splitCollapsed} />
         </aside>

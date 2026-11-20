@@ -274,6 +274,8 @@ export interface QueueComposerProps {
   readonly tools: readonly AITool[];
   readonly toolId: string;
   readonly onToolChange: (v: string) => void;
+  /** T06088：就地切换上下文容量 */
+  readonly onToolContextChange?: (toolId: string, capacity: string) => void;
   readonly onAdd: () => void;
   readonly adding: boolean;
 }
@@ -282,7 +284,7 @@ export function QueueComposer(props: QueueComposerProps) {
   const {
     queue, projects, projectId, onProjectChange, tasks, tasksLoading, tasksError, onRetryTasks,
     taskKeyword, onTaskKeywordChange, pickedTaskIds, onToggleTask, onClearPicked, queuedTaskIds,
-    tools, toolId, onToolChange, onAdd, adding,
+    tools, toolId, onToolChange, onAdd, adding, onToolContextChange,
   } = props;
   const editable = queue.status !== 'running';
 
@@ -332,7 +334,7 @@ export function QueueComposer(props: QueueComposerProps) {
             style={{ ...FIELD_QUIET, flex: '1 1 auto', minWidth: 0 }}
           />
         </div>
-        <QueueModelPicker tools={tools} value={toolId} onChange={onToolChange} />
+        <QueueModelPicker tools={tools} value={toolId} onChange={onToolChange} onContextChange={onToolContextChange} />
         <HoverCard
           card={`加入队列 | ${canAdd ? `提交已选 ${pickedTaskIds.length} 条任务到当前队列` : '先勾选任务并选择 AI 工具'}`}
           ariaLabel="加入队列"

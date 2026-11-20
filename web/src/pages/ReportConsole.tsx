@@ -16,7 +16,8 @@ import { reportStream, useReportStream } from '../reportStream'; // T00838：停
 import { resetWorkbenchArtifacts, RESET_CONFIRM_CONSOLE, CONSOLE_RESET_EVENT } from '../ui/consoleReset'; // T01042：控制台/卡片共用重置核心
 import { askConfirm } from '../ui/dialogs'; // T01042 建议：重置二次确认统一走对话框（Electron 下原生 confirm 不可靠）
 import { LOCAL_PROVIDER_LOGOS, inferProviderId } from '../ui/providerLogos';
-import { contextBadgeFor } from '../utils/modelContext';
+import { ContextCapacitySelect } from '../ui/ContextCapacitySelect';
+import { contextBadgeFor, contextProfileFor, selectedContextCapacity } from '../utils/modelContext';
 
 const CATEGORIES = [
   { key: 'summary', label: '周期要点汇总' },
@@ -178,11 +179,14 @@ function ToolSelect({
   tools,
   toolId,
   onChange,
+  onContextChange,
   unavailableReason = '',
 }: {
   readonly tools: AITool[];
   readonly toolId: string;
   readonly onChange: (id: string) => void;
+  /** T06088：就地切换所选模型的上下文容量并立即持久化 */
+  readonly onContextChange?: (toolId: string, capacity: string) => void;
   /** T03176（D-14）：空列表时区分「未配置」与「配了但不可用」 */
   readonly unavailableReason?: string;
 }) {
@@ -190,6 +194,7 @@ function ToolSelect({
   const wrapRef = useRef<HTMLDivElement>(null);
   const selected = tools.find((t) => t.id === toolId) ?? null;
   const selectedBadge = selected ? contextBadgeFor(selected) : null;
+  const selectedProfile = selected ? contextProfileFor(selected) : null;
 
   // 收拢态文案与完整提示：先判断是否配置了可用工具，再区分是否已选中，避免用嵌套三元表达三重分支
   let label = '选择工具';
@@ -213,13 +218,14 @@ function ToolSelect({
   }, [open]);
 
   return (
-    <div ref={wrapRef} data-ai-console-model-select="1" style={{ position: 'relative', flex: '0 1 210px', minWidth: 170 }}>
+    <div ref={wrapRef} data-ai-console-model-select="1" style={{ position: 'relative', flex: '0 1 300px', minWidth: 240 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
       <button
         onClick={() => setOpen((o) => !o)}
         title={title}
         aria-label={selected ? `AI 工具：${label}` : 'AI 工具：选择用于分析的工具'}
         style={{
-          display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 8px', width: '100%',
+          display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 8px', flex: '1 1 auto', minWidth: 0,
           border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', cursor: 'pointer',
           background: 'var(--card-bg)', color: 'var(--text)',
         }}
@@ -228,7 +234,7 @@ function ToolSelect({
         <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'left' }}>
           {selected ? label : (tools.length === 0 ? label : '选择工具')}
         </span>
-        {selectedBadge && (
+        {selectedBadge && !selectedProfile && (
           <span
             data-t06088="context-capacity-badge"
             title={selectedBadge.title}
@@ -243,6 +249,16 @@ function ToolSelect({
         )}
         <ChevronDown size={12} style={{ flex: '0 0 auto' }} />
       </button>
+      {selected && selectedProfile && (
+        <ContextCapacitySelect
+          profile={selectedProfile}
+          value={selectedContextCapacity(selected)}
+          label="上下文容量"
+          disabled={!onContextChange}
+          onChange={(capacity) => onContextChange?.(selected.id, capacity)}
+        />
+      )}
+      </div>
       {open && (
         <div
           role="listbox"
@@ -732,6 +748,7 @@ export function ReportConsole({
   tools,
   toolId,
   onToolIdChange,
+  onToolContextChange,
   period,
   projectIds = [],
   scopeLabel = '',
@@ -745,6 +762,8 @@ export function ReportConsole({
   readonly tools: AITool[];
   readonly toolId: string;
   readonly onToolIdChange: (id: string) => void;
+  /** T06088：在模型选择旁切换上下文容量并立即持久化 */
+  readonly onToolContextChange?: (toolId: string, capacity: string) => void;
   /** 当前分析周期；周期类预设（汇总/风险/建议）据此附带周期让后端注入真实数据 */
   readonly period?: ReportPeriod;
   /** T02165：页面顶部勾选的项目范围（空=全部项目），随 job 落库供后端按范围取数 */
@@ -1525,7 +1544,7 @@ export function ReportConsole({
 
         {/* 操作栏：AI 工具 / 分析内容 / 开始分析 / 重置 合并为一行；自定义提问时文本框另起一行 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-          <ToolSelect tools={tools} toolId={toolId} onChange={onToolIdChange} unavailableReason={unavailableReason} />
+          <ToolSelect tools={tools} toolId={toolId} onChange={onToolIdChange} onContextChange={onToolContextChange} unavailableReason={unavailableReason} />
           <select
             value={category}
             onChange={(e) => setCategory(e.target.value as typeof category)}

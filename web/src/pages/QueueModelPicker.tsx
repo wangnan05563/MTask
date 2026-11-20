@@ -10,7 +10,8 @@ import { ChevronDown } from 'lucide-react';
 import type { AITool } from '../api/client';
 import { LOCAL_PROVIDER_LOGOS, inferProviderId } from '../ui/providerLogos';
 import { FIELD_SM } from '../ui/primitives';
-import { contextBadgeFor } from '../utils/modelContext';
+import { ContextCapacitySelect } from '../ui/ContextCapacitySelect';
+import { contextBadgeFor, contextProfileFor, selectedContextCapacity } from '../utils/modelContext';
 
 const FALLBACK_LOGO = LOCAL_PROVIDER_LOGOS.openai;
 
@@ -41,13 +42,16 @@ interface QueueModelPickerProps {
   readonly tools: readonly AITool[];
   readonly value: string;
   readonly onChange: (toolId: string) => void;
+  /** T06088：选中模型后可就地切换上下文容量，立即写回该模型配置 */
+  readonly onContextChange?: (toolId: string, capacity: string) => void;
 }
 
-export function QueueModelPicker({ tools, value, onChange }: QueueModelPickerProps) {
+export function QueueModelPicker({ tools, value, onChange, onContextChange }: QueueModelPickerProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const selected = useMemo(() => tools.find((t) => t.id === value) ?? null, [tools, value]);
   const selectedBadge = selected ? contextBadgeFor(selected) : null;
+  const selectedProfile = selected ? contextProfileFor(selected) : null;
 
   useEffect(() => {
     if (!open) return undefined;
@@ -66,7 +70,8 @@ export function QueueModelPicker({ tools, value, onChange }: QueueModelPickerPro
   }, [open]);
 
   return (
-    <div ref={rootRef} data-queue-model-picker="1" style={{ position: 'relative', flex: '1 1 240px', minWidth: 200, maxWidth: 300 }}>
+    <div ref={rootRef} data-queue-model-picker="1" style={{ position: 'relative', flex: '1 1 280px', minWidth: 240, maxWidth: 360 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
       <button
         type="button"
         aria-label="选择要交付的 AI 模型"
@@ -76,7 +81,9 @@ export function QueueModelPicker({ tools, value, onChange }: QueueModelPickerPro
         onClick={() => setOpen((v) => !v)}
         style={{
           ...FIELD_SM,
-          width: '100%',
+          flex: '1 1 auto',
+          width: 'auto',
+          minWidth: 0,
           display: 'flex',
           alignItems: 'center',
           gap: 8,
@@ -89,7 +96,7 @@ export function QueueModelPicker({ tools, value, onChange }: QueueModelPickerPro
         <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {selected ? modelLabel(selected) : (tools.length ? '选择 AI 模型' : '暂无可用模型')}
         </span>
-        {selectedBadge && (
+        {selectedBadge && !selectedProfile && (
           <span
             data-t06088="context-capacity-badge"
             title={selectedBadge.title}
@@ -104,6 +111,16 @@ export function QueueModelPicker({ tools, value, onChange }: QueueModelPickerPro
         )}
         <ChevronDown size={13} style={{ flexShrink: 0, color: 'var(--text-muted)', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .12s ease' }} />
       </button>
+      {selected && selectedProfile && (
+        <ContextCapacitySelect
+          profile={selectedProfile}
+          value={selectedContextCapacity(selected)}
+          label="上下文容量"
+          disabled={tools.length === 0 || !onContextChange}
+          onChange={(capacity) => onContextChange?.(selected.id, capacity)}
+        />
+      )}
+      </div>
       {open && (
         <div
           role="listbox"

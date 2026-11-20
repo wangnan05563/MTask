@@ -21,6 +21,7 @@ import { NoticeToast, useNotice } from '../ui/notice';
 import { useProjectList } from '../ui/projectList';
 import { BTN_DANGER_OUTLINE, BTN_DISABLED, BTN_ICON, BTN_PRIMARY, BTN_SECONDARY_MD } from '../ui/primitives';
 import { computeQueueMetrics, type JobFilter } from './queueMetrics';
+import { withContextCapacity } from '../utils/modelContext';
 import {
   JobTable, PoolPanel, QueueComposer, QueueEmptyState, QueueHeadline, QueueMonitor,
   type PoolStatusView,
@@ -398,8 +399,23 @@ export function QueuePage() {
     }
   }
 
-  async function addJobs() {
-    if (!active || pickedTaskIds.length === 0 || !toolId) return;
+  /** T06088：在模型选择旁切换上下文容量，原位更新列表并立即持久化到 model_notes。 */
+  async function changeToolContext(targetId: string, capacity: string) {
+    const target = tools.find((t) => t.id === targetId);
+    if (!target) return;
+    const previous = target.model_notes;
+    const modelNotes = withContextCapacity(previous, capacity);
+    setTools((prev) => prev.map((t) => (t.id === targetId ? { ...t, model_notes: modelNotes } : t)));
+    try {
+      await api.patch(`/aitools/${targetId}`, { modelNotes });
+      flash(`已将「${target.name}」上下文容量切换为 ${capacity}`);
+    } catch (e) {
+      setTools((prev) => prev.map((t) => (t.id === targetId ? { ...t, model_notes: previous } : t)));
+      flash(`上下文容量保存失败：${errText(e)}`, 'error');
+    }
+  }
+
+  async function addJobs() {    if (!active || pickedTaskIds.length === 0 || !toolId) return;
     setAdding(true);
     try {
       await api.post(`/queues/${active.id}/jobs`, {
@@ -754,6 +770,7 @@ export function QueuePage() {
             tools={tools}
             toolId={toolId}
             onToolChange={setToolId}
+            onToolContextChange={(id, capacity) => void changeToolContext(id, capacity)}
             onAdd={() => void addJobs()}
             adding={adding}
           />
