@@ -37,6 +37,26 @@ const cellStyle: CSSProperties = { padding: 8, borderBottom: '1px solid var(--su
 const fieldStyle: CSSProperties = FIELD_BLOCK; // PM-302 ① 单源 ui/primitives.ts（取值与整改前逐字段相同）
 const labelStyle: CSSProperties = { fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 4, display: 'block' };
 
+/** T06091：最大输出 tokens 的常用预设与场景建议；服务端允许范围与保存校验保持一致。 */
+const MAX_TOKENS_MIN = 256;
+const MAX_TOKENS_MAX = 65536;
+const MAX_TOKENS_PRESETS = [1024, 4096, 8192, 32768] as const;
+const MAX_TOKENS_SUGGESTIONS = [
+  '从 PRD 导入项目计划 → 建议 32768',
+  '普通对话场景 → 建议 4096',
+  '代码生成/长文本 → 建议 8192 或更高',
+  '自定义输入建议使用 1024~65536 的整数',
+] as const;
+
+/** 返回空串表示合法；错误文案直接展示在输入框下方，保存时仍走原有整型校验。 */
+function maxTokensError(value: string): string {
+  if (!value.trim()) return '请输入最大输出 tokens';
+  const n = Number(value);
+  if (!Number.isFinite(n) || !Number.isInteger(n)) return '请输入正整数';
+  if (n < MAX_TOKENS_MIN || n > MAX_TOKENS_MAX) return `范围需为 ${MAX_TOKENS_MIN}~${MAX_TOKENS_MAX}`;
+  return '';
+}
+
 function emptyForm(defaultType: string): ToolForm {
   return {
     name: '', type: defaultType, providerType: '', endpoint: '', apiKey: '',
@@ -532,6 +552,7 @@ function ToolFormDialog(props: ToolFormDialogProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const contextProfile = contextProfileFor({ name: form.name, model: form.model, endpoint: form.endpoint });
   const contextCapacity = parseContextCapacity(form.modelNotes) || contextProfile?.tiers[1]?.label || '';
+  const maxTokensErrorText = maxTokensError(form.maxTokens);
 
   // 遮罩点击关闭改为文档级事件委托：点击目标在面板外即视为点遮罩（与原 e.target === e.currentTarget 等价），
   // 这样全屏遮罩 div 本身无需挂鼠标事件，避免非交互元素挂交互 handler（S6848）
@@ -653,21 +674,56 @@ function ToolFormDialog(props: ToolFormDialogProps) {
             <label htmlFor="aitool-model-notes" style={labelStyle}>模型配置说明</label>
             <input id="aitool-model-notes" style={fieldStyle} value={form.modelNotes} onChange={(e) => props.onFieldChange({ modelNotes: e.target.value })} placeholder="例如 建议 temperature 0.2" />
           </div>
-          <div>
+          <div style={{ gridColumn: '1 / -1' }}>
             <label htmlFor="aitool-max-tokens" style={labelStyle}>最大输出 tokens</label>
+            <div data-t06091="max-tokens-presets" style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
+              {MAX_TOKENS_PRESETS.map((preset) => {
+                const active = Number(form.maxTokens) === preset;
+                return (
+                  <button
+                    key={preset}
+                    type="button"
+                    data-t06091="max-tokens-preset"
+                    aria-pressed={active}
+                    onClick={() => props.onFieldChange({ maxTokens: String(preset) })}
+                    style={{
+                      padding: '3px 10px',
+                      borderRadius: 999,
+                      border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
+                      background: active ? 'var(--accent-soft)' : 'var(--card-bg)',
+                      color: active ? 'var(--accent)' : 'var(--text)',
+                      fontSize: 'var(--fs-s)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {preset.toLocaleString('en-US')}
+                  </button>
+                );
+              })}
+            </div>
             <input
               id="aitool-max-tokens"
-              style={fieldStyle}
+              data-t06091="max-tokens-input"
+              style={{ ...fieldStyle, borderColor: maxTokensErrorText ? 'var(--danger)' : undefined }}
               type="number"
-              min={256}
-              max={65536}
+              min={MAX_TOKENS_MIN}
+              max={MAX_TOKENS_MAX}
               step={1024}
               value={form.maxTokens}
+              aria-invalid={Boolean(maxTokensErrorText)}
+              aria-describedby="aitool-max-tokens-help aitool-max-tokens-error"
               onChange={(e) => props.onFieldChange({ maxTokens: e.target.value })}
               placeholder="4096"
             />
-            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>
-              单次输出上限，不是上下文窗口；长文档解析建议 16K~32K。修改后需重新解析才会使用新预算。
+            {maxTokensErrorText && (
+              <div id="aitool-max-tokens-error" data-t06091="max-tokens-error" role="alert" style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)', marginTop: 3 }}>
+                {maxTokensErrorText}
+              </div>
+            )}
+            <div id="aitool-max-tokens-help" data-t06091="max-tokens-suggestions" style={{ marginTop: 4, padding: '6px 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface-2)' }}>
+              {MAX_TOKENS_SUGGESTIONS.map((line) => (
+                <div key={line} style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', lineHeight: 1.7 }}>{line}</div>
+              ))}
             </div>
           </div>
           <div>
@@ -884,8 +940,9 @@ export function AIToolsPage() {
     if (!form.name.trim()) return flash('名称必填');
     if (!form.endpoint.trim()) return flash('Endpoint 必填');
     const maxTokens = Number(form.maxTokens);
-    if (!Number.isInteger(maxTokens) || maxTokens < 256 || maxTokens > 65536) {
-      return flash('最大输出 tokens 需为 256~65536 的整数');
+    const maxTokensIssue = maxTokensError(form.maxTokens);
+    if (maxTokensIssue) {
+      return flash(`最大输出 tokens：${maxTokensIssue}`);
     }
     const payload: Record<string, unknown> = {
       name: form.name.trim(),
