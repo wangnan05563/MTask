@@ -3,7 +3,7 @@
 "2","命名静态门","npm run verify:t06325","40 passed / 0 failed","scripts/tests/verify-t06325-channel-naming.mts","三通道主名、短名、英文名、机器值/平台值契约、错误码可读化、8 个 UI 文件无代号主标签"
 "3","派发回归","npm run verify:t06244","67 passed / 0 failed","%TEMP%\t06325-verify-t06244.log","派发策略与 dispatcher 行为未回归"
 "4","策略持久化回归","npm run verify:t06273-persist","7 passed / 0 failed","%TEMP%\t06325-verify-t06273.log","策略持久化未受命名改造影响"
-"5","Web 构建","npx vite build（web）","PASS","%TEMP%\t06325-build-web-portal.log","工作区同时存在 T06287 未提交组件，npm run build:web 的 tsc 被其 TS2430 阻断；Vite 产物构建通过，与本任务改动无关"
+"5","Web 构建","npm run build:web","PASS","evidence/t06325-build-web-final.log","tsc --noEmit + vite build 均通过；1855 modules transformed，主包 index-DKbLi3Lh.js，48.94s"
 "6","独立 UI 实测","npm run verify:t06325-ui","17 passed / 0 failed","D:\tmp\mtask-t06325\ui\cdp-t06325.json","隔离后端 39886 + Chrome CDP + 生产 web/dist；不触碰生产 39877"
 "7","UI-00 隔离","verify-t06325-ui.mjs","PASS","02a-drawer-open.png","临时 DATA_DIR，端口 39886"
 "8","UI-01/02 数据与定位","verify-t06325-ui.mjs","PASS","01-task-list-1500.png","隔离项目与待办任务，深链定位并切换项目"

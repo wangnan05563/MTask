@@ -48,7 +48,7 @@
 | `npm run verify:t06244` | 67 / 67 PASS |
 | `npm run verify:t06273-persist` | 7 / 7 PASS |
 | `npm run verify:t06325-ui` | 17 / 17 PASS（隔离后端 39886 + Chrome CDP） |
-| Web 构建 | Vite 构建 PASS；`npm run build:web` 的 tsc 被工作区中并发未提交的 T06287 组件 TS2430 阻断，与本任务无关 |
+| Web 构建 | `npm run build:web` PASS（tsc + vite，1855 modules，48.94s） |
 
 完整矩阵与证据见 `04-测试与验证矩阵.csv`，截图与日志在 `evidence/`：
 
