@@ -76,6 +76,10 @@ const themeCss = `
   --text-muted: #646a75;
   --border: #e5e7eb;
   --border-strong: #d1d5db;
+  /* T06290：关于页品牌名片是固定视觉资产，颜色不随主题切换，集中在此以免页面散落 hex */
+  --brand-card-bg: #05070f;
+  --brand-card-text: #dff6ff;
+  --brand-card-pink: #ffd9f1;
   --accent: #2563eb;
   /* T03431：强调色「作为文字」时的安全色（默认与 --accent 同值；自定义强调色时由 JS 压到 ≥4.5:1）。
      实底按钮上的文字用 --accent-text，浅强调底（--accent-soft）上的文字用 --accent-ink。 */
@@ -89,10 +93,14 @@ const themeCss = `
   --success: #15803d;
   /* T06310：小号成功徽标在 success-soft 底上的专用深色文字（#15803d 对 #e3f4e9 仅 4.39:1） */
   --success-strong: #0f6b32;
+  /* T06290：执行会话运行态流动边框的高亮色（图形装饰，不参与文字对比度） */
+  --session-live-accent: #0f766e;
   /* T03431：原 #dc2626 在 --surface-2(#f3f4f6) 上仅 4.39:1、在 --accent-soft(#eff6ff) 上 4.44:1
      （diff 行的悬停底正是 accent-soft，删除行文字压线不达标）——压到 #c81e1e：上述两底 5.21/5.27，白字实底 5.74 */
   --danger: #c81e1e;
   --warn: #b45309;
+  /* T06290：历史代码统一写 var(--warning)，补别名避免 fallback 失效 */
+  --warning: var(--warn);
   --overlay: rgba(0, 0, 0, 0.35);
   /* T03204（G-5）：甘特条高光/拖拽手柄——半透明白叠加在状态实底上，属图形装饰；走令牌避免页面内硬编码亮色底 */
   --bar-sheen: rgba(255, 255, 255, 0.45);
@@ -135,8 +143,10 @@ const themeCss = `
   --accent-soft: #1e293b;
   --success: #22c55e;
   --success-strong: #6ee7a0;
+  --session-live-accent: #5eead4;
   --danger: #f87171;
   --warn: #fbbf24;
+  --warning: var(--warn);
   --overlay: rgba(0, 0, 0, 0.55);
   --bar-sheen: rgba(255, 255, 255, 0.32);
   --bar-grip: rgba(255, 255, 255, 0.42);
@@ -270,7 +280,7 @@ body {
 .flow-btn {
   position: relative;
   overflow: hidden;
-  background-image: linear-gradient(100deg, transparent 25%, color-mix(in srgb, var(--accent-text, #fff) 38%, transparent) 50%, transparent 75%);
+  background-image: linear-gradient(100deg, transparent 25%, color-mix(in srgb, var(--accent-text) 38%, transparent) 50%, transparent 75%);
   background-size: 200% 100%;
   background-repeat: no-repeat;
   animation: flow-sweep 1.8s linear infinite;

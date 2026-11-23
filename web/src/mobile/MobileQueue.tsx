@@ -215,7 +215,7 @@ export function MobileQueue({ notify, openDesktop }: Props) {
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
                     {!!j.adopted_at && <Badge tone="success">已采纳</Badge>}
                     {(j.quality_warnings?.length ?? 0) > 0 && (
-                      <span title={(j.quality_warnings ?? []).map((w) => `${w.label}：${w.detail}`).join('\n')} style={{ color: 'var(--warning, #c80)', display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                      <span title={(j.quality_warnings ?? []).map((w) => `${w.label}：${w.detail}`).join('\n')} style={{ color: 'var(--warning)', display: 'inline-flex', alignItems: 'center', gap: 2 }}>
                         <AlertTriangle size={13} aria-hidden /> 质量待核 {j.quality_warnings!.length}
                       </span>
                     )}

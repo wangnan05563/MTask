@@ -231,10 +231,10 @@ function ReportCard({ icon, title, hint, aria, open, onToggle, onOpen, action, s
                   display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 22, height: 22,
                   borderRadius: 6, border: '1px solid var(--border-strong)', cursor: 'pointer',
                   background: favorite ? 'var(--accent-soft)' : 'var(--card-bg)',
-                  color: favorite ? '#d97706' : 'var(--text-muted)',
+                  color: favorite ? 'var(--warning)' : 'var(--text-muted)',
                 }}
               >
-                <Star size={12} fill={favorite ? '#f59e0b' : 'none'} />
+                <Star size={12} fill={favorite ? 'currentColor' : 'none'} />
               </button>
             )}
             {onReset && (

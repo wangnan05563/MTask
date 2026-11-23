@@ -1839,7 +1839,7 @@ export function ReportConsole({
           disabled={!canStop}
           title={`停止 — 中止正在进行的 PRD 生成 / ${aiReportLabel}生成 / 手动分析 / PRD 导入，并清理相关产物`}
           aria-label="停止：中止运行中的 AI 任务并清理相关产物"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '3px 7px', borderRadius: 6, cursor: canStop ? 'pointer' : 'not-allowed', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: canStop ? 'var(--danger, #dc2626)' : 'var(--text-muted)', opacity: canStop ? 1 : 0.5 }}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '3px 7px', borderRadius: 6, cursor: canStop ? 'pointer' : 'not-allowed', border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: canStop ? 'var(--danger)' : 'var(--text-muted)', opacity: canStop ? 1 : 0.5 }}
         >
           {stopping ? <Loader2 size={12} className="aispin" /> : <OctagonX size={12} />} 停止
         </button>
@@ -2023,7 +2023,7 @@ function streamsLen(t: AnalysisTask | null): string {
 
 /** 阶段日志级别 → 颜色样式（抽离嵌套三元，便于阅读与复用） */
 function logLevelColor(level: string): string {
-  if (level === 'ok') return 'var(--success, #16a34a)';
+  if (level === 'ok') return 'var(--success)';
   if (level === 'error') return 'var(--danger)';
   return 'var(--text-secondary)';
 }

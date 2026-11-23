@@ -184,7 +184,7 @@ function Metric({ label, value, hint, tone = 'default' }: {
       <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 2 }}>{label}</div>
       <div style={{
         fontSize: 'var(--fs-s)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-        color: tone === 'warning' ? 'var(--warning, #d97706)' : 'var(--text)',
+        color: tone === 'warning' ? 'var(--warning)' : 'var(--text)',
       }}>{value}</div>
       <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>{hint}</div>
     </div>
@@ -558,7 +558,7 @@ export function MemoryTab() {
             <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{loading ? '加载中…' : `共 ${total} 条`}</span>
             {coverage && (
               <span title="产品内有效记忆的零访问评估；不随上方筛选变化"
-                style={{ fontSize: 'var(--fs-xs)', color: coverage.zeroAccessPct > 30 ? 'var(--warning, #d97706)' : 'var(--text-muted)' }}>
+                style={{ fontSize: 'var(--fs-xs)', color: coverage.zeroAccessPct > 30 ? 'var(--warning)' : 'var(--text-muted)' }}>
                 零访问 {coverage.zeroAccess}/{coverage.total}（{coverage.zeroAccessPct}%）
                 {coverage.expired ? ` · 到期 ${coverage.expired}` : ''}
               </span>
@@ -689,7 +689,7 @@ export function MemoryTab() {
           ) : reviewStats.slice(0, 6).map((s) => (
             <div key={s.hitRule} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 'var(--fs-s)', padding: '3px 0' }}>
               <span>{s.hitRule}</span>
-              <span style={{ color: s.rejectRate > 0.4 ? 'var(--warning, #d97706)' : 'var(--text-muted)' }}>
+              <span style={{ color: s.rejectRate > 0.4 ? 'var(--warning)' : 'var(--text-muted)' }}>
                 {s.rejected}/{s.total} · {(s.rejectRate * 100).toFixed(1)}%
               </span>
             </div>
@@ -861,9 +861,9 @@ export function MemoryTab() {
                 <td style={cell}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, color: 'var(--text)' }}>
                     <div style={{ flex: 1, minWidth: 0 }}><CellText text={r.title} cardW={420} /></div>
-                    {r.need_review && <span style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--warning, #d97706)' }}>需复核</span>}
+                    {r.need_review && <span style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--warning)' }}>需复核</span>}
                     {r.invalidated_at && <span style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>已失效{r.superseded_by ? `（${r.superseded_by}）` : ''}</span>}
-                    {!r.invalidated_at && r.expired_at && <span style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--warning, #d97706)' }}>已到期</span>}
+                    {!r.invalidated_at && r.expired_at && <span style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--warning)' }}>已到期</span>}
                   </div>
                   <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
                     <CellText text={r.content} cardW={480} />

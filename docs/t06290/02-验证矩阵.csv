@@ -1,0 +1,8 @@
+序号,验证项,命令/条件,通过标准,实测结果,证据
+1,改造前基线,读取 HEAD=d27eb18 核心 12 文件并按 Lint 口径统计,记录直接 hex 数量,25 处（SettingsPage 16 / ExecSessionsPage 5 / TasksPage 2 / ReportPage 2）,evidence/t06290-baseline.log
+2,Lint 门禁,npm run verify:t06290,核心页面 hardcodedHex=0,corePages=12 hardcodedHex=0,evidence/t06290-verify.log
+3,Codemod 幂等,npm run verify:t06290 的 dry-run,可迁移 fallback=0,files=0 replacements=0,evidence/t06290-verify.log
+4,组合脚本退出码,npm run verify:t06290,exit 0,VERIFY_EXIT=0,evidence/t06290-verify.log
+5,Web 类型检查,npm --workspace web run build 中的 tsc --noEmit,无类型错误,tsc 通过,evidence/t06290-build-web.log
+6,Web 生产构建,npm --workspace web run build,Vite 构建成功,1864 modules transformed；built in 30.35s；BUILD_EXIT=0,evidence/t06290-build-web.log
+7,改动边界,git diff --stat,不裹挟并发会话改动,仅 23 个跟踪文件 + presets.ts + 2 脚本 + docs,git diff

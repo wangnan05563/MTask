@@ -380,8 +380,8 @@ export function RecurringTab() {
           placeholder="执行说明 / 任务描述：告诉外部执行者具体要做什么、输入在哪、完成标准是什么。该内容会写入每一条生成任务。"
           aria-label="循环任务执行说明"
           data-t05817="description"
-          style={{ width: '100%', boxSizing: 'border-box', padding: 8, fontSize: 'var(--fs-s)', border: `1px solid ${description.trim() ? 'var(--border-strong)' : 'var(--warning, #d97706)'}`, borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', resize: 'vertical' }} />
-        {!description.trim() && <div data-t05817="empty-warning" style={{ fontSize: 'var(--fs-xs)', color: 'var(--warning, #d97706)', display: 'flex', gap: 4, alignItems: 'center' }}><AlertTriangle size={12} /> 建议填写执行说明：空描述会让认领者只能看到标题。</div>}
+          style={{ width: '100%', boxSizing: 'border-box', padding: 8, fontSize: 'var(--fs-s)', border: `1px solid ${description.trim() ? 'var(--border-strong)' : 'var(--warning)'}`, borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', resize: 'vertical' }} />
+        {!description.trim() && <div data-t05817="empty-warning" style={{ fontSize: 'var(--fs-xs)', color: 'var(--warning)', display: 'flex', gap: 4, alignItems: 'center' }}><AlertTriangle size={12} /> 建议填写执行说明：空描述会让认领者只能看到标题。</div>}
 
         <RecurringSchedulePicker value={schedule} onChange={setSchedule} previewText={preview} error={previewError} />
 

@@ -114,7 +114,7 @@ const FORECAST_VERDICT: Record<MilestoneForecast['verdict'], { label: string; co
   'not-predictable': { label: '不预测', color: 'var(--text-muted)' },
   'on-track': { label: '按期', color: 'var(--success)' },
   ahead: { label: '提前', color: 'var(--success)' },
-  behind: { label: '延后', color: 'var(--danger, #dc2626)' },
+  behind: { label: '延后', color: 'var(--danger)' },
   'no-planned-end': { label: '未排期', color: 'var(--text-muted)' },
 };
 
@@ -551,7 +551,7 @@ function PlanComplexityButton({ backfill, evalBusy, busy, missing }: {
       aria-label={missing > 0 ? `批量补算复杂度（${missing} 行待评估）` : '批量补算复杂度'}
       data-t03622="complexity" data-complexity-missing={missing}
       className={evalBusy ? 'task-breathe' : undefined}
-      style={{ ...btnStyle, color: missing > 0 ? 'var(--warning, #c80)' : 'var(--text-secondary)', padding: '6px 8px', gap: 4 }}
+      style={{ ...btnStyle, color: missing > 0 ? 'var(--warning)' : 'var(--text-secondary)', padding: '6px 8px', gap: 4 }}
     >
       {evalBusy ? <Loader2 size={13} className="aispin" /> : <Gauge size={13} />}
       {missing > 0 && (
@@ -927,7 +927,7 @@ function PlanStartCell({ p, plans, flash, updatePlan }: { readonly p: PlanTask; 
       }
       void updatePlan(p, { start_date: e.target.value });
     }}
-      style={{ ...inputStyle, color: p.status === 'todo' && p.start_date && p.start_date < todayStr() ? 'var(--danger, #dc2626)' : inputStyle.color }} aria-label="开始日期（超期未开始标红）" />
+      style={{ ...inputStyle, color: p.status === 'todo' && p.start_date && p.start_date < todayStr() ? 'var(--danger)' : inputStyle.color }} aria-label="开始日期（超期未开始标红）" />
   );
 }
 
@@ -1088,7 +1088,7 @@ function MilestoneForecastPanel({ forecast, onClose }: { readonly forecast: Mile
                 <td style={{ padding: 4 }}>{c.title}</td>
                 <td style={{ padding: 4 }}>{STATUS_META[c.status as PlanTask['status']]?.label ?? c.status}</td>
                 <td style={{ padding: 4 }}>{c.progress}%</td>
-                <td style={{ padding: 4 }}>{c.missing.length ? <span style={{ color: 'var(--danger, #dc2626)' }}>缺排期</span> : c.totalWorkdays}</td>
+                <td style={{ padding: 4 }}>{c.missing.length ? <span style={{ color: 'var(--danger)' }}>缺排期</span> : c.totalWorkdays}</td>
                 <td style={{ padding: 4 }}>{c.status === 'done' ? '—' : (c.remainingWorkdays ?? '—')}</td>
               </tr>
             ))}
@@ -1379,7 +1379,7 @@ function HolidayModal({ holiBusy, setHoliOpen, holiTab, setHoliTab, holiNewKind,
                 {holidays.map((h) => (
                   <div key={h.date} style={{ display: 'flex', alignItems: 'center', gap: 8, border: '1px solid var(--border)', borderRadius: 4, padding: '4px 8px' }}>
                     <span style={{ fontWeight: 600, minWidth: 90 }}>{h.date}</span>
-                    <span style={{ fontSize: 'var(--fs-2xs)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', color: h.kind === 'overtime' ? 'var(--success, #16a34a)' : 'var(--danger)', flexShrink: 0 }}>
+                    <span style={{ fontSize: 'var(--fs-2xs)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: '0 4px', color: h.kind === 'overtime' ? 'var(--success)' : 'var(--danger)', flexShrink: 0 }}>
                       {h.kind === 'overtime' ? '加班日' : '节假日'}
                     </span>
                     <span style={{ flex: 1, color: 'var(--text-secondary)' }}>{h.name || '—'}</span>
@@ -2847,7 +2847,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
             // T00764：加班日（kind=overtime）绿色标记——排期按工作日处理
             const ot = c.day != null && holidays.some((h) => h.date === `${year}-${String(month + 1).padStart(2, '0')}-${String(c.day).padStart(2, '0')}` && h.kind === 'overtime');
             let color = 'var(--text)';
-            if (ot) color = 'var(--success, #16a34a)';
+            if (ot) color = 'var(--success)';
             else if (c.hol) color = 'var(--danger)';
             else if (c.weekend) color = 'var(--text-muted)';
             let titleStr: string | undefined;
@@ -2987,9 +2987,9 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
             <span title={`已完成 ${doneCount} · 进行中 ${doingCount}`} style={{ color: doneCount === plans.length ? 'var(--success)' : undefined }}>完成 {doneCount}/{plans.length}</span>
             {milestoneCount > 0 && <span title={`里程碑 ${milestoneCount} 个`}>里程碑：{milestoneCount}</span>}
             {forecastAt && <span data-t03234="forecast-basis" title={`预测业务日 ${forecastAt}（按项目/系统时区）；按未完成子项剩余工作日串行排期推算，不替代人工判断`}>预测基准日：{forecastAt} · 预测值，非承诺</span>}
-            {forecastErr && <span title={`里程碑预测取数失败：${forecastErr}`} style={{ color: 'var(--danger, #dc2626)' }}>预测暂不可用</span>}
+            {forecastErr && <span title={`里程碑预测取数失败：${forecastErr}`} style={{ color: 'var(--danger)' }}>预测暂不可用</span>}
             {/* T03237（PM-205）：日快照可回溯起点；缺失日期不补零，显式标「数据积累中」 */}
-            {snapErr && <span title={`洞察快照取数失败：${snapErr}`} style={{ color: 'var(--danger, #dc2626)' }}>洞察快照暂不可用</span>}
+            {snapErr && <span title={`洞察快照取数失败：${snapErr}`} style={{ color: 'var(--danger)' }}>洞察快照暂不可用</span>}
             {snapCoverage && (() => {
               const row = snapCoverage.projects.find((p) => p.projectId === projectId);
               if (!row) return null;

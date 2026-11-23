@@ -1249,7 +1249,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
             {r.drift?.flag && (
               <span
                 title={`偏差比值 = E ÷ 排期工作日 = ${num(r.drift.ratio)}\n服务端阈值：> ${data.checks.drift.thresholds.high} 或 < ${data.checks.drift.thresholds.low}（§7「计划工期改动」行，面板不重算比值）`}
-                style={{ fontSize: 'var(--fs-2xs)', padding: '0 4px', borderRadius: 3, border: '1px solid var(--warning, #c80)', color: 'var(--warning, #c80)', whiteSpace: 'nowrap' }}
+                style={{ fontSize: 'var(--fs-2xs)', padding: '0 4px', borderRadius: 3, border: '1px solid var(--warning)', color: 'var(--warning)', whiteSpace: 'nowrap' }}
               >
                 偏差 {num(r.drift.ratio)}
               </span>
@@ -1375,7 +1375,7 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
           <output aria-label="估算变更影响提示" style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 3, fontSize: 'var(--fs-xs)' }}>
             {hasChangedSinceExport && (
               <div
-                style={{ color: 'var(--warning, #c80)', cursor: 'help' }}
+                style={{ color: 'var(--warning)', cursor: 'help' }}
                 title={`上次导出：${data.checks.changedSinceExport.at}（快照 ${data.checks.changedSinceExport.snapshotId}）\n其后有变更的计划：${changedRowsNote}`}
               >
                 上次导出后 {data.checks.changedSinceExport.count} 条计划已变化 → 建议重导

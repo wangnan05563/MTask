@@ -674,7 +674,7 @@ function JobRow(props: JobRowProps) {
           {(job.quality_warnings?.length ?? 0) > 0 && (
             <div
               title={(job.quality_warnings ?? []).map((w) => `${w.label}：${w.detail}`).join('\n')}
-              style={{ fontSize: 'var(--fs-xs)', color: 'var(--warning, #c80)', whiteSpace: 'nowrap', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}
+              style={{ fontSize: 'var(--fs-xs)', color: 'var(--warning)', whiteSpace: 'nowrap', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}
             >
               <AlertTriangle size={10} style={{ verticalAlign: '-1px', marginRight: 2 }} />
               质量待核（{job.quality_warnings!.length}）

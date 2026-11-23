@@ -122,7 +122,7 @@ function DirBrowser({ onDone }: { readonly onDone: (path: string | null) => void
             </button>
           ))}
           {!loading && listing?.truncated && (
-            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--warning, #c80)', padding: '4px 8px' }}>子目录过多，仅显示前 500 项 — 可先进入下一层再继续查找。</div>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--warning)', padding: '4px 8px' }}>子目录过多，仅显示前 500 项 — 可先进入下一层再继续查找。</div>
           )}
         </div>
 

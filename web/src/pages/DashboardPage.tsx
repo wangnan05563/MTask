@@ -191,7 +191,7 @@ export function DashboardPage() {
                   items={[
                     { label: '待办', count: data.totals.todo, color: 'var(--text-secondary)' },
                     { label: '已完成', count: data.totals.done, color: 'var(--accent)' },
-                    { label: '进行中 / 搁置', count: data.totals.other, color: 'var(--warning, #d97706)' },
+                    { label: '进行中 / 搁置', count: data.totals.other, color: 'var(--warning)' },
                   ]}
                   empty="暂无任务数据"
                 />

@@ -1,0 +1,33 @@
+序号,文件,类型,改动摘要
+1,web/src/theme/presets.ts,新增,集中导出 ACCENT_PRESETS / THEME_PRESETS / DEFAULT_ACCENT 设计预设单源
+2,web/src/settings.tsx,修改,新增 --warning 别名、--session-live-accent 与 --brand-card-bg/text/pink 品牌资产 Token
+3,web/src/pages/SettingsPage.tsx,修改,移除页面内预设色常量；圆点/默认色改语义 Token；关于页名片 3 个 hex 改品牌 Token
+4,web/src/pages/TasksPage.tsx,修改,两处危险按钮文字 #fff 改 var(--on-solid)
+5,web/src/pages/ReportPage.tsx,修改,常用星标 #d97706/#f59e0b 改 var(--warning)/currentColor
+6,web/src/pages/ExecSessionsPage.tsx,修改,运行态边框 #5eead4 改 --session-live-accent；mask #000 改 currentColor
+7,web/src/pages/SonarSettingsTab.tsx,修改,主按钮文字 #fff 改 var(--on-solid)
+8,web/src/pages/PlanPage.tsx,修改,Codemod 收敛 8 处语义变量 hex fallback
+9,web/src/pages/MemoryTab.tsx,修改,Codemod 收敛 5 处语义变量 hex fallback
+10,web/src/pages/DashboardPage.tsx,修改,Codemod 收敛 1 处语义变量 hex fallback
+11,web/src/pages/HistoryPage.tsx,修改,Codemod 收敛 1 处语义变量 hex fallback
+12,web/src/pages/PrdGenPanel.tsx,修改,Codemod 收敛 4 处语义变量 hex fallback
+13,web/src/pages/PrdPanel.tsx,修改,Codemod 收敛 4 处语义变量 hex fallback
+14,web/src/pages/RecurringTokensTabs.tsx,修改,Codemod 收敛 2 处语义变量 hex fallback
+15,web/src/pages/ReportConsole.tsx,修改,Codemod 收敛 2 处语义变量 hex fallback
+16,web/src/pages/queuePanels.tsx,修改,Codemod 收敛 1 处语义变量 hex fallback
+17,web/src/components/EstimatePanel.tsx,修改,Codemod 收敛 3 处语义变量 hex fallback
+18,web/src/mobile/MobileQueue.tsx,修改,Codemod 收敛 1 处语义变量 hex fallback
+19,web/src/ui/DirBrowser.tsx,修改,Codemod 收敛 1 处语义变量 hex fallback
+20,web/src/ui/Markdown.tsx,修改,Codemod 收敛 2 处语义变量 hex fallback
+21,web/src/ui/WorkspaceAskPanel.tsx,修改,Codemod 收敛 1 处语义变量 hex fallback
+22,web/src/ui/WorkspaceSearchPanel.tsx,修改,Codemod 收敛 1 处语义变量 hex fallback
+23,web/src/ui/priority.ts,修改,Codemod 收敛 1 处语义变量 hex fallback；更新历史说明注释
+24,scripts/tests/lint-t06290-hardcoded-colors.mjs,新增,核心 12 页 hex 硬编码 Lint 门禁
+25,scripts/tests/codemod-t06290-colors.mjs,新增,var(--token,#hex) 自动迁移 Codemod（dry-run/--write）
+26,package.json,修改,新增 verify:t06290 组合门禁
+27,docs/t06290/README.md,新增,任务说明、改动与验证报告
+28,docs/t06290/01-代码变更清单.csv,新增,本清单
+29,docs/t06290/02-验证矩阵.csv,新增,验证矩阵
+30,docs/t06290/evidence/t06290-baseline.log,新增,改造前核心页面 hex 分布
+31,docs/t06290/evidence/t06290-verify.log,新增,Lint 与 Codemod 门禁输出
+32,docs/t06290/evidence/t06290-build-web.log,新增,Web 类型检查与生产构建日志

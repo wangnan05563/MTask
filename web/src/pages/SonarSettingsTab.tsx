@@ -76,7 +76,7 @@ const fieldStyle: React.CSSProperties = { width: '100%', maxWidth: 480, minWidth
 const labelStyle: React.CSSProperties = { display: 'block', fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginBottom: 4 };
 const btnStyle: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 5, minHeight: 36, boxSizing: 'border-box', padding: '6px 12px', fontSize: 'var(--fs-s)', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer' };
 /** 主按钮：此前只挂了不存在的 .primary 类，390 下退化成 19px 原生按钮；改为显式样式。 */
-const primaryBtnStyle: React.CSSProperties = { ...btnStyle, padding: '6px 16px', borderColor: 'var(--accent)', background: 'var(--accent)', color: '#fff' };
+const primaryBtnStyle: React.CSSProperties = { ...btnStyle, padding: '6px 16px', borderColor: 'var(--accent)', background: 'var(--accent)', color: 'var(--on-solid)' };
 
 /** T05773：右栏信息卡片。卡片不承载表单，纯展示；标题与正文分区固定，便于左右栏对齐。 */
 function SonarCard({ title, extra, children }: { readonly title: string; readonly extra?: ReactNode; readonly children: ReactNode }) {

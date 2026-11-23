@@ -202,8 +202,8 @@ export function MarkdownContent({
         <output
           style={{
             position: 'absolute', top: 28, right: 0, zIndex: 2, padding: '3px 8px', borderRadius: 6,
-            background: 'var(--card-bg)', border: '1px solid var(--danger, #dc2626)',
-            color: 'var(--danger, #dc2626)', fontSize: 'var(--fs-xs)', maxWidth: 320,
+            background: 'var(--card-bg)', border: '1px solid var(--danger)',
+            color: 'var(--danger)', fontSize: 'var(--fs-xs)', maxWidth: 320,
           }}
         >
           {COPY_FAILED_TEXT}

@@ -416,7 +416,7 @@ export function HistoryPage() {
                       <div key={t.id} title={t.description || t.handle_result || ''} style={{ fontSize: 'var(--fs-s)', color: 'var(--text)', padding: '3px 0', borderBottom: '1px solid var(--surface-2)', display: 'flex', gap: 6 }}>
                         <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', flexShrink: 0 }}>{t.task_no ?? '—'}</span>
                         <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</span>
-                        <span style={{ fontSize: 'var(--fs-xs)', color: t.status === 'done' ? 'var(--success, #16a34a)' : 'var(--text-muted)', flexShrink: 0 }}>{t.status === 'done' ? '已完成' : '待办'}</span>
+                        <span style={{ fontSize: 'var(--fs-xs)', color: t.status === 'done' ? 'var(--success)' : 'var(--text-muted)', flexShrink: 0 }}>{t.status === 'done' ? '已完成' : '待办'}</span>
                       </div>
                     ))}
                   </div>

@@ -1,0 +1,9 @@
+
+> mtask@0.1.1123.284 verify:t06290
+> node scripts/tests/lint-t06290-hardcoded-colors.mjs && node scripts/tests/codemod-t06290-colors.mjs
+
+
+[t06290-lint] corePages=12 hardcodedHex=0
+
+[t06290-codemod] mode=dry files=0 replacements=0
+[t06290-verify] exit=0

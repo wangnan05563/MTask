@@ -18,8 +18,8 @@ interface IssueRow extends PrdGenIssue { answer: string; key: string; }
 
 /** 问题级别展示映射；T03655：三档色点从 emoji 换成 lucide（与 PrdPanel 同一口径） */
 const LEVEL_META: Record<string, { label: string; color: string; Icon?: LucideIcon }> = {
-  blocker: { label: '阻塞', color: 'var(--danger, #c22)', Icon: CircleAlert },
-  suggested: { label: '建议', color: 'var(--warning, #c80)', Icon: AlertTriangle },
+  blocker: { label: '阻塞', color: 'var(--danger)', Icon: CircleAlert },
+  suggested: { label: '建议', color: 'var(--warning)', Icon: AlertTriangle },
   info: { label: '提示', color: 'var(--success)', Icon: Info },
   custom: { label: '自定义', color: 'var(--accent)' },
 };
@@ -496,7 +496,7 @@ export function PrdGenPanel({ toolId, onClose, onSaved }: {
         </label>
         {/* T00769 二轮：未绑定工作空间 → 原位警示 + 绑定入口（不阻断生成，但明确告知质量影响） */}
         {wsMissing && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', width: '100%', padding: '6px 8px', marginBottom: 4, border: '1px solid var(--warning, #c80)', borderRadius: 6, background: 'var(--card-bg)', fontSize: 'var(--fs-xs)', color: 'var(--warning, #c80)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', width: '100%', padding: '6px 8px', marginBottom: 4, border: '1px solid var(--warning)', borderRadius: 6, background: 'var(--card-bg)', fontSize: 'var(--fs-xs)', color: 'var(--warning)' }}>
             <FolderOpen size={13} style={{ flexShrink: 0 }} />
             <span>当前项目未绑定工作空间 —— 缺少项目源码上下文，待确认问题的识别质量会明显下降。</span>
             <span style={{ flex: 1 }} />

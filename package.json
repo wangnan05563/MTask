@@ -24,6 +24,7 @@
     "verify:t06309": "node scripts/tests/run-esbuild-gate.mjs scripts/tests/verify-t06309-global-error.mts",
     "verify:t06309-ui": "node scripts/tests/verify-t06309-ui.mjs",
     "verify:t06310": "node scripts/tests/verify-t06310-a11y.mjs",
+    "verify:t06290": "node scripts/tests/lint-t06290-hardcoded-colors.mjs && node scripts/tests/codemod-t06290-colors.mjs",
     "test:api": "node scripts/run-api-tests.mjs",
     "verify:plan-roundtrip": "node scripts/tests/plan-roundtrip-test.mjs",
     "verify:head-selfconsistency": "node node_modules/tsx/dist/cli.mjs scripts/verify-head-selfconsistency.mts",

@@ -4,6 +4,7 @@ import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视
 import { api, type TaskCategory } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { FONT_OPTIONS, FONT_SIZE_OPTIONS, useSettings, type ImportMode } from '../settings';
+import { ACCENT_PRESETS, DEFAULT_ACCENT, THEME_PRESETS } from '../theme/presets'; // T06290：主题预设单源
 import { AlignLeft, AlertTriangle, ArrowLeftRight, Ban, CheckCircle2, Download, ExternalLink, FileUp, FolderPlus, LayoutGrid, Loader2, MonitorCog, Moon, Pencil, PlugZap, RefreshCw, RotateCcw, Save, Settings2, Sun, Tags, Trash2 } from 'lucide-react';
 import { getLang, setLang, onLangChange, type Lang } from '../i18n'; // T01071-FR5.4：i18n 底座
 import { usePersistentState } from '../ui/session'; // T03271（UX-09③）：Tab 选中态跨页面/跨会话保持（沿用 T02977 口径）
@@ -11,18 +12,6 @@ import { SETTINGS_TAB_LABELS, filterSettingsGroups, normalizeSettingsTab } from 
 import { SettingsHelpIcon } from '../ui/settingsHelp'; // T06019：子页说明文字改为语义图标
 import { updateCardStore, shownProgressOf, type UpdateCheckInfo } from '../stores/updateCardStore';
 
-/** T01060-FR4.1：强调色预设色板（与主题内置 accent 同源的六色系） */
-const ACCENT_PRESETS = ['#2563eb', '#0891b2', '#16a34a', '#7c3aed', '#ea580c', '#dc2626'];
-
-/** T01068-FR4.3：主题预设库——主题 + 强调色的开箱组合 */
-const THEME_PRESETS: Array<{ label: string; theme: 'light' | 'dark' | 'auto'; accent: string }> = [
-  { label: '默认浅色', theme: 'light', accent: '' },
-  { label: '默认深色', theme: 'dark', accent: '' },
-  { label: '海洋', theme: 'dark', accent: '#0891b2' },
-  { label: '北欧', theme: 'dark', accent: '#5eead4' },
-  { label: '日暮', theme: 'light', accent: '#ea580c' },
-  { label: '玫瑰', theme: 'light', accent: '#e11d48' },
-];
 import { desktopApi } from '../ui/desktop'; // T00878：Electron 壳内一键下载并静默安装更新包
 import { isInFlightStatus, updateProgressView, type UpdateProgressView } from '../ui/updateProgress'; // T02977 复验补：下载进度文案单源
 import { TunnelPanel } from './TunnelPanel';
@@ -419,7 +408,7 @@ function GeneralTab() {
                 title={`应用预设「${p.label}」（${themeLabel}${accentSuffix}）`}
                 aria-label={`主题预设：${p.label}`}
                 style={{ ...segButton(active), display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ width: 12, height: 12, borderRadius: '50%', background: p.accent || (p.theme === 'dark' ? '#3b82f6' : '#2563eb'), display: 'inline-block', border: '1px solid rgba(127,127,127,.35)' }} />
+                <span style={{ width: 12, height: 12, borderRadius: '50%', background: p.accent || 'var(--accent)', display: 'inline-block', border: '1px solid var(--border-strong)' }} />
                 {p.label}
               </button>
             );
@@ -450,7 +439,7 @@ function GeneralTab() {
               aria-label={`强调色 ${c}`}
               style={{ width: 26, height: 26, borderRadius: 6, border: prefs.accent === c ? '2px solid var(--text)' : '1px solid var(--border-strong)', background: c, cursor: 'pointer' }} />
           ))}
-          <input type="color" value={prefs.accent || '#2563eb'} onChange={(e) => update('accent', e.target.value)}
+          <input type="color" value={prefs.accent || DEFAULT_ACCENT} onChange={(e) => update('accent', e.target.value)}
             title="自定义强调色（取色器）" aria-label="自定义强调色取色器"
             style={{ width: 34, height: 26, padding: 0, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', cursor: 'pointer' }} />
           <button onClick={() => update('accent', '')} style={segButton(prefs.accent === '')} title="恢复主题默认强调色" aria-label="恢复默认强调色">
@@ -870,7 +859,7 @@ function AboutTab() {
           overflow: 'hidden',
           border: '1px solid var(--border)',
           borderRadius: 12,
-          background: '#05070f',
+          background: 'var(--brand-card-bg)',
           boxShadow: '0 16px 40px rgba(0, 0, 0, 0.22)',
         }}
       >
@@ -888,14 +877,16 @@ function AboutTab() {
         >
           <span style={{
             padding: '5px 9px', borderRadius: 999, fontSize: 'var(--fs-xs)', fontWeight: 600,
-            color: '#dff6ff', background: 'rgba(3, 8, 20, 0.72)',
+            color: 'var(--brand-card-text)',
+            background: 'rgba(3, 8, 20, 0.72)',
             border: '1px solid rgba(89, 196, 255, 0.55)',
             boxShadow: '0 0 18px rgba(89, 196, 255, 0.22)',
             backdropFilter: 'blur(8px)',
           }}>v{version}</span>
           <span style={{
             padding: '5px 8px', borderRadius: 999, fontSize: 'var(--fs-xs)',
-            color: '#ffd9f1', background: 'rgba(30, 4, 24, 0.72)',
+            color: 'var(--brand-card-pink)',
+            background: 'rgba(30, 4, 24, 0.72)',
             border: '1px solid rgba(255, 122, 205, 0.45)',
           }}>MIT</span>
         </div>
@@ -982,7 +973,7 @@ function resultCardStyle(hasUpdate: boolean): React.CSSProperties {
   if (hasUpdate) {
     return {
       marginTop: 12, padding: 12, borderRadius: 6, fontSize: 'var(--fs-m)',
-      border: '1px solid var(--success, #2e7d32)', background: 'rgba(46, 125, 50, 0.06)',
+      border: '1px solid var(--success)', background: 'rgba(46, 125, 50, 0.06)',
     };
   }
   return { marginTop: 12, padding: 12, borderRadius: 6, fontSize: 'var(--fs-m)', border: '1px solid var(--border)', background: 'transparent' };
@@ -1186,7 +1177,7 @@ function UpdateInstallErrorCard({ error, busy, onRetry, onDismiss }: {
   return (
     <div style={{
       marginTop: 12, padding: 12, borderRadius: 6, fontSize: 'var(--fs-m)',
-      border: '1px solid var(--danger, #c62828)', background: 'rgba(198, 40, 40, 0.06)',
+      border: '1px solid var(--danger)', background: 'rgba(198, 40, 40, 0.06)',
     }}>
       <div style={{ fontWeight: 600 }}>安装失败：{error.message}</div>
       <div style={{ color: 'var(--text-secondary)', marginTop: 4 }}>

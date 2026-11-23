@@ -160,7 +160,7 @@ export function WorkspaceAskPanel({
     return (
       <>
         {resp.truncated && (
-          <div data-t03250="truncated" style={{ display: 'flex', gap: 6, padding: '7px 16px', background: 'var(--warn-soft, rgba(245,158,11,.12))', color: 'var(--warn, #b45309)', fontSize: 'var(--fs-s)', borderBottom: '1px solid var(--border)' }}>
+          <div data-t03250="truncated" style={{ display: 'flex', gap: 6, padding: '7px 16px', background: 'var(--warn-soft, rgba(245,158,11,.12))', color: 'var(--warn)', fontSize: 'var(--fs-s)', borderBottom: '1px solid var(--border)' }}>
             <AlertTriangle size={13} style={{ flexShrink: 0, marginTop: 2 }} />
             <span>上下文超出预算已截断：仅送入 {resp.contextChars.toLocaleString()} 字符证据，回答可能漏掉部分代码。</span>
           </div>

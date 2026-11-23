@@ -2,7 +2,7 @@
  * PM-302 ③：优先级 → 颜色/文案的唯一映射源。
  *
  * 整改前它是四处各写一遍：看板卡片左边框（TasksPage 的 priorityBorderColor，其中
- * `var(--warning, #d97706)` 引用的 `--warning` 令牌根本不存在，于是暗色下也硬吃 #d97706，
+ * `--warning` 令牌当时不存在，调用方只能写死 #d97706，于是暗色下也硬吃这个浅色值，
  * 在深色底上只有 3.0:1）、移动端列表圆点（MobileHome PRIO_COLOR）、移动端详情徽标
  * （MobileTaskDetail PRIO_TONE）、矩阵视图 P 档换算（MatrixTable PRIO_P_LABEL，只有字没有色）。
  * 四处的高档色各不相同（#d97706 / var(--warn)），同一个任务在看板上和在手机上是两种颜色。

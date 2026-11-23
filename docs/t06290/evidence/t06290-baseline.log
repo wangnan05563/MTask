@@ -1,0 +1,6 @@
+[t06290-baseline] HEAD=d27eb18
+web/src/pages/TasksPage.tsx	2
+web/src/pages/ReportPage.tsx	2
+web/src/pages/ExecSessionsPage.tsx	5
+web/src/pages/SettingsPage.tsx	16
+[t06290-baseline] corePages=12 hardcodedHex=25

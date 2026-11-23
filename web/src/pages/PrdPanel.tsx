@@ -35,8 +35,8 @@ interface PrdIssue {
  * T03655：三档色点从 emoji 换成 lucide——emoji 随系统字体变样、不可着色，与「图标统一 lucide」相悖。
  */
 const ISSUE_LEVEL_META: Record<string, { label: string; color: string; Icon?: LucideIcon }> = {
-  blocker: { label: '阻塞', color: 'var(--danger, #c22)', Icon: CircleAlert },
-  suggested: { label: '建议', color: 'var(--warning, #c80)', Icon: AlertTriangle },
+  blocker: { label: '阻塞', color: 'var(--danger)', Icon: CircleAlert },
+  suggested: { label: '建议', color: 'var(--warning)', Icon: AlertTriangle },
   info: { label: '提示', color: 'var(--success)', Icon: Info },
   custom: { label: '自定义', color: 'var(--accent)' },
 };
@@ -578,8 +578,8 @@ export function PrdPanel({ projectId, onClose }: {
                 style={{ marginTop: 3, flex: 'none', accentColor: 'var(--accent)', cursor: 'pointer' }} />
               <span title={i.status === 'resolved' ? '已确认' : '待确认'}
                 style={{ fontSize: 'var(--fs-2xs)', padding: '1px 6px', borderRadius: 8, flex: 'none', marginTop: 1,
-                  border: `1px solid ${i.status === 'resolved' ? 'var(--success)' : 'var(--warning, #c80)'}`,
-                  color: i.status === 'resolved' ? 'var(--success)' : 'var(--warning, #c80)' }}>
+                  border: `1px solid ${i.status === 'resolved' ? 'var(--success)' : 'var(--warning)'}`,
+                  color: i.status === 'resolved' ? 'var(--success)' : 'var(--warning)' }}>
                 {i.status === 'resolved' ? '已确认' : '待确认'}
               </span>
               {/* T00822：问题级别标签——对齐 AI 控制台生成面板的级别展示（阻塞/建议/提示/自定义） */}

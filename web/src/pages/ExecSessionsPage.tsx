@@ -351,13 +351,13 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
             transparent 0deg 58deg,
             rgba(34,197,94,.10) 74deg,
             rgba(34,197,94,.78) 92deg,
-            #5eead4 104deg,
+            var(--session-live-accent) 104deg,
             rgba(34,197,94,.16) 122deg,
             transparent 142deg 360deg
           );
-          -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          -webkit-mask: linear-gradient(currentColor 0 0) content-box, linear-gradient(currentColor 0 0);
           -webkit-mask-composite: xor;
-          mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          mask: linear-gradient(currentColor 0 0) content-box, linear-gradient(currentColor 0 0);
           mask-composite: exclude;
           animation: exec-running-flow 2.4s linear infinite;
           pointer-events: none;

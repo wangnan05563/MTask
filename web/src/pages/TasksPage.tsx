@@ -5576,7 +5576,7 @@ export function TasksPage() {
                     <img src={img.url} alt="待上传截图预览" style={{ height: 64, borderRadius: 4, border: '1px solid var(--border)' }} />
                     <button onClick={() => removeFailImage(img.id)}
                       title="移除该截图" aria-label="移除该截图"
-                      style={{ position: 'absolute', top: -6, right: -6, width: 16, height: 16, borderRadius: '50%', border: 'none', background: 'var(--danger)', color: '#fff', fontSize: 'var(--fs-xs)', lineHeight: '16px', cursor: 'pointer', padding: 0 }}>×</button>
+                      style={{ position: 'absolute', top: -6, right: -6, width: 16, height: 16, borderRadius: '50%', border: 'none', background: 'var(--danger)', color: 'var(--on-solid)', fontSize: 'var(--fs-xs)', lineHeight: '16px', cursor: 'pointer', padding: 0 }}>×</button>
                   </span>
                 ))}
               </div>
@@ -5587,7 +5587,7 @@ export function TasksPage() {
               style={{ padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>取消</button>
             <button onClick={() => void submitVerifyFailed()} disabled={failBusy} className="tbtn-anim"
               title="提交反馈并回退待办" aria-label="提交验证失败反馈"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: failBusy ? 'default' : 'pointer', border: 'none', background: 'var(--danger)', color: '#fff', fontSize: 'var(--fs-s)' }}>
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 14px', borderRadius: 6, cursor: failBusy ? 'default' : 'pointer', border: 'none', background: 'var(--danger)', color: 'var(--on-solid)', fontSize: 'var(--fs-s)' }}>
               {failBusy ? <><Loader2 size={12} className="aispin" />提交中…</> : '提交并回退待办'}
             </button>
           </div>

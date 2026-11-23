@@ -187,7 +187,7 @@ export function WorkspaceSearchPanel({
 
         {/* partial 提示条（T00786 建议项核心：结果可能不完整） */}
         {searched && partial && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 16px', background: 'var(--warn-soft, rgba(245,158,11,.12))', color: 'var(--warn, #b45309)', fontSize: 'var(--fs-s)', borderBottom: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 16px', background: 'var(--warn-soft, rgba(245,158,11,.12))', color: 'var(--warn)', fontSize: 'var(--fs-s)', borderBottom: '1px solid var(--border)' }}>
             <AlertTriangle size={13} style={{ flexShrink: 0 }} />
             <span>结果可能不完整：已扫描 {scannedFiles.toLocaleString()} 个文件后达到检索上限而提前停止，可用上方「文件过滤」glob 缩小范围以获得更精确结果。</span>
           </div>
