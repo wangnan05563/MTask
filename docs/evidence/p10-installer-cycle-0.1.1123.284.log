@@ -1,0 +1,71 @@
+# MTask 0.1.1123.284 formal installer / uninstall-reinstall evidence
+
+Date: 2026-11-23 (Asia/Shanghai)
+Installer: D:\code\otherProjects\MTask\release\MTask Setup 0.1.1123.284.exe
+Installer size: 114,064,313 B
+Installer SHA256: 68A57C6792B2D7F595E98AF717C871FEF07E58A88F7002A496C0A22FB3CE1BE8
+
+## 1. Formal install to real F:\Program (23:31:22)
+
+- Command: /S /allusers /D=F:\Program
+- Installer exit code: 0
+- F:\Program: real directory (Attributes=Directory, no LinkType)
+- F:\Program\MTask.exe: present, FileVersion 0.1.1123.284, 188,813,312 B
+- F:\Program\resources\app.asar: 145,381,432 B, SHA256 19DD1E540B53AE145C3748F07AE8830E76DB7BFBE513106F44327FAA42A03E45
+- F:\Program\Uninstall MTask.exe: present, 222,416 B
+- Registry key: HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\d85522ca-d69d-5d1e-91b2-58289d7d4f8f
+  - DisplayName=MTask 0.1.112-3.284
+  - DisplayVersion=0.1.112-3.284
+  - UninstallString="F:\Program\Uninstall MTask.exe" /allusers
+- F free after install: 3,243.7 MB
+
+## 2. Uninstall / reinstall cycle (23:36:50 onward)
+
+### 2.1 Uninstall
+
+- DB snapshot before cycle: D:\code\tmp\p10-cycle2-before.db, 222,457,856 B
+- All MTask processes stopped; MTask.exe count 0 before uninstaller invocation
+- F:\Program\Uninstall MTask.exe /S /allusers
+- Uninstaller exit code: 0
+- After uninstall: F:\Program directory exists but empty (MTask.exe absent, Uninstall MTask.exe absent)
+- After uninstall: registry key absent
+- F free after uninstall: 1,437.7 MB
+- Note: during the cycle, the project release directory was absent; installer was restored from D:\code\tmp\p10-release-c7d61fc\release and hash-checked before retry.
+
+### 2.2 First reinstall attempt after uninstall
+
+- Command: /S /allusers /D=F:\Program
+- Installer exit code: 2
+- Result: F:\Program\MTask.exe absent; registry absent
+- F free at attempt: 1,437.7 MB
+- F recycle bin at attempt: 841.6 MB, 2,054 entries under the user SID
+- Root cause status: installer failed before creating MTask.exe; free space was too tight. Exact NSIS failure message not captured because silent mode returned exit 2.
+
+### 2.3 Recycle-bin purge and successful reinstall
+
+- Recycle purge executed as LocalSystem via temporary service cmd.exe /c D:\code\tmp\clear-f-recycle.cmd
+- Recycle bin after purge: absent
+- F free after purge: 2,279.3 MB
+- Command: /S /allusers /D=F:\Program
+- Installer exit code: 0
+- F:\Program\MTask.exe: present
+- F:\Program\Uninstall MTask.exe: present
+- Registry key: present
+- F free after reinstall: 1,862.1 MB
+
+## 3. Final production verification
+
+- F:\Program: real directory; no junction
+- MTask.exe FileVersion: 0.1.1123.284
+- app.asar: 145,381,432 B, SHA256 19DD1E540B53AE145C3748F07AE8830E76DB7BFBE513106F44327FAA42A03E45
+- Uninstall MTask.exe: 222,416 B
+- Registry: DisplayName/DisplayVersion=MTask 0.1.112-3.284; UninstallString="F:\Program\Uninstall MTask.exe" /allusers; InstallLocation and Publisher remain empty
+- Process count at final start: 5
+- Health: {"ok":true,"service":"mtask-server","time":"2026-11-23T15:51:34.827Z"}
+- Homepage: HTTP 200
+- DB: C:\Users\hspcadmin\AppData\Roaming\mtask\data\mtask.db
+  - Size: 222,457,856 B
+  - quick_check=ok
+  - tasks total 3377; done 3178; running 0; projects 59
+- F: total 152,771,227,648 B (142.28 GB); free 1,862.1 MB
+- F pagefile: 68,097,458,176 B (63.421 GiB), system-managed; this is the main remaining capacity constraint
