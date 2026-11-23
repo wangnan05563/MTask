@@ -1,0 +1,9 @@
+{"autoEnabled":false,"defaultChannel":"auto","b0ToolId":"","scopeProjectIds":[],"trigger":"interval","intervalMs":45000,"cooldownMs":900000,"maxPerTick":3,"maxAttempts":2,"allowFallbackA":false,"allowAutoD":false,"retentionDays":14,"updatedAt":"2026-11-23T16:57:18.145Z"}
+[PASS] trigger 持久化为 interval
+[PASS] intervalMs 持久化为 45000
+[PASS] cooldownMs 持久化为 900000
+[PASS] maxPerTick 持久化为 3
+[PASS] maxAttempts 持久化为 2
+[PASS] allowFallbackA 持久化为 false
+[PASS] retentionDays 持久化为 14
+[t06273-persist] pass=7 fail=0

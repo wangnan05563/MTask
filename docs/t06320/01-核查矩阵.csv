@@ -1,0 +1,12 @@
+序号,核查项,来源,方法,结果,证据
+1,任务缺陷清单可定位性,T06320 正文与关联 REQ-035,检查任务描述/需求/验收项是否给出缺陷编号与复现步骤,未提供具体 P0 缺陷清单；存在 REQ-005/AC-05 与 REQ-035 编号错配,README 第 1 节
+2,P0 验收第 1 组,docs/十期-P0验收测试报告-第1组.md,复核 AC-01～AC-07 等结论,全部 PASS,npm verify:t06244 基线 67/0
+3,P0 验收第 2 组,docs/十期-P0验收测试报告-第2组.md,复核 AC-08、AC-19～AC-24 等结论,全部 PASS,npm verify:t06244 基线 67/0
+4,P0 派发主链路,HEAD acc344e,执行 verify-t06244-dispatch.mts,67 PASS / 0 FAIL,evidence/t06320-verify-t06244.log
+5,派发策略持久化,HEAD acc344e,执行 verify-t06273-policy-persist.mts,7 PASS / 0 FAIL,evidence/t06320-verify-t06273-persist.log
+6,异常场景覆盖,docs/十期-异常场景测试报告.md,复核 EX-01～EX-22,22/22 有覆盖，20 项完全 PASS；EX-20/EX-22 有外部或 P2 条件,README 第 1、3 节
+7,安全与脱敏,verify:t06244,复核 AC-25 五面检查,配置视图/响应/审计/日志/数据库均无明文 PASS,evidence/t06320-verify-t06244.log
+8,并发与幂等,verify:t06244,复核 EX-15 并发 tick 与重复派发,并发仅一轮执行；同幂等键第二次被拒 PASS,evidence/t06320-verify-t06244.log
+9,真实 B0 网关,最终发布验收报告,核对真实网关证据,未接入；仅 fake gateway 通过，列为外部条件,README 第 3 节
+10,类型检查环境,当前工作区 node_modules,直接 tsc --noEmit,缺 @types/node/@types/express/@types/better-sqlite3，属环境缺包，不计 PASS/FAIL,README 第 4 节；p10-head-gate-0.1.1123.284.txt
+11,可复现 P0 缺陷计数,本轮核查,汇总以上各项,0 个,README 第 5 节

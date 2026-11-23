@@ -1,0 +1,69 @@
+[PASS] 默认 autoEnabled=false
+[PASS] 默认冷却 5 分钟
+[PASS] 默认每轮 5 条
+[PASS] 默认 allowAutoD=false
+[PASS] 默认项目范围为空（不启用）
+[PASS] 远程 HTTP endpoint 被拒
+[PASS] URL 内嵌口令被拒
+[PASS] 回环 HTTP 允许
+[PASS] endpoint 脱敏去除 query/userinfo
+[PASS] 空范围无候选
+[PASS] 旧版本配置保存被拒绝
+[PASS] 范围内就绪任务被选中
+[PASS] dispatch_auto=0 被排除
+[PASS] 平台偏好 d-gui 被排除
+[PASS] 冷却中的任务被排除
+[PASS] 搁置任务被排除
+[PASS] 未就绪任务被排除
+[PASS] 1 万任务候选查询 <500ms
+[PASS] 候选索引 idx_tasks_dispatch_due 存在
+[PASS] dry-run 不写审计
+[PASS] dry-run 返回候选
+[PASS] AC-23 手动派发受理 <1s
+[PASS] A 通道成功归位就绪池
+[PASS] A 通道写 monitor_ready=1 / mcp
+[PASS] A 尝试落审计
+[PASS] D 返回待人工确认
+[PASS] D 不自动开 GUI/不改任务完成态
+[PASS] 归档任务拒绝派发
+[PASS] 已完成任务拒绝派发
+[PASS] running 任务拒绝派发，避免双跑
+[PASS] B0 未配置时 auto 回落 A
+[PASS] B0 失败 + A 成功均落审计
+[PASS] 自动链路失败返回 D_MANUAL_ONLY
+[PASS] 自动链路不写 d-gui 人工标记
+[PASS] supervisor.enabled=0 时自动调度仍运行
+[PASS] 自动一轮逐条写 attempt
+[PASS] readyMark 关闭时自动候选为空并提示
+[PASS] sending job 对应任务不被重推
+[PASS] 默认队列列表只含 manual
+[PASS] kind=all 能看到内部 dispatch 队列
+[PASS] B0 假网关受理为 running
+[PASS] B0 队列 kind=dispatch
+[PASS] B0 审计带 ticket/job/queue
+[PASS] 假网关收到任务正文
+[PASS] B0 401 映射 B0_AUTH_FAILED
+[PASS] B0 404 映射路径错误提示
+[PASS] B0 端口不通映射 B0_UNREACHABLE
+[PASS] SSE 断流先受理为 running
+[PASS] SSE 断流后 queue_job 收口失败
+[PASS] 同幂等键第二次被拒
+[PASS] 重复请求返回已有 attempt
+[PASS] B0 queue_job 收敛为 success
+[PASS] 审计 detail 脱敏 Bearer/API key/password
+[PASS] 按保留天数清理旧审计
+[PASS] AC-04 仅 B0 未配置返回 B0_NOT_CONFIGURED 且不回退 A
+[PASS] AC-21 单条失败后其余 job 继续完成
+[PASS] AC-21 失败 job 保留可重试状态
+[PASS] AC-21 失败项可重置为排队中
+[PASS] AC-21 重试后仅失败项重新提交成功
+[PASS] AC-25 配置视图只暴露掩码不含明文
+[PASS] AC-25 派发响应/审计不含网关口令
+[PASS] AC-25 运行日志不含网关口令
+[PASS] AC-25 数据库只存密文，无明文
+[PASS] EX-15 并发 tick 仅一轮执行，另一轮返回 busy
+[PASS] 调度器不依赖 SupervisorService
+[PASS] 调度器不调用 LLM chat
+[PASS] 自动链路强制 allowD=false
+
+[t06244] pass=67 fail=0
