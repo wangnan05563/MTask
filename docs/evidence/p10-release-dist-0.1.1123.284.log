@@ -1,0 +1,61 @@
+MTask 十期正式安装包构建记录
+========================================
+版本          : 0.1.1123.284
+提交          : c7d61fc6 release(p10): freeze dispatch feature and dependency-fix snapshot 0.1.1123.284
+构建时间      : 2026-11-23 19:10-19:22 (CST)
+主仓库        : D:\code\otherProjects\MTask
+构建 worktree : D:\code\tmp\p10-release-c7d61fc (detached HEAD c7d61fc, node_modules 为指向主仓库的 Junction)
+
+[构建命令]
+  npm run build:server
+  npm run build:web
+  npm run dist -- --publish=never
+
+[HEAD 自洽性预检]
+  PASS=9 FAIL=0 (正式构建未使用 --skip-head-check)
+  H-01 前置 / H-02 分离 worktree / H-03 副本干净 / H-04 junction 挂载
+  H-05 server tsc 零错误 / H-06 web tsc 零错误 / H-07 反证有效
+  H-08 清理且根依赖完好 / H-09 worktree 注册表无残留
+  原始结果: docs\evidence\p10-head-gate-0.1.1123.284.txt
+
+[构建产物]
+  server/dist：PASS（含 routes\dispatch.js、services\DispatchScheduler.js、skills）
+  web/dist   ：PASS（1852 modules，assets\index-CpqzdaTF.js 2,754.54 kB）
+  ABI 切换   ：workspace better_sqlite3.node → electron ABI 130；EBUSY 时按设计走改名旁路
+  ABI 还原   ：打包结束按快照还原为 ABI 127，sha256 校验通过
+  electron-builder 25.1.8 / Electron 33.4.11 / NSIS x64
+  代码签名   ：未配置；日志 “no signing info identified, signing is skipped”
+
+[安装包]
+  release\MTask Setup 0.1.1123.284.exe
+    size       = 114,064,313 B
+    sha256     = 68A57C6792B2D7F595E98AF717C871FEF07E58A88F7002A496C0A22FB3CE1BE8
+    FileVersion= 0.1.1123.284
+    built      = 2026-11-23 19:22:37
+  release\MTask Setup 0.1.1123.284.exe.blockmap
+    size       = 118,199 B
+
+[asar 校验]
+  win-unpacked\resources\app.asar
+    size       = 145,381,432 B
+    sha256     = 19DD1E540B53AE145C3748F07AE8830E76DB7BFBE513106F44327FAA42A03E45
+    package.json version = 0.1.1123.284
+    proxy-addr           = 2.0.8
+    @modelcontextprotocol/sdk = 1.32.2
+    web entry            = assets/index-CpqzdaTF.js（包内存在）
+    server dispatch route = server/dist/routes/dispatch.js（包内存在）
+    server DispatchScheduler = server/dist/services/DispatchScheduler.js（包内存在）
+  app.asar.unpacked better_sqlite3.node ABI = 130
+
+[构建异常与处置]
+  1) 主工作树第一次 npm run dist 失败：
+     ENOENT D:\code\otherProjects\MTask\web\dist\assets\index-oHNroE6L.js
+     根因：另一并发构建在 electron-builder 复制期间重写 web\dist，产物被换名/清空；不是源码错误。
+     处置：改用隔离 worktree 从 HEAD 重建并打包，避免共享 web/dist、server/dist 竞争。
+  2) 首次隔离打包使用 --skip-head-check 验证链路，产物已弃用；
+     随后恢复构建产物并重跑不带 skip 的正式打包，9/9 PASS，exit 0，本文记录的是后一次正式包。
+  3) 打包切换 ABI 时遇到 EBUSY，脚本改名旁路接管，收尾已还原并通过 sha256 校验。
+
+[结论]
+  正式安装包已生成并完成静态校验；生产 F:\Program 尚未升级，仍为 0.1.1122.283 依赖修复包。
+  对外发布仍受真实 B0 网关、SonarQube、P2 批量选择器、剩余依赖漏洞与未签名限制。

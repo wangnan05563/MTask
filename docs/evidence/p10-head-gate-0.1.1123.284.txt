@@ -1,0 +1,12 @@
+PASS=9 FAIL=0
+本轮门实例：门 head-selfconsistency · 运行 2026-11-23 19:10:39 · PID 44848 · HEAD c7d61fc · 结果文件 D:\code\tmp\p10-release-c7d61fc\.workbuddy\head-selfconsistency-gate-results-44848-20261123-191039.txt
+门：verify-head-selfconsistency · HEAD c7d61fc · 副本 D:\code\tmp\.mtask-pack-tmp\t02295-headwt-44848
+PASS H-01 前置：HEAD 可解析且仓库根 node_modules 在位（副本 tsc 依赖它）
+PASS H-02 对 HEAD 建分离 worktree 副本成功（判据打在提交上，不是工作树叠加态）
+PASS H-03 副本工作区干净（--porcelain 无输出，证明测的就是 HEAD 内容）
+PASS H-04 副本已挂上仓库根 node_modules（junction，未复制依赖）
+PASS H-05 HEAD 副本 `tsc --noEmit -p server/tsconfig.json` 零错误（重打包第 [3] 步的硬前置）
+PASS H-06 HEAD 副本 `tsc --noEmit -p web/tsconfig.json` 零错误
+PASS H-07 反证（只破坏副本）：注入未定义引用后 tsc 必须报错——本判据不是恒绿摆设
+PASS H-08 清理：junction 先解除、临时 worktree 已移除，仓库根 node_modules 完好
+PASS H-09 worktree 注册表无残留（本门跑完不污染并发会话的 worktree 列表）
