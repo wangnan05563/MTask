@@ -16,7 +16,7 @@
  */
 import { getSetting } from './AppSettings';
 import { normalizePlatform } from '../util/platform'; // T01288：平台标识归一化统一口径
-import { QueueService } from './QueueService';
+import { QueueService, type QueueKind } from './QueueService';
 import { AIService } from './AIService';
 import { logService } from './LogService';
 import { armTaskReady, armTaskRunning } from './taskArming'; // T05747：归位动作单源（避免与 AIService 循环依赖）
@@ -76,8 +76,14 @@ function armTask(taskId: string, platform: string, state: RelayDispatchResult['s
  *
  * T05747：新增可选 `toolIdOverride`——B0（CodeBuddy Gateway）与既有 supervisor 中继共用
  * 同一套 Queue/submit/poll/归位状态机，但两者工具 id 不同。不传时仍读原配置，零回归。
+ * T06245：新增可选 `queueKind`——B0/自动派发传 dispatch，会话重派/监督中继传 relay；默认 relay 保持旧调用语义。
  */
-export async function dispatchTask(taskId: string, platform: string, toolIdOverride?: string): Promise<RelayDispatchResult> {
+export async function dispatchTask(
+  taskId: string,
+  platform: string,
+  toolIdOverride?: string,
+  queueKind: QueueKind = 'relay',
+): Promise<RelayDispatchResult> {
   const toolId = (toolIdOverride ?? getSetting(RELAY_TOOL_KEY) ?? '').trim();
   if (!toolId) {
     const detail = `平台「${platform}」已声明为不支持 MCP 拉取（${RELAY_PLATFORMS_KEY}），但未配置中继派发工具（${RELAY_TOOL_KEY}）；请到「设置 → 监督与审计 → 中继通道」补充工具，或从 relayPlatforms 移除该平台以走 MCP 拉取。任务保持就绪`;
@@ -89,7 +95,11 @@ export async function dispatchTask(taskId: string, platform: string, toolIdOverr
   let jobId = '';
   try {
     // 队列是既有派发引擎的载体：一个动作建一条队列（含单 job），复用 submit/poll/ticket 全流程
-    const queue = QueueService.create(`监督派发（${platform}）`, new Date().toISOString().slice(0, 10));
+    const queue = QueueService.create(
+      `${queueKind === 'dispatch' ? '任务派发' : '监督派发'}（${platform}）`,
+      new Date().toISOString().slice(0, 10),
+      queueKind,
+    );
     queueId = queue.id;
     const jobs = QueueService.addJobs(queueId, [{ taskId, toolId }]);
     jobId = jobs[0].id;

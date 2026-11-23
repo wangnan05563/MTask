@@ -55,6 +55,8 @@ interface HistorySummary {
 }
 
 const PAGE_SIZE = 10;
+/** 快照内计划状态与任务状态保持同一套中文口径，避免同页出现 todo / done 原始枚举 */
+const PLAN_STATUS_LABEL: Record<string, string> = { todo: '待办', doing: '进行中', done: '已完成', blocked: '阻塞', canceled: '已取消' };
 
 /**
  * 历史资产页（T00589 二轮：**项目级快照**）。
@@ -67,6 +69,7 @@ export function HistoryPage() {
   const { projects: activeProjects } = projectList;
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [summary, setSummary] = useState<HistorySummary | null>(null);
+  const [summaryError, setSummaryError] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [loadError, setLoadError] = useState('');
@@ -110,12 +113,21 @@ export function HistoryPage() {
     // T02201：活跃项目改由统一容错层取数（原先与历史列表绑在同一 Promise.all，
     // 项目接口一挂整页 load 抛出且无提示）；本页其余取数失败也补了可见反馈。
     try {
-      const [data, sum] = await Promise.all([
+      const [data, sumResult] = await Promise.all([
         api.get<{ snapshots: Snapshot[] }>('/history/list'),
-        api.get<HistorySummary>('/history/summary').catch(() => null),
+        api.get<HistorySummary>('/history/summary')
+          .then((value) => ({ ok: true as const, value }))
+          .catch((e) => ({ ok: false as const, error: e instanceof Error ? e.message : String(e) })),
       ]);
       setSnapshots(data.snapshots);
-      setSummary(sum);
+      if (sumResult.ok) {
+        setSummary(sumResult.value);
+        setSummaryError('');
+      } else {
+        // 统计失败不能用 0 冒充真实值；保留错误入口，列表仍照常可用。
+        setSummary(null);
+        setSummaryError(sumResult.error || '统计数据加载失败');
+      }
       setLoadError('');
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -159,8 +171,11 @@ export function HistoryPage() {
   const activeProduct = productTabs.some((t) => t.key === productTag) ? productTag : '';
   const activeProductLabel = productTabs.find((t) => t.key === activeProduct)?.label ?? '全部产品';
   useEffect(() => {
+    // 首屏快照尚未返回时 productTabs 只有「全部产品」，不能据此清掉会话里恢复的标签；
+    // 等数据到位后再判断标签是否仍存在，避免刷新后产品筛选被静默重置。
+    if (snapshots.length === 0) return;
     if (productTag && !productTabs.some((t) => t.key === productTag)) setProductTag('');
-  }, [productTag, productTabs, setProductTag]);
+  }, [productTag, productTabs, snapshots.length, setProductTag]);
 
   const filtered = useMemo(() => {
     const k = searchKw.trim().toLowerCase();
@@ -205,7 +220,8 @@ export function HistoryPage() {
     try {
       await api.post('/history/restore', { projectId: s.id });
       flash(`快照「${s.name}」已恢复为活跃项目`);
-      await load();
+      // 恢复后项目重新变为活跃：同步刷新全局项目列表，否则沉淀下拉要等 60s 缓存过期才出现该项。
+      await Promise.all([load(), refreshProjectList()]);
     } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
   }
 
@@ -221,10 +237,10 @@ export function HistoryPage() {
   }
 
   const statCards = [
-    { label: '活跃项目', value: summary?.activeProjects ?? 0, hint: '当前任务/计划菜单可见的项目', color: 'var(--accent)', bg: 'var(--accent-soft)' },
-    { label: '历史快照', value: summary?.snapshotProjects ?? 0, hint: '已整体沉淀的项目快照', color: 'var(--success)', bg: 'color-mix(in srgb, var(--success) 10%, transparent)' },
-    { label: '快照任务', value: summary?.snapshotTasks ?? 0, hint: '快照内保留的任务总数', color: 'var(--warn)', bg: 'color-mix(in srgb, var(--warn) 10%, transparent)' },
-    { label: '快照计划', value: summary?.snapshotPlans ?? 0, hint: '快照内保留的计划总数', color: 'var(--danger)', bg: 'color-mix(in srgb, var(--danger) 10%, transparent)' },
+    { label: '活跃项目', value: summaryError ? '—' : summary?.activeProjects ?? 0, hint: '当前任务/计划菜单可见的项目', color: 'var(--accent)', bg: 'var(--accent-soft)' },
+    { label: '历史快照', value: summaryError ? '—' : summary?.snapshotProjects ?? 0, hint: '已整体沉淀的项目快照', color: 'var(--success)', bg: 'color-mix(in srgb, var(--success) 10%, transparent)' },
+    { label: '快照任务', value: summaryError ? '—' : summary?.snapshotTasks ?? 0, hint: '快照内保留的任务总数', color: 'var(--warn)', bg: 'color-mix(in srgb, var(--warn) 10%, transparent)' },
+    { label: '快照计划', value: summaryError ? '—' : summary?.snapshotPlans ?? 0, hint: '快照内保留的计划总数', color: 'var(--danger)', bg: 'color-mix(in srgb, var(--danger) 10%, transparent)' },
   ];
 
   return (
@@ -243,7 +259,7 @@ export function HistoryPage() {
         @media (hover: none) { .snap-precipitate-action { opacity: 1; } }
       `}</style>
 
-      {notice && <div style={{ position: 'fixed', top: 12, right: 16, zIndex: 200, padding: '6px 12px', borderRadius: 6, background: 'var(--card-bg)', border: '1px solid var(--accent)', fontSize: 'var(--fs-s)', color: 'var(--text)' }}>{notice}</div>}
+      {notice && <div data-t06001="notice" role="status" aria-live="polite" aria-atomic="true" style={{ position: 'fixed', top: 12, right: 16, zIndex: 200, padding: '6px 12px', borderRadius: 6, background: 'var(--card-bg)', border: '1px solid var(--accent)', fontSize: 'var(--fs-s)', color: 'var(--text)' }}>{notice}</div>}
 
       <div style={{ marginBottom: 4 }}>
         <SettingsHelpIcon
@@ -254,7 +270,7 @@ export function HistoryPage() {
         />
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: 10, margin: '12px 0' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, margin: '12px 0' }}>
         {statCards.map((c) => (
           <div key={c.label} data-t06001="stat-card" title={c.hint}
             style={{ padding: '10px 12px', border: '1px solid var(--border)', borderLeft: `3px solid ${c.color}`, borderRadius: 8, background: c.bg }}>
@@ -263,9 +279,19 @@ export function HistoryPage() {
           </div>
         ))}
       </div>
-      {(summary?.firstHistoryAt || summary?.lastHistoryAt) && (
+      {summaryError && (
+        <div data-t05776="summary-error" role="alert"
+          style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '7px 10px', marginBottom: 10, border: '1px solid var(--danger)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>
+          <span style={{ color: 'var(--danger)' }}>统计数据加载失败：{summaryError}（统计卡暂以「—」显示，不代表 0）</span>
+          <button type="button" onClick={() => void load()} className="tbtn-anim"
+            style={{ border: '1px solid var(--accent)', background: 'transparent', color: 'var(--accent)', borderRadius: 5, cursor: 'pointer', fontSize: 'var(--fs-s)', padding: '2px 8px' }}>
+            重试
+          </button>
+        </div>
+      )}
+      {!summaryError && (summary?.firstHistoryAt || summary?.lastHistoryAt) && (
         <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 10 }}>
-          沉淀时间跨度：{summary.firstHistoryAt ? relTime(summary.firstHistoryAt) : '—'} ~ {summary.lastHistoryAt ? relTime(summary.lastHistoryAt) : '—'}
+          沉淀时间跨度：{summary?.firstHistoryAt ? relTime(summary.firstHistoryAt) : '—'} ~ {summary?.lastHistoryAt ? relTime(summary.lastHistoryAt) : '—'}
         </div>
       )}
 
@@ -273,16 +299,17 @@ export function HistoryPage() {
       <div className="snap-precipitate" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card-bg)', marginBottom: 12 }}>
         <select value={transferProject} onChange={(e) => setTransferProject(e.target.value)}
           aria-label="选择要沉淀的项目" title="选择一个活跃项目整体沉淀为历史快照"
-          disabled={projectList.unusable}
+          disabled={projectList.unusable || (projectList.phase === 'ready' && activeProjects.length === 0)}
           style={{ padding: 4, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)' }}>
-          <option value="">{projectListPlaceholder(projectList)}</option>
+          <option value="">{projectList.phase === 'ready' && activeProjects.length === 0 ? '暂无活跃项目' : projectListPlaceholder(projectList)}</option>
           {activeProjects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         <ProjectListHint view={projectList} />
         <button onClick={() => void transfer()} disabled={busy || !transferProject} className="tbtn-anim snap-precipitate-action"
           title="把所选项目整体沉淀为历史资产快照" aria-label="沉淀为历史快照"
-          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 26, padding: 0, borderRadius: 6, cursor: transferProject ? 'pointer' : 'not-allowed', border: '1px solid var(--accent)', background: 'transparent', color: 'var(--accent)', fontSize: 'var(--fs-s)', opacity: transferProject ? 1 : 0.5 }}>
+          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4, height: 26, padding: '0 8px', borderRadius: 6, cursor: transferProject ? 'pointer' : 'not-allowed', border: '1px solid var(--accent)', background: 'transparent', color: 'var(--accent)', fontSize: 'var(--fs-s)', opacity: transferProject ? 1 : 0.5 }}>
           <FolderInput size={13} />
+          <span>沉淀</span>
         </button>
         <span style={{ flex: 1 }} />
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, border: '1px solid var(--border-strong)', borderRadius: 6, padding: '3px 8px' }}>
@@ -290,7 +317,7 @@ export function HistoryPage() {
           <input ref={searchRef} value={searchKw} onChange={(e) => { setSearchKw(e.target.value); setPage(1); }}
             placeholder="搜索快照项目…" aria-label="搜索历史快照" data-page-search
             style={{ border: 'none', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)', width: 160 }} />
-          {searchKw && <button onClick={() => setSearchKw('')} title="清除搜索" aria-label="清除搜索" style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: 0 }}><X size={12} /></button>}
+          {searchKw && <button onClick={() => { setSearchKw(''); setPage(1); }} title="清除搜索" aria-label="清除搜索" style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: 0 }}><X size={12} /></button>}
         </span>
       </div>
 
@@ -341,7 +368,7 @@ export function HistoryPage() {
       {!loadError && filtered.length === 0 && (
         <p style={{ color: 'var(--text-muted)' }}>
           {snapshots.length === 0
-            ? '暂无历史快照。选择一个活跃项目点击「沉淀为历史快照」——沉淀后该项目从任务/计划菜单隐去，内容以快照形式在此留存。'
+            ? '暂无历史快照。选择一个活跃项目点击「沉淀」——沉淀后该项目从任务/计划菜单隐去，内容以快照形式在此留存。'
             : searchKw.trim()
               ? `「${activeProductLabel}」下没有匹配「${searchKw.trim()}」的快照。`
               : `「${activeProductLabel}」下暂无历史快照。`}
@@ -352,30 +379,31 @@ export function HistoryPage() {
       {pageSnaps.map((s) => {
         const open = openIds.includes(s.id);
         return (
-          <div key={s.id} className="snap-card"
+          <div key={s.id} className="snap-card" role="group" aria-label={`历史快照：${s.name}`} data-t06001="snap-card" data-snapshot-id={s.id}
             style={{ border: '1px solid var(--border)', borderRadius: 10, background: 'var(--card-bg)', marginBottom: 10, transition: 'border-color .15s ease' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', flexWrap: 'wrap' }}>
               <button onClick={() => toggleOpen(s.id)} className="tbtn-anim"
-                title={open ? '收起快照内容' : '展开快照内容（任务与计划）'}
-                aria-label={open ? '收起快照内容' : '展开快照内容'}
+                title={open ? `收起快照内容：${s.name}` : `展开快照内容：${s.name}`}
+                aria-label={open ? `收起快照内容：${s.name}` : `展开快照内容：${s.name}`}
                 style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', display: 'inline-flex', padding: 0 }}>
                 {open ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
               </button>
-              <strong style={{ fontSize: 'var(--fs-l)', color: 'var(--text)' }}>{s.name}</strong>
+              <strong style={{ fontSize: 'var(--fs-l)', color: 'var(--text)', minWidth: 0, maxWidth: '100%', overflowWrap: 'anywhere', wordBreak: 'break-word' }}>{s.name}</strong>
               <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
                 任务 {s.stats.tasks}（完成 {s.stats.doneTasks}）· 计划 {s.stats.plans}（完结 {s.stats.donePlans}）· 沉淀于 {relTime(s.history_at)}
               </span>
-              <span style={{ flex: 1 }} />
-              <button onClick={() => void restore(s)} disabled={busy} className="tbtn-anim snap-card-action"
-                title="恢复 — 该快照整体恢复为活跃项目（重新出现在任务/计划菜单）" aria-label="恢复该快照"
-                style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 26, padding: 0, borderRadius: 6, border: '1px solid var(--accent)', background: 'transparent', color: 'var(--accent)', fontSize: 'var(--fs-s)', cursor: 'pointer' }}>
-                <RotateCcw size={12} />
-              </button>
-              <button onClick={() => void toArchive(s)} disabled={busy} className="tbtn-anim snap-card-action"
-                title="归档删除 — 整个项目内容转入归档区（软删除，可恢复）" aria-label="归档删除该快照"
-                style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 26, padding: 0, borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--danger)', fontSize: 'var(--fs-s)', cursor: 'pointer' }}>
-                <Archive size={12} />
-              </button>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginLeft: 'auto' }}>
+                <button onClick={() => void restore(s)} disabled={busy} className="tbtn-anim snap-card-action"
+                  title="恢复 — 该快照整体恢复为活跃项目（重新出现在任务/计划菜单）" aria-label={`恢复该快照：${s.name}`}
+                  style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 26, padding: 0, borderRadius: 6, border: '1px solid var(--accent)', background: 'transparent', color: 'var(--accent)', fontSize: 'var(--fs-s)', cursor: 'pointer' }}>
+                  <RotateCcw size={12} />
+                </button>
+                <button onClick={() => void toArchive(s)} disabled={busy} className="tbtn-anim snap-card-action"
+                  title="归档删除 — 整个项目内容转入归档区（软删除，可恢复）" aria-label={`归档删除该快照：${s.name}`}
+                  style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 26, padding: 0, borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--danger)', fontSize: 'var(--fs-s)', cursor: 'pointer' }}>
+                  <Archive size={12} />
+                </button>
+              </span>
             </div>
 
             {open && (
@@ -401,7 +429,7 @@ export function HistoryPage() {
                       <div key={p.id} title={p.description ?? ''} style={{ fontSize: 'var(--fs-s)', color: 'var(--text)', padding: '3px 0', borderBottom: '1px solid var(--surface-2)', display: 'flex', gap: 6 }}>
                         <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.title}</span>
                         <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flexShrink: 0 }}>
-                          {p.kind === 'milestone' ? '里程碑 · ' : ''}{p.status}{typeof p.progress === 'number' ? ` · ${p.progress}%` : ''}{p.duration_days !== null && p.duration_days !== undefined ? ` · ${p.duration_days}天` : ''}
+                          {p.kind === 'milestone' ? '里程碑 · ' : ''}{PLAN_STATUS_LABEL[p.status] ?? p.status}{typeof p.progress === 'number' ? ` · ${p.progress}%` : ''}{p.duration_days !== null && p.duration_days !== undefined ? ` · ${p.duration_days}天` : ''}
                         </span>
                       </div>
                     ))}
@@ -415,11 +443,11 @@ export function HistoryPage() {
 
       {pages > 1 && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0', fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>
-          <button onClick={() => setPage(Math.max(1, page - 1))} disabled={page <= 1} title="上一页" aria-label="上一页"
-            style={{ cursor: page <= 1 ? 'default' : 'pointer', padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', opacity: page <= 1 ? 0.5 : 1 }}>上一页</button>
+          <button onClick={() => setPage(Math.max(1, cur - 1))} disabled={cur <= 1} title="上一页" aria-label="上一页"
+            style={{ cursor: cur <= 1 ? 'default' : 'pointer', padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', opacity: cur <= 1 ? 0.5 : 1 }}>上一页</button>
           <span>第 {cur} / {pages} 页</span>
-          <button onClick={() => setPage(Math.min(pages, page + 1))} disabled={page >= pages} title="下一页" aria-label="下一页"
-            style={{ cursor: page >= pages ? 'default' : 'pointer', padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', opacity: page >= pages ? 0.5 : 1 }}>下一页</button>
+          <button onClick={() => setPage(Math.min(pages, cur + 1))} disabled={cur >= pages} title="下一页" aria-label="下一页"
+            style={{ cursor: cur >= pages ? 'default' : 'pointer', padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', opacity: cur >= pages ? 0.5 : 1 }}>下一页</button>
         </div>
       )}
     </section>

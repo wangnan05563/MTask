@@ -28,7 +28,7 @@ export async function createMigrationSnapshot(): Promise<MigrationSnapshot> {
     const reason = e instanceof Error ? e.message : String(e);
     throw new MigrationSnapshotError(
       `覆盖导入已中止：迁移前快照创建失败（${reason}）。`
-      + '当前数据未被改动。请先到「设置 → 数据维护」手动备份，或清理磁盘空间/备份目录权限后重试。',
+      + '当前数据未被改动。请先到「设置 → 数据库维护」手动备份，或清理磁盘空间/备份目录权限后重试。',
     );
   }
 }

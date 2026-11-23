@@ -130,9 +130,11 @@ export interface CaseBatchFields {
   reqId?: string | null;
 }
 
-/** 分页档位：0 表示「全部」模式（服务端 `limit≤0` 取全量，§7.3） */
-export const PAGE_SIZE_OPTIONS = [200, 500, 0] as const;
-export const PAGE_SIZE_LABELS: Record<number, string> = { 200: '200/页', 500: '500/页', 0: '全部' };
+/** 分页档位：0 表示「全部」模式（服务端 `limit≤0` 取全量，§7.3）
+ *  P2-6：默认页大小是 60（`tc.pageSize` 会话键），但旧档位只有 200/500/全部——
+ *  60 不在选项里导致下拉显示空白且首屏实际渲染 60 行没有对应档位。补齐 60/页，保持首屏行数 ≤500。 */
+export const PAGE_SIZE_OPTIONS = [60, 200, 500, 0] as const;
+export const PAGE_SIZE_LABELS: Record<number, string> = { 60: '60/页', 200: '200/页', 500: '500/页', 0: '全部' };
 
 /**
  * T01495（PRD §11 性能）：全部模式一次性取全量，>1000 条时上千行「输入框 + 下拉」控件会把主线程压死。

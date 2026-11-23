@@ -167,14 +167,18 @@ function normalizeBullets(raw: unknown, at: string, opts: ParseOutlineOptions, w
   return out;
 }
 
-/** 单段 projectIds（可选）：去重后校验都在请求范围内 */
-function parseSectionProjectIds(raw: unknown, at: string, projectIds: readonly string[]): string[] | undefined {
+/** 单段 projectIds（可选）：去重后校验都在请求范围内；宽松解析时模型误写项目名/未知 id 只告警不判废 */
+function parseSectionProjectIds(raw: unknown, at: string, projectIds: readonly string[], opts: ParseOutlineOptions, warnings: string[]): string[] | undefined {
   if (raw === undefined) return undefined;
   if (!Array.isArray(raw)) throw new Error(`${at} projectIds 不是数组`);
   const ids = [...new Set(raw.map(asText).filter(Boolean))];
   const unknown = ids.filter((id) => !projectIds.includes(id));
-  if (unknown.length) throw new Error(`${at} projectIds 含未知项目：${unknown.join('、')}`);
-  return ids;
+  if (unknown.length) {
+    if (!opts.lenient) throw new Error(`${at} projectIds 含未知项目：${unknown.join('、')}`);
+    warnings.push(`${at} projectIds 含未知项目，已忽略：${unknown.join('、')}`);
+  }
+  const known = ids.filter((id) => projectIds.includes(id));
+  return known.length ? known : undefined;
 }
 
 function parseOutlineSection(
@@ -200,7 +204,7 @@ function parseOutlineSection(
     warnings.push(`${at} 标题超长，已截断`);
   }
   const bullets = normalizeBullets(s.bullets, at, opts, warnings);
-  const ids = parseSectionProjectIds(s.projectIds, at, projectIds);
+  const ids = parseSectionProjectIds(s.projectIds, at, projectIds, opts, warnings);
   return { key: key as LectureSectionKey, title, bullets, ...(ids ? { projectIds: ids } : {}) };
 }
 
@@ -247,6 +251,54 @@ function normalizeQuestions(raw: unknown, opts: ParseOutlineOptions, warnings: s
   return questions;
 }
 
+/** 模型输出被 max_tokens 截断时，把尾巴补成合法 JSON（否则整份大纲判废，重试也还是截断）。 */
+function closeJsonTail(fragment: string): string {
+  let inStr = false;
+  let esc = false;
+  const stack: string[] = [];
+  for (const c of fragment) {
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === '\\') esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') inStr = true;
+    else if (c === '{') stack.push('}');
+    else if (c === '[') stack.push(']');
+    else if (c === '}' || c === ']') stack.pop();
+  }
+  let out = fragment;
+  if (inStr) out += '"';
+  out = out.replace(/[,\s]+$/, '');
+  out = out.replace(/,?\s*"[^"]*"\s*:\s*$/, ''); // 悬空的 key
+  out = out.replace(/[,\s]+$/, '');
+  return out + stack.reverse().join('');
+}
+
+function parseOutlineJsonLoose(content: string): unknown {
+  const text = String(content ?? '').trim();
+  try {
+    return parseAiJson(text);
+  } catch {
+    /* 落到截断修复 */
+  }
+  const start = Math.max(text.indexOf('{'), 0);
+  const body = text.slice(start);
+  const cutPoints = [body.length];
+  for (let i = body.length - 1; i > start && cutPoints.length < 260; i--) {
+    if (body[i] === ',' || body[i] === '}' || body[i] === ']') cutPoints.push(i + 1);
+  }
+  for (const cut of cutPoints) {
+    try {
+      return JSON.parse(closeJsonTail(body.slice(0, cut)));
+    } catch {
+      /* 继续往前退 */
+    }
+  }
+  return parseAiJson(text);
+}
+
 export function parseLectureOutline(
   raw: unknown,
   projectIds: readonly string[],
@@ -291,11 +343,18 @@ export async function outlineLecture(
     toolId,
     prompt.system,
     prompt.user,
-    (content) => parseLectureOutline(parseAiJson(content), projectIds),
+    (content) => {
+      const raw = parseOutlineJsonLoose(content);
+      // 先按严格口径校验；仅「标题/bullet 超字数」这类外观约束不达标时，退化为截断收编（留 warning），
+      // 不把整份大纲判死——否则模型每次多写几个字就会让整卡反复「大纲生成失败」。
+      try { return parseLectureOutline(raw, projectIds); }
+      catch { return parseLectureOutline(raw, projectIds, { lenient: true }); }
+    },
     {
       temperature: 0,
       signal: opts.signal,
       maxTokens: opts.maxTokens,
+      minMaxTokens: 4096, // 八段大纲 + 讨论问题是长 JSON：工具默认 max_tokens 偏低会截断，托底放宽
       retrySystemFromError: (lastError) => `${prompt.system}\n\n【上次输出不合格原因】${lastError}\n请只输出修正后的 JSON 对象。`,
       cardKey: 'ai.code_review_lecture', // T03296（G-2）：显式归属卡片
     },
@@ -361,7 +420,9 @@ export function buildSectionPrompt(input: SectionPromptInput): { system: string;
   const rule5Tail = outlineText ? `：\n${outlineText}` : '';
   const rule6 = fourPart
     ? '6. 逐文件讲解固定四段式：**要点**（改了什么+为什么）/ **潜在风险** / **规范检查** / **改进建议**；每个变更文件都要有这四段。'
-    : '6. 风险按「高/中/低」标注并带锚点；规范检查只写能从本仓配置或代码事实确认的项；改进建议必须具体可执行。';
+    : input.section.key === 'risks'
+      ? '6. 风险必须逐条成行，每条以 `- 高风险：` / `- 中风险：` / `- 低风险：` 开头（等级 + 全角冒号 + 风险描述 + 锚点），至少 5 条；禁止写成「高优先级风险是…」的叙述段。'
+      : '6. 规范检查只写能从本仓配置或代码事实确认的项；改进建议必须具体可执行，每条带锚点。';
   const rule7 = input.section.key === 'opening' || input.section.key === 'closing'
     ? '7. 多项目时按总-分-总：开场归并跨项目变更主题，结语点出「跨项目关联与不一致点」；单项目就聚焦本项目的整体脉络。'
     : '7. 本节只覆盖给定的项目/模块范围，不要越界讲其他模块。';
@@ -597,14 +658,102 @@ export interface SectionRunInput {
   extraNote?: string;
 }
 
+/**
+ * FR-4.5：讲稿是给主持人照念的口语，每段 ≤3 句。模型常写成长段落（5~10 句），
+ * 这里按句末标点切成 ≤3 句的小段；只处理普通叙述段，标题/表格/代码/列表原样保留。
+ */
+export function splitLectureParagraphs(text: string): string {
+  const out: string[] = [];
+  for (const raw of (text ?? '').split(/\n{2,}/)) {
+    const block = raw.trim();
+    if (!block) continue;
+    // 代码块/表格/标题/列表/含反引号的段落原样保留：按句号切会把 `saveView?.(true)` 这类代码切成两半
+    if (/^(?:#{1,6}\s|\||```|[-*•]\s|\d+[.)]\s|>\s)/.test(block) || block.includes('`')) { out.push(block); continue; }
+    const sentences = block.split(/(?<=[。！？；])/).map((s) => s.trim()).filter(Boolean);
+    if (sentences.length <= 3) { out.push(block); continue; }
+    for (let i = 0; i < sentences.length; i += 3) out.push(sentences.slice(i, i + 3).join(''));
+  }
+  return out.join('\n\n');
+}
+
+/**
+ * 单节正文清洗（导出稿可照念的前提）：
+ * 1) 去掉模型自带的、与本节标题重复的 markdown 标题行（否则导出稿会出现 5 个「## 逐项目-逐模块讲解」）；
+ * 2) 去掉「好的，以下是「X」一节讲稿正文：」这类聊天式开场；
+ * 3) 修锚点写法：`#L1-#L5` → `#L1-L5`，`[#path...]` → `[path...]`。
+ */
+export function polishSectionText(text: string, label: string): string {
+  const SECTION_LABELS: readonly string[] = LECTURE_SECTIONS.map((s) => s.label);
+  const isSectionHeading = (heading: string): boolean => {
+    const h = heading.replace(/\s+/g, ' ').trim();
+    const same = (x: string) => h === x.replace(/\s+/g, ' ').trim();
+    // 模型会在节内写「逐项目-逐模块讲解 — 逐模块讲解」这类带破折号后缀的变体，前缀命中同样按重复标题删掉
+    const prefixed = (x: string) => {
+      const base = x.replace(/\s+/g, ' ').trim();
+      return h.startsWith(base) && /^[—\-:：]/.test(h.slice(base.length));
+    };
+    if (SECTION_LABELS.some((x) => same(x) || prefixed(x))) return true;
+    return Boolean(label) && (same(label) || prefixed(label));
+  };
+  const out: string[] = [];
+  // 句级剔除：模型把过渡性自述混在正文段里（「……需要我在下一节逐模块展开的话，我就按模块顺序讲。」），
+  // 只删整行会漏；按句切，命中舞台指令的句子直接丢，其余句子保留。
+  const isChatterSentence = (s: string): boolean => {
+    const x = s.trim();
+    if (!x) return false;
+    if (/^(?:好的|好|各位好|各位同事|同学们)[，,](?:现在|接下来|下面)?我们?(?:就)?(?:进入|开始讲|开始|来看|看)/u.test(x)) return true;
+    if (/^(?:接下来|下面我们|现在我们|本节|这一节)/u.test(x) && /(进入|展开|讲解|讲.{0,4}节|环节|部分)/u.test(x)) return true;
+    if (/需要我/u.test(x) && /(下一节|展开|继续|接着)/u.test(x)) return true;
+    if (/^本节(?:按|将按).{0,12}(?:个)?文件/u.test(x)) return true;
+    return false;
+  };
+  const stripChatterSentences = (line: string): string => {
+    if (/\n/.test(line)) return line;
+    if (!/(好的|好[，,]|各位|需要我|接下来|下面我们|现在我们|本节|这一节)/u.test(line)) return line;
+    const parts = line.split(/(?<=[。！？])/u);
+    const kept = parts.filter((p) => !isChatterSentence(p));
+    return kept.join('').trim();
+  };
+  for (const rawLine of (text ?? '').split('\n')) {
+    const line = stripChatterSentences(rawLine);
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    // 模型在正文里自带的「## 逐项目-逐模块讲解」「# 规范检查」这类重复节标题：任意位置都删掉
+    if (/^#{1,6}\s/.test(trimmed) && isSectionHeading(trimmed.replace(/^#{1,6}\s*/, '').trim())) continue;
+    if (/^好的[，,].{0,40}?讲稿正文[:：]?\s*$/u.test(trimmed)) continue;
+    if (/^好[，,]\s*以下.{0,30}?讲稿正文[:：]?\s*$/u.test(trimmed)) continue;
+    // 过渡性自述（「各位好，我们进入逐模块讲解环节」「本节按五个文件展开」）——不是讲稿内容，主持人照念会尴尬
+    if (trimmed.length <= 120
+      && /^(?:好的[，,]?|好[，,]?|各位好[，,]?|各位同事[，,]?|接下来|下面我们|现在我们|本节|这一节)/u.test(trimmed)
+      && /(进入|讲稿|正文|环节|部分|展开|讲|按.{0,6}个?文件)/u.test(trimmed)) continue;
+    out.push(line);
+  }
+  let t = out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  t = t.replace(/\[#([^\]\s]+)\]/g, '[$1]').replace(/#L(\d+)-#L(\d+)/g, '#L$1-L$2');
+  // Markdown 里被模型多转义一层：`verify:\<id>` → `verify:<id>`（反引号内出现反斜杠会显示成字面 `\`）
+  t = t.replace(/\\([<>|`*_{}[\]()#+.!-])/g, '$1');
+  return t.trim();
+}
+
+/** 逐文件四段式的四个小节标题（模型漏段时用于判定是否要补一次） */
+const FOUR_PART_MARKERS = ['**要点**', '**潜在风险**', '**规范检查**', '**改进建议**'] as const;
+
+export function hasFourPartStructure(text: string): boolean {
+  return FOUR_PART_MARKERS.every((m) => text.includes(m));
+}
+
+/** 四段式块数（按「要点」标题计数）——逐文件展开要求块数 ≥ 本组文件数 */
+export function countFourPartBlocks(text: string): number {
+  return (text.match(/\*\*要点\*\*/g) ?? []).length;
+}
+
 /** 每个项目/模块组一次 askStream；单组失败只标该组，不拖垮已成功组 */
-export async function generateLectureSection(input: SectionRunInput, opts: SectionRunOptions = {}): Promise<SectionRunResult> {
-  if (input.groups.length === 0) return { ok: false, text: '', groups: [], error: '没有可生成的分组', aborted: false };
+export async function generateLectureSection(input: SectionRunInput, opts: SectionRunOptions = {}): Promise<SectionRunResult> {  if (input.groups.length === 0) return { ok: false, text: '', groups: [], error: '没有可生成的分组', aborted: false };
   const results: SectionGroupResult[] = [];
   let aborted = false;
   for (const group of input.groups) {
     if (opts.signal?.aborted) { aborted = true; break; }
-    const prompt = buildSectionPrompt({
+    const promptBase = {
       section: input.section,
       outline: input.outline,
       project: { id: group.projectId, name: group.projectName },
@@ -612,8 +761,8 @@ export async function generateLectureSection(input: SectionRunInput, opts: Secti
       files: group.files,
       commits: input.commits,
       style: input.style,
-      extraNote: input.extraNote,
-    });
+    };
+    const prompt = buildSectionPrompt({ ...promptBase, extraNote: input.extraNote });
     const meta = { projectName: group.projectName, module: group.module };
     const res = await AIService.askStream(
       input.toolId,
@@ -623,8 +772,43 @@ export async function generateLectureSection(input: SectionRunInput, opts: Secti
       opts.timeoutMs,
       opts.signal,
       'ai.code_review_lecture', // T03296（G-2）：讲稿分段流同属该卡
+      4096, // 逐节正文（四段式逐文件展开）常超 2k tokens；2048 会直接截成半句/空文
     );
-    const text = res.ok ? (res.content ?? '') : '';
+    const rawText = res.ok ? (res.content ?? '') : '';
+    const sectionLabel = input.section.title || lectureSectionLabel(input.section.key);
+    let text = res.ok ? polishSectionText(splitLectureParagraphs(rawText), sectionLabel) : '';
+    // 逐模块讲解要求「每个变更文件四段式」：模型偶发写成叙述段，这里补一次定向重写（只一次，避免无限重试）
+    if (res.ok && input.section.key === 'walkthrough' && group.files.length > 0 && countFourPartBlocks(text) < group.files.length) {
+      const nudge = `上一版只有 ${countFourPartBlocks(text)} 组四段式，本组有 ${group.files.length} 个变更文件。请对每个变更文件各写一组 **要点** / **潜在风险** / **规范检查** / **改进建议**，保留已给出的锚点。`;
+      const retryPrompt = buildSectionPrompt({ ...promptBase, extraNote: [input.extraNote, nudge].filter(Boolean).join('\n') });
+      const retry = await AIService.askStream(
+        input.toolId,
+        retryPrompt.system,
+        retryPrompt.user,
+        (delta) => opts.onDelta?.(delta, meta),
+        opts.timeoutMs,
+        opts.signal,
+        'ai.code_review_lecture',
+        4096,
+      );
+      if (retry.ok && retry.content) text = polishSectionText(splitLectureParagraphs(retry.content), sectionLabel);
+    } else if (res.ok && !text.trim()) {
+      // 空节兜底（R7 实测「变更摘要」整节空返回，导出就成了「（本节未生成）」）：
+      // 再给一次明确要求，仍空才交给要点兜底/占位。
+      const emptyNudge = '上一版正文为空。请直接输出本节讲稿正文（不要只回「好的」或标题），至少 3 个自然段，保留已给出的锚点。';
+      const retryPrompt = buildSectionPrompt({ ...promptBase, extraNote: [input.extraNote, emptyNudge].filter(Boolean).join('\n') });
+      const retry = await AIService.askStream(
+        input.toolId,
+        retryPrompt.system,
+        retryPrompt.user,
+        (delta) => opts.onDelta?.(delta, meta),
+        opts.timeoutMs,
+        opts.signal,
+        'ai.code_review_lecture',
+        4096,
+      );
+      if (retry.ok && retry.content) text = polishSectionText(splitLectureParagraphs(retry.content), sectionLabel);
+    }
     const { anchors, issues } = res.ok ? validateLectureAnchors(text, group.files) : { anchors: [], issues: [] };
     results.push({
       projectId: group.projectId,
@@ -640,11 +824,16 @@ export async function generateLectureSection(input: SectionRunInput, opts: Secti
   }
   const okGroups = results.filter((r) => r.ok && r.text.trim());
   const failed = results.filter((r) => !r.ok);
-  const text = okGroups
-    .map((r) => `### 项目「${r.projectName}」/ 模块 ${r.module}\n\n${r.text.trim()}`)
-    .join('\n\n');
+  const bullets = input.section.bullets ?? [];
+  // 兜底：模型对某一节整段空返回时（实测「变更摘要」偶发），用大纲要点补齐正文，
+  // 避免导出稿出现「（本节未生成）」——结构齐全优先，宁可要点式也不留空洞。
+  const text = okGroups.length
+    ? okGroups.map((r) => `### 项目「${r.projectName}」/ 模块 ${r.module}\n\n${r.text.trim()}`).join('\n\n')
+    : bullets.length
+      ? bullets.map((b) => `- ${b}`).join('\n')
+      : '';
   return {
-    ok: failed.length === 0 && !aborted,
+    ok: Boolean(text.trim()) && !aborted,
     text,
     groups: results,
     ...(failed.length ? { error: failed.map((r) => `${r.projectName}/${r.module}：${r.error}`).join('；') } : {}),
@@ -666,6 +855,14 @@ export interface AssembleLectureInput {
   generatedAt?: string;
 }
 
+/** 节内正文的标题统一降一级：模型偶发写 `## web/src/api`，会和八段 H2 平级、破坏目录层级 */
+export function demoteSectionHeadings(text: string): string {
+  return (text ?? '')
+    .split('\n')
+    .map((line) => (/^#{1,5}\s/.test(line) ? `#${line}` : line))
+    .join('\n');
+}
+
 /** 按八段固定顺序拼装成最终 md；缺节显式占位，不 silently 丢结构 */
 export function assembleLectureMarkdown(input: AssembleLectureInput): string {
   const head = [
@@ -678,7 +875,7 @@ export function assembleLectureMarkdown(input: AssembleLectureInput): string {
   const body: string[] = [];
   for (const meta of LECTURE_SECTIONS) {
     const found = input.sections.find((s) => s.key === meta.key);
-    body.push(`## ${meta.label}`, '', found?.text.trim() || '（本节未生成）', '');
+    body.push(`## ${meta.label}`, '', found?.text.trim() ? demoteSectionHeadings(found.text.trim()) : '（本节未生成）', '');
   }
   return `${head.join('\n')}\n${body.join('\n')}`.trimEnd() + '\n';
 }

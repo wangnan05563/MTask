@@ -250,13 +250,34 @@ export function finalizeJob(jobId: string, status: Exclude<GenJobStatus, 'runnin
 }
 
 /** 按卡取最近一个任务（刷新恢复入口）；无任务返回 null */
-export function latestJob(cardKey: string): GenJobView | null {
+export interface LatestJobFilter {
+  /** 只认「与这些项目有交集」的 job（讲稿类请求把 projectIds 存在 request_json 里） */
+  readonly projectIds?: readonly string[];
+  /** 只看最近这么久内更新过的 job（默认 72h，避免几周前的失败横幅一直弹） */
+  readonly maxAgeMs?: number;
+}
+
+/** 最近一条台账（可按项目 + 时效过滤）：恢复横幅不该跨项目、跨周次串台 */
+export function latestJob(cardKey: string, filter: LatestJobFilter = {}): GenJobView | null {
   const db = getDb();
-  const row = db.prepare(
-    'SELECT * FROM ai_gen_jobs WHERE card_key = ? ORDER BY created_at DESC, rowid DESC LIMIT 1',
-  ).get(cardKey) as JobRow | undefined;
-  if (!row) return null;
-  return toView(row, db.prepare('SELECT * FROM ai_gen_segments WHERE job_id = ? ORDER BY order_index, section_key').all(row.id) as SegmentRow[]);
+  const rows = db.prepare(
+    'SELECT * FROM ai_gen_jobs WHERE card_key = ? ORDER BY created_at DESC, rowid DESC LIMIT 20',
+  ).all(cardKey) as JobRow[];
+  const maxAge = filter.maxAgeMs ?? 72 * 3600_000;
+  const cutoff = Date.now() - maxAge;
+  const want = filter.projectIds ?? [];
+  for (const row of rows) {
+    const updated = new Date(row.updated_at).getTime();
+    if (Number.isFinite(updated) && updated < cutoff) continue;
+    if (want.length > 0) {
+      const req = parseJson<{ projectIds?: unknown }>(row.request_json, {});
+      const ids = Array.isArray(req.projectIds) ? req.projectIds.filter((x): x is string => typeof x === 'string') : [];
+      // 请求里没记项目（历史 job）时不据此排除，避免老台账彻底看不见
+      if (ids.length > 0 && !ids.some((id) => want.includes(id))) continue;
+    }
+    return toView(row, db.prepare('SELECT * FROM ai_gen_segments WHERE job_id = ? ORDER BY order_index, section_key').all(row.id) as SegmentRow[]);
+  }
+  return null;
 }
 
 function toSegmentView(r: SegmentRow): GenSegmentView {

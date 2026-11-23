@@ -8,6 +8,18 @@ import { exportGate, EXPORT_QUEUE_WAIT_SLOW_EXPORT } from '../util/export-gate';
  */
 export const dbAdminApi = Router();
 
+const CONFIRM_TOKEN = 'CONFIRM_DELETE';
+
+/** 危险操作（删除行/批量删除）必须带前端输入的确认码；前端弹窗只是交互，最终约束在服务端。 */
+function requireConfirm(req: import('express').Request, res: import('express').Response): boolean {
+  const supplied = typeof req.body?.confirm === 'string' ? req.body.confirm : '';
+  if (supplied !== CONFIRM_TOKEN) {
+    res.status(403).json({ error: `确认码不正确：删除操作必须提交 ${CONFIRM_TOKEN}` });
+    return false;
+  }
+  return true;
+}
+
 /** 统一错误包装：业务错误 → 400 + { error } */
 function wrap(res: import('express').Response, fn: () => unknown): void {
   try {
@@ -40,9 +52,13 @@ dbAdminApi.patch('/tables/:table/rows/:pk', (req, res) =>
   wrap(res, () => DbAdminService.updateRow(req.params.table, req.params.pk, req.body ?? {})),
 );
 
-dbAdminApi.delete('/tables/:table/rows/:pk', (req, res) => wrap(res, () => DbAdminService.deleteRow(req.params.table, req.params.pk)));
+dbAdminApi.delete('/tables/:table/rows/:pk', (req, res) => {
+  if (!requireConfirm(req, res)) return;
+  wrap(res, () => DbAdminService.deleteRow(req.params.table, req.params.pk));
+});
 
 dbAdminApi.post('/tables/:table/batch-delete', (req, res) => {
+  if (!requireConfirm(req, res)) return;
   const { pks } = (req.body ?? {}) as { pks?: unknown };
   if (!Array.isArray(pks) || pks.length === 0) return res.status(400).json({ error: 'pks 必填（主键数组）' });
   wrap(res, () => DbAdminService.batchDelete(req.params.table, pks.map(String)));

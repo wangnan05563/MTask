@@ -80,7 +80,7 @@ export interface SonarConfigView {
 
 export interface SonarTestResult {
   server?: { ok: boolean; version?: string; edition?: string; status?: string };
-  scanner?: { ok: boolean; version?: string };
+  scanner?: { ok: boolean; version?: string; note?: string };
   java?: { ok: boolean };
   project?: { ok: boolean; projectKey?: string };
   errors: Array<{ kind: SonarTestKind; message: string; hint: string }>;
@@ -277,6 +277,24 @@ const JAVA_MISSING_HINT = '未探测到 Java：系统 PATH、JAVA_HOME/bin、注
   + '新版 SonarScanner Windows 发布包自带运行时，只有你用的那份不带 jre 时才需要 JDK 11+；安装后点「重新探测」，本工具不提供安装。';
 
 const firstLine = (s: string) => s.split(/\r?\n/).map((l) => l.trim()).find((l) => l.length > 0) ?? '';
+const fullOutput = (s: string) => `${s ?? ''}`.trim();
+
+/** 扫描器版本：sonar-scanner -v 的首行是带时间戳的 INFO，不是版本号；从完整输出里取真正的版本行。 */
+function scannerVersion(out: string, bin = ''): string {
+  const match = out.match(/^.*?(?:SonarScanner|SonarQube Scanner|sonar-scanner)\s+([0-9][0-9A-Za-z._-]*)/im);
+  if (match) return `SonarScanner ${match[1]}`;
+  // 部分 Windows 发布包把 Java 子进程的输出丢了，只留下配置行；版本仍可从发布包的
+  // lib/sonar-scanner-cli-<version>.jar 文件名恢复，避免把配置行伪装成版本号。
+  if (bin) {
+    try {
+      const libDir = path.join(path.dirname(bin), '..', 'lib');
+      const jar = readdirSync(libDir).find((name) => /^sonar-scanner-cli-[0-9][0-9A-Za-z._-]*\.jar$/i.test(name));
+      const jarMatch = jar?.match(/^sonar-scanner-cli-([0-9][0-9A-Za-z._-]*)\.jar$/i);
+      if (jarMatch) return `SonarScanner ${jarMatch[1]}`;
+    } catch { /* 目录不可读时退回首行，保持原有可诊断性 */ }
+  }
+  return firstLine(out);
+}
 
 function execVersion(bin: string, args: string[]): Promise<ExecResult> {
   const spec = planScannerSpawn(bin, args);
@@ -285,7 +303,7 @@ function execVersion(bin: string, args: string[]): Promise<ExecResult> {
     const opts = { timeout: EXEC_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, windowsHide: true } as const;
     const cb = (err: unknown, stdout: string, stderr: string) => {
       // java -version 走 stderr 是既成事实（scanner CLI 走 stdout），两路都要收下
-      resolve({ ok: !err, out: firstLine(`${stdout ?? ''}${stderr ?? ''}`) });
+      resolve({ ok: !err, out: fullOutput(`${stdout ?? ''}${stderr ?? ''}`) });
     };
     try {
       execFile(spec.command, spec.args, { ...opts, shell: spec.shell }, cb);
@@ -535,7 +553,7 @@ function probeJavaBin(bin: string, source: JavaSource): Promise<SonarProbe> {
     return {
       available: res.ok,
       resolved: res.ok ? bin : '',
-      version: res.ok ? res.out : '',
+      version: res.ok ? firstLine(res.out) : '',
       // 可用时的 hint 只用来交代「这条 java 是从哪来的」——系统通道没命中不是可以瞒过去的事，
       // 否则用户看到一行绿字，却不知道它靠的是扫描器自带运行时。
       hint: res.ok ? javaSourceNote(source, bin) : probeHint('Java', res) || JAVA_MISSING_HINT,
@@ -594,7 +612,7 @@ export async function probeScanner(scannerPathConfig?: string): Promise<SonarPro
     return {
       available: res.ok,
       resolved: res.ok ? resolved : '',
-      version: res.ok ? res.out : '',
+      version: res.ok ? scannerVersion(res.out, resolved) : '',
       hint: res.ok ? scannerSourceNote(resolution, configured) : probeHint('扫描器', res)
         || `扫描器执行 \`sonar-scanner -v\` 失败（${resolved}）：确认该路径是可运行的 SonarScanner CLI，且 Java 环境可用。`,
     };
@@ -617,6 +635,8 @@ export async function getSonarConfigView(): Promise<SonarConfigView> {
   const scanLimit = readScanLimit();
   const gateRaw = getSetting(`exportGateLimit.${SONAR_SCAN_GATE}`);
   const gateParsed = gateRaw === null ? Number.NaN : Number(gateRaw);
+  // 扫描器与 Java 两条探测互不依赖，冷启动并行起进程，避免串行等待两次 CLI 超时。
+  const [scanner, java] = await Promise.all([probeScanner(), probeJava()]);
   return {
     serverUrl: getSetting(SERVER_URL_KEY) ?? '',
     tokenConfigured: Boolean(plain),
@@ -625,8 +645,8 @@ export async function getSonarConfigView(): Promise<SonarConfigView> {
     projectKeys: readProjectKeys(),
     scanLimit,
     gateLimitEffective: Number.isInteger(gateParsed) && gateParsed >= 1 ? gateParsed : scanLimit,
-    scanner: await probeScanner(),
-    java: await probeJava(),
+    scanner,
+    java,
   };
 }
 
@@ -770,9 +790,10 @@ async function testServerPart(
 }
 
 /** 扫描器项（连带 Java 项）：scanner 起不来时 Java 才是首要原因，只在失败分支补探一次。 */
-async function testScannerPart(errors: SonarTestResult['errors']): Promise<Pick<SonarTestResult, 'scanner' | 'java'>> {
-  const scanner = await probeScanner();
-  if (scanner.available) return { scanner: { ok: true, version: scanner.version } };
+async function testScannerPart(errors: SonarTestResult['errors'], scannerPath?: string): Promise<Pick<SonarTestResult, 'scanner' | 'java'>> {
+  // 连接测试必须按当前草稿路径探测，不能读已保存设置——否则用户改了路径点测试仍拿到旧结果。
+  const scanner = await probeScanner(scannerPath);
+  if (scanner.available) return { scanner: { ok: true, version: scanner.version, note: scanner.hint } };
   errors.push({ kind: 'no-scanner', message: scanner.resolved && scanner.version ? '扫描器执行失败' : '未找到可用的 sonar-scanner', hint: scanner.hint });
   // 正常环境不多起一个进程：只有 scanner 探不到时才需要追查 Java
   const java = await probeJava();
@@ -908,7 +929,7 @@ async function testProjectPart(
 }
 
 /** 三项连接测试，结果分别回显（PRD §3.4.1）；每类失败各给 kind 与可操作指引。 */
-export async function testSonarConnection(input?: { serverUrl?: string; token?: string; projectKey?: string }): Promise<SonarTestResult> {
+export async function testSonarConnection(input?: { serverUrl?: string; token?: string; projectKey?: string; scannerPath?: string }): Promise<SonarTestResult> {
   const errors: SonarTestResult['errors'] = [];
   const out: SonarTestResult = { errors };
   const serverUrl = normalizeSonarUrl(input?.serverUrl ?? getSetting(SERVER_URL_KEY) ?? '');
@@ -918,7 +939,7 @@ export async function testSonarConnection(input?: { serverUrl?: string; token?: 
   const retryToken = draftToken || savedToken;
 
   out.server = await testServerPart(serverUrl, retryToken, errors);
-  const scannerPart = await testScannerPart(errors);
+  const scannerPart = await testScannerPart(errors, input?.scannerPath);
   out.scanner = scannerPart.scanner;
   if (scannerPart.java) out.java = scannerPart.java;
   out.project = await testProjectPart(serverUrl, projectKey, retryToken, out.server?.ok === true, errors);

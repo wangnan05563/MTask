@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { Check, Copy } from 'lucide-react';
 
 /**
  * 设置页「帮助文档」Tab：集中展示功能说明、MCP 接口文档、配置 JSON 样例与快速上手。
@@ -6,7 +7,7 @@ import { useState } from 'react';
  * 离线可读、便于维护。样式沿用全局 CSS 变量，自动适配主题与字号。
  *
  * T03715：按当前一级菜单（任务/模型/提示词/通用需求/项目管理/AI 工作台/队列/执行会话/设置）
- * 与设置页三分组重排；MCP 工具清单与 server.ts 注册的 44 个工具逐条对齐。
+ * 与设置页三分组重排；MCP 工具清单与 server.ts 注册的 51 个工具逐条对齐（新增工具需同步此处）。
  */
 
 type Sub = 'features' | 'mcp' | 'skill' | 'config' | 'quickstart';
@@ -18,25 +19,106 @@ const SUBS: { key: Sub; label: string }[] = [
   { key: 'quickstart', label: '快速上手' },
 ];
 
-/** 代码块：横向可滚动、随主题配色，保持窄屏下不破坏排版 */
+/** JSONC 复制时仅去除字符串外的 // 与 /* 注释，URL 中的 // 不受影响。 */
+function stripJsonComments(src: string): string {
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    const next = src[i + 1];
+    if (inString) {
+      out += c;
+      if (escaped) escaped = false;
+      else if (c === '\\') escaped = true;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') {
+      inString = true;
+      out += c;
+      continue;
+    }
+    if (c === '/' && next === '/') {
+      while (i < src.length && src[i] !== '\n') i++;
+      out += '\n';
+      continue;
+    }
+    if (c === '/' && next === '*') {
+      i += 2;
+      while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++;
+      i++;
+      continue;
+    }
+    out += c;
+  }
+  return out;
+}
+
+function CopyButton({ text, label, compact = false }: { readonly text: string; readonly label: string; readonly compact?: boolean }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<number | null>(null);
+  const onCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+    }
+    setCopied(true);
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setCopied(false), 1600);
+  };
+  return (
+    <button
+      type="button"
+      className="help-copy"
+      data-help-copy
+      data-copied={copied ? '1' : '0'}
+      aria-label={copied ? `已复制：${label}` : label}
+      title={label}
+      onClick={(e) => { e.stopPropagation(); void onCopy(); }}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0,
+        padding: compact ? 4 : '2px 8px', height: 26, borderRadius: 6,
+        border: '1px solid var(--border-strong)', background: 'var(--card-bg)',
+        color: copied ? 'var(--accent)' : 'var(--text-secondary)', cursor: 'pointer',
+        fontSize: 'var(--fs-xs)', lineHeight: 1,
+      }}
+    >
+      {copied ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+      {!compact && <span>{copied ? '已复制' : '复制'}</span>}
+    </button>
+  );
+}
+
+/** 代码块：横向可滚动、随主题配色，保持窄屏下不破坏排版；JSONC 复制时自动去注释 */
 function Code({ title, lang, code }: { readonly title?: string; readonly lang?: string; readonly code: string }) {
+  const copyText = lang?.startsWith('JSONC') ? stripJsonComments(code) : code;
   return (
     <div style={{ margin: '8px 0', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', background: 'var(--card-bg)' }}>
-      {title && (
-        <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600, padding: '8px 12px', borderBottom: '1px solid var(--border)', background: 'var(--surface)' }}>
-          {title}{lang ? <span style={{ color: 'var(--text-muted)', fontWeight: 400, marginLeft: 8 }}>{lang}</span> : null}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid var(--border)', background: 'var(--surface)' }}>
+        <div style={{ flex: 1, minWidth: 0, fontSize: 'var(--fs-m)', fontWeight: 600 }}>
+          {title}{lang ? <span style={{ color: 'var(--text-muted)', fontWeight: 400, marginLeft: 8, whiteSpace: 'nowrap' }}>{lang}</span> : null}
         </div>
-      )}
+        <CopyButton text={copyText} label={`复制代码${title ? '：' + title : ''}`} />
+      </div>
       <pre style={{ margin: 0, padding: 12, overflowX: 'auto', fontSize: 'var(--fs-m)', lineHeight: 1.6, color: 'var(--text)', background: 'transparent' }}><code>{code}</code></pre>
     </div>
   );
 }
 
-/** 字段/行数据表：列 = 项目 | 说明（可选字段列） */
-function FieldTable({ head, rows }: { readonly head: string[]; readonly rows: string[][] }) {
+/** 字段/行数据表：列 = 项目 | 说明（可选字段列）；窄屏自动转为字段卡片，避免横向裁切 */
+function FieldTable({ head, rows }: { readonly head: string[]; readonly rows: ReactNode[][] }) {
   return (
-    <div style={{ overflowX: 'auto', margin: '8px 0' }}>
-      <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 'var(--fs-m)', minWidth: 420 }}>
+    <div className="help-table-wrap" style={{ overflowX: 'auto', margin: '8px 0' }}>
+      <table className="help-table" style={{ borderCollapse: 'collapse', width: '100%', fontSize: 'var(--fs-m)', minWidth: 420 }}>
         <thead>
           <tr>
             {head.map((h) => (
@@ -45,10 +127,10 @@ function FieldTable({ head, rows }: { readonly head: string[]; readonly rows: st
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
-            <tr key={r.join('|')}>
-              {r.map((c) => (
-                <td key={c} style={{ padding: '6px 10px', border: '1px solid var(--border)', verticalAlign: 'top' }}>{c}</td>
+          {rows.map((r, i) => (
+            <tr key={i}>
+              {r.map((c, j) => (
+                <td key={j} data-label={head[j] ?? ''} style={{ padding: '6px 10px', border: '1px solid var(--border)', verticalAlign: 'top' }}>{c}</td>
               ))}
             </tr>
           ))}
@@ -57,6 +139,21 @@ function FieldTable({ head, rows }: { readonly head: string[]; readonly rows: st
     </div>
   );
 }
+
+/** 帮助页局部样式：子页签换行、窄屏表格卡片化；不引入全局 CSS。 */
+const HELP_CSS = `
+.help-tabs { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:12px; }
+.help-copy:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+@media (max-width: 640px) {
+  .help-table-wrap { overflow-x: visible !important; }
+  .help-table { min-width:0 !important; width:100% !important; border-collapse:separate !important; border-spacing:0; }
+  .help-table thead { display:none; }
+  .help-table, .help-table tbody, .help-table tr, .help-table td { display:block; width:100%; }
+  .help-table tr { border:1px solid var(--border); border-radius:8px; margin:0 0 8px; background:var(--card-bg); overflow:hidden; }
+  .help-table td { border:0 !important; border-bottom:1px dashed var(--border) !important; padding:7px 9px !important; white-space:normal !important; overflow-wrap:anywhere; }
+  .help-table td:last-child { border-bottom:0 !important; }
+  .help-table td::before { content:attr(data-label); display:block; font-size:var(--fs-xs); color:var(--text-muted); margin-bottom:2px; font-weight:600; }
+}`;
 
 /** 功能模块：概述 + 步骤 + 注意事项 */
 interface FeatureModule { name: string; overview: string; steps?: string[]; tips?: string[]; }
@@ -85,7 +182,7 @@ const FEATURES: FeatureModule[] = [
     name: '任务的 AI 辅助与 Git 关联',
     overview: '任务行内的智能能力：分类/优先级建议、工作空间检索与只读问答、Git 提交徽标，以及「未回写」补录闭环。',
     steps: [
-      '「AI 分类建议」给出分类 + 优先级 + 一句理由，采纳后才落库；建议入口显隐与采纳率在「设置 → 通用设置」',
+      '「AI 分类建议」给出分类 + 优先级 + 一句理由，采纳后才落库；建议入口显隐与采纳率在「设置 → 通用」',
       '项目绑定工作空间后可用「工作空间检索」全文找代码；「工作空间问答」只读作答，引用可跳转源码',
       'Git 徽标显示关联提交简写（多个提交显示最新一条 +N）；未回写的已完成任务显示「未回写」',
       '已完成 tab 顶部「未回写」提示条：可一键复制回写指令，或打开 Git 树弹窗手动关联',
@@ -243,14 +340,14 @@ const FEATURES: FeatureModule[] = [
       '停滞口径：最近心跳超过 supervisor.sessionStaleMs（默认 10 分钟）',
       '数据来自外部平台调用 mtask_report_progress 的上报（建议 30~60 秒一次）',
       '面板只读，不提供任何会触发外部平台动作的入口',
-      '监督器（Supervisor）可判定就绪任务并分配平台，状态与审计在「设置 → 监督审计」',
+      '监督器（Supervisor）可判定就绪任务并分配平台，状态与审计在「设置 → 监督与审计」',
     ],
   },
   {
     name: '设置 · 通用与仪表盘',
     overview: '应用级偏好与统计：主题/主题预设/强调色/字体/字号/界面语言/任务通知/关闭窗口行为/AI 建议开关，以及仪表盘四指标。',
     steps: [
-      '「通用设置」选择主题（浅色/深色/跟随系统）或主题预设，调整强调色、字体字号与界面语言',
+      '「通用」选择主题（浅色/深色/跟随系统）或主题预设，调整强调色、字体字号与界面语言',
       '桌面端可开启「任务通知」：AI 处理完成/失败弹系统通知，点击通知可定位到任务',
       '桌面端可设「关闭窗口行为」：最小化到托盘（应用继续运行，正在跑的 AI 任务不打断，点托盘图标即唤回窗口）或直接关闭；未记住时点关闭按钮会弹窗询问，勾选「记住此选择，下次不再提示」后按所选行为直接执行',
       '「任务分类建议」提供总开关与采纳率（分母为已展示数）',
@@ -263,29 +360,46 @@ const FEATURES: FeatureModule[] = [
   },
   {
     name: '设置 · 数据管理',
-    overview: '任务分类、自定义字段、循环任务、历史资产、归档、数据迁移与数据维护七个数据页签。',
+    overview: '仪表盘、任务分类、自定义字段、循环任务、历史版本、归档、记忆管理、数据迁移与数据库维护九个数据页签。',
     steps: [
       '「任务分类」新增/编辑/删除分类；删除后其下任务回到未分类（任务保留）',
       '「自定义字段」按项目定义文本/数字/日期/单选字段与选项；被任务引用的选项禁止硬删',
       '「循环任务」按频率或 cron 表达式定时生成任务副本（标题自动带日期后缀）',
-      '「历史资产」把项目整体沉淀为快照，可恢复或归档删除',
+      '「历史版本（历史资产）」把项目整体沉淀为快照，可恢复或归档删除',
       '「归档」批量还原或彻底删除已归档的任务与计划（支持搜索、分类/项目筛选与分页）',
+      '「记忆管理」按产品标签查看长期记忆，支持列表/图谱、待确认队列、覆盖度与召回评估',
       '「数据迁移」导出单个 JSON 备份，导入可选合并/保留/覆盖三种策略',
-      '「数据维护」对任意业务表在线增删改查、批量删除、CSV/JSON 导入导出并查看表结构',
+      '「数据库维护」对任意业务表在线增删改查、批量删除、CSV/JSON 导入导出并查看表结构',
     ],
     tips: [
       '循环任务由服务端在启动时与每小时 tick 检查到期生成',
-      '历史资产沉淀后项目名被占用：新建同名项目会被拒绝；沉淀不删除任何数据',
+      '历史版本沉淀后项目名被占用：新建同名项目会被拒绝；沉淀不删除任何数据',
       '覆盖导入会清空并替换全部数据，不可恢复；导入在单事务内完成，失败自动回滚',
-      '数据维护的危险操作需输入确认码 CONFIRM_DELETE，表名/列名经白名单校验',
-      '任务图片随任务级联归档/删除；归档是软删除区，历史资产是项目级组织过程资产',
+      '数据库维护的危险操作需输入确认码 CONFIRM_DELETE，表名/列名经白名单校验',
+      '任务图片随任务级联归档/删除；归档是软删除区，历史版本是项目级组织过程资产',
     ],
   },
   {
-    name: '设置 · API Token 与 SonarQube',
+    name: '设置 · 记忆管理',
+    overview: '产品维度的 AI 长期记忆：同一产品下的多期项目共享记忆池，跨产品严格隔离；列表编辑、图谱关系、待确认与健康度治理。',
+    steps: [
+      '按产品标签切换记忆池；同一产品下可切换「列表」编辑与「图谱」查看关系',
+      '按类型（偏好/反馈/项目事实/外部参考）、分层、权威筛选；支持新增、编辑、删除与查看来源任务',
+      '「待确认」队列收纳疑似个人敏感内容，确认后才入库，驳回则丢弃',
+      '记忆摘要 / 召回覆盖评估 / 零访问建议为只读治理视图；评审看板与变更审计可追溯',
+      '项目级「自动抽取」开关控制该项目是否自动沉淀记忆',
+    ],
+    tips: [
+      '记忆按产品隔离：未绑定产品标签的项目返回空集提示，不会串到其它产品',
+      '疑似身份证/手机号/银行卡/住址内容不会自动入库，先转待确认队列',
+      '删除为物理删除，跨产品操作会被服务端拒绝；日常淘汰优先使用失效/到期而非删除',
+    ],
+  },
+  {
+    name: '设置 · API 令牌与 SonarQube',
     overview: '外部脚本凭据与 SonarQube 质量扫描的环境配置。',
     steps: [
-      '「API Token」新建命名凭据并选择只读或读写范围；明文仅在创建时展示一次，可停用或撤销',
+      '「API 令牌」新建命名凭据并选择只读或读写范围；明文仅在创建时展示一次，可停用或撤销',
       '「SonarQube」填写服务器地址、认证 Token（加密、脱敏、查看需二次确认并留审计）、扫描器路径与各项目 projectKey',
       '「连接测试」可分别校验服务器状态 / 扫描器版本 / 项目键可达性，支持用未保存的草稿值直接测试',
       '扫描并发上限 1~2（默认 1），超出不排队',
@@ -298,9 +412,9 @@ const FEATURES: FeatureModule[] = [
   },
   {
     name: '设置 · 运维与诊断',
-    overview: '监督审计、内网穿透与日志三个排障页签。',
+    overview: '监督与审计、内网穿透与日志三个排障页签。',
     steps: [
-      '「监督审计」查看监督器状态（熔断开关 / tick 周期 / token 预算 / 活跃与停滞会话）、最近决策与审计记录，可调整中继与运行参数',
+      '「监督与审计」查看监督器状态（熔断开关 / tick 周期 / token 预算 / 活跃与停滞会话）、最近决策与审计记录，可调整中继与运行参数',
       '「内网穿透」配置 provider 与访问令牌，启动后获得公网 URL',
       '「日志」按级别与来源筛选、暂停/继续、清空，并可调整轮询间隔',
     ],
@@ -350,7 +464,7 @@ const FEATURES: FeatureModule[] = [
   },
 ];
 
-/** MCP 工具：与 server/src/mcp/server.ts 注册的 44 个工具对齐（参数前 * 为必填） */
+/** MCP 工具：与 server/src/mcp/server.ts 注册的 51 个工具对齐（参数前 * 为必填） */
 interface McpTool { name: string; title: string; desc: string; params: string; }
 interface McpGroup { group: string; tools: McpTool[]; }
 const MCP_GROUPS: McpGroup[] = [
@@ -441,6 +555,18 @@ const MCP_GROUPS: McpGroup[] = [
     ],
   },
   {
+    group: '记忆与产品标签（7）',
+    tools: [
+      { name: 'mtask_save_memory', title: '保存记忆', desc: '写入产品维度长期记忆；疑似个人敏感内容转待确认队列并返回 queued=true', params: 'productKey / projectId / projectName；*type；*title；*content；tags / sourceKind / sourceTaskId / memoryKind / scope / authority / expiredAt' },
+      { name: 'mtask_query_memories', title: '召回记忆', desc: '按产品作用域召回，按类型/溯源/访问衰减排序；context=true 返回可注入提示词的参考块', params: 'productKey / projectId / projectName；type / memoryKind / scope / authority / query / taskNo / tag / limit / maxPerTask / ephemeral / context' },
+      { name: 'mtask_list_memories', title: '列出记忆（管理）', desc: '分页列出一个产品的全部记忆（含失效行与访问计数），按更新时间倒序', params: 'productKey / projectId / projectName；type / memoryKind / scope / authority / query / taskNo / includeInvalidated / limit / offset' },
+      { name: 'mtask_update_memory', title: '编辑记忆', desc: '按 id 修改 type/title/content/tags；跨产品修改会被拒绝，溯源字段不可改', params: 'productKey / projectId / projectName；*id；type / title / content / tags / memoryKind / authority' },
+      { name: 'mtask_delete_memory', title: '删除记忆', desc: '物理删除一条记忆（仅管理页/显式调用）；跨产品删除会被拒绝', params: 'productKey / projectId / projectName；*id' },
+      { name: 'mtask_list_pending_memories', title: '列出待确认记忆', desc: '返回疑似个人敏感、尚未入库的待确认候选；本工具只读', params: 'productKey / projectId / projectName；limit' },
+      { name: 'mtask_list_product_tags', title: '列出产品标签', desc: '返回全部产品标签及其项目数/有效记忆数', params: '—' },
+    ],
+  },
+  {
     group: '估算（3）',
     tools: [
       { name: 'mtask_get_estimates', title: '读取估算汇总', desc: '返回三点加权 E 人天、人月、阶段构成与 P50/P84 区间', params: 'projectId / projectName；full / includeArchived' },
@@ -452,11 +578,21 @@ const MCP_GROUPS: McpGroup[] = [
 
 const humanStr = (s: string) => s.replaceAll('**', '');
 
-function FeaturesScreen() {
+function FeaturesScreen({ query, onClear }: { readonly query: string; readonly onClear: () => void }) {
+  const q = query.trim().toLowerCase();
+  const list = useMemo(() => (q
+    ? FEATURES.filter((f) => [f.name, f.overview, ...(f.steps ?? []), ...(f.tips ?? [])].join(' ').toLowerCase().includes(q))
+    : FEATURES), [q]);
   return (
     <div style={{ maxWidth: 760 }}>
-      {FEATURES.map((f) => (
-        <div key={f.name} style={{ marginBottom: 16, padding: 14, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card-bg)' }}>
+      {q && (
+        <div data-help-result style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 8 }}>
+          <span>匹配 {list.length} / {FEATURES.length} 个模块</span>
+          <button type="button" onClick={onClear} style={{ padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer', fontSize: 'var(--fs-xs)' }}>清空搜索</button>
+        </div>
+      )}
+      {list.map((f) => (
+        <div key={f.name} data-help-feature style={{ marginBottom: 16, padding: 14, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card-bg)' }}>
           <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, marginBottom: 6 }}>● {f.name}</div>
           <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 8 }}>{f.overview}</div>
           {f.steps && (
@@ -477,18 +613,28 @@ function FeaturesScreen() {
           )}
         </div>
       ))}
+      {list.length === 0 && (
+        <div data-help-empty style={{ padding: 24, textAlign: 'center', border: '1px dashed var(--border)', borderRadius: 8, color: 'var(--text-secondary)', fontSize: 'var(--fs-m)' }}>
+          未找到包含「{query.trim()}」的功能模块，可换个关键词或清空搜索。
+        </div>
+      )}
     </div>
   );
 }
 
-function McpScreen() {
+function McpScreen({ query, onClear }: { readonly query: string; readonly onClear: () => void }) {
   const total = MCP_GROUPS.reduce((n, g) => n + g.tools.length, 0);
+  const q = query.trim().toLowerCase();
+  const groups = useMemo(() => (q
+    ? MCP_GROUPS.map((g) => ({ ...g, tools: g.tools.filter((t) => [t.name, t.title, t.desc, t.params].join(' ').toLowerCase().includes(q)) })).filter((g) => g.tools.length > 0)
+    : MCP_GROUPS), [q]);
+  const matched = groups.reduce((n, g) => n + g.tools.length, 0);
   return (
     <div style={{ maxWidth: 860 }}>
       <p style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }}>
         MTask 通过 <strong>MCP（Model Context Protocol）Streamable HTTP</strong> 暴露能力给外部 AI agent。端点{' '}
         <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>/api/mcp</code>，开发版端口<code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>39876</code>，打包版<code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>39877</code>。已配置访问令牌时，需携带{' '}
-        <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>X-Access-Token</code> 请求头（主令牌或「设置 → API Token」生成的命名凭据）。
+        <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>X-Access-Token</code> 请求头（主令牌或「设置 → API 令牌」生成的命名凭据）。
       </p>
 
       <div style={{ fontWeight: 600, fontSize: 'var(--fs-l)', margin: '6px 0 4px' }}>协议与会话</div>
@@ -499,13 +645,33 @@ function McpScreen() {
         ['结束', 'DELETE /api/mcp', '终止会话并释放连接'],
       ]} />
 
-      <div style={{ fontWeight: 600, fontSize: 'var(--fs-l)', margin: '12px 0 4px' }}>工具清单（{total} 个，按业务分组）</div>
-      {MCP_GROUPS.map((g) => (
-        <div key={g.group} style={{ marginBottom: 10 }}>
-          <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600, margin: '8px 0 2px' }}>{g.group}</div>
-          <FieldTable head={['工具名', '功能', '参数（* 为必填）']} rows={g.tools.map((t) => [t.name, `${t.title} · ${t.desc}`, humanStr(t.params)])} />
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap', margin: '12px 0 4px' }}>
+        <div style={{ fontWeight: 600, fontSize: 'var(--fs-l)' }}>工具清单（{total} 个，按业务分组）</div>
+        {q && (
+          <span data-help-result style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
+            匹配 {matched} 个
+            <button type="button" onClick={onClear} style={{ padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer', fontSize: 'var(--fs-xs)' }}>清空搜索</button>
+          </span>
+        )}
+      </div>
+      {groups.map((g) => (
+        <div key={g.group} style={{ marginBottom: 10 }} data-help-group>
+          <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600, margin: '8px 0 2px' }}>{q ? g.group.replace(/（\d+）$/, `（${g.tools.length}）`) : g.group}</div>
+          <FieldTable head={['工具名', '功能', '参数（* 为必填）']} rows={g.tools.map((t) => [
+            <span key={t.name} data-help-tool={t.name} style={{ display: 'inline-flex', alignItems: 'flex-start', gap: 4 }}>
+              <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>{t.name}</code>
+              <CopyButton text={t.name} label={`复制工具名 ${t.name}`} compact />
+            </span>,
+            `${t.title} · ${t.desc}`,
+            humanStr(t.params),
+          ])} />
         </div>
       ))}
+      {matched === 0 && (
+        <div data-help-empty style={{ padding: 24, textAlign: 'center', border: '1px dashed var(--border)', borderRadius: 8, color: 'var(--text-secondary)', fontSize: 'var(--fs-m)' }}>
+          未找到包含「{query.trim()}」的工具，可尝试工具名（如 mtask_create_task）或清空搜索。
+        </div>
+      )}
 
       <div style={{ fontWeight: 600, fontSize: 'var(--fs-l)', margin: '12px 0 4px' }}>请求示例</div>
       <Code lang="JSON-RPC" title="1) 初始化会话" code={`POST /api/mcp HTTP/1.1
@@ -532,7 +698,7 @@ X-Access-Token: <配置的访问令牌>
         ['-32603', '内部错误', '服务端处理失败'],
         ['-32000', '无效会话', 'HTTP 层返回 400：无有效 mcp-session-id'],
         ['401', '未授权', 'X-Access-Token 缺失或不匹配'],
-        ['403', '只读凭据越权', '只读 API Token 调用写操作被拒绝'],
+        ['403', '只读凭据越权', '只读 API 令牌调用写操作被拒绝'],
         ['业务', '执行失败', '工具返回 isError:true 及中文错误文本'],
       ]} />
     </div>
@@ -596,7 +762,7 @@ function SkillScreen() {
   "mcpServers": {
     "mtask": {
       "url": "http://127.0.0.1:39877/api/mcp",
-      "headers": { "X-Access-Token": "<在 设置 → API Token 中生成的令牌>" }
+      "headers": { "X-Access-Token": "<在 设置 → API 令牌 中生成的令牌>" }
     }
   }
 }`} />
@@ -612,7 +778,7 @@ mtask 执行 T05210 并回传
 处理待办
 回传任务`} />
       <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }}>
-        计划类需求（「编写项目计划 / 拆解 WBS / 输出里程碑工期」）转去读 <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>references/7-plan-workflow.md</code>，方案回写「项目计划」菜单并强制携带需求关联。
+        计划类需求（「编写项目计划 / 拆解 WBS / 输出里程碑工期」）转去读 <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>references/7-plan-workflow.md</code>，方案回写「项目管理」菜单并强制携带需求关联。
       </div>
 
       <div style={{ fontWeight: 600, fontSize: 'var(--fs-l)', margin: '16px 0 4px' }}>4 · 交互示例：输入「处理 T05210 任务」</div>
@@ -635,7 +801,7 @@ mtask 执行 T05210 并回传
         <li><strong>令牌</strong>：只读令牌无法调用写操作（403）；需回写结论的 Agent 请配可写令牌。凭据只存本地配置，不入库、不随技能包分发。</li>
         <li><strong>隔离测试</strong>：变更类验证用独立实例（MTask_PORT + MTask_DATA_DIR 指向临时目录），并用 MTASK_SESSION_FILE 隔离会话缓存。</li>
         <li><strong>Windows 注意</strong>：scripts/list-todo.ps1 刻意保持纯 ASCII，以兼容 PowerShell 5.1 的 ANSI 代码页；Python 脚本需 UTF-8 环境。</li>
-        <li>完整工具清单与错误码见本页「MCP 接口」子页，或仓库 docs/MCP接口文档.md。</li>
+        <li>完整工具清单与错误码见本页「MCP 接口」子页。</li>
       </ul>
     </div>
   );
@@ -646,10 +812,11 @@ function ConfigScreen() {
     <div style={{ maxWidth: 760 }}>
       <p style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }}>
         以下为「模型」页新增 AI 工具时的配置模板（3 种典型场景），在配置页填写即可；字段含义见下表。
+        样例标注 JSONC，含 <code style={{ background: 'var(--code-bg)', padding: '1px 4px', borderRadius: 4 }}>//</code> 说明注释；点代码块右上角「复制」会自动去除注释，得到可直接使用的 JSON。
       </p>
 
       {[
-        ['典型 1 · OpenAI 兼容（DeepSeek / 通义等）', 'application/json', `{
+        ['典型 1 · OpenAI 兼容（DeepSeek / 通义等）', 'JSONC', `{
   "type": "openai-compatible",          // 必填：适配器类型
   "name": "DeepSeek",                    // 必填：显示名
   "endpoint": "https://api.deepseek.com",// 必填：未带版本段时自动补 /v1（自带 /v4 等则不补）
@@ -658,7 +825,7 @@ function ConfigScreen() {
   "purpose": "develop",                  // organize | develop
   "temperature": 0.2, "maxTokens": 4096, "timeoutMs": 60000
 }`],
-        ['典型 2 · 本地 Ollama', 'application/json', `{
+        ['典型 2 · 本地 Ollama', 'JSONC', `{
   "type": "ollama",                      // 本地推理，无需密钥
   "name": "本地 Ollama",
   "endpoint": "http://127.0.0.1:11434",  // 走 /api/chat
@@ -666,7 +833,7 @@ function ConfigScreen() {
   "purpose": "develop",
   "timeoutMs": 120000
 }`],
-        ['典型 3 · WorkBuddy 回调中继（异步）', 'application/json', `{
+        ['典型 3 · WorkBuddy 回调中继（异步）', 'JSONC', `{
   "type": "workbuddy",                   // 中继/回调型适配器
   "name": "WorkBuddy 中继",
   "endpoint": "https://your-relay.example.com/mock/workbuddy",
@@ -687,7 +854,7 @@ function ConfigScreen() {
 · Java 环境为只读探测展示；扫描基于提交快照，不 checkout、不改动工作树`} />
 
       <div style={{ fontWeight: 600, fontSize: 'var(--fs-l)', margin: '14px 0 4px' }}>应用偏好（localStorage）</div>
-      <Code lang="application/json" title="settings.prefs" code={`{
+      <Code lang="JSONC" title="settings.prefs" code={`{
   "theme": "light",       // light | dark | auto（跟随系统）
   "font": "default",      // default | mono | kai | song
   "fontSize": "m",        // s | m | l
@@ -707,7 +874,7 @@ function QuickstartScreen() {
     ['5', '结果审阅与回写', '队列行展开审阅并「采纳」；把处理结论回传任务「处理结果」并显式回写 AI 状态。'],
     ['6', 'Git 回写与验证', '提交代码后用 mtask_link_git_commit 回写提交 ID；验证通过后任务标 done+verified。'],
     ['7', '报表与总结', '「AI 工作台」生成周报/月报、启动会 PPT、阶段总结或质量扫描，观察执行会话与用量。'],
-    ['8', '沉淀与归档', '项目收口后沉淀为「历史资产」；任务与计划归档后可在「设置 → 归档」还原或彻底删除。'],
+    ['8', '沉淀与归档', '项目收口后沉淀为「历史版本（历史资产）」；任务与计划归档后可在「设置 → 归档」还原或彻底删除。'],
   ];
   return (
     <div style={{ maxWidth: 720 }}>
@@ -728,14 +895,46 @@ function QuickstartScreen() {
 }
 
 export function HelpTab() {
-  const [sub, setSub] = useState<Sub>('features');
+  const [sub, setSub] = useState<Sub>(() => {
+    try {
+      const saved = localStorage.getItem('mtask.help.subtab');
+      return SUBS.some((t) => t.key === saved) ? saved as Sub : 'features';
+    } catch { return 'features'; }
+  });
+  const [q, setQ] = useState('');
+  const chooseSub = (key: Sub) => {
+    setSub(key);
+    setQ('');
+    try { localStorage.setItem('mtask.help.subtab', key); } catch { /* 存储禁用时静默降级 */ }
+  };
+  const onTabKeyDown = (e: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    let next = -1;
+    if (e.key === 'ArrowRight') next = (index + 1) % SUBS.length;
+    else if (e.key === 'ArrowLeft') next = (index - 1 + SUBS.length) % SUBS.length;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = SUBS.length - 1;
+    if (next < 0) return;
+    e.preventDefault();
+    const key = SUBS[next].key;
+    chooseSub(key);
+    window.requestAnimationFrame(() => document.getElementById(`help-tab-${key}`)?.focus());
+  };
+  const showSearch = sub === 'features' || sub === 'mcp';
   return (
     <div>
-      <nav style={{ display: 'flex', gap: 4, marginBottom: 12, overflowX: 'auto' }}>
-        {SUBS.map((t) => (
+      <style>{HELP_CSS}</style>
+      <nav className="help-tabs" role="tablist" aria-label="帮助文档主题">
+        {SUBS.map((t, index) => (
           <button
             key={t.key}
-            onClick={() => setSub(t.key)}
+            id={`help-tab-${t.key}`}
+            role="tab"
+            aria-selected={sub === t.key}
+            aria-controls="help-panel"
+            tabIndex={sub === t.key ? 0 : -1}
+            data-help-tab={t.key}
+            onClick={() => chooseSub(t.key)}
+            onKeyDown={(e) => onTabKeyDown(e, index)}
             style={{
               fontSize: 'var(--fs-m)', padding: '6px 14px', borderRadius: 6, whiteSpace: 'nowrap',
               background: sub === t.key ? 'var(--accent)' : 'var(--card-bg)',
@@ -746,11 +945,35 @@ export function HelpTab() {
           </button>
         ))}
       </nav>
-      {sub === 'features' && <FeaturesScreen />}
-      {sub === 'mcp' && <McpScreen />}
-      {sub === 'skill' && <SkillScreen />}
-      {sub === 'config' && <ConfigScreen />}
-      {sub === 'quickstart' && <QuickstartScreen />}
+      {showSearch && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+          <input
+            data-help-search
+            type="search"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            aria-label="搜索帮助内容"
+            placeholder={sub === 'features' ? '搜索功能模块（如：任务 / 队列 / 移动端）' : '搜索工具名或参数（如：mtask_create_task）'}
+            style={{ flex: '1 1 260px', maxWidth: 430, padding: '5px 10px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-m)' }}
+          />
+          {q && (
+            <button type="button" onClick={() => setQ('')} aria-label="清空帮助搜索"
+              style={{ padding: '4px 9px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 'var(--fs-xs)' }}>
+              清空
+            </button>
+          )}
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+            {sub === 'features' ? '搜索模块名、说明与步骤' : '搜索工具名、功能与参数'}
+          </span>
+        </div>
+      )}
+      <div id="help-panel" role="tabpanel" aria-labelledby={`help-tab-${sub}`} data-help-panel tabIndex={0} style={{ outline: 'none' }}>
+        {sub === 'features' && <FeaturesScreen query={q} onClear={() => setQ('')} />}
+        {sub === 'mcp' && <McpScreen query={q} onClear={() => setQ('')} />}
+        {sub === 'skill' && <SkillScreen />}
+        {sub === 'config' && <ConfigScreen />}
+        {sub === 'quickstart' && <QuickstartScreen />}
+      </div>
     </div>
   );
 }

@@ -58,7 +58,9 @@ export function ProjectScopePicker({ projects, value, onChange, workspaceConstra
     return () => document.removeEventListener('mousedown', onDoc);
   }, [open]);
 
-  const nameOf = (id: string) => projects.find((p) => p.id === id)?.name ?? id;
+  // 项目还没加载完时不要把人肉 UUID 摆到界面上：给骨架文案；确属已归档项目才显式说明
+  const nameOf = (id: string) => projects.find((p) => p.id === id)?.name
+    ?? (projects.length === 0 ? '加载中…' : `已归档项目（${id.slice(0, 8)}）`);
   const summary = scopeSummary(value.map(nameOf));
 
   function toggle(id: string) {

@@ -282,22 +282,36 @@ check('A', 'A-12 里程碑区间空档与子项越界可检出', (() => {
 check('A', 'A-13 覆盖缺口默认按阻断处理（--allow-coverage-gap 才降级）', !ALLOW_COVERAGE_GAP,
   ALLOW_COVERAGE_GAP ? '本次显式允许缺口（降级 WARN）' : '默认 FAIL');
 
-// A-14：覆盖缺口一键补齐——补出的行必须能被 isGapFillPlan 识别（不进工期、不参与同题去重）
-check('A', 'A-14 覆盖缺口一键补齐生成可识别的占位行', (() => {
+// A-14：覆盖缺口一键补齐——生成的是“未勾选模板”，不得计入覆盖、不得触发占位行质量门；
+// Dx 设计决策属软定位项，不生成占位计划。
+check('A', 'A-14 覆盖缺口一键补齐生成未勾选模板且不假归零', (() => {
+  const sources: QualitySource[] = [{ name: 'v2.md', text: 'D1 设计决策；Q-70 待确认', role: 'design' }];
+  const reqs: QualityReq[] = [{
+    reqNo: 'REQ-001', title: '需求一', priority: 'P0', content: '需求内容',
+    sourceRef: '§1', include: true,
+  }];
   const before: QualityPlan[] = [
-    { title: '1 M1 启动', kind: 'milestone', durationDays: 1, include: true },
-    { title: '1.1 需求梳理', kind: 'normal', durationDays: 2, include: true },
+    { title: 'M1 启动', kind: 'milestone', durationDays: 2, include: true, wbsCode: 'M1' },
+    {
+      title: '1.1 需求梳理', kind: 'normal', durationDays: 2, include: true,
+      wbsCode: 'M1.1', parentCode: 'M1', priority: 'P0', reqNos: ['REQ-001'],
+      description: '梳理需求边界、输入输出、异常分支与验收口径，形成可执行的开发任务卡并完成评审。',
+    },
   ];
-  const coverage = buildSourceCoverage(
-    [{ name: 'v2.md', text: 'D1 设计决策；Q-70 待确认', role: 'design' }],
-    [], [{ title: '需求梳理', content: '无编号' }],
-  );
+  const coverage = buildSourceCoverage(sources, reqs, before);
+  const d1 = coverage.find((g) => g.label.includes('设计决策'));
   const r = appendCoverageGapPlans(before, coverage);
   const addedRows = r.plans.slice(before.length);
+  const after = analyzeImportQuality({ sources, reqs, plans: r.plans });
   return r.added > 0 && r.plans.length === before.length + r.added
-    && addedRows.every((p) => isGapFillPlan(p) && p.kind === 'normal')
-    && before.length === 2; // 入参未被修改
-})(), '补齐行可被占位行判据识别');
+    && addedRows.every((p) => p.kind === 'normal' && p.include === false && isGapFillPlan(p))
+    && addedRows.every((p) => !p.title.startsWith('D1')) // D1 是软定位，不补
+    && d1?.soft === true
+    && before.length === 2 // 入参未被修改
+    && after.coverageGaps === 1 // Q-70 仍未覆盖，不能因为加了未勾选模板就假归零
+    && after.gapFillRows === addedRows.length
+    && !after.qualityErrors.some((e) => e.includes('系统补齐占位行') || e.includes('未写 P0/P1') || e.includes('缺少 wbsCode'));
+})(), '补齐模板默认未勾选；覆盖缺口保持；Dx 软定位不补；不触发占位行/优先级/WBS 阻断');
 
 // ---------------------------------------------------------------- B 组：导入产物结构化校验
 console.log('\n—— B 组 · 导入产物结构化校验（只读） ——');
@@ -489,8 +503,8 @@ check('D', 'D-08 归一化不误删中文标题、不误并占位行、冲突检
   && /if \(isGapFillPlan\(\{ title: d\.title/.test(wbsUtil)
   && /RANGE_RE/.test(qualityUtil));
 check('D', 'D-09 前端里程碑工期汇总与服务端同口径跳过占位行',
-  /if \(out\[j\]\.include && !isGapFillPlan\(out\[j\]\)\)/.test(panel)
-  && /if \(isGapFillPlan\(plans\[j\]\)\) continue;/.test(qualityUtil));
+  /if \(out\[j\]\.include && !isGapFillPlan\(out\[j\]\) && !isPrdCoveragePlan\(out\[j\]\)\)/.test(panel)
+  && /if \(isGapFillPlan\(child\) \|\| isPrdCoveragePlan\(child\)\) continue;/.test(qualityUtil));
 
 // ---------------- T05570 ~ T05575 代码落地锚 ----------------
 check('D', 'D-10 T05570 设计文档可勾选「参与解析」并逐文件送解析',

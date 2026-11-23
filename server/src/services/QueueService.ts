@@ -19,7 +19,11 @@ export interface QueueRow {
   created_at: string;
   /** T01434：队列级暂停——true 时拒绝 send/submit，移动端可半操作 */
   paused?: number;
+  /** T06245：manual=人工编排队列；dispatch=B0/A 内部派发；relay=监督中继 */
+  kind?: 'manual' | 'dispatch' | 'relay';
 }
+
+export type QueueKind = 'manual' | 'dispatch' | 'relay';
 
 export interface QueueJobRow {
   id: string;
@@ -356,13 +360,13 @@ export const QueueService = {
   /** T06076：回执质量提示（供路由/详情复用；模块级函数挂在对象上便于统一调用） */
   receiptWarnings: receiptWarnings,
 
-  /** FR4.1 创建队列 */
-  create(name: string, date: string): QueueRow {
+  /** FR4.1 创建队列；T06245 增加 kind，旧调用默认 manual */
+  create(name: string, date: string, kind: QueueKind = 'manual'): QueueRow {
     const db = getDb();
     const id = uuid();
-    db.prepare('INSERT INTO queues (id, name, date, status, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(id, name, date, 'draft', now());
-    cacheClear('queues'); // 列表缓存失效，保证新建立即可见
+    db.prepare('INSERT INTO queues (id, name, date, status, created_at, kind) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(id, name, date, 'draft', now(), kind);
+    this.clearListCache();
     return this.getById(id)!;
   },
 
@@ -371,12 +375,22 @@ export const QueueService = {
     return row ?? null;
   },
 
-  list() {
-    const cached = cacheGet<QueueRow[]>('queues');
+  /** T06245：默认只返回人工队列；kind=all 才返回内部派发/中继队列，供「派发记录」只读视图 */
+  list(kind: 'manual' | 'all' = 'manual') {
+    const cacheKey = `queues:${kind}`;
+    const cached = cacheGet<QueueRow[]>(cacheKey);
     if (cached) return cached;
-    const rows = getDb().prepare('SELECT * FROM queues ORDER BY date DESC, created_at DESC').all() as QueueRow[];
-    cacheSet('queues', rows, LIST_TTL_MS);
+    const rows = kind === 'all'
+      ? getDb().prepare('SELECT * FROM queues ORDER BY date DESC, created_at DESC').all() as QueueRow[]
+      : getDb().prepare("SELECT * FROM queues WHERE COALESCE(kind, 'manual') = 'manual' ORDER BY date DESC, created_at DESC").all() as QueueRow[];
+    cacheSet(cacheKey, rows, LIST_TTL_MS);
     return rows;
+  },
+
+  /** 列表缓存按 kind 分键，任何队列写操作都要同时清两份 */
+  clearListCache(): void {
+    cacheClear('queues:manual');
+    cacheClear('queues:all');
   },
 
   /**
@@ -408,7 +422,7 @@ export const QueueService = {
     const queue = this.getById(queueId);
     if (!queue) throw new Error('队列不存在');
     getDb().prepare('UPDATE queues SET name = ? WHERE id = ?').run(name, queueId);
-    cacheClear('queues');
+    this.clearListCache();
     return this.getById(queueId)!;
   },
 
@@ -499,7 +513,7 @@ export const QueueService = {
     });
     const task = TaskService.adoptContent(job.task_id, payload);
     getDb().prepare('UPDATE queue_jobs SET adopted_at = ?, adopt_snapshot = ? WHERE id = ?').run(now(), snapshot, jobId);
-    cacheClear('queues');
+    this.clearListCache();
     notifyChange('queue');
     return { job: this.getJob(jobId)!, task, already: false, warnings };
   },
@@ -561,7 +575,7 @@ export const QueueService = {
     else if (snap.ai_state === 'unread' || snap.ai_state === 'failed' || snap.ai_state === '') patch.ai_state = snap.ai_state;
     const restored = TaskService.update(job.task_id, patch);
     getDb().prepare("UPDATE queue_jobs SET adopted_at = '', adopt_snapshot = '' WHERE id = ?").run(jobId);
-    cacheClear('queues');
+    this.clearListCache();
     notifyChange('queue');
     return { job: this.getJob(jobId)!, task: restored };
   },
@@ -580,7 +594,7 @@ export const QueueService = {
     if (!queue) throw new Error('队列不存在');
     if (queue.status === 'running') throw new Error('队列正在发送中，不可删除');
     getDb().prepare('DELETE FROM queues WHERE id = ?').run(queueId);
-    cacheClear('queues');
+    this.clearListCache();
   },
 
   /** FR4.2 触发：逐 Job 发送（串行保序）。由 AIService 注入真实发送函数，便于测试。 */

@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { api } from '../api/client';
-import { askConfirm } from '../ui/dialogs';
+import { askConfirm, askInput } from '../ui/dialogs';
 import { Database, Download, FileUp, Pencil, Plus, RefreshCw, Search, Table2, Trash2, X } from 'lucide-react';
 import { SettingsHelpIcon } from '../ui/settingsHelp'; // T06019：子页说明文字改为语义图标
 
@@ -53,9 +53,10 @@ function formatCell(v: unknown): string {
   return String(v); // NOSONAR - 前置 typeof 已排除 object 分支，此处仅剩 number/boolean 等基本类型
 }
 
-/** 按列类型推断表单控件类型（编辑/新增弹窗用） */
-function inferFormType(colType: string): 'number' | 'checkbox' | 'textarea' | 'text' {
+/** 按列类型推断表单控件类型（编辑/新增弹窗用）；BLOB 只读展示，不允许文本回写覆盖二进制 */
+function inferFormType(colType: string): 'number' | 'checkbox' | 'textarea' | 'text' | 'blob' {
   const t = colType.toUpperCase();
+  if (t.includes('BLOB')) return 'blob';
   if (t.includes('INT') || t.includes('REAL') || t.includes('FLOA') || t.includes('DOUB') || t.includes('NUMERIC')) return 'number';
   if (t.includes('BOOL')) return 'checkbox';
   if (t.includes('TEXT') || t.includes('JSON') || t.includes('CLOB')) return 'textarea';
@@ -124,7 +125,8 @@ function download(name: string, content: string, mime: string): void {
   a.href = url;
   a.download = name;
   a.click();
-  URL.revokeObjectURL(url);
+  // 立即 revoke 会让部分 Chromium/Electron 版本取消尚未开始的下载；延迟释放覆盖点击后的读取窗口。
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 const btnStyle = (primary = false, danger = false): React.CSSProperties => {
@@ -150,44 +152,57 @@ export function DbAdminTab() {
   const [search, setSearch] = useState('');
   const [orderBy, setOrderBy] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(false);
+  const [ioBusy, setIoBusy] = useState<'export-csv' | 'export-json' | 'import' | ''>('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [editing, setEditing] = useState<{ mode: 'create' | 'update'; row?: Record<string, unknown> } | null>(null);
   const [schemaOpen, setSchemaOpen] = useState(false);
-  const [notice, setNotice] = useState('');
+  const [notice, setNotice] = useState<{ text: string; tone: 'success' | 'error' | 'info' } | null>(null);
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const flash = (msg: string) => {
-    setNotice(msg);
-    setTimeout(() => setNotice(''), 4000);
+  const flash = (msg: string, tone: 'success' | 'error' | 'info' = 'success') => {
+    // 旧提示的 4s 定时器必须清掉：否则连续操作时，上一条提示的定时器会把新提示提前清空（错误提示尤其明显）。
+    if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    setNotice({ text: msg, tone });
+    noticeTimer.current = setTimeout(() => setNotice(null), 4000);
   };
+  useEffect(() => () => { if (noticeTimer.current) clearTimeout(noticeTimer.current); }, []);
 
   // T01061-FR5.1：数据库自动备份/恢复（BackupService online backup，不停机）
   const [backups, setBackups] = useState<Array<{ name: string; size: number; mtime: string }>>([]);
-  const [lastBackup, setLastBackup] = useState('暂无');
+  const [backupsLoading, setBackupsLoading] = useState(true);
+  const [lastBackup, setLastBackup] = useState('加载中…');
   const [lastError, setLastError] = useState('');
   const [bkBusy, setBkBusy] = useState('');
+  const describeLastRun = (lr: { file: string; at: string; reason: string } | null): string => {
+    if (!lr) return '暂无';
+    const mode = lr.reason === 'manual' ? '手动' : lr.reason === 'history' ? '历史快照' : '自动';
+    return `${lr.file}（${mode}，${lr.at.slice(0, 19).replace('T', ' ')}）`;
+  };
   const loadBackups = useCallback(async () => {
+    setBackupsLoading(true);
     try {
       const d = await api.get<{ backups: Array<{ name: string; size: number; mtime: string }>; status: { lastRun: { file: string; at: string; reason: string } | null; lastError: string | null } }>('/backups');
       setBackups(d.backups);
-      const lastRun = d.status.lastRun;
-      if (lastRun) {
-        const mode = lastRun.reason === 'manual' ? '手动' : '自动';
-        setLastBackup(`${lastRun.file}（${mode}，${lastRun.at.slice(0, 19).replace('T', ' ')}）`);
-      } else {
-        setLastBackup('暂无');
-      }
+      setLastBackup(describeLastRun(d.status.lastRun));
       setLastError(d.status.lastError ?? '');
-    } catch { /* 加载失败不打断页面 */ }
+    } catch (e) {
+      // 加载失败不能显示「暂无」误导为没有备份；明确区分失败态，保留 lastError 供排障。
+      setLastBackup('加载失败');
+      setLastError(e instanceof Error ? e.message : String(e));
+      flash(`备份列表加载失败：${e instanceof Error ? e.message : String(e)}`, 'error');
+    } finally {
+      setBackupsLoading(false);
+    }
   }, []);
   useEffect(() => { void loadBackups(); }, [loadBackups]);
   async function backupNow() {
     setBkBusy('now');
     try {
-      const d = await api.post<{ backups: typeof backups; status: { lastRun: { file: string } | null } }>('/backups/now', {});
-      setBackups(d.backups); setLastBackup(d.status.lastRun ? d.status.lastRun.file : '暂无');
+      const d = await api.post<{ backups: typeof backups; status: { lastRun: { file: string; at: string; reason: string } | null } }>('/backups/now', {});
+      setBackups(d.backups); setLastBackup(describeLastRun(d.status.lastRun));
       flash('备份完成（online 备份，无需停机）');
     } catch (e) {
-      flash(`备份失败：${e instanceof Error ? e.message : String(e)}`);
+      flash(`备份失败：${e instanceof Error ? e.message : String(e)}`, 'error');
     } finally { setBkBusy(''); }
   }
   async function restoreBackup(name: string) {
@@ -197,9 +212,9 @@ export function DbAdminTab() {
     try {
       const d = await api.post<{ message: string }>('/backups/restore', { name });
       flash(d.message);
-      await loadBackups();
+      await reloadAfterRestore();
     } catch (e) {
-      flash(`恢复失败：${e instanceof Error ? e.message : String(e)}`);
+      flash(`恢复失败：${e instanceof Error ? e.message : String(e)}`, 'error');
     } finally { setBkBusy(''); }
   }
   /** T05791：删除指定备份快照——二次确认（本页危险操作统一 CONFIRM_DELETE 确认码），成功后同步列表与最近状态 */
@@ -210,14 +225,15 @@ export function DbAdminTab() {
     const busyKey = `del:${name}`;
     setBkBusy(busyKey);
     try {
-      const d = await api.del<{ ok: boolean; deleted: string; backups: typeof backups; status: { lastRun: { file: string; at: string; reason: string } | null; lastError: string | null } }>(`/backups/${encodeURIComponent(name)}`);
+      const d = await api.del<{ ok: boolean; deleted: string; backups: typeof backups; status: { lastRun: { file: string; at: string; reason: string } | null; lastError: string | null } }>(
+        `/backups/${encodeURIComponent(name)}`, { confirm: CONFIRM_TOKEN },
+      );
       setBackups(d.backups);
-      const lr = d.status.lastRun;
-      setLastBackup(lr ? `${lr.file}（${lr.reason === 'manual' ? '手动' : '自动'}，${lr.at.slice(0, 19).replace('T', ' ')}）` : '暂无');
+      setLastBackup(describeLastRun(d.status.lastRun));
       setLastError(d.status.lastError ?? '');
       flash(`已删除备份「${name}」`);
     } catch (e) {
-      flash(`删除备份失败：${e instanceof Error ? e.message : String(e)}`);
+      flash(`删除备份失败：${e instanceof Error ? e.message : String(e)}`, 'error');
     } finally { setBkBusy(''); }
   }
 
@@ -234,18 +250,19 @@ export function DbAdminTab() {
   useEffect(() => { void loadRetention(); }, [loadRetention]);
   async function saveRetention() {
     const n = Number(retDays);
-    if (!Number.isFinite(n)) { flash('保留天数必须为数字（0 = 不清理）'); return; }
+    if (!Number.isFinite(n) || !Number.isInteger(n)) { flash('保留天数必须为整数（0 = 不清理）', 'error'); return; }
+    if (n < 0 || n > 3650) { flash('保留天数范围为 0–3650 天（0 = 不清理）', 'error'); return; }
     try {
       const d = await api.put<{ days: number; total: number }>('/events/retention', { days: n });
       setRetDays(String(d.days)); setRetTotal(d.total);
       flash(d.days > 0 ? `事件保留期已设为 ${d.days} 天（每日自动清理一次）` : '事件保留期已关闭（保留全部事件）');
     } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
+      flash(e instanceof Error ? e.message : String(e), 'error');
     }
   }
   async function purgeEvents() {
     const days = Number(retDays);
-    if (!Number.isFinite(days) || days <= 0) { flash('保留天数为 0（不清理）时无需手动清理'); return; }
+    if (!Number.isFinite(days) || !Number.isInteger(days) || days <= 0 || days > 3650) { flash('保留天数为 0（不清理）或超出 0–3650 时无需手动清理', 'error'); return; }
     if (!(await askConfirm(`立即清理 ${days} 天前的任务事件？\n\n当前共 ${retTotal} 条事件，过期部分将被永久删除（不可恢复）。`))) return;
     try {
       const d = await api.post<{ deleted: number; total: number }>('/events/purge', {});
@@ -264,7 +281,7 @@ export function DbAdminTab() {
       setTables(list);
       setActive((prev) => (keepActive && prev && list.some((t) => t.name === prev) ? prev : list[0]?.name ?? null));
     } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
+      flash(e instanceof Error ? e.message : String(e), 'error');
     }
   }, []);
 
@@ -280,11 +297,18 @@ export function DbAdminTab() {
       setRows(r.rows);
       setTotal(r.total);
     } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
+      flash(e instanceof Error ? e.message : String(e), 'error');
     } finally {
       setLoading(false);
     }
   }, [active, page, search, orderBy]);
+
+  /** 恢复快照后当前库内容已变化：重新拉备份状态、表清单与当前页行，避免继续展示旧数据 */
+  async function reloadAfterRestore() {
+    await loadBackups();
+    await loadTables();
+    await loadRows();
+  }
 
   // 切表：重置分页/搜索/排序；结构 + 数据一起加载
   useEffect(() => {
@@ -296,10 +320,20 @@ export function DbAdminTab() {
   useEffect(() => { void loadRows(); }, [loadRows]);
   useEffect(() => { void loadTables(false); }, [loadTables]);
 
-  /** 危险操作确认：输入 CONFIRM_DELETE 才放行（与参考项目交互一致） */
+  /** 危险操作确认：必须输入 CONFIRM_DELETE；前端校验 + 后端 403 复核，避免「只提示不校验」 */
   async function confirmDanger(title: string, detail: string): Promise<boolean> {
-    const ok = await askConfirm(`${title}\n${detail}\n\n确认码：${CONFIRM_TOKEN}（输入确认弹窗中才生效）`);
-    return ok;
+    const code = await askInput({
+      title,
+      description: `${detail}\n\n请输入确认码 ${CONFIRM_TOKEN} 以继续（区分大小写）。`,
+      placeholder: CONFIRM_TOKEN,
+      okText: '确认执行',
+    });
+    if (code === null) return false;
+    if (code.trim() !== CONFIRM_TOKEN) {
+      flash('确认码不正确，操作已取消', 'error');
+      return false;
+    }
+    return true;
   }
 
   async function handleDelete(pkValue: string) {
@@ -307,11 +341,11 @@ export function DbAdminTab() {
     const ok = await confirmDanger(`确认删除表 ${active} 的一行记录？`, `主键：${pkValue}。此操作不可恢复。`);
     if (!ok) return;
     try {
-      await api.del(`/dbadmin/tables/${active}/rows/${encodeURIComponent(pkValue)}`);
+      await api.del(`/dbadmin/tables/${active}/rows/${encodeURIComponent(pkValue)}`, { confirm: CONFIRM_TOKEN });
       flash('已删除');
       await Promise.all([loadRows(), loadTables()]);
     } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
+      flash(e instanceof Error ? e.message : String(e), 'error');
     }
   }
 
@@ -320,16 +354,17 @@ export function DbAdminTab() {
     const ok = await confirmDanger(`确认批量删除 ${selected.size} 行？`, `表 ${active} 中选中的记录将全部删除，此操作不可恢复。`);
     if (!ok) return;
     try {
-      const r = await api.post<{ affected: number; requested: number }>(`/dbadmin/tables/${active}/batch-delete`, { pks: [...selected] });
+      const r = await api.post<{ affected: number; requested: number }>(`/dbadmin/tables/${active}/batch-delete`, { pks: [...selected], confirm: CONFIRM_TOKEN });
       flash(`已删除 ${r.affected}/${r.requested} 行`);
       await Promise.all([loadRows(), loadTables()]);
     } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
+      flash(e instanceof Error ? e.message : String(e), 'error');
     }
   }
 
   async function handleExport(format: 'csv' | 'json') {
-    if (!active) return;
+    if (!active || ioBusy) return;
+    setIoBusy(format === 'csv' ? 'export-csv' : 'export-json');
     try {
       const data = await api.get<Record<string, unknown>[]>(`/dbadmin/tables/${active}/export`);
       const stamp = new Date().toISOString().slice(0, 19).replaceAll(':', '').replaceAll('T', '');
@@ -339,9 +374,11 @@ export function DbAdminTab() {
         const headers = data.length > 0 ? Object.keys(data[0]) : columns.map((c) => c.name);
         download(`${active}_${stamp}.csv`, '\ufeff' + toCSV(headers, data), 'text/csv;charset=utf-8');
       }
-      flash('导出成功');
+      flash(`导出成功（${data.length} 行）`);
     } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    } finally {
+      setIoBusy('');
     }
   }
 
@@ -349,16 +386,17 @@ export function DbAdminTab() {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!active || !file) return;
+    setIoBusy('import');
     try {
       const text = await file.text();
       let data: Record<string, unknown>[];
       if (file.name.toLowerCase().endsWith('.json')) {
         const parsed = JSON.parse(text) as unknown;
-        if (!Array.isArray(parsed) || parsed.length === 0) { flash('JSON 必须是非空对象数组'); return; }
+        if (!Array.isArray(parsed) || parsed.length === 0) { flash('JSON 必须是非空对象数组', 'error'); return; }
         data = parsed as Record<string, unknown>[];
       } else {
         const all = parseCSV(text);
-        if (all.length < 2) { flash('CSV 至少需要表头 + 1 行数据'); return; }
+        if (all.length < 2) { flash('CSV 至少需要表头 + 1 行数据', 'error'); return; }
         const headers = all[0];
         data = all.slice(1).map((r) => Object.fromEntries(headers.map((h, i) => [h, r[i] ?? ''])));
       }
@@ -366,10 +404,12 @@ export function DbAdminTab() {
       if (!ok) return;
       const r = await api.post<{ inserted: number; skipped: number; errors: string[] }>(`/dbadmin/tables/${active}/import`, { rows: data });
       const errHint = r.errors.length ? `；首条错误：${r.errors[0]}` : '';
-      flash(`导入完成：${r.inserted} 成功，${r.skipped} 跳过${errHint}`);
+      flash(`导入完成：${r.inserted} 成功，${r.skipped} 跳过${errHint}`, r.inserted > 0 ? 'success' : 'error');
       await Promise.all([loadRows(), loadTables()]);
     } catch (err) {
-      flash(err instanceof Error ? err.message : String(err));
+      flash(err instanceof Error ? err.message : String(err), 'error');
+    } finally {
+      setIoBusy('');
     }
   }
 
@@ -379,7 +419,7 @@ export function DbAdminTab() {
   };
 
   return (
-    <div>
+    <div className="dbadmin-page" data-dbadmin-page>
       <div style={{ marginBottom: 12 }}>
         <SettingsHelpIcon
           icon={Database}
@@ -402,26 +442,30 @@ export function DbAdminTab() {
             {bkBusy === 'now' ? '备份中…' : '立即备份'}
           </button>
         </div>
-        {backups.length > 0 && (
-          <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {backups.slice(0, 5).map((b) => (
-              <div key={b.name} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 'var(--fs-m)' }}>
-                <span style={{ color: 'var(--text)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.name}</span>
+        {backups.length > 0 ? (
+          <div className="dbadmin-backup-list" style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 220, overflowY: 'auto' }} data-backup-count={backups.length}>
+            {backups.map((b) => (
+              <div key={b.name} className="dbadmin-backup-row" data-backup-name={b.name} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 'var(--fs-m)', minHeight: 32 }}>
+                <span style={{ color: 'var(--text)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={b.name}>{b.name}</span>
                 <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{(b.size / 1048576).toFixed(1)} MB</span>
                 <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{b.mtime.slice(0, 19).replace('T', ' ')}</span>
-                <button onClick={() => void restoreBackup(b.name)} disabled={bkBusy !== ''}
+                <button onClick={() => void restoreBackup(b.name)} disabled={bkBusy !== ''} aria-label={`从快照 ${b.name} 恢复数据库`} aria-busy={bkBusy === b.name}
                   title="从该快照恢复整个数据库 — 恢复前会先自动备份当前状态"
-                  style={{ fontSize: 'var(--fs-xs)', padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--danger)', cursor: bkBusy ? 'wait' : 'pointer', whiteSpace: 'nowrap' }}>
+                  style={{ fontSize: 'var(--fs-xs)', padding: '6px 8px', minHeight: 32, border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--danger)', cursor: bkBusy ? 'wait' : 'pointer', whiteSpace: 'nowrap' }}>
                   {bkBusy === b.name ? '恢复中…' : '恢复'}
                 </button>
                 {/* T05791：删除指定备份快照——二次确认（CONFIRM_DELETE），物理文件移除且不影响当前库 */}
-                <button onClick={() => void deleteBackupFile(b.name)} disabled={bkBusy !== ''}
+                <button onClick={() => void deleteBackupFile(b.name)} disabled={bkBusy !== ''} aria-label={`删除快照 ${b.name}`} aria-busy={bkBusy === `del:${b.name}`}
                   title="删除该备份快照 — 物理删除备份文件，需确认码；当前数据库不受影响"
-                  style={{ fontSize: 'var(--fs-xs)', padding: '2px 8px', border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--text-secondary)', cursor: bkBusy ? 'wait' : 'pointer', whiteSpace: 'nowrap' }}>
+                  style={{ fontSize: 'var(--fs-xs)', padding: '6px 8px', minHeight: 32, border: '1px solid var(--border-strong)', borderRadius: 5, background: 'var(--card-bg)', color: 'var(--text-secondary)', cursor: bkBusy ? 'wait' : 'pointer', whiteSpace: 'nowrap' }}>
                   {bkBusy === `del:${b.name}` ? '删除中…' : '删除'}
                 </button>
               </div>
             ))}
+          </div>
+        ) : (
+          <div style={{ marginTop: 8, fontSize: 'var(--fs-m)', color: backupsLoading ? 'var(--text-muted)' : 'var(--text-secondary)' }} data-backup-empty>
+            {backupsLoading ? '备份列表加载中…' : '暂无备份快照'}
           </div>
         )}
       </div>
@@ -452,9 +496,9 @@ export function DbAdminTab() {
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+      <div className="dbadmin-layout" style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
         {/* 左侧表清单 */}
-        <div style={{ width: 190, flexShrink: 0, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card-bg)', overflow: 'hidden' }}>
+        <div className="dbadmin-sidebar" style={{ width: 190, flexShrink: 0, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card-bg)', overflow: 'hidden' }}>
           <div style={{ padding: '10px 12px', fontWeight: 600, borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)' }}>业务表</div>
           {tables.map((t) => (
             <button
@@ -477,17 +521,17 @@ export function DbAdminTab() {
         <div style={{ flex: 1, minWidth: 0 }}>
           {active ? (
             <>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10, alignItems: 'center' }}>
+              <div className="dbadmin-toolbar" style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10, alignItems: 'center' }}>
                 <button style={btnStyle(true)} onClick={() => setEditing({ mode: 'create' })} title="新增一行记录"><Plus size={13} /> 新增</button>
                 <button style={btnStyle(false, true)} disabled={selected.size === 0} onClick={() => void handleBatchDelete()} title="批量删除选中行（需确认码）">
                   <Trash2 size={13} /> 删除{selected.size > 0 ? `(${selected.size})` : ''}
                 </button>
-                <label style={{ ...btnStyle(false), marginBottom: 0 }} title="从 CSV / JSON 文件导入数据">
-                  <FileUp size={13} /> 导入
-                  <input type="file" accept=".csv,.json" style={FILE_INPUT_SR_ONLY} onChange={(e) => void handleImportFile(e)} />
+                <label className="dbadmin-file-label" style={{ ...btnStyle(false), marginBottom: 0, opacity: ioBusy ? 0.6 : 1 }} title="从 CSV / JSON 文件导入数据">
+                  <FileUp size={13} /> {ioBusy === 'import' ? '导入中…' : '导入'}
+                  <input type="file" accept=".csv,.json" aria-busy={ioBusy === 'import'} disabled={!!ioBusy} style={FILE_INPUT_SR_ONLY} onChange={(e) => void handleImportFile(e)} />
                 </label>
-                <button style={btnStyle(false)} onClick={() => void handleExport('csv')} title="导出当前表全部数据为 CSV"><Download size={13} /> CSV</button>
-                <button style={btnStyle(false)} onClick={() => void handleExport('json')} title="导出当前表全部数据为 JSON"><Download size={13} /> JSON</button>
+                <button style={btnStyle(false)} disabled={!!ioBusy} aria-busy={ioBusy === 'export-csv'} onClick={() => void handleExport('csv')} title="导出当前表全部数据为 CSV"><Download size={13} /> {ioBusy === 'export-csv' ? '导出中…' : 'CSV'}</button>
+                <button style={btnStyle(false)} disabled={!!ioBusy} aria-busy={ioBusy === 'export-json'} onClick={() => void handleExport('json')} title="导出当前表全部数据为 JSON"><Download size={13} /> {ioBusy === 'export-json' ? '导出中…' : 'JSON'}</button>
                 <button style={btnStyle(false)} onClick={() => setSchemaOpen(true)} title="查看当前表字段结构"><Table2 size={13} /> 表结构</button>
                 <input
                   value={search}
@@ -598,9 +642,10 @@ export function DbAdminTab() {
         <div /* NOSONAR - 遮罩点击空白关闭为便捷辅助，正式关闭入口为弹窗内原生按钮，无需对背景遮罩聚焦键盘 */
           style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => setSchemaOpen(false)}>
           <div /* NOSONAR - 阻断点击冒泡属事件传递逻辑而非独立交互控件，可访问关闭入口仍为原生按钮 */
+            role="dialog" aria-modal="true" aria-labelledby="dbadmin-schema-title"
             style={{ background: 'var(--card-bg)', borderRadius: 8, padding: 16, minWidth: 420, maxWidth: 640, maxHeight: '70vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-              <div style={{ fontWeight: 600 }}>表结构 - {active}</div>
+              <div id="dbadmin-schema-title" style={{ fontWeight: 600 }}>表结构 - {active}</div>
               <button style={{ ...btnStyle(false), padding: '2px 6px' }} onClick={() => setSchemaOpen(false)} title="关闭表结构预览" aria-label="关闭表结构预览"><X size={13} /></button>
             </div>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-m)' }}>
@@ -627,16 +672,29 @@ export function DbAdminTab() {
         </div>
       )}
 
-      {notice && <output className="flash-toast">{notice}</output>}
+      {notice && (
+        <output
+          className={notice.tone === 'error' ? 'flash-toast is-error' : 'flash-toast'}
+          role={notice.tone === 'error' ? 'alert' : 'status'}
+          data-notice-tone={notice.tone}
+          style={notice.tone === 'error' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}
+        >
+          {notice.text}
+        </output>
+      )}
     </div>
   );
 }
 
-/** 表单值 → 提交值：checkbox 归一为 0/1；非 checkbox 空串返回 undefined 表示不提交（走列默认/可空语义） */
-function formValue(v: string | boolean | undefined, type: 'number' | 'checkbox' | 'textarea' | 'text'): unknown {
+/** 表单值 → 提交值：checkbox 归一为 0/1；更新模式允许清空（文本 → ''，数值 → null）；新增模式空串不提交（走列默认/可空语义） */
+function formValue(v: string | boolean | undefined, type: 'number' | 'checkbox' | 'textarea' | 'text' | 'blob', forUpdate: boolean): unknown {
+  if (type === 'blob') return undefined;
   if (type === 'checkbox') return v ? 1 : 0;
   const s = typeof v === 'string' ? v.trim() : '';
-  if (s === '') return undefined;
+  if (s === '') {
+    if (!forUpdate) return undefined;
+    return type === 'number' ? null : '';
+  }
   return type === 'number' ? Number(s) : s;
 }
 
@@ -669,7 +727,9 @@ function EditModal(props: {
     try {
       const data: Record<string, unknown> = {};
       for (const c of columns) {
-        const v = formValue(values[c.name], inferFormType(c.type));
+        const type = inferFormType(c.type);
+        if (type === 'blob') continue; // BLOB 列表只回占位符，文本回写会破坏二进制；本轮不支持在 UI 编辑
+        const v = formValue(values[c.name], type, mode === 'update');
         if (v !== undefined) data[c.name] = v;
       }
       if (mode === 'create') {
@@ -700,13 +760,21 @@ function EditModal(props: {
     <div /* NOSONAR - 遮罩点击空白关闭为便捷辅助，正式关闭入口为弹窗内原生按钮，无需对背景遮罩聚焦键盘 */
       style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={onClose}>
       <div /* NOSONAR - 阻断点击冒泡属事件传递逻辑而非独立交互控件，可访问关闭入口仍为原生按钮 */
+        role="dialog" aria-modal="true" aria-labelledby="dbadmin-edit-title"
         style={{ background: 'var(--card-bg)', borderRadius: 8, padding: 20, minWidth: 380, maxWidth: 560, maxHeight: '80vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
-        <div style={{ fontWeight: 600, marginBottom: 12 }}>{mode === 'create' ? `新增 → ${table}` : `编辑 → ${table}`}</div>
+        <div id="dbadmin-edit-title" style={{ fontWeight: 600, marginBottom: 12 }}>{mode === 'create' ? `新增 → ${table}` : `编辑 → ${table}`}</div>
         {columns.map((c) => {
           const type = inferFormType(c.type);
-          const editable = !(mode === 'update' && c.primary_key);
+          const isBlob = type === 'blob';
+          const editable = !(mode === 'update' && (c.primary_key || isBlob));
           let control: React.ReactNode;
-          if (type === 'checkbox') {
+          if (isBlob) {
+            control = (
+              <textarea aria-label={`${c.name}（二进制只读）`} readOnly rows={2} value={String(values[c.name] ?? '')}
+                title="BLOB 二进制列不在页面内编辑，避免文本回写破坏数据；如需替换请走导入（base64: 前缀）"
+                style={{ ...fieldStyle, opacity: 0.7, fontFamily: 'var(--font-mono, monospace)' }} />
+            );
+          } else if (type === 'checkbox') {
             control = <input type="checkbox" aria-label={c.name} disabled={!editable} checked={Boolean(values[c.name])} onChange={(e) => setValues((p) => ({ ...p, [c.name]: e.target.checked }))} />;
           } else if (type === 'textarea') {
             control = <textarea aria-label={c.name} rows={3} disabled={!editable} value={String(values[c.name])} onChange={(e) => setValues((p) => ({ ...p, [c.name]: e.target.value }))} style={fieldStyle} />;
@@ -728,6 +796,7 @@ function EditModal(props: {
               <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-m)', marginBottom: 3 }}>
                 <span style={{ fontWeight: 600 }}>{c.name}</span>
                 {c.primary_key && <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--accent)' }}>PK</span>}
+                {isBlob && <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)' }}>BLOB · 只读</span>}
                 <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{c.type}</span>
               </label>
               {control}
@@ -737,7 +806,7 @@ function EditModal(props: {
         {err && <div style={{ color: 'var(--danger)', fontSize: 'var(--fs-m)', marginBottom: 8 }}>{err}</div>}
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <button style={btnStyle(false)} onClick={onClose}>取消</button>
-          <button style={btnStyle(true)} disabled={busy} onClick={() => void submit()}>{submitLabel}</button>
+          <button style={btnStyle(true)} disabled={busy} aria-busy={busy} onClick={() => void submit()}>{submitLabel}</button>
         </div>
       </div>
     </div>

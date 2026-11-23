@@ -50,6 +50,8 @@ export interface QualityPlan {
   dependsOn?: string[];
   taskType?: string;
   estimateDays?: number;
+  /** 系统补齐的覆盖模板：只作编辑草稿，默认不勾选、不计入覆盖 */
+  gapFill?: boolean;
 }
 
 export interface QualitySource {
@@ -86,6 +88,8 @@ export function normalizePlanTitle(title: string): string {
     .replace(/^\s*\d+(?:\.\d+)*\s*(?:M\d+)?\s*/i, '')
     .replace(/^\s*M\d+\s*/i, '')
     .replace(/^REQ-\d+\s*/i, '')
+    // 2026-11-21：系统覆盖卡用（2）…（12）区分；尾序号不剥离会让 12 张同题卡被统计成 0 组重复。
+    .replace(/\s*[（(]\s*\d+\s*[)）]\s*$/i, '')
     // 只去空白/标点/符号，**不能**用 [\s\W_]：JS 的 \W 会把中文一并当作非单词字符删掉，
     // 导致所有纯中文标题归一化为 ''，跨片同题去重全部失效（质量门 A-02 实测捕获）。
     .replaceAll(/[\s\p{P}\p{S}]+/gu, '')
@@ -164,12 +168,36 @@ export function splitWbsGroupRanges(plans: ReadonlyArray<QualityPlan>): Array<{ 
   }));
 }
 
+/** 系统兜底的「需求追溯与覆盖核对」卡：按不同需求组拆成多张，标题只差序号，
+ *  语义上不是重复任务；同题去重不能把它们算成重复行（真正的重复卡由导入侧幂等去重消除）。 */
+export function isPrdCoveragePlan(p: Pick<QualityPlan, 'title'>): boolean {
+  return /需求追溯与覆盖核对/.test(p.title ?? '');
+}
+
+/** 设计/运维/工程治理类支撑任务（enabler）：架构评审、风险登记册、环境准备、代码审查与清理等。
+ *  它们可以是合法交付物，但必须有足够描述；带章节溯源时优先放行，工程治理类标题可在无章节时按标题识别。
+ *  实现/测试类零关联仍按孤儿阻断。 */
+export function isEnablerPlan(p: Pick<QualityPlan, 'title' | 'taskType' | 'sourceSection' | 'description'>): boolean {
+  const type = (p.taskType ?? '').toLowerCase();
+  const explicitSupport = type === 'design' || type === 'ops' || type === 'enabler';
+  const sourced = /§\s*\d+(?:\.\d+)*/.test(p.sourceSection ?? '');
+  const descOk = (p.description ?? '').replace(/\s/g, '').length >= 50;
+  if (explicitSupport) return sourced && descOk;
+  // 2026-11-22：AirMirror「代码审查与清理」被模型标成 verify 且未关联需求——它是跨需求的工程治理动作，
+  // 不是某条功能的实现/验收卡。标题语义足够明确时按 enabler 放行，避免为了过门强行挂一条无关需求。
+  const engineeringGovernance = /代码审查|代码评审|代码清理|代码重构|技术债|静态代码检查|静态扫描|死代码|重复代码|编码规范|依赖清理|依赖升级/.test(p.title ?? '')
+    && !/^(?:实现|开发|新增|接入|支持)/.test((p.title ?? '').trim());
+  return engineeringGovernance && descOk;
+}
+
 /** 同题计划分组（归一化标题相同即一组），返回重复组明细 */
 export function findDuplicatePlanGroups(plans: ReadonlyArray<QualityPlan>): Array<{ key: string; titles: string[]; indexes: number[] }> {
   const byKey = new Map<string, { titles: string[]; indexes: number[] }>();
   plans.forEach((p, i) => {
     // 系统补齐占位行按 REQ 编号区分，归一化后全叫「相关实现」——必须排除，否则 22 行会被误判成一组重复
     if (isGapFillPlan(p)) return;
+    // 覆盖核对卡是按需求组拆分的系统卡（标题带（2）…（N）），不是重复执行任务
+    if (isPrdCoveragePlan(p)) return;
     const key = normalizePlanTitle(p.title ?? '');
     if (!key) return;
     const g = byKey.get(key);
@@ -179,22 +207,70 @@ export function findDuplicatePlanGroups(plans: ReadonlyArray<QualityPlan>): Arra
   return Array.from(byKey.values()).filter((g) => g.indexes.length > 1).map((g, i) => ({ key: `dup-${i}`, ...g }));
 }
 
-/** 里程碑工期 = 其下（下一里程碑之前）勾选明细之和；返回不符清单 */
+/** 从显式字段/标题前缀推出 WBS 编号（与服务端 prdWbs.wbsCodeOf 同口径） */
+export function planWbsCodeOf(p: Pick<QualityPlan, 'title' | 'wbsCode'>): string {
+  const explicit = (p.wbsCode ?? '').trim();
+  if (explicit) return explicit;
+  const m = /^(M\d+(?:\.\d+)*|\d+(?:\.\d+)*|P[01]-\d+(?:\.\d+)*|EX|Q|F|R-\d+(?:\.\d+)*)\s+/i.exec((p.title ?? '').trim());
+  return m ? m[1].replace(/^m/i, 'M') : '';
+}
+
+/** 父编号：显式 parentCode 优先；否则按 wbsCode 点分层级推导（M1.1 → M1）。 */
+export function planParentCodeOf(p: Pick<QualityPlan, 'title' | 'kind' | 'wbsCode' | 'parentCode'>): string {
+  if (p.kind === 'milestone') return '';
+  const explicit = (p.parentCode ?? '').trim();
+  if (explicit) return explicit;
+  const code = planWbsCodeOf(p);
+  return code.includes('.') ? code.slice(0, code.lastIndexOf('.')) : '';
+}
+
+/** 沿 parentCode 向上找归属里程碑；找不到返回 -1（供结构化工期汇总用）。 */
+function milestoneOwnerOf(plans: ReadonlyArray<QualityPlan>, index: number): number {
+  let cur = index;
+  for (let guard = 0; guard < 16; guard += 1) {
+    const p = plans[cur];
+    if (!p) return -1;
+    if (p.kind === 'milestone') return cur;
+    const parentCode = planParentCodeOf(p);
+    if (!parentCode) return -1;
+    const parentIdx = plans.findIndex((x) => planWbsCodeOf(x) === parentCode);
+    if (parentIdx < 0) return -1;
+    cur = parentIdx;
+  }
+  return -1;
+}
+
+/** 里程碑工期 = 其下勾选明细之和；返回不符清单。
+ *  2026-11-22：结构字段（wbsCode/parentCode）优先——旧实现按「下一里程碑之前」的行序区间统计，
+ *  当模型把 5 个里程碑集中输出在文档前部、明细集中在末尾时，会把所有明细都算到最后一座里程碑，
+ *  误报「M5 23≠123」。覆盖核对卡是管理动作，不计入交付工期。 */
 export function findMilestoneDurationIssues(plans: ReadonlyArray<QualityPlan>): Array<{
   title: string; index: number; declared: number; computed: number; children: number;
 }> {
   const out: Array<{ title: string; index: number; declared: number; computed: number; children: number }> = [];
+  const structured = plans.some((p) => !!planWbsCodeOf(p) || !!planParentCodeOf(p));
   for (let i = 0; i < plans.length; i++) {
-    if (plans[i].kind !== 'milestone') continue;
+    if (plans[i].kind !== 'milestone' || plans[i].include === false) continue;
     let sum = 0;
     let children = 0;
-    for (let j = i + 1; j < plans.length; j++) {
-      if (plans[j].kind === 'milestone') break;
-      if (plans[j].include === false) continue;
-      // 与服务端 milestoneDurations / intervalChildEdges 同一口径：系统补齐占位行不计入里程碑工期
-      if (isGapFillPlan(plans[j])) continue;
-      sum += Math.max(1, Math.round(Number(plans[j].durationDays) || 1));
-      children += 1;
+    if (structured) {
+      for (let j = 0; j < plans.length; j += 1) {
+        const child = plans[j];
+        if (j === i || child.kind === 'milestone' || child.include === false) continue;
+        if (isGapFillPlan(child) || isPrdCoveragePlan(child)) continue;
+        if (milestoneOwnerOf(plans, j) !== i) continue;
+        sum += Math.max(1, Math.round(Number(child.durationDays) || 1));
+        children += 1;
+      }
+    } else {
+      for (let j = i + 1; j < plans.length; j++) {
+        if (plans[j].kind === 'milestone') break;
+        if (plans[j].include === false) continue;
+        // 与服务端 milestoneDurations / intervalChildEdges 同一口径：系统补齐占位行、覆盖核对卡不计入里程碑工期
+        if (isGapFillPlan(plans[j]) || isPrdCoveragePlan(plans[j])) continue;
+        sum += Math.max(1, Math.round(Number(plans[j].durationDays) || 1));
+        children += 1;
+      }
     }
     const declared = Math.max(1, Math.round(Number(plans[i].durationDays) || 1));
     if (children > 0 && sum !== declared) out.push({ title: plans[i].title, index: i, declared, computed: sum, children });
@@ -361,7 +437,7 @@ export interface CoverageGroup {
   total: number;
   covered: number;
   missing: string[];
-  /** 章节号（§x.y）只是定位锚点，不是可执行条目：缺失只提示，不参与硬阻断/一键补计划。 */
+  /** §x.y 只是章节定位锚点；Dx 是设计决策标题。两者缺失都只提示，不参与硬阻断/一键补计划。 */
   soft?: boolean;
 }
 
@@ -371,29 +447,48 @@ export function buildSourceCoverage(
   reqs: ReadonlyArray<QualityReq>,
   plans: ReadonlyArray<QualityPlan>,
 ): CoverageGroup[] {
+  // 未勾选的行不参与导入，也不得被当成“已覆盖”：否则点“补齐”生成未勾选模板后，
+  // 覆盖缺口会假归零，导入时却因模板行被过滤而丢掉这些条目。
+  const activeReqs = reqs.filter((r) => r.include !== false);
+  const activePlans = plans.filter((p) => p.include !== false);
   const docText = sources.map((s) => s.text ?? '').join('\n');
   const resultText = [
-    ...reqs.map((r) => `${r.sourceRef ?? ''} ${r.title ?? ''} ${r.content ?? ''}`),
-    ...plans.map((p) => `${p.title ?? ''} ${p.description ?? ''} ${p.sourceSection ?? ''}`),
+    ...activeReqs.map((r) => `${r.sourceRef ?? ''} ${r.title ?? ''} ${r.content ?? ''}`),
+    ...activePlans.map((p) => `${p.title ?? ''} ${p.description ?? ''} ${p.sourceSection ?? ''}`),
   ].join('\n');
 
-  const specs: Array<{ label: string; re: RegExp; soft?: boolean }> = [
+  const specs: Array<{ label: string; re: RegExp; soft?: boolean; ctx?: RegExp; ctxFor?: (id: string) => RegExp }> = [
     // 章节号用于定位，不是需求条目；解析结果通常只保留「1.3 目标 G1」而不写 §1.3。
     // 把它算成硬缺口会让一份正常 PRD 每次都要求补 20~40 条占位计划（2026-11-17 实测 39 项全为 §）。
     { label: '章节 §x.y（仅定位，不阻断）', re: /(?:§|^|\s)(\d{1,2}\.\d{1,2})(?:[\s\-A-Z]|$)/gm, soft: true },
-    { label: '确认项 Q-xx', re: /\bQ-\d{2}\b/g },
-    { label: '脚本 Sx / S3-x', re: /\bS3-[BCD]\b|\bS[1-4]\b/g },
-    { label: '设计决策 Dx', re: /\bD[1-7]\b/g },
-    { label: '回归场景 Rx', re: /\bR(?:10|[1-9])\b/g },
-    { label: '核实项 Tx', re: /\bT(?:11|10|[1-9])\b/g },
-    { label: '偏差 N-x', re: /\bN-[1-5]\b/g },
-    { label: '开放项 Ox', re: /\bO[1-5]\b/g },
+    { label: '确认项 Q-xx', re: /\bQ-\d{2}\b/g, ctx: /待确认|确认项|待回复|问题/ },
+    { label: '脚本 Sx / S3-x', re: /\bS3-[BCD]\b|\bS[1-4]\b/g, ctx: /脚本|步骤|用例|测试/ },
+    { label: '设计决策 Dx（仅提示）', re: /\bD[1-7]\b/g, ctx: /设计|决策|方案/, soft: true },
+    // 回归场景必须与编号相邻（R1 回归 / 回归场景 R1）；只看 ±60 字窗口会把「功能不回归 … R2」误判成缺口。
+    { label: '回归场景 Rx', re: /\bR(?:10|[1-9])\b/g, ctxFor: (id) => new RegExp(`(?:${id}\\s*[：:、-]?\\s*回归)|(?:回归(?:场景|用例)?\\s*[：:、-]?\\s*${id})`) },
+    { label: '核实项 Tx', re: /\bT(?:11|10|[1-9])\b/g, ctx: /核实|验证|测试/ },
+    { label: '偏差 N-x', re: /\bN-[1-5]\b/g, ctx: /偏差|差异|偏离/ },
+    { label: '开放项 Ox', re: /\bO[1-5]\b/g, ctx: /开放项|待定|待确认|待回复|风险/ },
   ];
-  return specs.map(({ label, re, soft }) => {
+  return specs.map(({ label, re, soft, ctx, ctxFor }) => {
     const ids = new Set<string>();
     let m: RegExpExecArray | null;
     const source = new RegExp(re.source, re.flags);
-    while ((m = source.exec(docText)) !== null) ids.add(m[1] ? `§${m[1]}` : m[0]);
+    while ((m = source.exec(docText)) !== null) {
+      // 2026-11-22：短编号必须结合上下文判定。AutoClicker PRD 的 O1~O5 是「目标」、S1~S5 是「用户场景」、
+      // R1~R3 是「发布批次」，都不是待补的条目；只按 \bO1/\bS1/\bR1 抓取会制造 11 个假硬缺口并阻断导入。
+      const raw = m[1] ? `§${m[1]}` : m[0];
+      const testRe = ctxFor ? ctxFor(raw) : ctx;
+      if (testRe) {
+        const lineStart = docText.lastIndexOf('\n', m.index) + 1;
+        const lineEndRaw = docText.indexOf('\n', m.index);
+        const lineEnd = lineEndRaw < 0 ? docText.length : lineEndRaw;
+        const line = docText.slice(lineStart, lineEnd);
+        const win = docText.slice(Math.max(0, m.index - 60), Math.min(docText.length, m.index + m[0].length + 60));
+        if (!testRe.test(`${line}\n${win}`)) continue;
+      }
+      ids.add(raw);
+    }
     const missing: string[] = [];
     const covered = new Set<string>();
     for (const id of ids) {
@@ -417,7 +512,8 @@ export function buildSourceCoverage(
  *  否则编号写法漂移会制造「AC 未映射」假阻断。 */
 export function normalizeReqRefKey(raw: string): string {
   const s = (raw ?? '').trim().toUpperCase().replaceAll('_', '-').replaceAll(' ', '-');
-  const ac = /^AC-?0*(\d+)$/.exec(s);
+  // 2026-11-21：模型会把 AC 写成 REQ-AC-01；必须与 AC-01 视为同一验收项。
+  const ac = /^(?:REQ-?)?AC-?0*(\d+)$/.exec(s);
   if (ac) return `AC-${Number(ac[1])}`;
   const req = /^(?:REQ(?:UIREMENT)?|R)?-?0*(\d+)$/.exec(s);
   if (req) return `REQ-${String(Number(req[1])).padStart(3, '0')}`;
@@ -435,11 +531,97 @@ export function evaluateImportReadiness(
   const errors: string[] = [];
   const warnings: string[] = [];
   const ms = plans.filter((p) => p.kind === 'milestone');
-  const normals = plans.filter((p) => p.kind !== 'milestone');
+  // 2026-11-22：覆盖核对卡是管理动作，不是交付任务——不占 45 条 executable 上限，也不计入里程碑工期。
+  const allNormals = plans.filter((p) => p.kind !== 'milestone');
+  const coveragePlans = allNormals.filter(isPrdCoveragePlan);
+  const normals = allNormals.filter((p) => !isPrdCoveragePlan(p));
   const groups = detectWbsGroups(plans);
   if (groups.groups > 1) errors.push(`检测到 ${groups.groups} 套并行 WBS（${groups.groupStartTitles.slice(0, 5).join(' / ')}…）——必须收敛为一套 5~6 个里程碑`);
+  const durationIssues = findMilestoneDurationIssues(plans);
+  if (durationIssues.length > 0) {
+    errors.push(`里程碑工期与子项不符 ${durationIssues.length} 个（${durationIssues.slice(0, 3).map((x) => `「${x.title}」${x.declared}≠${x.computed}`).join('、')}）——请重算后再导入`);
+  }
+  const zeroLinkedNormals = normals.filter((p) => {
+    if (isGapFillPlan(p)) return false;
+    const links = new Set([...(p.reqNos ?? []), ...(p.acceptanceRefs ?? [])].map(normalizeReqRefKey).filter(Boolean));
+    return links.size === 0;
+  });
+  // 设计/运维类支撑任务是合法 enabler（架构评审、风险登记册等），带章节溯源时不应按「孤儿任务」阻断；
+  // 实现/测试类零关联仍必须阻断（上一轮 AirMirror P1 预留接口验证即属此类）。
+  const zeroLinkedEnablers = zeroLinkedNormals.filter(isEnablerPlan);
+  const zeroLinkedImplementations = zeroLinkedNormals.filter((p) => !isEnablerPlan(p));
+  if (zeroLinkedImplementations.length > 0) {
+    const detail = zeroLinkedImplementations.slice(0, 5).map((p) => {
+      const code = (p.wbsCode ?? '').trim();
+      return `「${p.title}」${code ? `（${code}）` : ''}`;
+    }).join('、');
+    errors.push(`有 ${zeroLinkedImplementations.length} 条任务未关联任何需求/验收项（${detail}）——请补关联或删除`);
+  }
+  if (zeroLinkedEnablers.length > 0) {
+    const detail = zeroLinkedEnablers.slice(0, 3).map((p) => `「${p.title}」`).join('、');
+    warnings.push(`有 ${zeroLinkedEnablers.length} 条设计/运维/工程治理类支撑任务未关联需求（${detail}）——已按章节溯源或标题语义放行，确认是否本期交付`);
+  }
+  // 覆盖核对卡按需求组拆分；同一需求被两张卡重复承接时，待办会出现「同一件事做两遍」。
+  const coverageRefs = new Set<string>();
+  if (coveragePlans.length > 0) {
+    const seen = new Set<string>();
+    let dup = 0;
+    for (const p of coveragePlans) {
+      // 同一张卡里 reqNos 与 acceptanceRefs 本来就允许重叠（AC 同时是需求和验收引用），
+      // 只有「跨卡重复」才代表同一需求被两张覆盖卡承接。
+      const cardRefs = new Set([...(p.reqNos ?? []), ...(p.acceptanceRefs ?? [])].map(normalizeReqRefKey).filter(Boolean));
+      for (const ref of cardRefs) {
+        coverageRefs.add(ref);
+        if (seen.has(ref)) dup += 1; else seen.add(ref);
+      }
+    }
+    if (dup > 0) {
+      errors.push(`覆盖核对卡有 ${dup} 个跨卡重复需求引用（如「${coveragePlans[0].title}」）——同一需求只能由一张覆盖卡承接`);
+    }
+    const needed = Math.ceil(seen.size / 6);
+    if (coveragePlans.length > needed) {
+      errors.push(`覆盖核对卡 ${coveragePlans.length} 张，超过 ${seen.size} 条需求所需 ${needed} 张——请合并重复卡`);
+    }
+  }
+  // 覆盖核对只是管理动作，不能替代实现/验收卡；P0 仅被覆盖卡承接必须阻断，P1 强提示。
+  const realRefs = new Set<string>();
+  for (const p of normals) {
+    if (isPrdCoveragePlan(p)) continue;
+    for (const ref of [...(p.reqNos ?? []), ...(p.acceptanceRefs ?? [])].map(normalizeReqRefKey)) {
+      if (ref) realRefs.add(ref);
+    }
+  }
+  const onlyCoverageReqs = reqs.filter((r) => {
+    if (/p[23]/i.test(r.priority ?? '') || !r.reqNo) return false;
+    const key = normalizeReqRefKey(r.reqNo);
+    return !!key && coverageRefs.has(key) && !realRefs.has(key);
+  });
+  const onlyCoverageP0 = onlyCoverageReqs.filter((r) => /p0/i.test(r.priority ?? ''));
+  if (onlyCoverageP0.length > 0) {
+    errors.push(`有 ${onlyCoverageP0.length} 条 P0 需求只被覆盖核对卡承接、没有实现/验收任务（${onlyCoverageP0.slice(0, 5).map((r) => r.reqNo).join('、')}）——请补真实交付任务`);
+  } else if (onlyCoverageReqs.length > 0) {
+    warnings.push(`有 ${onlyCoverageReqs.length} 条 P1 需求只被覆盖核对卡承接（${onlyCoverageReqs.slice(0, 5).map((r) => r.reqNo).join('、')}）——确认是否进入本期交付`);
+  }
   if (ms.length > 8) errors.push(`里程碑 ${ms.length} 个，超过上限 8 个——请合并阶段，保留 5~6 个交付阶段`);
   if (ms.length < 5) warnings.push(`里程碑只有 ${ms.length} 个，低于建议的 5~6 个`);
+  // 2026-11-22：结构退化诊断——模型有时把 5 个里程碑集中输出在文档前部，再把全部明细挂到最后一个里程碑。
+  // 按树汇总后工期可能自洽（123=123），但前 4 个阶段为空，甘特/待办仍失真；这里只提示，交由人工按阶段拆分。
+  const structuredForOwner = plans.some((p) => !!planWbsCodeOf(p) || !!planParentCodeOf(p));
+  if (structuredForOwner && ms.length >= 3 && normals.length >= 10) {
+    const ownerCounts = ms.map(() => 0);
+    for (let i = 0; i < plans.length; i += 1) {
+      if (plans[i].kind === 'milestone' || plans[i].include === false) continue;
+      if (isGapFillPlan(plans[i]) || isPrdCoveragePlan(plans[i])) continue;
+      const owner = milestoneOwnerOf(plans, i);
+      if (owner >= 0) ownerCounts[ms.indexOf(plans[owner])] += 1;
+    }
+    const maxCount = Math.max(...ownerCounts);
+    const emptyStages = ownerCounts.filter((n) => n === 0).length;
+    if (maxCount / normals.length >= 0.8 && emptyStages >= 2) {
+      const topIdx = ownerCounts.indexOf(maxCount);
+      warnings.push(`WBS 阶段分布失衡：${ms[topIdx]?.title ?? '最后一个里程碑'} 承接 ${maxCount}/${normals.length} 条任务，${emptyStages} 个阶段为空——请按 parentCode 把任务拆回对应阶段，否则甘特与待办会集中在一处`);
+    }
+  }
   if (normals.length > 45) errors.push(`可执行任务 ${normals.length} 条，超过上限 45 条——粒度过细，请合并同一交付物`);
   if (normals.length < 20) warnings.push(`可执行任务只有 ${normals.length} 条，低于建议的 30~40 条，可能漏项`);
   if (normals.length === 0) errors.push('没有任何可执行任务（normal）——里程碑不能独立交付');
@@ -452,7 +634,7 @@ export function evaluateImportReadiness(
   const fragmentRe = /§|\||`|\.(?:tsx?|jsx?|json|md|sql|py)$/i;
   const fragments = plans.filter((p) => fragmentRe.test((p.title ?? '').trim()));
   if (fragments.length > 0) errors.push(`存在 ${fragments.length} 条碎片标题（如「${fragments[0].title}」）——标题应是可交付动作`);
-  const thinP0 = plans.filter((p) => /p[01]/i.test(p.priority ?? '') && (p.description ?? '').replace(/\s/g, '').length < 50);
+  const thinP0 = plans.filter((p) => p.kind !== 'milestone' && /p[01]/i.test(p.priority ?? '') && (p.description ?? '').replace(/\s/g, '').length < 50);
   if (thinP0.length > 0) errors.push(`P0/P1 任务 ${thinP0.length} 条描述不足 50 字（如「${thinP0[0].title}」）——执行卡必须写清动作、边界与验收`);
   const structured = plans.some((p) => !!p.wbsCode || !!p.parentCode);
   if (structured) {
@@ -545,30 +727,33 @@ export function analyzeImportQuality(input: {
   plans: ReadonlyArray<QualityPlan>;
 }): QualitySummary {
   const { sources, reqs, plans } = input;
-  const dup = findDuplicatePlanGroups(plans);
+  // 质量门和结构指标只看实际参与导入的行；未勾选的占位模板/历史套次不得继续制造阻断。
+  const activeReqs = reqs.filter((r) => r.include !== false);
+  const activePlans = plans.filter((p) => p.include !== false);
+  const dup = findDuplicatePlanGroups(activePlans);
   const conflicts = detectVersionConflicts(sources);
-  const coverage = buildSourceCoverage(sources, reqs, plans);
-  const durationDetails = findMilestoneDurationIssues(plans);
+  const coverage = buildSourceCoverage(sources, activeReqs, activePlans);
+  const durationDetails = findMilestoneDurationIssues(activePlans);
   const docCounts = { prd: 0, design: 0, test: 0 };
   for (const s of sources) docCounts[s.role ?? 'prd'] += 1;
-  const gate = evaluateImportReadiness(reqs, plans);
+  const gate = evaluateImportReadiness(activeReqs, activePlans);
   return {
     docCounts,
     reqCount: reqs.length,
     planCount: plans.length,
-    milestoneCount: plans.filter((p) => p.kind === 'milestone').length,
-    wbsGroups: detectWbsGroups(plans).groups,
+    milestoneCount: activePlans.filter((p) => p.kind === 'milestone').length,
+    wbsGroups: detectWbsGroups(activePlans).groups,
     duplicateGroups: dup.length,
     duplicateRows: dup.reduce((n, g) => n + g.indexes.length - 1, 0),
     gapFillRows: plans.filter(isGapFillPlan).length,
-    constraintReqs: detectConstraintReqs(reqs).length,
-    unattributedReqs: reqs.filter((r) => !/^(§|\d+\.\d+|Q-\d+)/.test((r.sourceRef ?? '').trim())).length,
+    constraintReqs: detectConstraintReqs(activeReqs).length,
+    unattributedReqs: activeReqs.filter((r) => !/^(§|\d+\.\d+|Q-\d+)/.test((r.sourceRef ?? '').trim())).length,
     durationIssues: durationDetails.length,
     versionConflicts: conflicts.length,
     // 2026-11-17：只把「缺少结构依据」的行算推定；有 wbsCode/parentCode/acceptanceRefs 的行已有可追溯来源
-    inferredFieldRows: plans.filter((p) => !p.wbsCode && !p.parentCode && !p.sourceSection).length,
-    // 2026-11-17：§x.y 是定位锚点而非需求条目，单独计数为提示；硬缺口只算 Q/S/D/R/T/N/O，
-    // 避免一份正常 PRD 因章节号未回写 sourceRef 就被拦在导入门外。
+    inferredFieldRows: activePlans.filter((p) => !p.wbsCode && !p.parentCode && !p.sourceSection).length,
+    // 2026-11-17：§x.y 是定位锚点、Dx 是设计决策标题，均非独立需求条目，单独计数为提示；
+    // 硬缺口只算 Q/S/R/T/N/O，避免正常 PRD 因章节号或设计决策编号未回写就被拦在导入门外。
     coverageGaps: coverage.filter((g) => !g.soft).reduce((n, g) => n + g.missing.length, 0),
     coverageSectionGaps: coverage.filter((g) => g.soft).reduce((n, g) => n + g.missing.length, 0),
     conflicts,
@@ -586,7 +771,7 @@ export function formatQualitySummary(s: QualitySummary): string {
   return `导入质量自检：来源文档 ${s.docCounts.prd} 份 PRD / ${s.docCounts.design} 份设计 / ${s.docCounts.test} 份测试；`
     + `${s.reqCount} 需求、${s.planCount} 计划（${s.milestoneCount} 里程碑）；`
     + `WBS ${s.wbsGroups} 套、同题重复 ${s.duplicateRows} 行、占位 ${s.gapFillRows} 行、工期不符 ${s.durationIssues} 个、`
-    + `否定口径 ${s.constraintReqs} 条、溯源未标注 ${s.unattributedReqs} 条、版本冲突 ${s.versionConflicts} 项、硬覆盖缺口 ${s.coverageGaps} 项、章节引用缺口 ${s.coverageSectionGaps} 项（仅提示）；`
+    + `否定口径 ${s.constraintReqs} 条、溯源未标注 ${s.unattributedReqs} 条、版本冲突 ${s.versionConflicts} 项、硬覆盖缺口 ${s.coverageGaps} 项、软定位缺口 ${s.coverageSectionGaps} 项（章节/设计决策，仅提示）；`
     + `另有 ${s.inferredFieldRows} 行工期/复杂度/优先级属推定值（源文档无依据）`;
 }
 
@@ -614,6 +799,9 @@ export function normalizeWbs(plans: ReadonlyArray<QualityPlan>): {
   out.forEach((p) => {
     // 占位行不参与同题去重（归一化后标题相同，会被整批误取消勾选）
     if (isGapFillPlan(p)) return;
+    // 2026-11-22：覆盖核对卡按需求组拆分，标题归一化后都叫「需求追溯与覆盖核对」；
+    // 若参与同题去重，第 2~N 张会被整批取消勾选，直接制造「7 条需求未覆盖」。
+    if (isPrdCoveragePlan(p)) return;
     const key = normalizePlanTitle(p.title ?? '');
     if (!key) return;
     if (seen.has(key)) { p.include = false; disabledRows += 1; }
@@ -631,14 +819,25 @@ export function normalizeWbs(plans: ReadonlyArray<QualityPlan>): {
     const next = `M${mi} ${body || p.title}`;
     if (next !== p.title) { p.title = next; renumberedMilestones += 1; }
   });
-  // 工期重算：跳过未勾选行与占位行（与服务端补边口径一致）
+  // 工期重算：结构字段优先；跳过未勾选行、占位行与覆盖核对卡（与服务端 milestoneDurations 一致）
+  const structured = out.some((p) => !!planWbsCodeOf(p) || !!planParentCodeOf(p));
   for (let i = 0; i < out.length; i++) {
     if (out[i].kind !== 'milestone' || out[i].include === false) continue;
     let sum = 0;
-    for (let j = i + 1; j < out.length; j++) {
-      if (out[j].kind === 'milestone' && out[j].include !== false) break;
-      if (out[j].include === false || isGapFillPlan(out[j])) continue;
-      sum += Math.max(1, Math.round(Number(out[j].durationDays) || 1));
+    if (structured) {
+      for (let j = 0; j < out.length; j += 1) {
+        const p = out[j];
+        if (j === i || p.kind === 'milestone' || p.include === false) continue;
+        if (isGapFillPlan(p) || isPrdCoveragePlan(p)) continue;
+        if (milestoneOwnerOf(out, j) !== i) continue;
+        sum += Math.max(1, Math.round(Number(p.durationDays) || 1));
+      }
+    } else {
+      for (let j = i + 1; j < out.length; j++) {
+        if (out[j].kind === 'milestone' && out[j].include !== false) break;
+        if (out[j].include === false || isGapFillPlan(out[j]) || isPrdCoveragePlan(out[j])) continue;
+        sum += Math.max(1, Math.round(Number(out[j].durationDays) || 1));
+      }
     }
     if (sum > 0) out[i].durationDays = sum;
   }
@@ -654,9 +853,11 @@ export function normalizeWbs(plans: ReadonlyArray<QualityPlan>): {
 }
 
 /**
- * T05575：覆盖缺口一键处置——把「原文有、解析结果无」的编号补成 normal 计划行。
+ * T05575：覆盖缺口一键处置——把「原文有、解析结果无」的编号补成 normal 占位模板。
+ * 生成行默认 **不勾选**：它们只是待改写的草稿，勾选前不参与覆盖统计、也不得被当成
+ * 已覆盖（否则一键补齐会把覆盖缺口假归零，随后又被质量门按占位行拦截）。
  * 与 server/src/util/prdWbs.ts 的 applySourceEntryGapFill 同口径（description 以「自动补齐：」开头，
- * 因此不参与同题去重、不计入里程碑工期、可被质量卡单独统计与取消勾选）。
+ * 因此不参与同题去重、不计入里程碑工期）。
  * 返回新数组，不修改入参。
  */
 export function appendCoverageGapPlans(
@@ -667,7 +868,7 @@ export function appendCoverageGapPlans(
   const existing = new Set(out.map((p) => p.title ?? ''));
   let added = 0;
   for (const g of coverage) {
-    if (g.soft) continue; // §x.y 仅定位锚点，不生成占位计划
+    if (g.soft) continue; // §x.y / Dx 仅定位或设计决策，不生成占位计划
     for (const id of g.missing ?? []) {
       const title = `${id} ${g.label}（源文档条目）`;
       if (existing.has(title)) continue;
@@ -677,7 +878,7 @@ export function appendCoverageGapPlans(
         durationDays: 1,
         kind: 'normal',
         reqNos: [],
-        include: true,
+        include: false,
       });
       existing.add(title);
       added += 1;

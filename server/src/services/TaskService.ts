@@ -91,6 +91,11 @@ export interface TaskRow {
   user_sort: number | null;
   created_at: string;
   updated_at: string;
+  /** T06244：任务级自动派发闸门（NULL=跟随全局，0=禁止，1=允许） */
+  dispatch_auto?: number | null;
+  /** T06247：最近一次派发尝试时间与结果，供详情页回显 */
+  dispatch_last_at?: string | null;
+  dispatch_last_state?: string;
 }
 
 /** T02949：裁决预设选项的服务端单源已迁到 `util/ruling.ts`（`RULING_DEFAULT_OPTIONS`）——
@@ -139,6 +144,11 @@ export interface TaskView {
   created_at: string;
   updated_at: string;
   images: TaskImageMeta[];
+  /** T06244：任务级自动派发闸门（NULL=跟随全局，0=禁止，1=允许） */
+  dispatch_auto?: number | null;
+  /** T06247：最近一次派发尝试时间与结果 */
+  dispatch_last_at?: string | null;
+  dispatch_last_state?: string;
   /** T00462/T00451：任务由项目计划联动创建/关联——值为来源计划标题，前端据此显示区分徽标与来源引用 */
   fromPlanTitle?: string;
   /** T01037：来源计划的类型（milestone=里程碑 / normal=普通 / daily=日常）——
@@ -663,7 +673,7 @@ function decorateRows(db: ReturnType<typeof getDb>, rows: TaskRow[]): TaskView[]
 type UpdateEventPatch = Partial<Pick<TaskRow, 'status' | 'verified' | 'ai_state' | 'handle_result'>>;
 type UpdateEventBefore = { status: string; verified: number; ai_state: string; handle_result: string | null };
 /** PATCH 可写字段白名单（update 与联动副作用共用同一形状） */
-type TaskPatch = Partial<Pick<TaskRow, 'title' | 'description' | 'priority' | 'status' | 'verified' | 'ai_summary' | 'handle_result' | 'pinned' | 'category_id' | 'parent_id' | 'color' | 'ai_state' | 'ai_state_at' | 'derived_from' | 'shelved' | 'archived'>>;
+type TaskPatch = Partial<Pick<TaskRow, 'title' | 'description' | 'priority' | 'status' | 'verified' | 'ai_summary' | 'handle_result' | 'pinned' | 'category_id' | 'parent_id' | 'color' | 'ai_state' | 'ai_state_at' | 'derived_from' | 'shelved' | 'archived' | 'dispatch_auto'>>;
 
 /** T01072-FR1.9：旧结果留档（diff/回滚数据源）——每任务保留最近 10 条 */
 function recordResultHistory(db: ReturnType<typeof getDb>, taskId: string, prevResult: string | null): void {

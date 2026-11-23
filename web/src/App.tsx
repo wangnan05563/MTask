@@ -121,7 +121,8 @@ function Shell() {
   const guide = GUIDES[tab];
   const [guideOpen, setGuideOpen] = useState(false);
   const closeGuide = () => { if (guide) { markGuideSeen(guide.seenKey); } setGuideOpen(false); };
-  useEffect(() => { if (guide && !hasSeenGuide(guide.seenKey)) setGuideOpen(true); }, [guide]);
+  // 队列菜单的引导改为页内常驻上手条，不再自动弹窗（autoOpen:false 只允许手动唤起）
+  useEffect(() => { if (guide && guide.autoOpen !== false && !hasSeenGuide(guide.seenKey)) setGuideOpen(true); }, [guide]);
   // T00821：全局 Tab 导航事件——供深层页面（如 AI 工作台确认录入成功）跨 Tab 跳转到目标菜单
   useEffect(() => {
     const onNavigate = (e: Event) => {
@@ -392,9 +393,15 @@ function Shell() {
         @media (prefers-reduced-motion: reduce) {
           .locate-flash { animation: none; background: var(--accent-soft); }
         }
-        /* T00491：菜单操作控件/搜索框统一「默认隐藏、悬浮宿主区显示」（后代选择器支持嵌套组） */
-        .op-host .op-hidden { opacity: 0; visibility: hidden; transition: opacity .2s ease, visibility 0s linear .2s; }
-        .op-host:hover .op-hidden, .op-host:focus-within .op-hidden, .op-host.op-force .op-hidden { opacity: 1; visibility: visible; transition: opacity .2s ease, visibility 0s; }
+        /* T00491：菜单操作控件/搜索框统一「默认隐藏、悬浮宿主区显示」（后代选择器支持嵌套组）
+           P2-7：旧实现用 visibility:hidden 藏控件，等于把整组导出/导入入口移出 Tab 序——纯键盘无法到达。
+           改为「透明但仍可聚焦 + pointer-events:none 防误点」，焦点进入即淡入；触屏/粗指针设备常显。 */
+        .op-host .op-hidden { opacity: 0; visibility: visible; pointer-events: none; transition: opacity .2s ease; }
+        .op-host:hover .op-hidden, .op-host:focus-within .op-hidden, .op-host.op-force .op-hidden { opacity: 1; pointer-events: auto; transition: opacity .2s ease; }
+        .op-hidden:focus-visible, .op-hidden:focus-within { opacity: 1 !important; pointer-events: auto; }
+        @media (hover: none), (pointer: coarse) {
+          .op-host .op-hidden { opacity: 1; pointer-events: auto; }
+        }
         /* T01674：键盘可达的文件选择入口——sr-only file input 聚焦时容器（label）显示焦点环，
            与相邻按钮焦点观感一致；不加此环则 Tab 命中后无可见指示 */
         .op-hidden:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 6px; }

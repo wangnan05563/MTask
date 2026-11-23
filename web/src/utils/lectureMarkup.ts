@@ -91,6 +91,22 @@ export interface LectureExportSection {
   text: string;
 }
 
+/**
+ * 导出稿的八段固定骨架（PRD §8 A-2：导出稿必须八段标题齐全）。
+ * 服务端可能因分段失败而不返回某一节，导出时仍按此顺序补位，缺节显式写「（本节未生成）」，
+ * 避免成稿静默少节、会上无法照稿讲。
+ */
+export const LECTURE_EXPORT_SECTIONS = [
+  { key: 'opening', label: '开场白' },
+  { key: 'summary', label: '变更摘要' },
+  { key: 'walkthrough', label: '逐项目-逐模块讲解' },
+  { key: 'risks', label: '风险清单' },
+  { key: 'standards', label: '规范检查' },
+  { key: 'improvements', label: '改进建议' },
+  { key: 'questions', label: '讨论问题' },
+  { key: 'closing', label: '结语' },
+] as const;
+
 export interface LectureExportDoc {
   markdown: string;
   ignored: number;
@@ -102,6 +118,38 @@ export interface LectureExportDoc {
  * 导出稿装配（md 直出；docx/pptx 由服务端按同一份 sections 再排）。
  * 顺序：标题 → 项目 → 各节（忽略项已剔除）→「会后跟进清单」→ 生成时间。
  */
+/**
+ * 导出前最后一道正文清洗（R7 实测遗留）：
+ * 1) 模型在节内自带与本节同名的 H2（如 `## 逐项目-逐模块讲解 — 逐模块讲解`）——导出已有标准 H2，
+ *    再留一条会让目录多出一个平级节点；按「等于 label / label + 破折号或冒号后缀」整行删掉。
+ * 2) `[#server/x.ts#L1-L2]` 这类锚点首字符 `#` 未去掉、`#L1-#L2` 双井号写法——统一成 [path#L1-L2]。
+ * 3) 反斜杠转义（`verify:\<id>`）在 Markdown 里会显示成字面 `\`，去掉多余的一层。
+ */
+function sanitizeSectionText(text: string, label: string): string {
+  const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
+  const isDupHeading = (heading: string): boolean => {
+    const h = norm(heading);
+    if (!h || !label) return false;
+    if (h === norm(label)) return true;
+    return /^[—\-:：]/.test(h.slice(norm(label).length)) && h.startsWith(norm(label));
+  };
+  const out: string[] = [];
+  for (const line of (text ?? '').split('\n')) {
+    const m = /^(#{1,6})\s+(.*)$/.exec(line.trim());
+    if (m && isDupHeading(m[2])) continue;
+    // 节内不应有 H2：导出自己已经写了 `## label`，模型再写 `## 项目 — 模块` 会与八段平级。
+    // 统一降一级（`##`→`###`），既保留小标题又保证目录只有八段。
+    if (m && m[1] === '##') { out.push(`### ${m[2]}`); continue; }
+    out.push(line);
+  }
+  return out
+    .join('\n')
+    .replace(/\[#([^\]\s]+)\]/g, '[$1]')
+    .replace(/#L(\d+)-#L(\d+)/g, '#L$1-L$2')
+    .replace(/\\([<>|`*_{}[\]()#+.!-])/g, '$1')
+    .trim();
+}
+
 export function assembleLectureExport(input: {
   title: string;
   projectNames: readonly string[];
@@ -112,11 +160,32 @@ export function assembleLectureExport(input: {
   const body: string[] = [`# ${input.title}`, '', `项目：${input.projectNames.join('、')}`, ''];
   let ignoredCount = 0;
   const followupList: Array<{ section: string; text: string }> = [];
+  // 同一 key 可能存在多段（逐模块讲解每模块一段）：合并成节内多段，而不是重复一个 H2 标题
+  const grouped = new Map<string, { label: string; texts: string[] }>();
   for (const s of input.sections) {
     const applied = applyMarksToSection(s.key, s.text, input.marks);
     ignoredCount += applied.ignored;
     applied.followups.forEach((text) => followupList.push({ section: s.label, text }));
-    body.push(`## ${s.label}`, '', applied.text || '（本节无内容）', '');
+    const kept = sanitizeSectionText(applied.text, s.label);
+    const bucket = grouped.get(s.key);
+    if (bucket) {
+      if (kept) bucket.texts.push(kept);
+    } else {
+      grouped.set(s.key, { label: s.label, texts: kept ? [kept] : [] });
+    }
+  }
+  const emitted = new Set<string>();
+  for (const meta of LECTURE_EXPORT_SECTIONS) {
+    const found = grouped.get(meta.key);
+    emitted.add(meta.key);
+    const text = (found?.texts ?? []).join('\n\n').trim();
+    body.push(`## ${found?.label || meta.label}`, '', text || '（本节未生成）', '');
+  }
+  // 骨架之外的附加节（如服务端补的「溯源」）按原顺序追加，不吞内容
+  for (const [key, value] of grouped) {
+    if (emitted.has(key)) continue;
+    const text = value.texts.join('\n\n').trim();
+    body.push(`## ${value.label}`, '', text || '（本节未生成）', '');
   }
   if (followupList.length > 0) {
     body.push('## 会后跟进清单', '');

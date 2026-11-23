@@ -12,8 +12,10 @@ export interface ReqCategoryRow {
   sort_weight: number;
   created_at: string;
   updated_at: string;
-  /** 分类列表接口附带的条目数量 */
+  /** 分类列表接口附带的条目数量（未归档） */
   reqCount?: number;
+  /** 分类列表接口附带的已归档条目数量——删除分类会级联删除它们，确认文案必须覆盖 */
+  archivedCount?: number;
 }
 
 export interface ReqEntryRow {
@@ -89,9 +91,18 @@ export const ReqCategoryService = {
     const cats = getDb().prepare('SELECT * FROM req_categories ORDER BY sort_weight, created_at').all() as ReqCategoryRow[];
     // T03685：分类计数排除已归档条目——口径与提示词分类（prompts WHERE archived = 0）一致，
     // 否则归档一条后侧栏计数仍含它，与列表可见条数不符
-    const counts = getDb().prepare('SELECT category_id, COUNT(*) AS c FROM req_entries WHERE archived = 0 GROUP BY category_id').all() as { category_id: string; c: number }[];
-    const countMap = new Map(counts.map((r) => [r.category_id, r.c]));
-    return cats.map((c) => ({ ...c, reqCount: countMap.get(c.id) ?? 0 }));
+    // 但删除分类是级联物理删除，已归档条目也会一起消失：另带 archivedCount 供确认文案提示影响面
+    const counts = getDb().prepare(
+      `SELECT category_id,
+              SUM(CASE WHEN archived = 0 THEN 1 ELSE 0 END) AS c,
+              SUM(CASE WHEN archived = 1 THEN 1 ELSE 0 END) AS archived_c
+       FROM req_entries GROUP BY category_id`,
+    ).all() as { category_id: string; c: number; archived_c: number }[];
+    const countMap = new Map(counts.map((r) => [r.category_id, r]));
+    return cats.map((c) => {
+      const row = countMap.get(c.id);
+      return { ...c, reqCount: row?.c ?? 0, archivedCount: row?.archived_c ?? 0 };
+    });
   },
 
   create(name: string): ReqCategoryRow {

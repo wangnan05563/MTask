@@ -48,6 +48,8 @@ const fixture = JSON.parse(readFileSync(FIXTURE, 'utf8')) as {
   requirements: Array<QualityReq & { content?: string }>;
   plans: QualityPlan[];
 };
+// finalize 会原地补需求/关联；每个用例用独立深拷贝，避免后续 G3 基线读到前序用例的变更。
+const cloneFixture = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
 // ---------------------------------------------------------------------------
 // G1：分片重复 WBS -> 单一 M1…M5
@@ -97,7 +99,7 @@ check('G1 normal 编号连续为 Mx.y', normals.every((d) => /^M\d+\.\d+\s/.test
 
 // G1b：骨架路径不经过分片合并，也必须由 finalize 统一归一/折叠（实测模型会输出两套 WBS）。
 const skeletonInput = chunkedPlans.map((p) => ({ ...p, reqNos: p.reqNos ?? [], acceptanceRefs: p.acceptanceRefs ?? [] }));
-const skeletonFinal = finalizePrdParseResult(fixture.requirements, skeletonInput, '');
+const skeletonFinal = finalizePrdParseResult(cloneFixture(fixture.requirements), cloneFixture(skeletonInput), '');
 check('G1b 骨架收口后只剩一套 WBS', skeletonFinal.wbsGroups === 1, { groups: skeletonFinal.wbsGroups });
 check('G1b 骨架收口后里程碑=5', skeletonFinal.drafts.filter((d) => d.kind === 'milestone').length === 5, {
   milestones: skeletonFinal.drafts.filter((d) => d.kind === 'milestone').length,
@@ -118,7 +120,7 @@ const p2Plans: QualityPlan[] = [
     reqNos: [`FR-1.${i + 1}`],
   })),
 ];
-const finalized = finalizePrdParseResult(fixture.requirements, p2Plans, '');
+const finalized = finalizePrdParseResult(cloneFixture(fixture.requirements), cloneFixture(p2Plans), '');
 const finalNormals = finalized.drafts.filter((d) => d.kind !== 'milestone');
 check('G2 分片收口剔除 P2/P3', finalNormals.every((d) => !/p[23]/i.test(d.priority ?? '')), {
   p2: finalNormals.filter((d) => /p[23]/i.test(d.priority ?? '')).map((d) => d.title).slice(0, 3),
@@ -142,7 +144,7 @@ const reqNoAcs = [
   { reqNo: 'REQ-900', title: '验收标准：分片结果必须单一 WBS', type: 'AC', priority: 'P1', sourceRef: '验收标准', content: 'Given 分片合并，When 质量门执行，Then 无未映射 AC。' },
 ];
 const plansWithoutAcRefs = fixture.plans.map((p) => ({ ...p, acceptanceRefs: [] as string[] }));
-const acFinal = finalizePrdParseResult(reqNoAcs, plansWithoutAcRefs, '');
+const acFinal = finalizePrdParseResult(cloneFixture(reqNoAcs), cloneFixture(plansWithoutAcRefs), '');
 check('G2b REQ 编号 AC 也被映射', acFinal.drafts.some((p) => [...(p.reqNos ?? []), ...(p.acceptanceRefs ?? [])].includes('REQ-900')), {
   mapped: acFinal.drafts.filter((p) => [...(p.reqNos ?? []), ...(p.acceptanceRefs ?? [])].includes('REQ-900')).map((p) => p.title),
 });

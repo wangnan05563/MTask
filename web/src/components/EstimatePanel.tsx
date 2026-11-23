@@ -1357,11 +1357,19 @@ export function EstimatePanel({ projectId, plans, collapsedMs, onToggleMsCollaps
             {cfg.manDaysPerManMonth} 人天/人月 · 系数和 {num(s.coefSum)}
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <div style={{ flex: 1, minWidth: 0 }}>{card('实际预估人月 P50 / P84', `${num(s.quote.p50ManMonth)} / ${num(s.quote.p84ManMonth)}`, `σ_total ${num(s.quote.sigma)} 人天`)}</div>
-          <div style={{ flex: 1, minWidth: 0 }}>{card('理想人月（ΣE）', num(s.idealManMonths.expected), `直接投入 ${num(s.directManDays.expected)} 人天`)}</div>
-          <div style={{ flex: 1, minWidth: 0 }}>{card('Σ估算比例（I40）', pct(rc.sumRatio), `偏差 ${devPct(rc.deviationPct)}`, rc.danger)}</div>
-        </div>
+        {/* P1-3：空态不再渲染 0/0 与「偏差 100%」——那组读数在没有任何估算行时是噪声，
+            改为一句引导；真正的「按规则推导」按钮在下方面板空态块里（保持单入口）。 */}
+        {isEmpty ? (
+          <div aria-label="估算汇总空态" style={{ border: '1px dashed var(--border-strong)', borderRadius: 8, padding: '8px 10px', fontSize: 'var(--fs-s)', color: 'var(--text-muted)', background: 'var(--card-bg)' }}>
+            尚无估算数据——下方点「按规则推导」，按复杂度 / 用例 / 工期生成初始值后再逐行复核。
+          </div>
+        ) : (
+          <div style={{ display: 'flex', gap: 6 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>{card('实际预估人月 P50 / P84', `${num(s.quote.p50ManMonth)} / ${num(s.quote.p84ManMonth)}`, `σ_total ${num(s.quote.sigma)} 人天`)}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>{card('理想人月（ΣE）', num(s.idealManMonths.expected), `直接投入 ${num(s.directManDays.expected)} 人天`)}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>{card('Σ估算比例（I40）', pct(rc.sumRatio), `偏差 ${devPct(rc.deviationPct)}`, rc.danger)}</div>
+          </div>
+        )}
         {/* §7 变更影响提示条（sticky 区常驻）：计数与文案口径都在服务端 checks，面板不做第二次判定 */}
         {hasDriftNotices && (
           <output aria-label="估算变更影响提示" style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 3, fontSize: 'var(--fs-xs)' }}>

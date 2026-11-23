@@ -1,7 +1,7 @@
 /**
  * 移动端离线能力（§3.4 / §4.4）：
  * - 离线时随手记内容落 localStorage 草稿队列，恢复联网后批量补提；
- * - useOnlineStatus 监听 navigator.onLine 实时反映连接状态；
+ * - useOnlineStatus 反映连接状态：浏览器 online/offline 事件 + 后端 `/health` 探活（后端挂掉也算离线）；
  * - submitQuickNote 为随手记统一提交入口（带图片上传），供在线提交与草稿补提复用。
  */
 import { useEffect, useState } from 'react';
@@ -100,12 +100,24 @@ export async function flushDrafts(): Promise<number> {
   return ok;
 }
 
-/** 实时在线状态（监听 online/offline 事件） */
+/**
+ * 实时在线状态 = 浏览器在线 **且** 后端可达。
+ *
+ * 只看 navigator.onLine 会误报：后端挂了/隧道断了但网络还在时，顶栏依旧显示「在线」，
+ * 与此同时队列页却在提示「数据截至（离线缓存）」，两个信号互相打脸。
+ * 这里在浏览器在线时每 15s 探一次 `/api/health`（守卫豁免、无鉴权、极轻），
+ * 探活失败即判离线；浏览器 offline 事件立即判离线，恢复后再探。
+ */
+const PROBE_INTERVAL_MS = 15_000;
+const PROBE_TIMEOUT_MS = 4_000;
+
 export function useOnlineStatus(): boolean {
-  const [online, setOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine));
+  const [browserOnline, setBrowserOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine));
+  const [serverUp, setServerUp] = useState(true);
+
   useEffect(() => {
-    const on = () => setOnline(true);
-    const off = () => setOnline(false);
+    const on = () => setBrowserOnline(true);
+    const off = () => setBrowserOnline(false);
     globalThis.addEventListener('online', on);
     globalThis.addEventListener('offline', off);
     return () => {
@@ -113,7 +125,28 @@ export function useOnlineStatus(): boolean {
       globalThis.removeEventListener('offline', off);
     };
   }, []);
-  return online;
+
+  useEffect(() => {
+    if (!browserOnline) { setServerUp(false); return; }
+    let cancelled = false;
+    const probe = async () => {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), PROBE_TIMEOUT_MS);
+      try {
+        await api.get('/health', ctrl.signal);
+        if (!cancelled) setServerUp(true);
+      } catch {
+        if (!cancelled) setServerUp(false);
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    void probe();
+    const id = setInterval(() => { void probe(); }, PROBE_INTERVAL_MS);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [browserOnline]);
+
+  return browserOnline && serverUp;
 }
 
 // ---------- T01425：stale-while-revalidate 缓存（弱网/无网降级） ----------

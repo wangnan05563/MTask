@@ -129,7 +129,7 @@ async function redispatch(a: GuardAction): Promise<ApplyOutcome> {
  * 混为一谈会让审计把「还没配」误读成「派发坏了」。
  */
 async function pushOrApply(a: GuardAction, taskId: string, platform: string): Promise<ApplyOutcome> {
-  const r = await dispatchTask(taskId, platform);
+  const r = await dispatchTask(taskId, platform, undefined, 'relay');
   let status: ApplyOutcome['status'];
   if (r.ok) {
     status = 'applied';

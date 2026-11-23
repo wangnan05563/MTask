@@ -83,12 +83,22 @@ function tableColumns(table: string): PragmaCol[] {
 }
 
 export const DbAdminService = {
-  /** 表清单：业务表 + 行数（COUNT 子查询逐表取数，表数量个位数，可接受） */
+  /** 表清单：业务表 + 行数（排除 sqlite 系统表、FTS 虚拟表及其影子表） */
   listTables(): DbTableInfo[] {
     const db = getDb();
-    const tables = db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
-      .all() as { name: string }[];
+    const raw = db
+      .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+      .all() as { name: string; sql: string | null }[];
+    // FTS5 会在 sqlite_master 生成 memories_fts<...> 影子表；它们不是业务表，也不支持行级主键操作。
+    const virtuals = raw.filter((t) => /^CREATE\s+VIRTUAL\s+TABLE/i.test(t.sql ?? '')).map((t) => t.name);
+    const shadow = new Set<string>();
+    for (const v of virtuals) {
+      shadow.add(v);
+      for (const suffix of ['_data', '_idx', '_content', '_docsize', '_config', '_segments', '_segdir', '_stat']) {
+        shadow.add(`${v}${suffix}`);
+      }
+    }
+    const tables = raw.filter((t) => !shadow.has(t.name) && !/^memories_fts_/.test(t.name));
     return tables.map((t) => {
       let rows = 0;
       try {
@@ -160,6 +170,14 @@ export const DbAdminService = {
     const rows = db
       .prepare(`SELECT * FROM "${table}" ${whereSql} ${orderSql} LIMIT ? OFFSET ?`)
       .all(...params, limit, offset) as Record<string, unknown>[];
+    // 列表不传输 BLOB 原始字节：task_images.data 单行可达 7MB，JSON 序列化会把 50 行放大到 80MB。
+    // 前端仅展示占位，导出仍走 exportRows 的完整 base64。
+    for (const row of rows) {
+      for (const col of cols) {
+        const value = row[col.name];
+        if (Buffer.isBuffer(value)) row[col.name] = `<BLOB ${value.length} bytes>`;
+      }
+    }
     return { rows, total };
   },
 
@@ -188,7 +206,11 @@ export const DbAdminService = {
     const setClause = keys.map((k) => `"${k}" = ?`).join(', ');
     const sql = `UPDATE "${table}" SET ${setClause} WHERE "${pk}" = ?`;
     const r = getDb().prepare(sql).run(...keys.map((k) => data[k]), pkValue);
-    if (r.changes === 0) throw new Error('记录不存在或未变更');
+    if (r.changes === 0) {
+      // SQLite 对「值完全未变」的 UPDATE 返回 changes=0；需区分「记录不存在」与「提交了相同值」。
+      const exists = getDb().prepare(`SELECT 1 AS ok FROM "${table}" WHERE "${pk}" = ?`).get(pkValue);
+      if (!exists) throw new Error('记录不存在');
+    }
   },
 
   /** 按主键删除单行 */
@@ -219,17 +241,29 @@ export const DbAdminService = {
     assertTable(table);
     const cols = this.getColumns(table);
     const validCols = new Set(cols.map((c) => c.name));
+    const blobCols = new Set(cols.filter((c) => /BLOB/i.test(c.type)).map((c) => c.name));
     const db = getDb();
     let inserted = 0;
     let skipped = 0;
     const errors: string[] = [];
+
+    const normalize = (key: string, value: unknown): unknown => {
+      if (blobCols.has(key) && typeof value === 'string' && value.startsWith('base64:')) {
+        try {
+          return Buffer.from(value.slice('base64:'.length), 'base64');
+        } catch {
+          throw new Error(`BLOB 字段 ${key} 的 base64 内容非法`);
+        }
+      }
+      return value;
+    };
 
     const insertOne = (data: Record<string, unknown>) => {
       const keys = Object.keys(data).filter((k) => validCols.has(k) && data[k] !== undefined);
       if (keys.length === 0) throw new Error('无有效字段');
       const collist = keys.map((k) => `"${k}"`).join(', ');
       const sql = `INSERT INTO "${table}" (${collist}) VALUES (${keys.map(() => '?').join(', ')})`;
-      db.prepare(sql).run(...keys.map((k) => data[k]));
+      db.prepare(sql).run(...keys.map((k) => normalize(k, data[k])));
     };
 
     db.transaction(() => {

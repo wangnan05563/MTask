@@ -110,6 +110,30 @@ interface LecturePreflight {
 
 const fmtSeconds = (s: number): string => (s >= 60 ? `${Math.ceil(s / 60)} 分钟` : `${s} 秒`);
 
+/** 台账横幅「忽略」的持久化名单：点过忽略的 jobId 记在本地，重开面板不再重现 */
+const JOURNAL_DISMISS_KEY = 'mtask:lecture-journal-dismissed';
+
+function readDismissedJournalIds(): string[] {
+  try {
+    const raw = globalThis.localStorage?.getItem(JOURNAL_DISMISS_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function dismissJournalId(id: string): void {
+  try {
+    const ids = new Set(readDismissedJournalIds());
+    ids.add(id);
+    // 只留最近 50 条，避免无限增长
+    globalThis.localStorage?.setItem(JOURNAL_DISMISS_KEY, JSON.stringify([...ids].slice(-50)));
+  } catch {
+    /* 本地存储不可用时忽略仅本次生效 */
+  }
+}
+
 /**
  * T03245（AI-103③）：`GET /plans/code-review-lecture/jobs/latest` 的台账视图
  * （服务端 `AiGenJournal.GenJobView` + 节中文名）。刷新/重进后面板据此显示上次进度。
@@ -477,19 +501,22 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
   const refreshJournal = useCallback(async () => {
     for (let i = 0; i < 12; i += 1) {
       try {
-        const view = await api.get<LectureJournalView | null>('/plans/code-review-lecture/jobs/latest');
+        // 恢复横幅只认「当前项目范围」的台账：换项目/换周次不该再弹别人的失败段
+        const query = selectedKey ? `?projectIds=${encodeURIComponent(selectedKey)}` : '';
+        const view = await api.get<LectureJournalView | null>(`/plans/code-review-lecture/jobs/latest${query}`);
         if (view?.status === 'running' && i < 11) {
           await new Promise((r) => { globalThis.setTimeout(r, 300); });
           continue;
         }
-        setJournal(view && view.status !== 'done' && view.progress.segmentsTotal > 0 ? view : null);
+        const dismissed = readDismissedJournalIds();
+        setJournal(view && view.status !== 'done' && view.progress.segmentsTotal > 0 && !dismissed.includes(view.id) ? view : null);
         return;
       } catch {
         // 台账只服务于恢复提示；读失败不阻塞生成主流程
         return;
       }
     }
-  }, []);
+  }, [selectedKey]);
 
   useEffect(() => { void refreshJournal(); }, [refreshJournal]);
 
@@ -700,7 +727,7 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
       {journal && (
         <JournalRestoreBanner journal={journal} streaming={snap.streaming}
           onRetry={(label) => void runStream({ jobId: journal.id, retryFailed: true }, label)}
-          onDismiss={() => setJournal(null)} />
+          onDismiss={() => { dismissJournalId(journal.id); setJournal(null); }} />
       )}
 
       <LectureScopeSection projects={projects} projectIds={projectIds} onProjectIdsChange={onProjectIdsChange}
@@ -709,6 +736,7 @@ export function CodeReviewLecturePanel({ projectIds, onProjectIdsChange, project
         streaming={snap.streaming} diffLoading={snap.diffLoading} preflightLoading={preflightLoading}
         onLoadDiff={() => void loadDiff()} onPreflight={openPreflight} onOpenGitTree={() => setGitTreeOpen(true)}
         outline={outline} onOpenOutline={() => void openPreflight({ outlineOnly: true }, '只出大纲')}
+        scopeError={scopeBody.error}
         doneTasks={doneTasks} checkedTaskIds={checkedTaskIds} onToggleTask={toggleTask} />
 
       <div style={{ display: 'flex', gap: 10, alignItems: 'stretch', minHeight: 320 }}>
@@ -841,6 +869,8 @@ interface ScopeSectionProps {
   readonly onOpenGitTree: () => void;
   readonly onOpenOutline: () => void;
   readonly outline?: LectureOutline;
+  /** 采集范围不完整时的原因（如「全部项目但只有单项目有提交」）——就地显示，别让按钮点了没反应 */
+  readonly scopeError?: string;
   /** T05682：已完成任务勾选 */
   readonly doneTasks: DoneTask[];
   readonly checkedTaskIds: string[];
@@ -851,9 +881,17 @@ interface ScopeSectionProps {
 function LectureScopeSection(props: ScopeSectionProps) {
   const {
     projects, projectIds, onProjectIdsChange, selectedIds,
-    pickedProjects, clearPicked, streaming, diffLoading, preflightLoading, onLoadDiff, onPreflight, onOpenGitTree, onOpenOutline, outline,
+    pickedProjects, clearPicked, streaming, diffLoading, preflightLoading, onLoadDiff, onPreflight, onOpenGitTree, onOpenOutline, outline, scopeError,
     doneTasks, checkedTaskIds, onToggleTask,
   } = props;
+  // 大项目下已完成任务可达上千条：先按关键字收敛，再只渲染前 120 条，避免整块 DOM 拖慢面板
+  const [taskQuery, setTaskQuery] = useState('');
+  const TASK_RENDER_MAX = 120;
+  const q = taskQuery.trim().toLowerCase();
+  const tasksMatched = q
+    ? doneTasks.filter((t) => `${t.taskNo} ${t.title}`.toLowerCase().includes(q))
+    : doneTasks;
+  const tasksShown = tasksMatched.slice(0, TASK_RENDER_MAX);
   return (
     <section aria-label="采集范围" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', border: '1px solid var(--border)', borderRadius: 8, padding: 10, marginBottom: 10 }}>
       {/* T03311：不再只读——改选直接写回顶部「报表范围」（空数组=全部项目），两处始终同一份数据 */}
@@ -884,12 +922,18 @@ function LectureScopeSection(props: ScopeSectionProps) {
       )}
       {doneTasks.length > 0 && (
         <div data-lck="done-tasks" style={{ width: '100%', borderTop: '1px dashed var(--border)', paddingTop: 8, marginTop: 2 }}>
-          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', marginBottom: 4 }}>
-            已完成任务（勾选后按其关联提交生成；{checkedTaskIds.length} / {doneTasks.length} 已选）
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', marginBottom: 4, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span>已完成任务（勾选后按其关联提交生成；{checkedTaskIds.length} / {doneTasks.length} 已选）</span>
+            <input value={taskQuery} onChange={(e) => setTaskQuery(e.target.value)}
+              placeholder="筛选任务号/标题" aria-label="筛选已完成任务"
+              style={{ width: 180, maxWidth: '100%', padding: '2px 6px', fontSize: 'var(--fs-xs)', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--surface)' }} />
+            {tasksMatched.length > TASK_RENDER_MAX && (
+              <span style={{ color: 'var(--text-muted)' }}>匹配 {tasksMatched.length} 条，仅显示前 {TASK_RENDER_MAX} 条</span>
+            )}
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 168, overflow: 'auto' }}>
             {/* T05693：未回写 commit 的任务灰显且禁止勾选——勾了也不产生采集范围，只会让「加载 diff」白跑一趟 */}
-            {doneTasks.map((t) => (
+            {tasksShown.map((t) => (
               <label key={t.id} title={t.commits.length ? `关联 ${t.commits.length} 个提交` : '该任务未回写 commit，不可勾选（勾了也不会产生采集范围）'}
                 style={{ ...chipStyle, display: 'inline-flex', gap: 4, alignItems: 'center', opacity: t.commits.length ? 1 : 0.55, cursor: t.commits.length ? undefined : 'not-allowed' }}>
                 <input type="checkbox" checked={checkedTaskIds.includes(t.id)} disabled={!t.commits.length}
@@ -900,6 +944,11 @@ function LectureScopeSection(props: ScopeSectionProps) {
             ))}
           </div>
         </div>
+      )}
+      {scopeError && (
+        <p data-lck="scope-error" role="alert" style={{ width: '100%', margin: 0, fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>
+          范围不可用：{scopeError}（下方「加载 diff / 开始生成」会直接跳过）
+        </p>
       )}
       <FlowButton onClick={onLoadDiff} disabled={streaming} loading={diffLoading} loadingText="采集中"
         title="按当前范围采集 diff 并渲染到左栏">
@@ -992,7 +1041,9 @@ function LectureStatusFooter({ stage, streaming, result, followupCount, ignoredC
       {!streaming && (
         <div data-lck="provenance-wrap"
           style={{ flexBasis: '100%', minWidth: 0, maxWidth: '100%', overflowWrap: 'anywhere', wordBreak: 'break-word', maxHeight: 220, overflowY: 'auto' }}>
-          <AiProvenanceSection cardKey="ai.code_review_lecture" projectId={provenanceProjectId} refreshKey={result?.title ?? ''} />
+          <AiProvenanceSection cardKey="ai.code_review_lecture" projectId={provenanceProjectId}
+            refreshKey={result?.title ?? ''}
+            nameHint={result?.title?.split('·')[1]?.trim() || null} />
         </div>
       )}
       {/* ③ 操作行：右对齐 + 不压缩，按钮文字不再竖排 */}

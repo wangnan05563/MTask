@@ -114,11 +114,16 @@ export function ArchivePage() {
   const [reqCatNames, setReqCatNames] = useState<Record<string, string>>({}); // T03685：归档通用需求的分类名标注
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
+  const [noticeKind, setNoticeKind] = useState<'info' | 'error'>('info');
+  const noticeTimer = useRef<number | null>(null);
 
   // T00586：多选模式 + 搜索 + 分类/项目筛选 + 分页（会话级保持，切页不丢）
   const [multi, setMulti] = useSessionState<boolean>('archive.multi', false);
   const [selTaskIds, setSelTaskIds] = useSessionState<string[]>('archive.selTasks', []);
   const [selPlanIds, setSelPlanIds] = useSessionState<string[]>('archive.selPlans', []);
+  // T06096：PRD 文档 / 需求跟踪矩阵页签也要支持多选，选中集按归档类型独立保存
+  const [selPrdIds, setSelPrdIds] = useSessionState<string[]>('archive.selPrdDocs', []);
+  const [selMatrixIds, setSelMatrixIds] = useSessionState<string[]>('archive.selMatrixReqs', []);
   const [kw, setKw] = useSessionState<string>('archive.kw', '');
   const [catFilter, setCatFilter] = useSessionState<string>('archive.catFilter', '');
   const [projFilter, setProjFilter] = useSessionState<string>('archive.projFilter', '');
@@ -163,7 +168,25 @@ export function ArchivePage() {
   const [pageSizeStored, setPageSize] = usePersistentState<number>('archive.pageSize', DEFAULT_PAGE_SIZE);
   const pageSize = (PAGE_SIZE_OPTIONS as readonly number[]).includes(pageSizeStored) ? pageSizeStored : DEFAULT_PAGE_SIZE;
 
-  const flash = (m: string) => { setNotice(m); setTimeout(() => setNotice(''), 3000); };
+  const flash = (m: string, kind: 'info' | 'error' = 'info') => {
+    setNotice(m);
+    setNoticeKind(kind);
+    if (noticeTimer.current !== null) window.clearTimeout(noticeTimer.current);
+    noticeTimer.current = window.setTimeout(() => setNotice(''), 3000);
+  };
+  useEffect(() => () => {
+    if (noticeTimer.current !== null) window.clearTimeout(noticeTimer.current);
+  }, []);
+  // 单条写操作的统一兜底：失败必须可见，且不能把 Promise rejection 丢给 window
+  async function perform(work: () => Promise<void>, successText: string): Promise<void> {
+    try {
+      await work();
+      flash(successText);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e ?? '');
+      flash(`操作失败：${msg.replace(/^Error:\s*/, '').trim() || '未知错误'}`, 'error');
+    }
+  }
 
   // T02284：筛选/关键词下推服务端后不再逐字符打接口——300ms 防抖（与移动端归档视图 T01442 同口径）
   const [kwQuery, setKwQuery] = useState(() => searchKw.trim());
@@ -266,20 +289,26 @@ export function ArchivePage() {
   // ---------- 单条操作（T02284：只刷新所属列表的当前页，不再整页三端点全量重拉） ----------
 
   async function restore(task: Task) {
-    await api.post('/archive/restore', { taskIds: [task.id] });
-    tasksView.reload();
+    await perform(async () => {
+      await api.post('/archive/restore', { taskIds: [task.id] });
+      tasksView.reload();
+    }, `已还原任务「${task.title}」到待办列表`);
   }
 
   async function remove(task: Task) {
     const ok = await askConfirm(`确认永久删除任务「${task.title}」？此操作不可恢复。`);
     if (!ok) return;
-    await api.del('/archive', { taskIds: [task.id] });
-    tasksView.reload();
+    await perform(async () => {
+      await api.del('/archive', { taskIds: [task.id] });
+      tasksView.reload();
+    }, `已永久删除任务「${task.title}」`);
   }
 
   async function restorePlan(p: ArchivedPlan) {
-    await api.post(`/plans/${p.id}/restore`);
-    plansView.reload();
+    await perform(async () => {
+      await api.post(`/plans/${p.id}/restore`);
+      plansView.reload();
+    }, `已恢复计划「${p.title}」到项目计划时间线`);
   }
 
   async function purgePlan(p: ArchivedPlan) {
@@ -287,74 +316,97 @@ export function ArchivePage() {
     const impact = await api.get<PurgeImpact>(`/plans/${p.id}/purge-impact`).catch(() => null);
     const ok = await askConfirm(`确认彻底删除计划「${p.title}」？此操作不可恢复（归档后仅剩此副本）。${purgeImpactText(impact)}`);
     if (!ok) return;
-    const r = await api.del<{ deleted: boolean } & PurgeImpact>(`/plans/${p.id}`);
-    if (r.deleted && r.strippedTasksArchived > 0) flash(`已彻底删除计划「${p.title}」，连带归档 ${r.strippedTasksArchived} 条派生待办`);
-    plansView.reload();
-    // 彻底删除计划会连带归档其派生待办——归档任务区的数据确实变了，一并只刷当前页
-    if (r.deleted && r.strippedTasksArchived > 0) tasksView.reload();
+    try {
+      const r = await api.del<{ deleted: boolean } & PurgeImpact>(`/plans/${p.id}`);
+      plansView.reload();
+      // 彻底删除计划会连带归档其派生待办——归档任务区的数据确实变了，一并只刷当前页
+      if (r.deleted && r.strippedTasksArchived > 0) tasksView.reload();
+      flash(r.deleted && r.strippedTasksArchived > 0
+        ? `已彻底删除计划「${p.title}」，连带归档 ${r.strippedTasksArchived} 条派生待办`
+        : `已彻底删除计划「${p.title}」`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e ?? '');
+      flash(`操作失败：${msg.replace(/^Error:\s*/, '').trim() || '未知错误'}`, 'error');
+    }
   }
 
   // T00872：归档提示词还原（PATCH archived=false）与彻底删除（DELETE /prompts/:id）
   async function restorePrompt(p: Prompt) {
-    await api.patch(`/prompts/${p.id}`, { archived: false });
-    promptsView.reload();
+    await perform(async () => {
+      await api.patch(`/prompts/${p.id}`, { archived: false });
+      promptsView.reload();
+    }, `已还原提示词「${p.title}」到原分类`);
   }
 
   async function removePrompt(p: Prompt) {
     const ok = await askConfirm(`确认彻底删除提示词「${p.title}」？此操作不可恢复。`);
     if (!ok) return;
-    await api.del(`/prompts/${p.id}`);
-    promptsView.reload();
+    await perform(async () => {
+      await api.del(`/prompts/${p.id}`);
+      promptsView.reload();
+    }, `已彻底删除提示词「${p.title}」`);
   }
 
   // T03685：归档通用需求还原（PATCH archived=false）与彻底删除（DELETE /req-entries/:id）——
   // 与提示词区同一套动作，还原后条目回到原分类的通用需求页
   async function restoreReq(e: ReqEntry) {
-    await api.patch(`/req-entries/${e.id}`, { archived: false });
-    flash(`已还原通用需求「${e.title}」到原分类`);
-    reqsView.reload();
+    await perform(async () => {
+      await api.patch(`/req-entries/${e.id}`, { archived: false });
+      reqsView.reload();
+    }, `已还原通用需求「${e.title}」到原分类`);
   }
 
   async function removeReq(e: ReqEntry) {
     const ok = await askConfirm(`确认彻底删除通用需求「${e.title}」？此操作不可恢复。`);
     if (!ok) return;
-    await api.del(`/req-entries/${e.id}`);
-    reqsView.reload();
+    await perform(async () => {
+      await api.del(`/req-entries/${e.id}`);
+      reqsView.reload();
+    }, `已彻底删除通用需求「${e.title}」`);
   }
 
   // T05080：归档 PRD 文档 / 需求跟踪矩阵 / 测试用例三区的还原与彻底删除（与归档通用需求同构）
   async function restorePrdDoc(d: ArchivedPrdDoc) {
-    await api.post(`/plans/prd-docs/${d.id}/restore`);
-    flash(`已还原 PRD 文档「${d.filename}」`);
-    prdDocsArchivedView.reload();
+    await perform(async () => {
+      await api.post(`/plans/prd-docs/${d.id}/restore`);
+      prdDocsArchivedView.reload();
+    }, `已还原 PRD 文档「${d.filename}」`);
   }
   async function purgePrdDoc(d: ArchivedPrdDoc) {
     const ok = await askConfirm(`确认彻底删除 PRD 文档「${d.filename}」？此操作不可恢复。`);
     if (!ok) return;
-    await api.post(`/plans/prd-docs/${d.id}/purge`);
-    prdDocsArchivedView.reload();
+    await perform(async () => {
+      await api.post(`/plans/prd-docs/${d.id}/purge`);
+      prdDocsArchivedView.reload();
+    }, `已彻底删除 PRD 文档「${d.filename}」`);
   }
   async function restoreMatrixReq(r: ArchivedReqRow) {
-    await api.post(`/plans/prd-requirements/${r.id}/restore`);
-    flash(`已还原需求「${r.req_no} ${r.title}」`);
-    reqMatrixArchivedView.reload();
+    await perform(async () => {
+      await api.post(`/plans/prd-requirements/${r.id}/restore`);
+      reqMatrixArchivedView.reload();
+    }, `已还原需求「${r.req_no} ${r.title}」`);
   }
   async function purgeMatrixReq(r: ArchivedReqRow) {
     const ok = await askConfirm(`确认彻底删除需求「${r.req_no} ${r.title}」？此操作不可恢复；其下已归档的测试用例将因外键级联一并彻底删除。`);
     if (!ok) return;
-    await api.post(`/plans/prd-requirements/${r.id}/purge`);
-    reqMatrixArchivedView.reload();
+    await perform(async () => {
+      await api.post(`/plans/prd-requirements/${r.id}/purge`);
+      reqMatrixArchivedView.reload();
+    }, `已彻底删除需求「${r.req_no} ${r.title}」`);
   }
   async function restoreCase(c: ArchivedCaseRow) {
-    await api.post(`/plans/test-cases/${c.id}/restore`);
-    flash(`已还原测试用例「${c.case_no} ${c.title}」`);
-    casesArchivedView.reload();
+    await perform(async () => {
+      await api.post(`/plans/test-cases/${c.id}/restore`);
+      casesArchivedView.reload();
+    }, `已还原测试用例「${c.case_no} ${c.title}」`);
   }
   async function purgeCase(c: ArchivedCaseRow) {
     const ok = await askConfirm(`确认彻底删除测试用例「${c.case_no} ${c.title}」？此操作不可恢复。`);
     if (!ok) return;
-    await api.post(`/plans/test-cases/${c.id}/purge`);
-    casesArchivedView.reload();
+    await perform(async () => {
+      await api.post(`/plans/test-cases/${c.id}/purge`);
+      casesArchivedView.reload();
+    }, `已彻底删除测试用例「${c.case_no} ${c.title}」`);
   }
 
   // ---------- T00586：批量操作（参考计划页批量工具条） ----------
@@ -380,7 +432,10 @@ export function ArchivePage() {
       flash(`已还原 ${selTaskIds.length} 条归档任务`);
       setSelTaskIds([]);
       tasksView.reload();
-    } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e ?? '');
+      flash(`操作失败：${msg.replace(/^Error:\s*/, '').trim() || '未知错误'}`, 'error');
+    } finally { setBusy(false); }
   }
 
   async function batchPurgeTasks() {
@@ -392,18 +447,24 @@ export function ArchivePage() {
       flash(`已永久删除 ${selTaskIds.length} 条任务`);
       setSelTaskIds([]);
       tasksView.reload();
-    } catch (e) { flash(String((e as Error).message ?? e)); } finally { setBusy(false); }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e ?? '');
+      flash(`操作失败：${msg.replace(/^Error:\s*/, '').trim() || '未知错误'}`, 'error');
+    } finally { setBusy(false); }
   }
 
   async function batchRestorePlans() {
     if (selPlanIds.length === 0) return;
     setBusy(true);
     let n = 0;
+    let failed = 0;
     try {
       for (const id of selPlanIds) {
-        try { await api.post(`/plans/${id}/restore`); n += 1; } catch { /* 单条失败继续 */ }
+        try { await api.post(`/plans/${id}/restore`); n += 1; } catch { failed += 1; }
       }
-      flash(`已恢复 ${n} 条归档计划`);
+      flash(failed > 0
+        ? `已恢复 ${n} 条归档计划，${failed} 条恢复失败`
+        : `已恢复 ${n} 条归档计划`, failed > 0 ? 'error' : 'info');
       setSelPlanIds([]);
       plansView.reload();
     } finally { setBusy(false); }
@@ -418,17 +479,19 @@ export function ArchivePage() {
     if (!(await askConfirm(`彻底删除选中的 ${selPlanIds.length} 条归档计划？此操作不可恢复。${purgeImpactText(preview)}`))) return;
     setBusy(true);
     let n = 0;
+    let failed = 0;
     let strippedTasks = 0;
     try {
       for (const id of selPlanIds) {
         try {
           const r = await api.del<{ deleted: boolean; strippedTasksArchived: number }>(`/plans/${id}`);
-          if (r.deleted) { n += 1; strippedTasks += r.strippedTasksArchived; }
-        } catch { /* 单条失败继续 */ }
+          if (r.deleted) { n += 1; strippedTasks += r.strippedTasksArchived; } else failed += 1;
+        } catch { failed += 1; }
       }
       // S4624：内层模板先赋值再插值，文案逐字不变
       const strippedNote = strippedTasks > 0 ? `，连带归档 ${strippedTasks} 条派生待办` : '';
-      flash(`已彻底删除 ${n} 条计划${strippedNote}`);
+      const failedNote = failed > 0 ? `，${failed} 条失败` : '';
+      flash(`已彻底删除 ${n} 条计划${strippedNote}${failedNote}`, failed > 0 ? 'error' : 'info');
       setSelPlanIds([]);
       plansView.reload();
       // 同 purgePlan：连带归档了派生待办，归档任务区也要重取当前页
@@ -436,37 +499,120 @@ export function ArchivePage() {
     } finally { setBusy(false); }
   }
 
-  /** 批量工具条（T00586）：风格与计划页一致——accent 边框 + 已选计数 + 纯图标按钮 */
-  function renderBatchBar(kind: 'task' | 'plan') {
-    const ids = kind === 'task' ? selTaskIds : selPlanIds;
-    if (ids.length === 0) return null;
+  // T06096：PRD 文档与需求跟踪矩阵的批量选择/批量动作——补齐多选模式在这两个页签的缺口
+  function togglePrdDoc(id: string) {
+    setSelPrdIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+  function toggleMatrixReq(id: string) {
+    setSelMatrixIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+  function selectAllPrdDocs() {
+    setSelPrdIds((prev) => togglePageSelection(prev, archivedPrdDocs.map((d) => d.id)));
+  }
+  function selectAllMatrixReqs() {
+    setSelMatrixIds((prev) => togglePageSelection(prev, archivedMatrixReqs.map((r) => r.id)));
+  }
+
+  async function batchRestorePrdDocs() {
+    if (selPrdIds.length === 0) return;
+    setBusy(true);
+    let n = 0;
+    let failed = 0;
+    try {
+      for (const id of selPrdIds) {
+        try { await api.post(`/plans/prd-docs/${id}/restore`); n += 1; } catch { failed += 1; }
+      }
+      flash(failed > 0 ? `已还原 ${n} 条 PRD 文档，${failed} 条失败` : `已还原 ${n} 条 PRD 文档`, failed > 0 ? 'error' : 'info');
+      setSelPrdIds([]);
+      prdDocsArchivedView.reload();
+    } finally { setBusy(false); }
+  }
+
+  async function batchPurgePrdDocs() {
+    if (selPrdIds.length === 0) return;
+    if (!(await askConfirm(`永久删除选中的 ${selPrdIds.length} 条归档 PRD 文档？此操作不可恢复。`))) return;
+    setBusy(true);
+    let n = 0;
+    let failed = 0;
+    try {
+      for (const id of selPrdIds) {
+        try { await api.post(`/plans/prd-docs/${id}/purge`); n += 1; } catch { failed += 1; }
+      }
+      flash(failed > 0 ? `已彻底删除 ${n} 条 PRD 文档，${failed} 条失败` : `已彻底删除 ${n} 条 PRD 文档`, failed > 0 ? 'error' : 'info');
+      setSelPrdIds([]);
+      prdDocsArchivedView.reload();
+    } finally { setBusy(false); }
+  }
+
+  async function batchRestoreMatrixReqs() {
+    if (selMatrixIds.length === 0) return;
+    setBusy(true);
+    let n = 0;
+    let failed = 0;
+    try {
+      for (const id of selMatrixIds) {
+        try { await api.post(`/plans/prd-requirements/${id}/restore`); n += 1; } catch { failed += 1; }
+      }
+      flash(failed > 0 ? `已还原 ${n} 条需求，${failed} 条失败` : `已还原 ${n} 条需求`, failed > 0 ? 'error' : 'info');
+      setSelMatrixIds([]);
+      reqMatrixArchivedView.reload();
+    } finally { setBusy(false); }
+  }
+
+  async function batchPurgeMatrixReqs() {
+    if (selMatrixIds.length === 0) return;
+    if (!(await askConfirm(`彻底删除选中的 ${selMatrixIds.length} 条归档需求？此操作不可恢复；其下已归档的测试用例将因外键级联一并彻底删除。`))) return;
+    setBusy(true);
+    let n = 0;
+    let failed = 0;
+    try {
+      for (const id of selMatrixIds) {
+        try { await api.post(`/plans/prd-requirements/${id}/purge`); n += 1; } catch { failed += 1; }
+      }
+      flash(failed > 0 ? `已彻底删除 ${n} 条需求，${failed} 条失败` : `已彻底删除 ${n} 条需求`, failed > 0 ? 'error' : 'info');
+      setSelMatrixIds([]);
+      reqMatrixArchivedView.reload();
+      // 需求被彻底删除会级联清掉其已归档测试用例，用例区一并刷新
+      casesArchivedView.reload();
+    } finally { setBusy(false); }
+  }
+
+  /** 批量工具条（T00586）：风格与计划页一致——accent 边框 + 已选计数 + 纯图标按钮；T06096 扩展到 PRD/矩阵 */
+  function renderBatchBar(kind: 'task' | 'plan' | 'prd' | 'matrix') {
+    const configs: Record<'task' | 'plan' | 'prd' | 'matrix', { ids: string[]; pageIds: string[]; clear: () => void; selectAll: () => void; restore: () => Promise<void>; purge: () => Promise<void> }> = {
+      task: { ids: selTaskIds, pageIds: pageTasks.map((t) => t.id), clear: () => setSelTaskIds([]), selectAll: selectAllTasks, restore: batchRestoreTasks, purge: batchPurgeTasks },
+      plan: { ids: selPlanIds, pageIds: pagePlans.map((p) => p.id), clear: () => setSelPlanIds([]), selectAll: selectAllPlans, restore: batchRestorePlans, purge: batchPurgePlans },
+      prd: { ids: selPrdIds, pageIds: archivedPrdDocs.map((d) => d.id), clear: () => setSelPrdIds([]), selectAll: selectAllPrdDocs, restore: batchRestorePrdDocs, purge: batchPurgePrdDocs },
+      matrix: { ids: selMatrixIds, pageIds: archivedMatrixReqs.map((r) => r.id), clear: () => setSelMatrixIds([]), selectAll: selectAllMatrixReqs, restore: batchRestoreMatrixReqs, purge: batchPurgeMatrixReqs },
+    };
+    const cfg = configs[kind];
+    if (cfg.ids.length === 0) return null;
     // S3358：将嵌套三元拆为独立变量，避免嵌套条件表达式
-    const pageIds = (kind === 'task' ? pageTasks : pagePlans).map((x) => x.id);
-    const onPage = pageIds.filter((id) => ids.includes(id)).length;
-    const selectAllTitle = pageIds.length > 0 && onPage === pageIds.length ? '取消全选本页' : '全选本页';
+    const onPage = cfg.pageIds.filter((id) => cfg.ids.includes(id)).length;
+    const selectAllTitle = cfg.pageIds.length > 0 && onPage === cfg.pageIds.length ? '取消全选本页' : '全选本页';
     // T02284：跨页选中保留——计数显式标注「含其他页 N 条」，避免「已选 25 条」被误读成本页全选
-    const offPage = ids.length - onPage;
+    const offPage = cfg.ids.length - onPage;
     const offPageNote = offPage > 0 ? `（含其他页 ${offPage} 条）` : '';
     return (
       <div style={{ position: 'sticky', top: 0, zIndex: 50, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', padding: '6px 10px', margin: '8px 0', borderRadius: 8, background: 'var(--card-bg)', border: '1px solid var(--accent)', boxShadow: '0 4px 12px rgba(0,0,0,.12)', fontSize: 'var(--fs-s)' }}>
-        <strong style={{ color: 'var(--accent)' }}>已选 {ids.length} 条{offPageNote}</strong>
-        <button onClick={kind === 'task' ? selectAllTasks : selectAllPlans} disabled={busy} className="tbtn-anim"
+        <strong style={{ color: 'var(--accent)' }}>已选 {cfg.ids.length} 条{offPageNote}</strong>
+        <button onClick={cfg.selectAll} disabled={busy} className="tbtn-anim"
           title={selectAllTitle}
-          aria-label="全选本页"
+          aria-label={selectAllTitle}
           style={{ cursor: 'pointer', padding: '2px 4px', display: 'inline-flex', alignItems: 'center', border: 'none', background: 'transparent', color: 'var(--text)' }}>
           <ListChecks size={14} />
         </button>
-        <button onClick={() => void (kind === 'task' ? batchRestoreTasks() : batchRestorePlans())} disabled={busy} className="tbtn-anim"
+        <button onClick={() => void cfg.restore()} disabled={busy} className="tbtn-anim"
           title="批量还原 — 将选中条目还原到原列表" aria-label="批量还原"
           style={{ cursor: 'pointer', padding: '2px 4px', display: 'inline-flex', alignItems: 'center', border: 'none', background: 'transparent', color: 'var(--accent)' }}>
           <Undo2 size={14} />
         </button>
-        <button onClick={() => void (kind === 'task' ? batchPurgeTasks() : batchPurgePlans())} disabled={busy} className="tbtn-anim"
+        <button onClick={() => void cfg.purge()} disabled={busy} className="tbtn-anim"
           title="批量彻底删除 — 不可恢复" aria-label="批量彻底删除"
           style={{ cursor: 'pointer', padding: '2px 4px', display: 'inline-flex', alignItems: 'center', border: 'none', background: 'transparent', color: 'var(--danger)' }}>
           <Trash2 size={14} />
         </button>
-        <button onClick={() => (kind === 'task' ? setSelTaskIds([]) : setSelPlanIds([]))} disabled={busy} className="tbtn-anim"
+        <button onClick={cfg.clear} disabled={busy} className="tbtn-anim"
           title="取消选择" aria-label="取消选择"
           style={{ cursor: 'pointer', padding: '2px 4px', marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', border: 'none', background: 'transparent', color: 'var(--text)' }}>
           <X size={14} />
@@ -501,13 +647,13 @@ export function ArchivePage() {
 
   // T05808：归档类型页签统一「去归档前缀 + 数量」；数量与列表 total/过滤后条目实时联动。
   const archiveTabs = [
-    { key: 'tasks', label: '任务', count: taskTotal },
-    { key: 'plans', label: '计划', count: planTotal },
-    { key: 'prompts', label: '提示词', count: promptTotal },
-    { key: 'reqs', label: '通用需求', count: archivedReqs.length },
-    { key: 'prd', label: 'PRD 文档', count: archivedPrdDocs.length },
-    { key: 'matrix', label: '需求跟踪矩阵', count: archivedMatrixReqs.length },
-    { key: 'cases', label: '测试用例', count: archivedCases.length },
+    { key: 'tasks', label: '任务', count: tasksView.phase === 'error' ? '—' : taskTotal },
+    { key: 'plans', label: '计划', count: plansView.phase === 'error' ? '—' : planTotal },
+    { key: 'prompts', label: '提示词', count: promptsView.phase === 'error' ? '—' : promptTotal },
+    { key: 'reqs', label: '通用需求', count: reqsView.phase === 'error' ? '—' : archivedReqs.length },
+    { key: 'prd', label: 'PRD 文档', count: prdDocsArchivedView.phase === 'error' ? '—' : archivedPrdDocs.length },
+    { key: 'matrix', label: '需求跟踪矩阵', count: reqMatrixArchivedView.phase === 'error' ? '—' : archivedMatrixReqs.length },
+    { key: 'cases', label: '测试用例', count: casesArchivedView.phase === 'error' ? '—' : archivedCases.length },
   ];
   // T05775 复审：archive.tab 是持久化自由字符串；旧版本/手工写入的未知 key 会让所有 sheet 同时 display:none。
   // 渲染前收敛到已知页签，未知值按「任务」兜底，保证至少有一个可见内容区。
@@ -519,7 +665,7 @@ export function ArchivePage() {
     if (key !== 'tasks') setCatFilter('');
     if (key !== 'plans') setProjFilter('');
     setPage(1); setPlanPage(1); setPromptPage(1);
-    setSelTaskIds([]); setSelPlanIds([]);
+    setSelTaskIds([]); setSelPlanIds([]); setSelPrdIds([]); setSelMatrixIds([]);
   };
   const resetArchiveFilters = () => {
     setSearchKw('');
@@ -528,28 +674,48 @@ export function ArchivePage() {
     setPage(1); setPlanPage(1); setPromptPage(1);
   };
   const hasActiveFilters = Boolean(kwQuery || catFilter || projFilter);
+  const handleTabKeyDown = (event: { key: string; preventDefault: () => void }, index: number) => {
+    let nextIndex = index;
+    if (event.key === 'ArrowRight') nextIndex = (index + 1) % archiveTabs.length;
+    else if (event.key === 'ArrowLeft') nextIndex = (index - 1 + archiveTabs.length) % archiveTabs.length;
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = archiveTabs.length - 1;
+    else return;
+    event.preventDefault();
+    const target = archiveTabs[nextIndex];
+    switchArchiveTab(target.key);
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLButtonElement>(`[data-t05775="archive-type-${target.key}"]`)?.focus();
+    });
+  };
 
   return (
     <section>
-      {/* 悬浮操作按钮 + 行 hover 高亮 + 相对时间：类名与任务页体验一致，聚焦当前行减少视觉噪音 */}
+      {/* 行内操作默认低对比可见：hover 只做强调、不再隐藏——触屏与键盘用户不会失去还原/删除入口 */}
       <style>{`
         .arena-row:hover { background: var(--surface-2); }
-        .abtn { opacity: 0; visibility: hidden; transition: opacity .15s ease, visibility 0s linear .15s; }
-        .arena-row:hover .abtn, .arena-row:focus-within .abtn { opacity: 1; visibility: visible; transition: opacity .15s ease, visibility 0s; }
+        .abtn { opacity: .72; visibility: visible; transition: opacity .15s ease; }
+        .arena-row:hover .abtn, .arena-row:focus-within .abtn { opacity: 1; }
+        @media (hover: none), (pointer: coarse) { .abtn { opacity: 1; } }
       `}</style>
-      {notice && <div style={{ position: 'fixed', top: 12, right: 16, zIndex: 200, padding: '6px 12px', borderRadius: 6, background: 'var(--card-bg)', border: '1px solid var(--accent)', fontSize: 'var(--fs-s)', color: 'var(--text)' }}>{notice}</div>}
+      {notice && <div data-t05775="archive-notice" role={noticeKind === 'error' ? 'alert' : 'status'} aria-live={noticeKind === 'error' ? 'assertive' : 'polite'} aria-atomic="true"
+        style={{ position: 'fixed', top: 12, right: 16, zIndex: 200, maxWidth: 'min(420px, calc(100vw - 32px))', padding: '6px 12px', borderRadius: 6, background: 'var(--card-bg)', border: `1px solid ${noticeKind === 'error' ? 'var(--danger)' : 'var(--accent)'}`, fontSize: 'var(--fs-s)', color: 'var(--text)', boxShadow: '0 4px 12px rgba(0,0,0,.14)' }}>{notice}</div>}
 
       {/* T06000：页签 + 多选 + 搜索 + 分类/项目筛选合并为同一排；窄屏横向滚动，不挤压主操作区 */}
       <div data-t06000="archive-toolbar" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'nowrap', overflowX: 'auto', borderBottom: '1px solid var(--border-strong)', marginBottom: 10, paddingBottom: 6 }}>
         <div role="tablist" aria-label="归档类型切换" data-t05775="archive-type-tabs" style={{ display: 'flex', gap: 2, alignItems: 'center', flex: '0 0 auto' }}>
-          {archiveTabs.map((t) => (
+          {archiveTabs.map((t, index) => (
             <button
               key={t.key}
               type="button"
               role="tab"
+              id={`archive-tab-${t.key}`}
+              aria-controls={`archive-panel-${t.key}`}
               aria-selected={archiveTabSafe === t.key}
+              tabIndex={archiveTabSafe === t.key ? 0 : -1}
               data-t05775={`archive-type-${t.key}`}
               onClick={() => switchArchiveTab(t.key)}
+              onKeyDown={(e) => handleTabKeyDown(e, index)}
               title={`${t.label} (${t.count}) — 点击切换归档类型`}
               style={{
                 fontSize: 'var(--fs-s)', padding: '5px 8px', border: 'none', background: archiveTabSafe === t.key ? 'var(--accent-soft)' : 'transparent',
@@ -565,7 +731,7 @@ export function ArchivePage() {
         </div>
         <span aria-hidden="true" style={{ width: 1, height: 24, background: 'var(--border)', flex: '0 0 auto' }} />
         {/* 多选模式（参考计划页：ListChecks/Check 图标切换） */}
-        <button onClick={() => { setMulti((m) => !m); setSelTaskIds([]); setSelPlanIds([]); }}
+        <button onClick={() => { setMulti((m) => !m); setSelTaskIds([]); setSelPlanIds([]); setSelPrdIds([]); setSelMatrixIds([]); }}
           className="tbtn-anim"
           title={multi ? '退出多选模式' : '多选模式 — 勾选归档条目后批量还原/删除'}
           aria-label={multi ? '退出多选模式' : '进入多选模式'}
@@ -578,29 +744,28 @@ export function ArchivePage() {
           <input ref={searchRef} value={searchKw} onChange={(e) => { setSearchKw(e.target.value); setPage(1); setPlanPage(1); setPromptPage(1); }}
             placeholder="搜索归档标题…" aria-label="搜索归档内容" data-page-search
             style={{ border: 'none', background: 'transparent', color: 'var(--text)', fontSize: 'var(--fs-s)', width: '100%', minWidth: 100 }} />
-          {searchKw && <button onClick={() => setSearchKw('')} title="清除搜索" aria-label="清除搜索" style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: 0 }}><X size={12} /></button>}
+          {searchKw && <button onClick={() => { setSearchKw(''); setPage(1); setPlanPage(1); setPromptPage(1); }} title="清除搜索" aria-label="清除搜索" style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: 0 }}><X size={12} /></button>}
         </span>
         {archiveTabSafe === 'tasks' && (
           <select value={catFilter} onChange={(e) => { setCatFilter(e.target.value); setPage(1); }}
             aria-label="按分类筛选归档任务" title="按分类筛选归档任务"
-            style={{ padding: '4px 6px', fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', flex: '0 0 auto' }}>
+            style={{ padding: '4px 6px', fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', flex: '0 0 auto', minWidth: 110, maxWidth: 200 }}>
             <option value="">全部分类</option>
             {cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             <option value="none">未分类</option>
           </select>
         )}
         {archiveTabSafe === 'plans' && (
-          <>
-            <select value={projFilter} onChange={(e) => { setProjFilter(e.target.value); setPlanPage(1); }}
-              aria-label="按项目筛选归档计划" title="按项目筛选归档计划"
-              style={{ padding: '4px 6px', fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', flex: '0 0 auto' }}>
-              <option value="">全部项目</option>
-              {Object.entries(projectNames).map(([id, name]) => <option key={id} value={id}>{name}</option>)}
-            </select>
-            <ProjectListHint view={projectList} />
-          </>
+          <select value={projFilter} onChange={(e) => { setProjFilter(e.target.value); setPlanPage(1); }}
+            aria-label="按项目筛选归档计划" title="按项目筛选归档计划"
+            style={{ padding: '4px 6px', fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', flex: '0 0 auto', minWidth: 140, maxWidth: 260 }}>
+            <option value="">全部项目</option>
+            {Object.entries(projectNames).map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+          </select>
         )}
       </div>
+      {/* 项目名用于任务/计划/PRD/矩阵/用例五行；失败提示不再只在计划页签出现 */}
+      {archiveTabSafe !== 'prompts' && archiveTabSafe !== 'reqs' && <ProjectListHint view={projectList} style={{ marginBottom: 8, flexWrap: 'wrap', maxWidth: '100%' }} />}
       {hasActiveFilters && (
         <div data-t06000="filter-reset" style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>
           <span>当前筛选{kwQuery ? `：关键词「${kwQuery}」` : ''}{catFilter ? ' · 指定分类' : ''}{projFilter ? ' · 指定项目' : ''}</span>
@@ -611,7 +776,7 @@ export function ArchivePage() {
         </div>
       )}
 
-      <div data-t05775="archive-section" data-archive-type="tasks" style={{ display: archiveTabSafe === 'tasks' ? 'block' : 'none' }}>
+      <div id="archive-panel-tasks" role="tabpanel" aria-labelledby="archive-tab-tasks" data-t05775="archive-section" data-archive-type="tasks" style={{ display: archiveTabSafe === 'tasks' ? 'block' : 'none' }}>
       <ResourceHint view={tasksView} label="归档任务列表" showLoading />
       {renderBatchBar('task')}
       {/* 空态只在「取数成功且本页为空」时出现——失败态由上方 ResourceHint 承载，两者不再同形 */}
@@ -620,7 +785,7 @@ export function ArchivePage() {
       )}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
         {pageTasks.map((t) => (
-          <li key={t.id} className="arena-row" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderRadius: 4, borderBottom: '1px solid var(--surface-2)' }}>
+          <li key={t.id} className="arena-row" data-archive-row data-archive-id={t.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderRadius: 4, borderBottom: '1px solid var(--surface-2)' }}>
             {multi && (
               <input type="checkbox" checked={selTaskIds.includes(t.id)} aria-label={`选中归档任务 ${t.title}`}
                 onChange={() => toggleTask(t.id)} style={{ cursor: 'pointer', flexShrink: 0 }} />
@@ -630,15 +795,15 @@ export function ArchivePage() {
               {t.category_id ? ` · ${cats.find((c) => c.id === t.category_id)?.name ?? ''}` : ''}）
             </span>
             <span className="abtn" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }} title={`归档时间：${t.archived_at ?? ''}`}>{relTime(t.archived_at)}</span>
-            <button className="abtn" onClick={() => void restore(t)} title="还原 — 将该归档任务还原到待办列表" aria-label="还原：将该归档任务还原到待办列表" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
-            <button className="abtn" onClick={() => void remove(t)} title="删除 — 永久删除该任务，此操作不可恢复" aria-label="删除：永久删除该任务，此操作不可恢复" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
+            <button className="abtn" onClick={() => void restore(t)} title={`还原 — 将任务「${t.title}」还原到待办列表`} aria-label={`还原任务 ${t.task_no ? `${t.task_no} ` : ''}${t.title}`} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
+            <button className="abtn" onClick={() => void remove(t)} title={`删除 — 永久删除任务「${t.title}」，此操作不可恢复`} aria-label={`彻底删除任务 ${t.task_no ? `${t.task_no} ` : ''}${t.title}`} style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
           </li>
         ))}
       </ul>
-      {renderPager(curTaskPage, taskPages, (n) => setPage(n), '归档任务')}
+      {tasksView.phase === 'ready' && renderPager(curTaskPage, taskPages, (n) => setPage(n), '归档任务')}
       </div>
 
-      <div data-t05775="archive-section" data-archive-type="plans" style={{ display: archiveTabSafe === 'plans' ? 'block' : 'none' }}>
+      <div id="archive-panel-plans" role="tabpanel" aria-labelledby="archive-tab-plans" data-t05775="archive-section" data-archive-type="plans" style={{ display: archiveTabSafe === 'plans' ? 'block' : 'none' }}>
       {/* T00442 扩展：项目计划归档区——计划「删除」改归档后在此恢复或彻底删除 */}
       <ResourceHint view={plansView} label="归档计划列表" showLoading />
       {renderBatchBar('plan')}
@@ -647,22 +812,22 @@ export function ArchivePage() {
       )}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
         {pagePlans.map((p) => (
-          <li key={p.id} className="arena-row" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderRadius: 4, borderBottom: '1px solid var(--surface-2)' }}>
+          <li key={p.id} className="arena-row" data-archive-row data-archive-id={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderRadius: 4, borderBottom: '1px solid var(--surface-2)' }}>
             {multi && (
               <input type="checkbox" checked={selPlanIds.includes(p.id)} aria-label={`选中归档计划 ${p.title}`}
                 onChange={() => togglePlan(p.id)} style={{ cursor: 'pointer', flexShrink: 0 }} />
             )}
             <span style={{ flex: 1, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.title}（{p.project_name}）</span>
             <span className="abtn" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }} title={`归档时间：${p.archived_at ?? ''}`}>{relTime(p.archived_at)}</span>
-            <button className="abtn" onClick={() => void restorePlan(p)} title="恢复 — 将该计划还原到「项目计划」时间线并自动衔接排期" aria-label="恢复：将该计划还原到项目计划时间线" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
-            <button className="abtn" onClick={() => void purgePlan(p)} title="删除 — 彻底删除该计划，此操作不可恢复" aria-label="删除：彻底删除该计划，此操作不可恢复" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
+            <button className="abtn" onClick={() => void restorePlan(p)} title={`恢复 — 将计划「${p.title}」还原到「项目计划」时间线并自动衔接排期`} aria-label={`还原计划 ${p.title}`} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
+            <button className="abtn" onClick={() => void purgePlan(p)} title={`删除 — 彻底删除计划「${p.title}」，此操作不可恢复`} aria-label={`彻底删除计划 ${p.title}`} style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
           </li>
         ))}
       </ul>
-      {renderPager(curPlanPage, planPages, (n) => setPlanPage(n), '归档项目计划')}
+      {plansView.phase === 'ready' && renderPager(curPlanPage, planPages, (n) => setPlanPage(n), '归档项目计划')}
       </div>
 
-      <div data-t05775="archive-section" data-archive-type="prompts" style={{ display: archiveTabSafe === 'prompts' ? 'block' : 'none' }}>
+      <div id="archive-panel-prompts" role="tabpanel" aria-labelledby="archive-tab-prompts" data-t05775="archive-section" data-archive-type="prompts" style={{ display: archiveTabSafe === 'prompts' ? 'block' : 'none' }}>
       {/* T00872：归档提示词区——提示词「归档」（软删）后在此还原或彻底删除 */}
       <ResourceHint view={promptsView} label="归档提示词列表" showLoading />
       {promptsView.phase === 'ready' && pagePrompts.length === 0 && (
@@ -670,20 +835,20 @@ export function ArchivePage() {
       )}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
         {pagePrompts.map((p) => (
-          <li key={p.id} className="arena-row" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderRadius: 4, borderBottom: '1px solid var(--surface-2)' }}>
+          <li key={p.id} className="arena-row" data-archive-row data-archive-id={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderRadius: 4, borderBottom: '1px solid var(--surface-2)' }}>
             <span style={{ flex: 1, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {p.title}（{promptCatNames[p.category_id] ?? '未知分类'}）
             </span>
             <span className="abtn" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }} title={`归档时间：${p.archived_at ?? ''}`}>{relTime(p.archived_at)}</span>
-            <button className="abtn" onClick={() => void restorePrompt(p)} title="还原 — 将该提示词还原到提示词页原分类" aria-label="还原：将该提示词还原到提示词页原分类" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
-            <button className="abtn" onClick={() => void removePrompt(p)} title="删除 — 彻底删除该提示词，此操作不可恢复" aria-label="删除：彻底删除该提示词，此操作不可恢复" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
+            <button className="abtn" onClick={() => void restorePrompt(p)} title={`还原 — 将提示词「${p.title}」还原到提示词页原分类`} aria-label={`还原提示词 ${p.title}`} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
+            <button className="abtn" onClick={() => void removePrompt(p)} title={`删除 — 彻底删除提示词「${p.title}」，此操作不可恢复`} aria-label={`彻底删除提示词 ${p.title}`} style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
           </li>
         ))}
       </ul>
-      {renderPager(curPromptPage, promptPages, (n) => setPromptPage(n), '归档提示词')}
+      {promptsView.phase === 'ready' && renderPager(curPromptPage, promptPages, (n) => setPromptPage(n), '归档提示词')}
       </div>
 
-      <div data-t05775="archive-section" data-archive-type="reqs" style={{ display: archiveTabSafe === 'reqs' ? 'block' : 'none' }}>
+      <div id="archive-panel-reqs" role="tabpanel" aria-labelledby="archive-tab-reqs" data-t05775="archive-section" data-archive-type="reqs" style={{ display: archiveTabSafe === 'reqs' ? 'block' : 'none' }}>
       {/* T03685：归档通用需求区——通用需求条目「归档」（软删）后在此还原或彻底删除，
           与提示词区同构；入口来自通用需求菜单的行内归档按钮 */}
       <ResourceHint view={reqsView} label="归档通用需求列表" showLoading />
@@ -692,59 +857,71 @@ export function ArchivePage() {
       )}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
         {archivedReqs.map((e) => (
-          <li key={e.id} data-t03685="archived-req-row" className="arena-row" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderRadius: 4, borderBottom: '1px solid var(--surface-2)' }}>
+          <li key={e.id} data-t03685="archived-req-row" data-archive-row data-archive-id={e.id} className="arena-row" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderRadius: 4, borderBottom: '1px solid var(--surface-2)' }}>
             <span style={{ flex: 1, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {e.title}（{reqCatNames[e.category_id] ?? '未知分类'}）
             </span>
             <span className="abtn" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }} title={`归档时间：${e.archived_at ?? ''}`}>{relTime(e.archived_at)}</span>
-            <button className="abtn" onClick={() => void restoreReq(e)} title="还原 — 将该通用需求还原到通用需求页原分类" aria-label="还原：将该通用需求还原到原分类" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
-            <button className="abtn" onClick={() => void removeReq(e)} title="删除 — 彻底删除该通用需求，此操作不可恢复" aria-label="删除：彻底删除该通用需求，此操作不可恢复" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
+            <button className="abtn" onClick={() => void restoreReq(e)} title={`还原 — 将通用需求「${e.title}」还原到通用需求页原分类`} aria-label={`还原通用需求 ${e.title}`} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
+            <button className="abtn" onClick={() => void removeReq(e)} title={`删除 — 彻底删除通用需求「${e.title}」，此操作不可恢复`} aria-label={`彻底删除通用需求 ${e.title}`} style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
           </li>
         ))}
       </ul>
       </div>
 
-      <div data-t05775="archive-section" data-archive-type="prd" style={{ display: archiveTabSafe === 'prd' ? 'block' : 'none' }}>
+      <div id="archive-panel-prd" role="tabpanel" aria-labelledby="archive-tab-prd" data-t05775="archive-section" data-archive-type="prd" style={{ display: archiveTabSafe === 'prd' ? 'block' : 'none' }}>
       {/* T05080：归档 PRD 文档区——PRD 管理视图「归档」后在此还原或彻底删除 */}
       <ResourceHint view={prdDocsArchivedView} label="归档 PRD 文档列表" showLoading />
+      {/* T06096：多选模式下提供与任务/计划一致的批量工具条 */}
+      {renderBatchBar('prd')}
       {prdDocsArchivedView.phase === 'ready' && archivedPrdDocs.length === 0 && (
         <p style={{ color: 'var(--text-muted)' }}>{hasActiveFilters ? '未找到相关归档。请调整搜索/筛选条件，或点上方「重置筛选」。' : '暂无归档 PRD 文档。PRD 管理页归档后的文档会出现在这里。'}</p>
       )}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
         {archivedPrdDocs.map((d) => (
-          <li key={d.id} className="arena-row" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderRadius: 4, borderBottom: '1px solid var(--surface-2)' }}>
+          <li key={d.id} className="arena-row" data-archive-row data-archive-id={d.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderRadius: 4, borderBottom: '1px solid var(--surface-2)' }}>
+            {multi && (
+              <input type="checkbox" checked={selPrdIds.includes(d.id)} aria-label={`选中归档 PRD 文档 ${d.filename}`}
+                onChange={() => togglePrdDoc(d.id)} style={{ cursor: 'pointer', flexShrink: 0 }} />
+            )}
             <span style={{ flex: 1, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {d.filename}（{projectNames[d.project_id] ?? '未知项目'}）
             </span>
             <span className="abtn" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }} title={`归档时间：${d.archived_at ?? ''}`}>{relTime(d.archived_at)}</span>
-            <button className="abtn" onClick={() => void restorePrdDoc(d)} title="还原 — 将该 PRD 文档还原到 PRD 管理页" aria-label="还原：将该 PRD 文档还原到 PRD 管理页" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
-            <button className="abtn" onClick={() => void purgePrdDoc(d)} title="删除 — 彻底删除该 PRD 文档，此操作不可恢复" aria-label="删除：彻底删除该 PRD 文档，此操作不可恢复" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
+            <button className="abtn" onClick={() => void restorePrdDoc(d)} title={`还原 — 将 PRD 文档「${d.filename}」还原到 PRD 管理页`} aria-label={`还原 PRD 文档 ${d.filename}`} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
+            <button className="abtn" onClick={() => void purgePrdDoc(d)} title={`删除 — 彻底删除 PRD 文档「${d.filename}」，此操作不可恢复`} aria-label={`彻底删除 PRD 文档 ${d.filename}`} style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
           </li>
         ))}
       </ul>
       </div>
 
-      <div data-t05775="archive-section" data-archive-type="matrix" style={{ display: archiveTabSafe === 'matrix' ? 'block' : 'none' }}>
+      <div id="archive-panel-matrix" role="tabpanel" aria-labelledby="archive-tab-matrix" data-t05775="archive-section" data-archive-type="matrix" style={{ display: archiveTabSafe === 'matrix' ? 'block' : 'none' }}>
       {/* T05080：归档需求跟踪矩阵区——需求跟踪矩阵视图「归档」后在此还原或彻底删除 */}
       <ResourceHint view={reqMatrixArchivedView} label="归档需求跟踪矩阵列表" showLoading />
+      {/* T06096：多选模式下提供与任务/计划一致的批量工具条 */}
+      {renderBatchBar('matrix')}
       {reqMatrixArchivedView.phase === 'ready' && archivedMatrixReqs.length === 0 && (
         <p style={{ color: 'var(--text-muted)' }}>{hasActiveFilters ? '未找到相关归档。请调整搜索/筛选条件，或点上方「重置筛选」。' : '暂无归档需求跟踪矩阵行。需求跟踪矩阵页归档后的行会出现在这里。'}</p>
       )}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
         {archivedMatrixReqs.map((r) => (
-          <li key={r.id} className="arena-row" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderRadius: 4, borderBottom: '1px solid var(--surface-2)' }}>
+          <li key={r.id} className="arena-row" data-archive-row data-archive-id={r.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderRadius: 4, borderBottom: '1px solid var(--surface-2)' }}>
+            {multi && (
+              <input type="checkbox" checked={selMatrixIds.includes(r.id)} aria-label={`选中归档需求 ${r.req_no} ${r.title}`}
+                onChange={() => toggleMatrixReq(r.id)} style={{ cursor: 'pointer', flexShrink: 0 }} />
+            )}
             <span style={{ flex: 1, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {r.req_no} {r.title}（{projectNames[r.project_id] ?? '未知项目'}）
             </span>
             <span className="abtn" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }} title={`归档时间：${r.archived_at ?? ''}`}>{relTime(r.archived_at)}</span>
-            <button className="abtn" onClick={() => void restoreMatrixReq(r)} title="还原 — 将该需求行还原到需求跟踪矩阵" aria-label="还原：将该需求行还原到需求跟踪矩阵" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
-            <button className="abtn" onClick={() => void purgeMatrixReq(r)} title="删除 — 彻底删除该需求行，此操作不可恢复" aria-label="删除：彻底删除该需求行，此操作不可恢复" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
+            <button className="abtn" onClick={() => void restoreMatrixReq(r)} title={`还原 — 将需求「${r.req_no} ${r.title}」还原到需求跟踪矩阵`} aria-label={`还原需求 ${r.req_no} ${r.title}`} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
+            <button className="abtn" onClick={() => void purgeMatrixReq(r)} title={`删除 — 彻底删除需求「${r.req_no} ${r.title}」，此操作不可恢复`} aria-label={`彻底删除需求 ${r.req_no} ${r.title}`} style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
           </li>
         ))}
       </ul>
       </div>
 
-      <div data-t05775="archive-section" data-archive-type="cases" style={{ display: archiveTabSafe === 'cases' ? 'block' : 'none' }}>
+      <div id="archive-panel-cases" role="tabpanel" aria-labelledby="archive-tab-cases" data-t05775="archive-section" data-archive-type="cases" style={{ display: archiveTabSafe === 'cases' ? 'block' : 'none' }}>
       {/* T05080：归档测试用例区——测试用例视图「归档」后在此还原或彻底删除 */}
       <ResourceHint view={casesArchivedView} label="归档测试用例列表" showLoading />
       {casesArchivedView.phase === 'ready' && archivedCases.length === 0 && (
@@ -752,13 +929,13 @@ export function ArchivePage() {
       )}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
         {archivedCases.map((c) => (
-          <li key={c.id} className="arena-row" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderRadius: 4, borderBottom: '1px solid var(--surface-2)' }}>
+          <li key={c.id} className="arena-row" data-archive-row data-archive-id={c.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderRadius: 4, borderBottom: '1px solid var(--surface-2)' }}>
             <span style={{ flex: 1, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {c.case_no} {c.title}（{projectNames[c.project_id] ?? '未知项目'}）
             </span>
             <span className="abtn" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }} title={`归档时间：${c.archived_at ?? ''}`}>{relTime(c.archived_at)}</span>
-            <button className="abtn" onClick={() => void restoreCase(c)} title="还原 — 将该测试用例还原到测试用例页" aria-label="还原：将该测试用例还原到测试用例页" style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
-            <button className="abtn" onClick={() => void purgeCase(c)} title="删除 — 彻底删除该测试用例，此操作不可恢复" aria-label="删除：彻底删除该测试用例，此操作不可恢复" style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
+            <button className="abtn" onClick={() => void restoreCase(c)} title={`还原 — 将测试用例「${c.case_no} ${c.title}」还原到测试用例页`} aria-label={`还原测试用例 ${c.case_no} ${c.title}`} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Undo2 size={13} /></button>
+            <button className="abtn" onClick={() => void purgeCase(c)} title={`删除 — 彻底删除测试用例「${c.case_no} ${c.title}」，此操作不可恢复`} aria-label={`彻底删除测试用例 ${c.case_no} ${c.title}`} style={{ fontSize: 'var(--fs-s)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}><Trash2 size={13} /></button>
           </li>
         ))}
       </ul>

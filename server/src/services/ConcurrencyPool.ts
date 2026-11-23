@@ -23,6 +23,9 @@ export interface PoolRunSlot {
   title: string;
   ai_state_at: string;
   project_name: string;
+  /** T06268：任务被哪个平台/通道领走（取自 monitor_preferred_platform） */
+  platform: string | null;
+  channel: 'B0' | 'A' | 'D';
 }
 
 export interface PoolStatus {
@@ -56,18 +59,22 @@ export function readPoolStatus(): PoolStatus {
   const db = getDb();
   const limit = readPoolLimit();
   const running = db.prepare(
-    `SELECT t.id, t.task_no, t.title, t.ai_state_at, p.name AS project_name
+    `SELECT t.id, t.task_no, t.title, t.ai_state_at, p.name AS project_name,
+            t.monitor_preferred_platform AS platform
        FROM tasks t JOIN projects p ON p.id = t.project_id
       WHERE t.ai_state = 'running' AND t.archived = 0 AND COALESCE(t.shelved, 0) = 0
       ORDER BY t.ai_state_at DESC`,
   ).all() as PoolRunSlot[];
+  for (const slot of running) {
+    const platform = (slot.platform ?? '').toLowerCase().trim();
+    slot.channel = platform === 'codebuddy-gateway' ? 'B0' : platform === 'd-gui' ? 'D' : 'A';
+  }
   const queued = (
     db.prepare(
       "SELECT COUNT(*) AS c FROM tasks WHERE status = 'todo' AND COALESCE(ai_state, '') = '' AND archived = 0 AND COALESCE(shelved, 0) = 0",
     ).get() as { c: number }
   ).c;
-  return { limit, running, runningCount: running.length, queued, full: running.length >= limit };
-}
+  return { limit, running, runningCount: running.length, queued, full: running.length >= limit };}
 
 /**
  * MCP 领取路径的池满提示文案（T01066 后续）。

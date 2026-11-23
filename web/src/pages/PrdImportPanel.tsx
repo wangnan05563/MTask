@@ -10,6 +10,7 @@ import { aiImportStore } from '../stores/aiImportStore';
 // 2026-11-10 质量复核优化：导入前质量自检（纯函数，只读分析 + 用户确认后才归一化）
 import {
   analyzeImportQuality, appendCoverageGapPlans, disableConstraintReqs, evaluateImportReadiness, formatQualitySummary, isConstraintReq, isGapFillPlan,
+  isPrdCoveragePlan,
   normalizeWbs, type QualitySource, type QualitySummary,
 } from '../utils/prdQuality';
 
@@ -54,21 +55,36 @@ function planParentCode(p: Pick<PrdPlan, 'title' | 'kind' | 'wbsCode' | 'parentC
   return code.includes('.') ? code.slice(0, code.lastIndexOf('.')) : '';
 }
 
+/** 沿 parentCode 向上找归属里程碑；找不到返回 -1。 */
+function planMilestoneOwner(list: PrdPlan[], index: number): number {
+  let cur = index;
+  for (let guard = 0; guard < 16; guard += 1) {
+    const p = list[cur];
+    if (!p) return -1;
+    if (isMilestoneRow(p)) return cur;
+    const parentCode = planParentCode(p);
+    if (!parentCode) return -1;
+    const parentIdx = list.findIndex((x) => planWbsCode(x) === parentCode);
+    if (parentIdx < 0) return -1;
+    cur = parentIdx;
+  }
+  return -1;
+}
+
 /** 重算全部里程碑工期（返回新数组；无明细的里程碑保留原值）。
- *  2026-11-17：有 wbsCode/parentCode 时按树汇总，行序不再参与父子判定；无结构字段的旧数据仍按区间兜底。 */
+ *  2026-11-17：有 wbsCode/parentCode 时按树汇总，行序不再参与父子判定；无结构字段的旧数据仍按区间兜底。
+ *  2026-11-22：结构汇总改为递归归属（支持 M1.1.1 等深层节点）；覆盖核对卡是管理动作，不计入交付工期。 */
 function recalcMilestoneDurations(list: PrdPlan[]): PrdPlan[] {
   const out = list.map((p) => ({ ...p }));
   const structured = out.some((p) => !!planWbsCode(p) || !!p.parentCode);
   if (structured) {
     for (let i = 0; i < out.length; i += 1) {
       if (!isMilestoneRow(out[i])) continue;
-      const code = planWbsCode(out[i]);
-      if (!code) continue;
       let sum = 0;
       for (let j = 0; j < out.length; j += 1) {
-        if (j === i || !out[j].include || isMilestoneRow(out[j]) || isGapFillPlan(out[j])) continue;
-        const parent = planParentCode(out[j]);
-        if (parent && parent === code) sum += Math.max(1, Math.round(Number(out[j].durationDays) || 1));
+        if (j === i || !out[j].include || isMilestoneRow(out[j]) || isGapFillPlan(out[j]) || isPrdCoveragePlan(out[j])) continue;
+        if (planMilestoneOwner(out, j) !== i) continue;
+        sum += Math.max(1, Math.round(Number(out[j].durationDays) || 1));
       }
       if (sum > 0) out[i] = { ...out[i], durationDays: sum };
     }
@@ -80,7 +96,8 @@ function recalcMilestoneDurations(list: PrdPlan[]): PrdPlan[] {
     for (let j = i + 1; j < out.length; j++) {
       if (isMilestoneRow(out[j])) break;
       // 2026-11-10 质量复核优化⑥：系统补齐占位行不计入里程碑工期（与服务端 child 归属口径一致）
-      if (out[j].include && !isGapFillPlan(out[j])) sum += Math.max(1, Math.round(Number(out[j].durationDays) || 1));
+      // 2026-11-22：覆盖核对卡同样不计入交付工期
+      if (out[j].include && !isGapFillPlan(out[j]) && !isPrdCoveragePlan(out[j])) sum += Math.max(1, Math.round(Number(out[j].durationDays) || 1));
     }
     if (sum > 0) out[i] = { ...out[i], durationDays: sum };
   }
@@ -230,12 +247,26 @@ function logImportResult(r: ImportPrdResult): void {
  * T03700+：覆盖缺口播报——基于合并重排后的最终编号，且必须带标题：编号是位置号，
  * 同一份文档每次解析都会重排，只报编号会让用户误以为「每次缺的都不一样」。
  */
-function logUncoveredReqs(list: ReadonlyArray<{ reqNo: string; title: string }>): void {
+function logUncoveredReqs(list: ReadonlyArray<{ reqNo: string; title: string; priority?: string }>): void {
   if (list.length === 0) return;
-  const names = list.slice(0, 8).map((r) => `${r.reqNo}《${r.title.slice(0, 16)}》`).join('、');
-  const more = list.length > 8 ? ' 等' : '';
+  // 2026-11-22：P2/P3 是按范围闸门有意不进入本期 WBS 的需求，不能播报成「不可追溯」并诱导补计划。
+  // AutoClicker 的 7 条（多语言/更新提示/条件等待/CLI/MCP/文本扩展/便携模式）全属 R3 P2，旧文案造成误判。
+  const outOfScope = list.filter((r) => /p[23]/i.test(r.priority ?? ''));
+  const inScope = list.filter((r) => !/p[23]/i.test(r.priority ?? ''));
+  if (outOfScope.length > 0) {
+    const names = outOfScope.slice(0, 8).map((r) => `${r.reqNo}《${r.title.slice(0, 16)}》`).join('、');
+    const more = outOfScope.length > 8 ? ' 等' : '';
+    aiImportStore.log(
+      `ℹ 有 ${outOfScope.length} 条 P2/P3 需求按范围闸门未进入本期 WBS（${names}${more}）——仍保留在需求矩阵，不阻断导入；`
+      + '如需本期交付，请在矩阵里把优先级改为 P0/P1 后再补计划',
+      'info',
+    );
+  }
+  if (inScope.length === 0) return;
+  const names = inScope.slice(0, 8).map((r) => `${r.reqNo}《${r.title.slice(0, 16)}》`).join('、');
+  const more = inScope.length > 8 ? ' 等' : '';
   aiImportStore.log(
-    `⚠ 有 ${list.length} 条需求暂未被任何 WBS 计划关联（${names}${more}）——这些需求当前不可追溯；`
+    `⚠ 有 ${inScope.length} 条本期需求暂未被任何 WBS 计划关联（${names}${more}）——这些需求当前不可追溯；`
     + '可在面板「未被任何计划关联」处点「补齐计划」自动生成一行，或在矩阵面板手动关联（编号每次解析会按出现顺序重排，跨次比对请以标题为准）',
     'error',
   );
@@ -285,10 +316,10 @@ function logQualityWarnings(s: QualitySummary): void {
   }
   if (s.coverageGaps > 0) {
     const gaps = s.coverage.filter((g) => !g.soft && g.missing.length > 0).map((g) => `${g.label} ${g.covered}/${g.total}`).join('、');
-    aiImportStore.log(`源文档条目覆盖自检：${gaps}；共 ${s.coverageGaps} 个硬缺口未出现在解析结果中（Q/S/D/R/T/N/O 等条目级编号），请人工确认是否需补计划`, 'info');
+    aiImportStore.log(`源文档条目覆盖自检：${gaps}；共 ${s.coverageGaps} 个硬缺口未出现在解析结果中（Q/S/R/T/N/O 等条目级编号），请人工确认是否需补计划`, 'info');
   }
   if (s.coverageSectionGaps > 0) {
-    aiImportStore.log(`章节定位自检：${s.coverageSectionGaps} 个 §x.y 章节号未回写 sourceRef——章节号只用于定位，不是需求条目，本次不阻断导入、也不生成占位计划`, 'info');
+    aiImportStore.log(`软定位自检：${s.coverageSectionGaps} 个 §x.y 章节号或 Dx 设计决策标题未回写——只用于定位/设计说明，不是独立需求条目，本次不阻断导入、也不生成占位计划`, 'info');
   }
   if (s.docCounts.design === 0 && s.docCounts.test === 0 && s.docCounts.prd > 0) {
     aiImportStore.log('提示：本次没有关联设计/测试文档。如需归档配套方案设计，请在「关联设计/测试文档」添加；该类文档按设计只归档、不参与 AI 解析，若期望其实现细节进入 WBS，需作为 PRD 文件参与解析', 'info');
@@ -322,13 +353,13 @@ function formatQualityReport(s: QualitySummary, baseline: string, sources: Quali
     '|---|---:|---|',
     `| 并行 WBS 套数 | ${s.wbsGroups} | >1 表示分片各自产出了完整里程碑体系 |`,
     `| 同题重复计划 | ${s.duplicateGroups} 组 / ${s.duplicateRows} 行 | 归一化标题相同 |`,
-    `| 自动补齐占位行 | ${s.gapFillRows} | 无业务语义，不归属里程碑 |`,
+    `| 自动补齐占位模板 | ${s.gapFillRows} | 默认未勾选；改写并勾选后才参与导入与覆盖统计 |`,
     `| 里程碑工期不符 | ${s.durationIssues} | 声明工期 ≠ 其下明细之和 |`,
     `| 否定/已闭环口径 | ${s.constraintReqs} | 约束项，不应作待开发需求 |`,
     `| 溯源未标注 | ${s.unattributedReqs} | sourceRef 非章节/Q 编号格式 |`,
     `| 跨文档版本冲突 | ${s.versionConflicts} | 同编号状态相反 |`,
-    `| 源文档硬覆盖缺口 | ${s.coverageGaps} | Q/S/D/R/T/N/O 等条目级编号未出现在解析结果 |`,
-    `| § 章节定位缺口 | ${s.coverageSectionGaps} | 章节号未回写 sourceRef；仅提示，不阻断、不补占位 |`,
+    `| 源文档硬覆盖缺口 | ${s.coverageGaps} | Q/S/R/T/N/O 等条目级编号未出现在解析结果 |`,
+    `| §/Dx 软定位缺口 | ${s.coverageSectionGaps} | 章节号或设计决策标题未回写；仅提示，不阻断、不补占位 |`,
     `| 推定字段行 | ${s.inferredFieldRows} | 工期/复杂度/优先级/排期源文档均无依据 |`,
     '',
     '## 三、跨文档版本冲突',
@@ -451,12 +482,12 @@ function QualityCard({ s, sources, baselineDoc, onBaseline, previewDocRefs, busy
         <QualityMetric label="来源 PRD/设计/测试" value={`${s.docCounts.prd}/${s.docCounts.design}/${s.docCounts.test}`} bad={s.docCounts.prd === 0} hint="设计/测试文档按当前设计只归档、不参与 AI 解析" />
         <QualityMetric label="并行 WBS" value={`${s.wbsGroups} 套`} bad={s.wbsGroups > 1} hint="分片各自产出完整里程碑后直接拼接会造成重复排期" />
         <QualityMetric label="同题重复" value={`${s.duplicateGroups} 组 / ${s.duplicateRows} 行`} bad={s.duplicateRows > 0} hint="归一化标题（去掉章号/空白/标点）后相同" />
-        <QualityMetric label="占位行" value={s.gapFillRows} bad={s.gapFillRows > 0} hint="系统自动补齐，无业务语义，不归属里程碑" />
+        <QualityMetric label="占位模板" value={s.gapFillRows} bad={s.qualityErrors.some((e) => e.includes('系统补齐占位行'))} hint="默认未勾选；改写并勾选后才参与导入与覆盖统计" />
         <QualityMetric label="工期不符" value={s.durationIssues} bad={s.durationIssues > 0} hint="里程碑声明工期 ≠ 其下明细之和" />
         <QualityMetric label="否定口径" value={s.constraintReqs} bad={s.constraintReqs > 0} hint="约束/验收项，不应作为待开发需求" />
         <QualityMetric label="溯源未标注" value={s.unattributedReqs} bad={s.unattributedReqs > 0} hint="sourceRef 不是章节/Q 编号格式，无法唯一定位原文" />
         <QualityMetric label="版本冲突" value={s.versionConflicts} bad={s.versionConflicts > 0} hint="同一编号在不同来源里「待确认」与「已确认」并存" />
-        <QualityMetric label="硬覆盖缺口" value={s.coverageGaps} bad={s.coverageGaps > 0} hint="Q/S/D/R/T/N/O 等条目级编号未出现在解析结果中" />
+        <QualityMetric label="硬覆盖缺口" value={s.coverageGaps} bad={s.coverageGaps > 0} hint="Q/S/R/T/N/O 等条目级编号未出现在解析结果中" />
         <QualityMetric label="§ 章节缺口" value={s.coverageSectionGaps} bad={false} hint="章节号只用于定位，不阻断导入、不生成占位计划" />
         <QualityMetric label="推定字段" value={`${s.inferredFieldRows} 行`} bad hint="工期/复杂度/优先级/排期在源文档中均无依据" />
       </div>
@@ -830,8 +861,9 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
   }
 
   /**
-   * T05575：覆盖缺口一键处置——按缺口编号补 normal 计划行（description 带「自动补齐：」前缀，
-   * 因此不参与同题去重、不计入里程碑工期），补完立即重算快照；仍需人工把占位改写成有业务语义的任务。
+   * T05575：覆盖缺口一键处置——按缺口编号补 normal 占位模板行（description 带「自动补齐：」前缀，
+   * 因此不参与同题去重、不计入里程碑工期）。模板默认不勾选，避免刚补齐就触发占位行/优先级/WBS
+   * 四类质量门阻断；人工改写并勾选后才计入覆盖，或改用「接受缺口」直接导入。
    */
   function fillCoverageGapsNow() {
     if (busy) return;
@@ -840,7 +872,7 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
     if (gapGroups.length === 0) {
       aiImportStore.log(
         s.coverageSectionGaps > 0
-          ? `没有条目级硬缺口；${s.coverageSectionGaps} 项 § 章节定位缺口仅提示，不生成占位计划`
+          ? `没有条目级硬缺口；${s.coverageSectionGaps} 项 § 章节/设计决策软缺口仅提示，不生成占位计划`
           : '当前没有覆盖缺口，无需补齐',
         'info',
       );
@@ -850,8 +882,15 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
     const next = recalcMilestoneDurations(filled.plans.map((p, i) => ({ ...(plans[i] ?? {}), ...p })) as PrdPlan[]);
     setPlans(next);
     const s2 = refreshQuality({ planRows: next });
+    if (filled.added === 0) {
+      aiImportStore.log(
+        `表格中已有未勾选占位模板；硬覆盖缺口仍为 ${s2.coverageGaps} 项——请改写并勾选模板，或勾选「接受缺口」直接导入现有计划`,
+        'info',
+      );
+      return;
+    }
     aiImportStore.log(
-      `已按源文档条目补齐 ${filled.added} 行计划（占位行，可在表格里改写成有业务语义的任务或取消勾选）；覆盖缺口 ${s.coverageGaps} → ${s2.coverageGaps} 项`,
+      `已加入 ${filled.added} 条未勾选占位模板（需改写标题/描述、补 WBS/优先级并勾选后才计入覆盖；也可勾选「接受缺口」直接导入现有计划）；硬覆盖缺口仍为 ${s2.coverageGaps} 项`,
       'ok',
     );
   }
@@ -1192,9 +1231,18 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
   // 按钮门槛若只看 include，会把「勾了但标题为空」的行算成可提交，点了仍被拦，等于禁用项不给真原因。
   const submittableReqs = useMemo(() => reqs.filter((x) => x.include && x.title.trim()).length, [reqs]);
   // T03700+：按「本次实际会导入的勾选集」算未关联需求——未勾选的计划不参与导入，其覆盖不应算数
-  const uncoveredReqs = useMemo(
+  const allUncoveredReqs = useMemo(
     () => findUncoveredReqs(reqs.filter((x) => x.include), plans.filter((x) => x.include)),
     [reqs, plans],
+  );
+  // 2026-11-22：P2/P3 按范围闸门不进入本期 WBS，不属于「不可追溯」，也不应诱导「补齐计划」。
+  const outOfScopeUncovered = useMemo(
+    () => allUncoveredReqs.filter((r) => /p[23]/i.test(r.priority ?? '')),
+    [allUncoveredReqs],
+  );
+  const uncoveredReqs = useMemo(
+    () => allUncoveredReqs.filter((r) => !/p[23]/i.test(r.priority ?? '')),
+    [allUncoveredReqs],
   );
   // AC 验收项不能补「实现/验证」计划；只有 FR/NFR/EX 等实现类需求才适合一键补计划。
   const fillableUncovered = useMemo(
@@ -1420,6 +1468,16 @@ export function PrdImportPanel({ toolId, onClose, onSaved }: {
               补齐计划（{fillableUncovered.length}）
             </button>
           </div>
+        </div>
+      )}
+      {outOfScopeUncovered.length > 0 && (
+        <div role="status" data-scope="p2p3-unplanned" style={{ marginBottom: 10, border: '1px solid var(--border-strong)', borderRadius: 8, padding: '8px 10px', background: 'var(--card-bg)' }}>
+          <strong style={{ fontSize: 'var(--fs-s)' }}>ℹ {outOfScopeUncovered.length} 条 P2/P3 需求未进入本期 WBS</strong>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', marginLeft: 8 }}>
+            {outOfScopeUncovered.slice(0, 6).map((r) => `${r.reqNo}《${r.title.slice(0, 16)}》`).join('、')}
+            {outOfScopeUncovered.length > 6 ? ` 等 ${outOfScopeUncovered.length} 条` : ''}
+            ——按范围闸门保留在需求矩阵，不阻断导入；如需本期交付，请先把优先级改为 P0/P1 再补计划
+          </span>
         </div>
       )}
 

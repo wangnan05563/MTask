@@ -1072,6 +1072,42 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('exec_sessions', 'progress_reported', 'progress_reported INTEGER NOT NULL DEFAULT 0');
   // 就绪任务拉取按 monitor_ready 过滤（mtask_list_ready_tasks），加索引避免全表扫描
   db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_monitor_ready ON tasks(monitor_ready)");
+  /* T06244（十期 · 派发入口与自动触发）：任务级派发闸门与最近一次审计回显。
+     dispatch_auto=NULL 表示跟随全局，老任务保持 NULL 即零回归；0 是硬闸，即使全局开启也不自动派发。 */
+  ensureColumn('tasks', 'dispatch_auto', 'dispatch_auto INTEGER');
+  ensureColumn('tasks', 'dispatch_last_at', 'dispatch_last_at TEXT');
+  ensureColumn('tasks', 'dispatch_last_state', "dispatch_last_state TEXT NOT NULL DEFAULT ''");
+  /* T06244 / T06249：queues.kind 区分人工队列与内部派发队列。
+     存量行先补 manual（保持队列页现状），再按旧命名一次性回填 relay；运行时不再依赖名称识别。 */
+  ensureColumn('queues', 'kind', "kind TEXT NOT NULL DEFAULT 'manual'");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_queues_kind_date ON queues(kind, date DESC, created_at DESC)");
+  db.exec("UPDATE queues SET kind='relay' WHERE kind='manual' AND name LIKE '监督派发（%'");
+  /* T06246 / T06248：跨通道派发审计（B0/A/D），不替代 queue_jobs 的执行状态权威。
+     只存展示与审计字段，不存任务正文、不存任何 token；按任务+时间与全局时间建索引。 */
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS dispatch_attempts (
+      id              TEXT PRIMARY KEY,
+      task_id         TEXT NOT NULL,
+      task_no         TEXT,
+      channel         TEXT NOT NULL,
+      state           TEXT NOT NULL,
+      queue_id        TEXT,
+      job_id          TEXT,
+      ticket          TEXT,
+      fallback_reason TEXT DEFAULT '',
+      detail          TEXT DEFAULT '',
+      actor           TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL DEFAULT '',
+      created_at      TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_dispatch_attempts_task_time
+      ON dispatch_attempts(task_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_dispatch_attempts_time
+      ON dispatch_attempts(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_dispatch_attempts_idem
+      ON dispatch_attempts(idempotency_key);
+  `);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_dispatch_due ON tasks(status, monitor_ready, dispatch_last_at)");
   // T00763：需求行关联的 PRD 文档 id（导入时若携带 PRD 原文则回填，供矩阵查看与 AI 上下文反查）
   ensureColumn('prd_requirements', 'prd_id', 'prd_id TEXT');
   // T00770：PRD 文档状态流转——'prd'=草稿/评审中 | 'confirmed'=确认版（进入需求跟踪矩阵的正式基线）

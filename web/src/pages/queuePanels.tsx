@@ -854,6 +854,9 @@ export interface PoolRunSlotView {
   readonly title: string;
   readonly ai_state_at: string;
   readonly project_name: string;
+  /** T06268：平台/通道标识，B0 任务在池中一眼可辨 */
+  readonly platform?: string | null;
+  readonly channel?: 'B0' | 'A' | 'D';
 }
 
 export interface PoolStatusView {
@@ -929,13 +932,18 @@ export function PoolPanel(props: PoolPanelProps) {
                 <div key={r.id} style={{ ...rowStyle, gap: 8, fontSize: 'var(--fs-s)' }}>
                   <Loader2 size={12} className="aispin" style={{ color: 'var(--accent)', flexShrink: 0 }} />
                   <span style={{ color: 'var(--accent)', flexShrink: 0 }}>{r.task_no ?? '—'}</span>
+                  {r.channel && (
+                    <span style={{ ...PILL, color: r.channel === 'B0' ? 'var(--accent)' : r.channel === 'D' ? 'var(--danger)' : 'var(--warn)', flexShrink: 0 }} title={`平台：${r.platform ?? r.channel}`}>
+                      {r.channel === 'B0' ? 'B0 执行中' : r.channel === 'D' ? 'D 人工' : 'MCP'}
+                    </span>
+                  )}
                   <span title={`${r.title}（${r.project_name}）`} style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {r.title}
                   </span>
                   <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{r.project_name} · {Math.max(1, Math.round((now - new Date(r.ai_state_at).getTime()) / 60000))} 分钟</span>
                   <button onClick={() => onPauseTask(r.id)} style={{ ...BTN_SECONDARY, fontSize: 'var(--fs-xs)', padding: '2px 8px', whiteSpace: 'nowrap' }}
-                    title="暂停 — 把该任务移出分发池（转搁置）；Agent 侧已开始的动作无法强制中断" aria-label={`暂停任务 ${r.task_no ?? ''}`}>
-                    <Pause size={11} /> 暂停
+                    title="移出池 — 把该任务移出分发池（转搁置）；Agent 侧已开始的动作无法强制中断" aria-label={`移出池 ${r.task_no ?? ''}`}>
+                    <Pause size={11} /> 移出池
                   </button>
                 </div>
               ))}
@@ -943,7 +951,7 @@ export function PoolPanel(props: PoolPanelProps) {
           )}
           {pool && pool.running.length === 0 && <div style={{ ...hintStyle, marginTop: 6 }}>当前没有外部 Agent 领取任务。队列发送不占用这里的并发槽位。</div>}
           <div style={{ ...hintStyle, marginTop: 6 }}>
-            暂停 = 移出分发池（转搁置，恢复请在「任务」菜单搁置列表操作）；MCP 领取是软引导，不阻断外部 Agent。
+            移出池 = 把任务转搁置（恢复请在「任务」菜单搁置列表操作）；MCP 领取是软引导，不阻断外部 Agent。
           </div>
         </>
       )}

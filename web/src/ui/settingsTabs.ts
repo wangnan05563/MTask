@@ -11,14 +11,14 @@
  */
 import {
   Archive, ArrowLeftRight, Brain, CircleHelp, Database, History, Info, KeyRound,
-  LayoutDashboard, ListPlus, Network, Repeat, ScanLine, ScrollText, Settings2,
+  LayoutDashboard, ListPlus, Network, Repeat, ScanLine, ScrollText, Send, Settings2,
   ShieldCheck, SlidersHorizontal, Tags, Wrench, type LucideIcon,
 } from 'lucide-react';
 
 export type SettingsTabKey =
   | 'general' | 'help' | 'about'
   | 'dashboard' | 'categories' | 'fields' | 'recurring' | 'history' | 'archive' | 'memory' | 'migration' | 'dbadmin' | 'apitokens' | 'sonar'
-  | 'supervisor' | 'tunnel' | 'logs';
+  | 'supervisor' | 'dispatch' | 'tunnel' | 'logs';
 
 export interface SettingsTab {
   readonly key: SettingsTabKey;
@@ -67,6 +67,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
     key: 'ops', label: '运维与诊断', icon: Wrench,
     tabs: [
       { key: 'supervisor', label: '监督与审计', icon: ShieldCheck, keywords: ['监督', '审计', '熔断', '队列', '监督审计'] },
+      { key: 'dispatch', label: '派发策略', icon: Send, keywords: ['派发', '推送', '自动派发', 'B0', 'CodeBuddy', '网关', '冷却', '候选'] },
       { key: 'tunnel', label: '内网穿透', icon: Network, keywords: ['穿透', '隧道', '外网'] },
       { key: 'logs', label: '日志', icon: ScrollText, keywords: ['日志', '排障', '诊断'] },
     ],

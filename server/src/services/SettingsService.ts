@@ -36,6 +36,8 @@ export type ImportResult = {
   imported: number;
   /** 因项目名撞重被跳过未导入的行数 */
   skippedDuplicateNames: number;
+  /** 因父项目重名被跳过而无法安全落库的关联行数（任务、任务图片） */
+  skippedDependents: number;
   /** 冲突明细（bundle 行名 ↔ 占用行 id），供事后核对 */
   nameConflicts: ImportNameConflict[];
 };
@@ -173,7 +175,8 @@ export async function* exportBundleChunks(tables?: string[]): AsyncGenerator<str
       // 提前退出（调用方 break/抛错/客户端断开）必须显式收尾，否则读语句悬挂、WAL checkpoint 被无限推迟
       it.return?.();
     }
-    yield `${firstChunk ? '' : ','}${buf.join(',')}]`;
+    // 尾片可能正好在上一次 flush 后为空：此时流里已有完整行，直接闭合数组，不能再补逗号。
+    yield `${!firstChunk && buf.length > 0 ? ',' : ''}${buf.join(',')}]`;
   }
   yield '}}';
 }
@@ -280,6 +283,7 @@ export function importBundle(b: unknown, mode: ImportMode): ImportResult {
   if (!validateBundle(b)) throw new Error('导入文件无效或格式不受支持');
   const db = getDb();
   const nameConflicts: ImportNameConflict[] = [];
+  let skippedDependents = 0;
   const imported = db.transaction(() => {
     if (mode === 'overwrite') {
       // 先清空全部业务表（子表先删保证外键安全），再按父表顺序重插。
@@ -295,6 +299,10 @@ export function importBundle(b: unknown, mode: ImportMode): ImportResult {
     }
     // keep / merge：不改动现有多余数据的差异删减，仅按策略合并导入行
     let n = 0;
+    // 项目名冲突被跳过 ⇒ 该项目的任务不可落库（project_id 外键），其图片也不能再引用不存在的任务。
+    // 这是“按行跳过、不整单失败”的必要收口，否则一条项目冲突会让整个事务因 FOREIGN KEY 回滚。
+    const skippedProjectIds = new Set<string>();
+    const skippedTaskIds = new Set<string>();
     for (const t of EXPORT_TABLES) {
       if (!Array.isArray(b.data[t])) continue; // 兼容旧备份缺少新增表
       const rows = normalize(db, t, b.data[t]);
@@ -302,7 +310,31 @@ export function importBundle(b: unknown, mode: ImportMode): ImportResult {
         // T02945：导入通道的最后一条重名产生侧——写 projects 前过单源判据，冲突行跳过并点名
         const { accepted, conflicts } = filterProjectRows(db, rows, mode);
         nameConflicts.push(...conflicts);
+        const acceptedIds = new Set(accepted.map((r) => String((r as Record<string, unknown>).id ?? '')));
+        for (const row of rows) {
+          const id = String((row as Record<string, unknown>).id ?? '');
+          if (id && !acceptedIds.has(id)) skippedProjectIds.add(id);
+        }
         n += upsertRows(db, t, accepted, mode);
+        continue;
+      }
+      if (t === 'tasks') {
+        const importable = skippedProjectIds.size
+          ? rows.filter((row) => !skippedProjectIds.has(String((row as Record<string, unknown>).project_id ?? '')))
+          : rows;
+        for (const row of rows) {
+          if (!importable.includes(row)) skippedTaskIds.add(String((row as Record<string, unknown>).id ?? ''));
+        }
+        skippedDependents += rows.length - importable.length;
+        n += upsertRows(db, t, importable, mode);
+        continue;
+      }
+      if (t === 'task_images') {
+        const importable = skippedTaskIds.size
+          ? rows.filter((row) => !skippedTaskIds.has(String((row as Record<string, unknown>).task_id ?? '')))
+          : rows;
+        skippedDependents += rows.length - importable.length;
+        n += upsertRows(db, t, importable, mode);
         continue;
       }
       n += upsertRows(db, t, rows, mode);
@@ -313,7 +345,7 @@ export function importBundle(b: unknown, mode: ImportMode): ImportResult {
   // cacheClear」——projects 等列表有 5s TTL 兜底，但导入后立刻看列表会看到导入前的旧数据
   // （T02945 门 R-05 实测）。清全部集合缓存：导入可能改任意业务表，保守全清（TTL 仅 5s，代价可忽略）。
   cacheClear();
-  return { imported, skippedDuplicateNames: nameConflicts.length, nameConflicts };
+  return { imported, skippedDuplicateNames: nameConflicts.length, skippedDependents, nameConflicts };
 }
 
 /** 按目标表规范化导入行（base64 → Buffer 解码、明文 key → 密文），并插入 */
@@ -327,6 +359,18 @@ function insertAll(db: Database.Database, table: string, rows: unknown[]): numbe
       ins.run(r.id, r.task_id, r.mime_type, Buffer.from(data, 'base64'), r.created_at);
     }
     return rows.length;
+  }
+  if (table === 'app_settings') {
+    // app_settings 主键是 key 不是 id；overwrite 走不到 upsertRows 的 key 分支，必须单独插入，
+    // 否则覆盖回导会静默丢掉全部配置（实测 14 行配置归零）。
+    const ins = db.prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)');
+    let n = 0;
+    for (const r of rows as Record<string, unknown>[]) {
+      if (typeof r.key !== 'string' || !r.key) continue;
+      ins.run(r.key, r.value);
+      n++;
+    }
+    return n;
   }
   if (table === 'ai_tools') {
     const dbRows = (rows as Record<string, unknown>[]).map(aiToolImportRow);

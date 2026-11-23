@@ -76,7 +76,7 @@ export const FIELD_INLINE: CSSProperties = {
 };
 
 /** 表格行内输入（显形后用卡片底；PlanPage 原引用的 --bg 是未定义令牌，此处收编为 --card-bg） */
-export const FIELD_ROW: CSSProperties = { border: '1px solid var(--border-strong)', borderRadius: 6, padding: '3px 6px', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' };
+export const FIELD_ROW: CSSProperties = { border: '1px solid var(--border-strong)', borderRadius: 6, padding: '3px 6px', background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)', boxSizing: 'border-box' };
 
 /** 表单标签 */
 export const FIELD_LABEL: CSSProperties = { fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 4, display: 'block' };

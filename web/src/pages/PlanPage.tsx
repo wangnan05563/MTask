@@ -22,7 +22,7 @@ import { AiUnavailableHint, aiBlocked, aiBlockedTitle, useAiReadiness } from '..
 import { FontColorButton } from '../ui/FontColorButton';
 import { saveBlob } from '../utils/download'; // T03197：分享快照下载（文件名取自服务端 Content-Disposition）
 import { api, type AITool } from '../api/client';
-import { askConfirm, askInput, askInputEx } from '../ui/dialogs';
+import { askConfirm, askInput, askInputEx, showReport } from '../ui/dialogs';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { buildWorkdayCtx } from '../utils/workday'; // T01059 后续：甘特拖动
 import { deltaDaysFromPx, ganttDragResult, newGanttDrag, type GanttDragMode, type GanttDragState } from '../utils/ganttDrag'; // T01059 后续
@@ -178,6 +178,10 @@ const planTableCss = `
   .plan-table tr:hover input, .plan-table tr:focus-within input { border-color: var(--border-strong); background: var(--card-bg); }
   .plan-table .task-op { opacity: 0; visibility: hidden; transition: opacity .15s ease, visibility 0s linear .15s; }
   .plan-table tr:hover .task-op, .plan-table tr:focus-within .task-op { opacity: 1; visibility: visible; transition: opacity .15s ease, visibility 0s; }
+  /* T040XX：表头吸顶——258 行/1.6 万像素高的列表滚过一屏后仍能辨认列名。
+     border-collapse 下 sticky th 的分隔线会随滚动消失，改用 inset 阴影画底线。 */
+  .plan-table thead th { position: sticky; top: 0; z-index: 2; background: var(--surface); box-shadow: inset 0 -1px 0 var(--border-strong); }
+  .plan-table thead tr { background: var(--surface); }
 `;
 
 /** AI 模型默认整理工具优先排序 */
@@ -253,7 +257,7 @@ function PlanProjectPicker({ projects, sortedProjects, projectId, setProjectId, 
         setProjOpen((o) => !o);
       }} aria-haspopup="listbox" aria-expanded={projOpen}
         title="选择项目 — 项目名后徽标：绿=已完成、蓝=进行中、灰=待开始（悬浮查看详情）"
-        aria-label="选择项目"
+        aria-label={cur ? `选择项目：${cur.name}（已完成 ${cur.plan_done ?? 0} / 进行中 ${cur.plan_doing ?? 0} / 待开始 ${cur.plan_open ?? 0}）` : '选择项目'}
         style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 8px', border: '1px solid var(--border-strong)', borderRadius: 4, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)', cursor: 'pointer', maxWidth: 220, minWidth: 0 }}>
         {/* T02167：与任务页项目下拉条同修——名称让步（单行省略），徽标与箭头 flexShrink:0 不让步，
             否则窄窗口下裸文本节点被压到 1 字宽、统计徽标溢出按钮边框 */}
@@ -529,20 +533,30 @@ function ShareSnapshotButton({ projectId, projectName }: {
   );
 }
 
-/** 工具栏：复杂度批量补算按钮（T01058 后续，S3776 抽取） */
-function PlanComplexityButton({ backfill, evalBusy, busy }: {
+/** 工具栏：复杂度批量补算按钮（T01058 后续，S3776 抽取）
+ *  P1-4：把「还有多少行没评级」直接标在按钮上——此前缺口只在 ≥4 时以红色徽标出现，
+ *  空值（手工/Excel 导入的存量行）完全看不见，用户没有补算的动机。 */
+function PlanComplexityButton({ backfill, evalBusy, busy, missing }: {
   readonly backfill: (force: boolean) => Promise<void>; readonly evalBusy: boolean; readonly busy: boolean;
+  readonly missing: number;
 }) {
+  const title = missing > 0
+    ? `补算复杂度 — 还有 ${missing} 行未评级（显示的数字即缺口），AI 按批评定；按住 Shift 点击 = 连同已评级的行一起重算`
+    : '补算复杂度 — 当前行均已评级；按住 Shift 点击 = 全部重算';
   return (
     <button
       onClick={(e) => runAsync(backfill(e.shiftKey))}
       disabled={evalBusy || busy}
-      title="补算复杂度 — 为尚无复杂度评级（1~5）的计划行批量补算，AI 按批评定；按住 Shift 点击 = 连同已评级的行一起重算"
-      aria-label="批量补算复杂度" data-t03622="complexity"
+      title={title}
+      aria-label={missing > 0 ? `批量补算复杂度（${missing} 行待评估）` : '批量补算复杂度'}
+      data-t03622="complexity" data-complexity-missing={missing}
       className={evalBusy ? 'task-breathe' : undefined}
-      style={{ ...btnStyle, color: 'var(--text-secondary)', padding: '6px 8px' }}
+      style={{ ...btnStyle, color: missing > 0 ? 'var(--warning, #c80)' : 'var(--text-secondary)', padding: '6px 8px', gap: 4 }}
     >
       {evalBusy ? <Loader2 size={13} className="aispin" /> : <Gauge size={13} />}
+      {missing > 0 && (
+        <span style={{ fontSize: 'var(--fs-xs)', fontVariantNumeric: 'tabular-nums' }}>{missing}</span>
+      )}
     </button>
   );
 }
@@ -777,7 +791,7 @@ function PlanTitleFilterHeader({ planMulti, plans, planSelIds, setPlanSelIds, al
 }) {
   const allSelected = plans.length > 0 && plans.every((x) => planSelIds.includes(x.id));
   return (
-    <th style={{ padding: 6 }}>
+    <th scope="col" style={{ padding: 6 }}>
       {/* T00658：多选模式下标题字段旁「全选框」——全选/全不选当前列表（含半选态） */}
       {planMulti && (
         <input ref={allPlansRef} type="checkbox"
@@ -823,7 +837,7 @@ function PlanDurationHeader({ durationUnit, setDurationUnit }: {
 }) {
   const hour = durationUnit === 'hour';
   return (
-    <th style={{ padding: 6 }}>
+    <th scope="col" style={{ padding: 6 }}>
       <button onClick={() => setDurationUnit((u) => (u === 'day' ? 'hour' : 'day'))}
         title="点击切换工期显示模式：工期/日（工作日）与 工期/时（按 8 小时/天换算持久化）"
         className="task-op"
@@ -2265,9 +2279,12 @@ export function PlanPage() {
 
   async function exportExcel() {
     if (!projectId) return flash('请先选择项目');
-    const buf = await api.getBinary(`/plans/export?projectId=${projectId}`);
-    const ts = todayStr().replaceAll('-', '');
-    downloadBlob(buf, `项目计划-${ts}.xlsx`);
+    setBusy(true);
+    try {
+      const buf = await api.getBinary(`/plans/export?projectId=${projectId}`);
+      const ts = todayStr().replaceAll('-', '');
+      downloadBlob(buf, `项目计划-${ts}.xlsx`);
+    } catch (e) { flash(`导出 Excel 失败：${String((e as Error).message ?? e)}`); } finally { setBusy(false); }
   }
 
   /** T01071-FR5.3：项目全量 Markdown 导出（任务清单 + WBS + 需求矩阵单文档） */
@@ -2288,7 +2305,18 @@ export function PlanPage() {
       const buf = await file.arrayBuffer();
       const r = await api.postBinary<{ inserted: number; errors: Array<{ row: number; message: string }> }>(`/plans/import?projectId=${projectId}`, buf);
       if (r.errors.length > 0) {
-        flash(`导入失败（整体未入库）：${r.errors.length} 行有问题，首条 → 第 ${r.errors[0].row} 行：${r.errors[0].message}`);
+        // P1-5：整文件级（row=0）与行级错误分开展示，且给出完整清单 + 复制入口。
+        // 旧实现只 flash 首条，用户既不知道一共几行错、也无从逐条修正。
+        const fileLevel = r.errors.filter((e) => e.row <= 0).map((e) => e.message);
+        const rowLevel = r.errors.filter((e) => e.row > 0);
+        showReport({
+          title: '导入未写入：修正后可重新导入',
+          intro: fileLevel.length > 0
+            ? `${fileLevel.join('\n')}\n（本次整体未入库，原有计划未受影响）`
+            : `共 ${rowLevel.length} 行未通过校验（导入是整体事务：任一行失败则全部不入库，原有计划未受影响）`,
+          items: rowLevel.map((e) => `第 ${e.row} 行：${e.message}`),
+          footnote: '提示：表头须含「标题」「开始日期」；日期用 YYYY-MM-DD；状态只能填 todo/doing/done/blocked。可先下载模板对照。',
+        });
       } else {
         flash(`导入成功 ${r.inserted} 条，时间线已重排`);
       }
@@ -2910,7 +2938,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         <ShareSnapshotButton projectId={projectId} projectName={projects.find((p) => p.id === projectId)?.name ?? ''} />
         <PlanEvalButton batchEvaluatePlans={batchEvaluatePlans} evalBusy={evalBusy} busy={busy} evalLabel={evalLabel} plans={plans}
           blocked={aiDown} blockedTitle={aiBlockedTitle(readiness, 'AI 评估 — 对全部计划条目评估工期合理性/风险与建议，结果自动录入各条描述（确认后执行）')} />
-        <PlanComplexityButton backfill={backfillComplexity} evalBusy={evalBusy} busy={busy} />
+        <PlanComplexityButton backfill={backfillComplexity} evalBusy={evalBusy} busy={busy}
+          missing={plans.filter((p) => p.complexity == null).length} />
         <PlanMultiToggle planMulti={planMulti} setPlanMulti={setPlanMulti} setPlanSelIds={setPlanSelIds} />
         {planMulti && planSelIds.length > 0 && (
           <PlanBatchBar planSelIds={planSelIds} plans={plans} selectAllPlans={selectAllPlans}
@@ -3037,23 +3066,23 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
       <table className="plan-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-s)' }}>
         <thead>
           <tr style={{ textAlign: 'left', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-strong)' }}>
-            <th style={{ padding: 6 }}>#</th>
+            <th scope="col" style={{ padding: 6 }}>#</th>
             <PlanTitleFilterHeader planMulti={planMulti} plans={plans} planSelIds={planSelIds} setPlanSelIds={setPlanSelIds}
               allPlansRef={allPlansRef} titleFilter={titleFilter} setTitleFilter={setTitleFilter}
               titleFilterOpen={titleFilterOpen} setTitleFilterOpen={setTitleFilterOpen} />
-            <th style={{ padding: 6, fontSize: 'var(--fs-xs)' }}>依赖</th>
-            <th style={{ padding: 6 }}>{renderColFilter('start', '开始', 'text')}</th>
-            <th style={{ padding: 6 }}>{renderColFilter('end', '结束', 'text')}</th>
+            <th scope="col" style={{ padding: 6, fontSize: 'var(--fs-xs)' }}>依赖</th>
+            <th scope="col" style={{ padding: 6 }}>{renderColFilter('start', '开始', 'text')}</th>
+            <th scope="col" style={{ padding: 6 }}>{renderColFilter('end', '结束', 'text')}</th>
             <PlanDurationHeader durationUnit={durationUnit} setDurationUnit={setDurationUnit} />
-            <th style={{ padding: 6 }}>{renderColFilter('progress', '进度', 'select', [
+            <th scope="col" style={{ padding: 6 }}>{renderColFilter('progress', '进度', 'select', [
               { v: 'none', l: '未开始' }, { v: 'doing', l: '进行中' }, { v: 'done', l: '已完成' },
             ])}</th>
-            <th style={{ padding: 6, minWidth: 70, whiteSpace: 'nowrap' }}>{renderColFilter('status', '状态', 'select', [
+            <th scope="col" style={{ padding: 6, minWidth: 70, whiteSpace: 'nowrap' }}>{renderColFilter('status', '状态', 'select', [
               { v: 'todo', l: '待开始' }, { v: 'doing', l: '进行中' }, { v: 'done', l: '已完成' }, { v: 'blocked', l: '阻塞' },
             ])}</th>
-            <th style={{ padding: 6 }}>{renderColFilter('assignee', '负责人', 'text')}</th>
-            <th style={{ padding: 6 }}>待办联动</th>
-            <th style={{ padding: 6 }}>操作</th>
+            <th scope="col" style={{ padding: 6 }}>{renderColFilter('assignee', '负责人', 'text')}</th>
+            <th scope="col" style={{ padding: 6 }}>待办联动</th>
+            <th scope="col" style={{ padding: 6 }}>操作</th>
           </tr>
         </thead>
         <tbody>
@@ -3093,12 +3122,12 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
           });
           })()}
           {plans.length === 0 && (
-            <tr><td colSpan={10} style={{ padding: 0 }}>
+            <tr><td colSpan={11} style={{ padding: 0 }}>
               {/* T01072-FR1.10：统一空态——动作直达新建入口 */}
               <EmptyState
                 icon={<CalendarPlus size={18} />}
                 title="当前项目暂无计划任务"
-                hint="可「新建任务」逐条创建，或「导入 Excel」批量导入；也可在 AI 工作台用「AI 项目计划导入」从 PRD 自动拆解。"
+                hint="可「新建计划任务」逐条创建，或「导入 Excel」批量导入；也可在 AI 工作台用「AI 项目计划导入」从 PRD 自动拆解。"
                 action={{ label: '新建计划任务', onClick: () => void createPlan() }}
               />
             </td></tr>

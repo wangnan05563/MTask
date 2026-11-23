@@ -216,6 +216,28 @@ function applyPlanSheetStyle(ws: ExcelJS.Worksheet, centerKeys: string[]): void 
   for (const key of centerKeys) ws.getColumn(key).alignment = { horizontal: 'center' };
 }
 
+/** 日期列写成真日期（Date 值）而不是文本：排序/筛选/公式才能按时间比较。
+ *  空日期保持 null，交给 Excel 显示为空白。 */
+function planDateValue(s: string | null | undefined): Date | null {
+  if (!s) return null;
+  const d = new Date(`${String(s).slice(0, 10)}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** 数据区样式：细底线 + 垂直居中 + 描述列换行。表头样式由 applyPlanSheetStyle 负责。 */
+function applyPlanDataStyle(ws: ExcelJS.Worksheet, wrapKeys: string[]): void {
+  const keyByCol = new Map<number, string>();
+  ws.columns.forEach((col, idx) => { if (col.key) keyByCol.set(idx + 1, col.key); });
+  for (let r = 2; r <= ws.rowCount; r += 1) {
+    const row = ws.getRow(r);
+    row.eachCell({ includeEmpty: true }, (c, colNo) => {
+      c.border = { bottom: { style: 'hair', color: { argb: 'FFE5E7EB' } } };
+      const key = keyByCol.get(colNo) ?? '';
+      c.alignment = { vertical: 'middle', horizontal: c.alignment?.horizontal ?? 'left', wrapText: wrapKeys.includes(key) };
+    });
+  }
+}
+
 /**
  * 从 AI 输出中提取 JSON 数组，带截断恢复（T00439）：
  * 大文档拆分时输出可能被 max_tokens 截断（JSON 未闭合），此时退化到
@@ -350,6 +372,20 @@ function parseDate(s: string): Date {
 function fmt(d: Date): string {
   const p = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/** 本地时区标签：Windows 上 Intl 会把 UTC+8 报成 Asia/Hong_Kong，对内地用户是误导，
+ *  这里统一按实际偏移输出 UTC+08:00，跨平台口径稳定。 */
+function localTzLabel(): string {
+  const off = -new Date().getTimezoneOffset();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `UTC${off >= 0 ? '+' : '-'}${p(Math.floor(Math.abs(off) / 60))}:${p(Math.abs(off) % 60)}`;
+}
+/** 本地时间戳（YYYY-MM-DD HH:mm:ss）：导出正文的「生成时间」必须与本机时区一致。
+ *  此前用 toISOString() 直接截断，UTC 下比用户本地早 8 小时——凌晨导出会显示成前一天。 */
+function fmtDateTime(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${fmt(d)} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
 /**
@@ -735,13 +771,18 @@ function buildCoverageWarn(draftCount: number, requirements: Array<{ reqNo: stri
   if (uncovered.length === requirements.length) return '本次解析的计划节点未关联到任何需求编号——可在矩阵面板中手动建立关联';
   const priorityOf = new Map(requirements.map((r) => [r.reqNo, (r.priority ?? '').toLowerCase()]));
   // 2026-11-18：P2/P3 未排期是范围闸门的正常结果，不是「不可追溯」，不要和 P0/P1 缺口混为一谈。
-  if (uncovered.every((no) => /p[23]/i.test(priorityOf.get(no) ?? ''))) {
+  const outOfScope = uncovered.filter((no) => /p[23]/i.test(priorityOf.get(no) ?? ''));
+  const inScope = uncovered.filter((no) => !/p[23]/i.test(priorityOf.get(no) ?? ''));
+  const scopeNote = outOfScope.length > 0
+    ? `；另有 ${outOfScope.length} 条 P2/P3 按范围闸门未进入本期 WBS（仍保留在需求矩阵）`
+    : '';
+  if (inScope.length === 0) {
     return `有 ${uncovered.length} 条 P2/P3 需求按范围闸门未进入本期 WBS（仍保留在需求矩阵）——如需本期交付，请在矩阵面板手动关联计划`;
   }
   const titleOf = new Map(requirements.map((r) => [r.reqNo, r.title]));
-  const list = uncovered.slice(0, 8).map((no) => `${no}《${(titleOf.get(no) ?? '').slice(0, 16)}》`).join('、');
-  const more = uncovered.length > 8 ? '…' : '';
-  return `有 ${uncovered.length} 条需求未被任何 WBS 计划关联（${list}${more}）——这些需求当前不可追溯，建议补计划或在矩阵面板手动关联；`
+  const list = inScope.slice(0, 8).map((no) => `${no}《${(titleOf.get(no) ?? '').slice(0, 16)}》`).join('、');
+  const more = inScope.length > 8 ? '…' : '';
+  return `有 ${inScope.length} 条本期需求未被任何 WBS 计划关联（${list}${more}）——这些需求当前不可追溯，建议补计划或在矩阵面板手动关联${scopeNote}；`
     + '编号每次解析会按出现顺序重排，跨次比对请以需求标题为准';
 }
 
@@ -797,7 +838,9 @@ function pushTaskTable(
   tasks: Array<{ task_no: string | null; title: string; status: string; priority: string; verified: number }>,
   esc: MdCell,
 ): void {
-  lines.push(`## 任务清单（${tasks.length} 条）`, '', '| 编号 | 标题 | 状态 | 优先级 | 验证 |', '| --- | --- | --- | --- | --- |');
+  // P2-9：显式锚点——中文标题在不同 Markdown 渲染器里的 slug 规则不一（有的保留中文、有的转码），
+  // 目录链接若依赖标题自动 slug 会指空；固定 <a id> 让飞书/GitHub/VSCode 都能跳。
+  lines.push('<a id="mtask-tasks"></a>', '', `## 任务清单（${tasks.length} 条）`, '', '| 编号 | 标题 | 状态 | 优先级 | 验证 |', '| --- | --- | --- | --- | --- |');
   for (const t of tasks) {
     lines.push(`| ${t.task_no ?? '—'} | ${esc(t.title)} | ${t.status} | ${t.priority} | ${t.verified ? '✓' : ''} |`);
   }
@@ -806,7 +849,7 @@ function pushTaskTable(
 
 /** M6-6.1：追加「项目计划 / WBS」表到导出正文 */
 function pushPlanTable(lines: string[], plans: PlanTaskRow[], esc: MdCell): void {
-  lines.push(`## 项目计划 / WBS（${plans.length} 条）`, '', '| 类型 | 标题 | 开始 | 结束 | 工期 | 进度 | 状态 | 负责人 |', '| --- | --- | --- | --- | --- | --- | --- | --- |');
+  lines.push('<a id="mtask-plans"></a>', '', `## 项目计划 / WBS（${plans.length} 条）`, '', '| 类型 | 标题 | 开始 | 结束 | 工期 | 进度 | 状态 | 负责人 |', '| --- | --- | --- | --- | --- | --- | --- | --- |');
   for (const p of plans) {
     const kindLabel = planKindLabel((p as { kind?: string }).kind);
     lines.push(`| ${kindLabel} | ${esc(p.title)} | ${p.start_date} | ${p.end_date} | ${p.duration_days} | ${p.progress}% | ${p.status} | ${esc(p.assignee) || '—'} |`);
@@ -816,7 +859,7 @@ function pushPlanTable(lines: string[], plans: PlanTaskRow[], esc: MdCell): void
 
 /** M6-6.1：追加「需求跟踪矩阵」表（T01361：关联计划读真实字段 linkedPlans，与界面矩阵同源） */
 function pushReqTable(lines: string[], reqs: RequirementRow[], esc: MdCell): void {
-  lines.push(`## 需求跟踪矩阵（${reqs.length} 条）`, '', '| 编号 | 需求 | 状态 | 关联计划 |', '| --- | --- | --- | --- |');
+  lines.push('<a id="mtask-reqs"></a>', '', `## 需求跟踪矩阵（${reqs.length} 条）`, '', '| 编号 | 需求 | 状态 | 关联计划 |', '| --- | --- | --- | --- |');
   for (const r of reqs) {
     const reqNo = r.req_no == null ? '—' : String(r.req_no);
     const status = r.status == null ? 'todo' : String(r.status);
@@ -855,7 +898,9 @@ function normalizedReqNoKey(raw: string): string {
   if (!s) return '';
   // 2026-11-17：AC 是独立编号空间（AC-1/AC-01/AC_01 视为同一条验收项）。
   // 旧实现只归一 REQ，导致计划写的 AC-1 与需求行的 AC-01 匹配不上，质量门误报「AC 未映射」。
-  const ac = /^AC[-_:：]?0*(\d+)$/i.exec(s);
+  // 2026-11-21：模型在覆盖卡里把验收项写成 REQ-AC-01，旧正则只认 AC-01，
+  // 导致同一批 AC 被当成两套编号，预览/导入二次兜底生成重复覆盖卡。
+  const ac = /^(?:REQ[-_:：]?)?AC[-_:：]?0*(\d+)$/i.exec(s);
   if (ac) return `AC-${String(Number(ac[1])).padStart(2, '0')}`;
   const m = /^(?:REQ(?:UIREMENT)?|R|需求(?:编号)?|要求)?[-_:：]?0*(\d+)$/i.exec(s);
   if (!m) return s.toUpperCase();
@@ -950,6 +995,8 @@ function milestoneDurations(
   skip?: (index: number) => boolean,
 ): number[] {
   const out = items.map((it) => Math.max(1, Math.floor(Number(it?.durationDays) || 1)));
+  // 2026-11-22：覆盖核对卡是管理动作，不是交付任务——不计入里程碑工期（否则 6 张卡会把 M5 抬高 6 天）。
+  const isCoverage = (idx: number): boolean => /需求追溯与覆盖核对/.test(items[idx]?.title ?? '');
   // 结构优先：有 wbsCode/parentCode 时按树汇总，行序不再参与父子判定
   const tree = deriveWbsTree(items.map((it) => ({
     title: it.title ?? '',
@@ -962,7 +1009,7 @@ function milestoneDurations(
       let sum = 0;
       const walk = (idx: number): void => {
         for (const child of tree.childrenOf[idx]) {
-          if (skip?.(child)) continue;
+          if (skip?.(child) || isCoverage(child)) continue;
           if (items[child]?.kind !== 'milestone') sum += out[child] ?? 1;
           walk(child);
         }
@@ -983,7 +1030,7 @@ function milestoneDurations(
     let sum = 0;
     for (let j = i + 1; j < items.length; j++) {
       if (items[j]?.kind === 'milestone') break;
-      if (skip?.(j)) continue;
+      if (skip?.(j) || isCoverage(j)) continue;
       sum += out[j] ?? 1;
     }
     if (sum > 0) out[i] = sum; // 无明细的里程碑保留 AI 给的工期
@@ -1109,9 +1156,12 @@ function applyPrdPlanDefaults(drafts: PrdPlanDraft[]): void {
  *  ③ 丢弃没有 milestone 归属的 normal（质量门会判孤儿，不如在解析阶段直接暴露）。 */
 function consolidatePrdPlanDrafts(drafts: PrdPlanDraft[]): PrdPlanDraft[] {
   const kinds = drafts.map((d) => resolvePrdKind(d.title, d.kind, d.wbsCode));
-  const milestoneCodes = new Set(drafts.filter((_, i) => kinds[i] === 'milestone').map((d) => (d.wbsCode ?? '').trim()).filter(Boolean));
-  const normals = drafts.filter((_, i) => kinds[i] === 'normal' && !/p[23]/i.test(drafts[i].priority ?? ''));
-  if (normals.length === 0) return drafts.filter((_, i) => kinds[i] === 'milestone');
+  // 2026-11-22：覆盖核对卡是管理动作，不占 PRD_PARSE_MAX_NORMALS=45 的真实任务配额；
+  // 若先被 AC 兜底插入再参与裁剪，可能挤掉真实交付任务，甚至自己也被裁掉。
+  const coverageRows = drafts.filter((_, i) => kinds[i] === 'normal' && /需求追溯与覆盖核对/.test(drafts[i].title));
+  const normals = drafts.filter((_, i) => kinds[i] === 'normal'
+    && !/p[23]/i.test(drafts[i].priority ?? '')
+    && !/需求追溯与覆盖核对/.test(drafts[i].title));
   let kept = normals;
   if (normals.length > PRD_PARSE_MAX_NORMALS) {
     const rank = (d: PrdPlanDraft): number => {
@@ -1122,10 +1172,41 @@ function consolidatePrdPlanDrafts(drafts: PrdPlanDraft[]): PrdPlanDraft[] {
     kept = [...normals].sort((a, b) => rank(a) - rank(b)).slice(0, PRD_PARSE_MAX_NORMALS);
   }
   const keptSet = new Set(kept);
+  /** P2/P3 里程碑本身也属于范围闸门：模型常把 R3 批次直接写成第 5 个里程碑，子项全被 P2/P3 过滤后
+   *  只剩一个空里程碑，前端质量门仍按「P2/P3 条目进入排期」阻断。这里同步收敛里程碑骨架：
+   *  - 无本期子项：整条丢弃（需求矩阵保留，后续批次再排）；
+   *  - 仍有 P0/P1 子项：把里程碑优先级提升到子项最高优先级，避免父节点 P2/P3 误伤本期任务。 */
+  const activeMilestones = new Set<PrdPlanDraft>();
+  const milestoneCodes = new Set<string>();
+  for (let i = 0; i < drafts.length; i += 1) {
+    if (kinds[i] !== 'milestone') continue;
+    const d = drafts[i];
+    const code = (d.wbsCode ?? '').trim();
+    if (!/p[23]/i.test(d.priority ?? '')) {
+      activeMilestones.add(d);
+      if (code) milestoneCodes.add(code);
+      continue;
+    }
+    const scopedChildren = kept.filter((n) => {
+      if (!code) return false;
+      const parent = (n.parentCode ?? '').trim();
+      return parent === code || (n.wbsCode ?? '').trim().startsWith(`${code}.`);
+    });
+    if (scopedChildren.length === 0) continue;
+    d.priority = scopedChildren.some((n) => /p0/i.test(n.priority ?? '')) ? 'p0' : 'p1';
+    activeMilestones.add(d);
+    milestoneCodes.add(code);
+  }
+  if (normals.length === 0) return drafts.filter((_, i) => activeMilestones.has(drafts[i]) || coverageRows.includes(drafts[i]));
   const out: PrdPlanDraft[] = [];
   for (const d of drafts) {
     const kind = resolvePrdKind(d.title, d.kind, d.wbsCode);
-    if (kind === 'milestone') { out.push(d); continue; }
+    if (kind === 'milestone') {
+      if (activeMilestones.has(d)) out.push(d);
+      continue;
+    }
+    // 覆盖核对卡不受 45 条真实任务配额与 P2/P3 范围过滤影响，统一保留（后续 compact 重分组）。
+    if (kind === 'normal' && /需求追溯与覆盖核对/.test(d.title)) { out.push(d); continue; }
     // 本期质量门硬闸门：P2/P3 不进入排期（需求矩阵仍保留，后续批次再排）。
     if (/p[23]/i.test(d.priority ?? '')) continue;
     if (!keptSet.has(d)) continue;
@@ -1182,35 +1263,57 @@ function dropPrdCoveragePlans(drafts: PrdCoveragePlan[]): number {
 }
 
 /** 2026-11-19：系统兜底生成的覆盖核对卡也可能多于所需（模型先写了一部分、系统再补一部分）。
- *  按每条最多 6 个关联的容量重新分组，保留前 N 张并删除多余卡，避免 normal 超过质量门上限。 */
+ *  2026-11-22：不再只在「卡多于所需」时压缩——覆盖卡单卡超 6 条或跨卡重复引用时，
+ *  即使卡数刚好，也必须按唯一引用重分组；否则质量门会因跨卡重复永久阻断。
+ *  按每条最多 6 个关联的容量重新分组，保留前 N 张并删除多余卡。 */
 function compactPrdCoveragePlans(drafts: PrdCoveragePlan[], requirements: PrdRequirementLite[]): number {
   const coverage = drafts.filter((d) =>
     resolvePrdKind(d.title, d.kind, d.wbsCode) === 'normal'
     && /需求追溯与覆盖核对/.test(d.title));
-  if (coverage.length <= 1) return 0;
+  if (coverage.length <= 0) return 0;
   const refs: string[] = [];
   const seen = new Set<string>();
   const acRefs = new Set<string>();
+  let hasDup = false;
+  let oversized = false;
   for (const p of coverage) {
+    const cardRefs = new Set<string>();
     for (const no of p.reqNos ?? []) {
       const key = normalizedReqNoKey(no);
-      if (key && !seen.has(key)) { seen.add(key); refs.push(key); }
+      if (key) cardRefs.add(key);
     }
     for (const no of p.acceptanceRefs ?? []) {
       const key = normalizedReqNoKey(no);
-      if (key) acRefs.add(key);
-      if (key && !seen.has(key)) { seen.add(key); refs.push(key); }
+      if (key) { cardRefs.add(key); acRefs.add(key); }
     }
+    for (const key of cardRefs) {
+      if (seen.has(key)) hasDup = true;
+      else { seen.add(key); refs.push(key); }
+    }
+    if (cardRefs.size > PRD_COVERAGE_GROUP_SIZE) oversized = true;
   }
   if (refs.length === 0) return 0;
   const needed = Math.ceil(refs.length / PRD_COVERAGE_GROUP_SIZE);
-  if (needed >= coverage.length) return 0;
+  if (coverage.length === needed && !hasDup && !oversized) return 0;
   const sorted = [...coverage].sort((a, b) => {
     const ac = (a.wbsCode ?? '').localeCompare(b.wbsCode ?? '', undefined, { numeric: true });
     if (ac !== 0) return ac;
     return a.title.localeCompare(b.title);
   });
   const keep = sorted.slice(0, needed);
+  // 唯一引用数超过现有卡容量时，克隆模板卡补足（正常情况下 ensure 已生成足够卡，这里只做防御）。
+  const template = sorted[0];
+  for (let i = keep.length; i < needed; i += 1) {
+    const clone: PrdCoveragePlan = {
+      ...template,
+      title: `需求追溯与覆盖核对（${i + 1}）`,
+      wbsCode: template.wbsCode ? `${template.wbsCode}-${i + 1}` : template.wbsCode,
+      reqNos: [],
+      acceptanceRefs: undefined,
+    };
+    drafts.push(clone);
+    keep.push(clone);
+  }
   for (const p of sorted.slice(needed)) {
     const idx = drafts.indexOf(p);
     if (idx >= 0) drafts.splice(idx, 1);
@@ -1234,7 +1337,7 @@ function compactPrdCoveragePlans(drafts: PrdCoveragePlan[], requirements: PrdReq
       );
     }
   }
-  return coverage.length - keep.length;
+  return Math.max(0, coverage.length - keep.length);
 }
 
 export function finalizePrdParseResult(
@@ -1267,6 +1370,12 @@ export function finalizePrdParseResult(
   ensurePrdRequirementCoverage(requirements, finalDrafts);
   compactPrdCoveragePlans(finalDrafts, requirements);
   fillPlanSourceSectionsFromRequirements(requirements, finalDrafts);
+  // 2026-11-21：解析预览也必须走与导入相同的 normal 工期归一。否则预览里 M5=18（normal 多为 1 天），
+  // 导入时 normal 被改成 1~5 天、M5 变 24，用户看到的计划与最终落库不一致。
+  for (const p of finalDrafts) {
+    p.kind = p.kind ?? resolvePrdKind(p.title, p.kind, p.wbsCode);
+    normalizeNormalPlanDuration(p);
+  }
   // 2026-11-18：解析预览阶段就把里程碑工期收敛为「子项合计」，否则质量门会持续报工期不符。
   const planDurations = milestoneDurations(
     finalDrafts,
@@ -1512,6 +1621,22 @@ function normalizePrdPlans(raw: unknown[]): PrdPlanDraft[] {
   return drafts;
 }
 
+/** 设计/运维/工程治理类支撑任务（enabler）：架构评审、风险登记册、环境准备、代码审查与清理等。
+ *  带 §章节溯源 + 足够描述时允许零需求关联；工程治理类标题可在无章节时按标题识别。
+ *  实现/测试类零关联仍按孤儿阻断。 */
+function isPrdEnablerPlan(p: PrdImportPlanItem): boolean {
+  const type = (p.taskType ?? '').toLowerCase();
+  const explicitSupport = type === 'design' || type === 'ops' || type === 'enabler';
+  const sourced = /§\s*\d+(?:\.\d+)*/.test(p.sourceSection ?? '');
+  const descOk = (p.description ?? '').replace(/\s/g, '').length >= 50;
+  if (explicitSupport) return sourced && descOk;
+  // 2026-11-22：AirMirror「代码审查与清理」被模型标成 verify 且未关联需求——它是跨需求的工程治理动作，
+  // 不是某条功能的实现/验收卡。标题语义足够明确时按 enabler 放行，避免为了过门强行挂一条无关需求。
+  const engineeringGovernance = /代码审查|代码评审|代码清理|代码重构|技术债|静态代码检查|静态扫描|死代码|重复代码|编码规范|依赖清理|依赖升级/.test(p.title ?? '')
+    && !/^(?:实现|开发|新增|接入|支持)/.test((p.title ?? '').trim());
+  return engineeringGovernance && descOk;
+}
+
 /** 2026-11-17：导入前质量门（服务端二次校验）。
  *  前端预演负责让用户看见问题；这里负责「即使绕开前端/MCP 直调，也不把坏结构落库」。
  *  只对带 PRD 结构信号（wbsCode/parentCode/prdDocs/prdMd）的导入生效，普通计划回写不受影响。 */
@@ -1522,16 +1647,99 @@ function validatePrdImportDraft(
   const errors: string[] = [];
   const warnings: string[] = [];
   const kinds = plans.map((p) => resolvePrdKind(p.title, p.kind, p.wbsCode));
+  const normalRowsAll = plans.filter((_, i) => kinds[i] === 'normal');
+  // 2026-11-22：覆盖核对卡是管理动作，不是交付任务——不占 45 条可执行上限，也不计入里程碑工期。
+  // 用户 AutoClicker 的「51 条超过 45」正是 45 条真实任务 + 6 张覆盖卡被一起计数造成的假阻断。
+  const coverageRows = normalRowsAll.filter((p) => /需求追溯与覆盖核对/.test(p.title));
+  const normalRows = normalRowsAll.filter((p) => !/需求追溯与覆盖核对/.test(p.title));
+  const normalCount = normalRows.length;
   const milestones = kinds.filter((k) => k === 'milestone').length;
-  const normals = kinds.filter((k) => k === 'normal').length;
   const groups = detectWbsGroups(plans.map((p, i) => ({ title: p.title, kind: kinds[i] })));
   if (groups.groups > 1) errors.push(`检测到 ${groups.groups} 套并行 WBS（${groups.groupStartTitles.slice(0, 6).join(' / ')}…）——必须收敛为一套 5~6 个里程碑后再导入`);
   if (milestones > 8) errors.push(`里程碑 ${milestones} 个，超过上限 8 个——请合并阶段，保留 5~6 个交付阶段`);
   if (milestones < 5) warnings.push(`里程碑只有 ${milestones} 个，低于建议的 5~6 个`);
-  if (normals > 45) errors.push(`可执行任务 ${normals} 条，超过上限 45 条——粒度过细，请合并同一交付物`);
-  if (normals < 20) warnings.push(`可执行任务只有 ${normals} 条，低于建议的 30~40 条，可能漏项`);
-  if (normals === 0) errors.push('没有任何可执行任务（normal）——里程碑不能独立交付');
-  const normalRows = plans.filter((_, i) => kinds[i] === 'normal');
+  if (normalCount > 45) errors.push(`可执行任务 ${normalCount} 条，超过上限 45 条——粒度过细，请合并同一交付物`);
+  if (normalCount < 20) warnings.push(`可执行任务只有 ${normalCount} 条，低于建议的 30~40 条，可能漏项`);
+  if (normalCount === 0) errors.push('没有任何可执行任务（normal）——里程碑不能独立交付');
+  // 2026-11-21：工期不符不能只放在导入质量摘要里；否则界面 ready、库里却是 58 天里程碑配 19 天子项。
+  // 与 milestoneDurations 同一口径（结构优先，系统补齐行/覆盖核对卡跳过），在落库前阻断。
+  const planDurations = milestoneDurations(
+    plans.map((p, i) => ({ kind: kinds[i], durationDays: p.durationDays, title: p.title, wbsCode: p.wbsCode, parentCode: p.parentCode })),
+    (i) => isGapFillPlan({ title: plans[i]?.title, description: plans[i]?.description }),
+  );
+  for (let i = 0; i < plans.length; i += 1) {
+    if (kinds[i] !== 'milestone') continue;
+    const declared = Math.max(1, Math.round(Number(plans[i].durationDays) || 1));
+    const computed = Math.max(1, Math.round(Number(planDurations[i]) || 1));
+    if (declared !== computed) {
+      errors.push(`里程碑「${plans[i].title}」工期 ${declared} 天与子项合计 ${computed} 天不一致——请重算里程碑工期后再导入`);
+    }
+  }
+  // 2026-11-21：零关联 normal 不是可验收执行卡；本次 AirMirror 的「P1预留接口验证」就是此类。
+  // 2026-11-22：设计/运维类支撑任务（架构评审、风险登记册等）带章节溯源时是合法 enabler，放行并提示；
+  // 实现/测试/验证类零关联仍必须阻断，避免把真正的孤儿任务混进待办。
+  const zeroLinkedRows = normalRows.filter((p) => {
+    if (isGapFillPlan({ title: p.title, description: p.description })) return false;
+    const links = new Set([...(p.reqNos ?? []), ...(p.acceptanceRefs ?? [])].map(normalizedReqNoKey).filter(Boolean));
+    return links.size === 0;
+  });
+  const zeroLinkedEnablers = zeroLinkedRows.filter(isPrdEnablerPlan);
+  const zeroLinkedImplementations = zeroLinkedRows.filter((p) => !isPrdEnablerPlan(p));
+  if (zeroLinkedImplementations.length > 0) {
+    const detail = zeroLinkedImplementations.slice(0, 5).map((p) => {
+      const code = (p.wbsCode ?? '').trim();
+      return `「${p.title}」${code ? `（${code}）` : ''}`;
+    }).join('、');
+    errors.push(`有 ${zeroLinkedImplementations.length} 条 normal 未关联任何需求/验收项（${detail}）——请补关联或删除该执行卡`);
+  }
+  if (zeroLinkedEnablers.length > 0) {
+    warnings.push(`有 ${zeroLinkedEnablers.length} 条设计/运维/工程治理类支撑任务未关联需求（${zeroLinkedEnablers.slice(0, 3).map((p) => `「${p.title}」`).join('、')}）——已按章节溯源或标题语义放行，确认是否本期交付`);
+  }
+  // 2026-11-21：覆盖核对卡若把同一需求拆进两张卡，会生成两条“同一件事做两遍”的待办。
+  // 按唯一引用数与单卡容量校验，既拦重复引用，也拦模型自造的多余覆盖卡。
+  const coverageRefs = new Set<string>();
+  if (coverageRows.length > 0) {
+    const seen = new Set<string>();
+    let dup = 0;
+    for (const p of coverageRows) {
+      // 同一张卡里 reqNos 与 acceptanceRefs 允许重叠（AC 同时是需求与验收引用），
+      // 只统计跨卡重复；否则每张卡都会把自己的 AC 算成重复。
+      const cardRefs = new Set([
+        ...(p.reqNos ?? []).map(normalizedReqNoKey),
+        ...(p.acceptanceRefs ?? []).map(normalizedReqNoKey),
+      ].filter(Boolean));
+      for (const ref of cardRefs) {
+        coverageRefs.add(ref);
+        if (seen.has(ref)) dup += 1; else seen.add(ref);
+      }
+    }
+    if (dup > 0) {
+      errors.push(`覆盖核对卡有 ${dup} 个跨卡重复需求引用（如「${coverageRows[0].title}」）——同一需求只能由一张覆盖卡承接`);
+    }
+    const needed = Math.ceil(seen.size / PRD_MAX_REQS_PER_NORMAL);
+    if (coverageRows.length > needed) {
+      errors.push(`覆盖核对卡 ${coverageRows.length} 张，超过 ${seen.size} 条需求所需 ${needed} 张——请合并重复卡`);
+    }
+  }
+  // 覆盖核对只是管理动作，不能替代实现/验收卡；P0 仅被覆盖卡承接必须阻断，P1 强提示。
+  const realRefs = new Set<string>();
+  for (const p of normalRows) {
+    if (/需求追溯与覆盖核对/.test(p.title)) continue;
+    for (const ref of [...(p.reqNos ?? []), ...(p.acceptanceRefs ?? [])].map(normalizedReqNoKey)) {
+      if (ref) realRefs.add(ref);
+    }
+  }
+  const onlyCoverageReqs = reqs.filter((r) => {
+    if (/p[23]/i.test(r.priority ?? '') || !r.reqNo) return false;
+    const key = normalizedReqNoKey(r.reqNo);
+    return !!key && coverageRefs.has(key) && !realRefs.has(key);
+  });
+  const onlyCoverageP0 = onlyCoverageReqs.filter((r) => /p0/i.test(r.priority ?? ''));
+  if (onlyCoverageP0.length > 0) {
+    errors.push(`有 ${onlyCoverageP0.length} 条 P0 需求只被覆盖核对卡承接、没有实现/验收任务（${onlyCoverageP0.slice(0, 5).map((r) => r.reqNo).join('、')}）——请补真实交付任务`);
+  } else if (onlyCoverageReqs.length > 0) {
+    warnings.push(`有 ${onlyCoverageReqs.length} 条 P1 需求只被覆盖核对卡承接（${onlyCoverageReqs.slice(0, 5).map((r) => r.reqNo).join('、')}）——确认是否进入本期交付`);
+  }
   const heavyRows = normalRows.filter((p) => new Set([
     ...(p.reqNos ?? []).map((x) => normalizedReqNoKey(x)),
     ...(p.acceptanceRefs ?? []).map((x) => normalizedReqNoKey(x)),
@@ -1548,7 +1756,7 @@ function validatePrdImportDraft(
   const fragmentRe = /§|\||`|\.(?:tsx?|jsx?|json|md|sql|py)$/i;
   const fragments = plans.filter((p) => fragmentRe.test(p.title.trim()));
   if (fragments.length > 0) errors.push(`存在 ${fragments.length} 条碎片标题（如「${fragments[0].title}」）——标题应是可交付动作，不是原文条目/文件路径`);
-  const thinP0 = plans.filter((p) => /p[01]/i.test(p.priority ?? '') && (p.description ?? '').replace(/\s/g, '').length < 50);
+  const thinP0 = plans.filter((p, i) => kinds[i] === 'normal' && /p[01]/i.test(p.priority ?? '') && (p.description ?? '').replace(/\s/g, '').length < 50);
   if (thinP0.length > 0) errors.push(`P0/P1 任务 ${thinP0.length} 条描述不足 50 字（如「${thinP0[0].title}」）——执行卡必须写清动作、边界与验收`);
   const tree = deriveWbsTree(plans.map((p, i) => ({ title: p.title, kind: kinds[i], wbsCode: p.wbsCode, parentCode: p.parentCode })));
   if (tree.hasStructure) {
@@ -2083,6 +2291,81 @@ function insertPrdRequirementsForImport(
  *  （重导不得打回 0%），其聚合由启动对账 reconcileMilestoneProgresses 权威收敛。
  *  ⚠ 重算必须在**全部边写完之后**统一做：包络/进度都读全量子项，边写一半就重算会漏算后继子项。
  */
+/**
+ * 2026-11-21：一个 normal 只能有一个 child 父里程碑。
+ * 跨阶段任务（如「跨模块集成联调」）常把 M1/M2/M3/M4 都写进 dependsOn，
+ * linkBatchDeps 会把每个 milestone 依赖都写成 child，导致同一任务被四个里程碑重复统计。
+ * 这里按结构树（parentCode）保留唯一父边，其余 child 边降级为 serial（前置依赖不丢），
+ * 随后 applyImportMilestoneChildEdges 再补唯一父边。
+ */
+function normalizeImportSingleChildParent(
+  db: ReturnType<typeof getDb>,
+  ctx: {
+    planItems: PrdImportPlanItem[];
+    planKinds: PlanKind[];
+    planTargets: PrdImportPlanTarget[];
+    planIds: Array<string | null>;
+  },
+): Set<string> {
+  const { planItems, planKinds, planTargets, planIds } = ctx;
+  const removedParents = new Set<string>();
+  const skipGapFill = (i: number): boolean => isGapFillPlan({ title: planItems[i]?.title, description: planItems[i]?.description });
+  const tree = deriveWbsTree(planItems.map((p, i) => ({ title: p.title, kind: planKinds[i], wbsCode: p.wbsCode, parentCode: p.parentCode })));
+  const desiredParentByIndex = new Map<number, string>();
+  // 结构优先；没有 wbsCode/parentCode 的旧数据用区间边兜底，保证「一个 normal 一个 child 父」与
+  // applyImportMilestoneChildEdges 的补边口径一致（否则补边会再写回第二个 child，去重前功尽弃）。
+  const fallbackEdges = tree.hasStructure
+    ? structuralChildEdges(
+      planItems.map((p, i) => ({
+        title: p.title,
+        kind: planKinds[i],
+        wbsCode: p.wbsCode,
+        parentCode: p.parentCode,
+      })),
+    )
+    : intervalChildEdges(planItems.map((_, i) => ({ kind: planKinds[i] })), { skip: skipGapFill });
+  for (const edge of fallbackEdges) {
+    if (skipGapFill(edge.index)) continue;
+    const parentId = planTargets[edge.parentIndex]?.reuseId ?? planIds[edge.parentIndex];
+    if (parentId) desiredParentByIndex.set(edge.index, parentId);
+  }
+  if (desiredParentByIndex.size === 0) return removedParents;
+  const updDeps = db.prepare('UPDATE plan_tasks SET deps = ?, updated_at = ? WHERE id = ?');
+  for (let i = 0; i < planItems.length; i += 1) {
+    if (planKinds[i] !== 'normal' || skipGapFill(i)) continue;
+    const childId = planTargets[i]?.reuseId ?? planIds[i];
+    if (!childId) continue;
+    const row = db.prepare('SELECT deps FROM plan_tasks WHERE id = ?').get(childId) as { deps: string | null } | undefined;
+    if (!row?.deps) continue;
+    let parsed: Array<{ id?: string; type?: string }>;
+    try { parsed = JSON.parse(row.deps) as Array<{ id?: string; type?: string }>; } catch { continue; }
+    if (!Array.isArray(parsed)) continue;
+    const desiredParent = desiredParentByIndex.get(i);
+    let keptChild = false;
+    let changed = false;
+    const next: Array<{ id: string; type: string }> = [];
+    for (const dep of parsed) {
+      if (!dep?.id || typeof dep.type !== 'string') continue;
+      if (dep.type !== 'child') { next.push({ id: dep.id, type: dep.type }); continue; }
+      if (dep.id === desiredParent && !keptChild) {
+        keptChild = true;
+        next.push({ id: dep.id, type: 'child' });
+        continue;
+      }
+      // 非唯一父边的 child 改成 serial：保留跨阶段前置关系，但不再计入里程碑子项。
+      next.push({ id: dep.id, type: 'serial' });
+      removedParents.add(dep.id);
+      changed = true;
+    }
+    if (changed || (desiredParent && !keptChild)) {
+      // 若 desiredParent 已作为 serial 存在，保留 serial，applyImportMilestoneChildEdges 会补 child；
+      // 这里不删除 serial，避免丢失跨阶段前置关系。
+      updDeps.run(JSON.stringify(next), now(), childId);
+    }
+  }
+  return removedParents;
+}
+
 function applyImportMilestoneChildEdges(
   db: ReturnType<typeof getDb>, ctx: {
     t: string;
@@ -2090,6 +2373,8 @@ function applyImportMilestoneChildEdges(
     planKinds: PlanKind[];
     planTargets: PrdImportPlanTarget[];
     planIds: Array<string | null>;
+    /** 被 normalizeImportSingleChildParent 降级过父边的里程碑；仍需重算包络。 */
+    extraParents?: Set<string>;
   },
 ): void {
   const { t, planItems, planKinds, planTargets, planIds } = ctx;
@@ -2104,7 +2389,7 @@ function applyImportMilestoneChildEdges(
     : intervalChildEdges(planItems.map((_, i) => ({ kind: planKinds[i] })), { skip: skipGapFill });
   const updDeps = db.prepare('UPDATE plan_tasks SET deps = ?, updated_at = ? WHERE id = ?');
   const newMs = new Set(planTargets.map((x, i) => (x.reuseId ? null : planIds[i])).filter((x): x is string => !!x));
-  const touchedParents = new Set<string>();
+  const touchedParents = new Set<string>(ctx.extraParents ?? []);
   for (const { index, parentIndex } of edges) {
     // T02881：planIds 只覆盖新建行，reuse 命中行须回退到 planTargets 的 reuseId，否则整段补边被静默跳过
     const childId = planTargets[index]?.reuseId ?? planIds[index];
@@ -2748,11 +3033,12 @@ function findPrdSemanticTarget(
   req: PrdRequirementLite,
   candidates: PrdCoveragePlan[],
   exclude?: PrdCoveragePlan,
+  allowOverloaded = false,
 ): { target: PrdCoveragePlan; score: number } | null {
   let best: PrdCoveragePlan | undefined;
   let bestScore = 0;
   for (const p of candidates) {
-    if (p === exclude || prdPlanReqKeys(p).length >= PRD_MAX_REQS_PER_NORMAL) continue;
+    if (p === exclude || (!allowOverloaded && prdPlanReqKeys(p).length >= PRD_MAX_REQS_PER_NORMAL)) continue;
     const score = prdPlanMatchScore(req, p);
     if (score > bestScore) {
       best = p;
@@ -2803,6 +3089,113 @@ function createPrdCoveragePlan(
     acceptanceRefs: acRefs.length > 0 ? acRefs : undefined,
     taskType: 'verify',
     estimateDays: 1,
+  };
+  const prevSibling = siblings[siblings.length - 1]?.wbsCode;
+  if (prevSibling) row.dependsOn = [prevSibling];
+  drafts.push(row);
+  return row;
+}
+
+/** 2026-11-22：验收项溢出时不能落到「需求追溯与覆盖核对」卡——那只是管理动作，
+ *  无法替代验收执行。这里按 6 条一组生成真实的「执行验收」任务，保证 P0/P1 的 AC
+ *  始终有实现/验收任务承接，同时避免把几十条 AC 全堆到一条测试卡。 */
+function createPrdAcceptancePlan(
+  drafts: PrdCoveragePlan[],
+  reqs: PrdRequirementLite[],
+): PrdPlanDraft {
+  const lastMs = [...drafts].reverse().find((d) => resolvePrdKind(d.title, d.kind, d.wbsCode) === 'milestone');
+  const parent = lastMs?.wbsCode?.trim() || 'M1';
+  const siblings = drafts.filter((d) => resolvePrdKind(d.title, d.kind, d.wbsCode) === 'normal'
+    && (d.parentCode ?? '').trim() === parent);
+  const maxSeq = siblings.reduce((max, d) => {
+    const m = /(?:^|\.)(\d+)$/.exec((d.wbsCode ?? '').trim());
+    return m ? Math.max(max, Number(m[1])) : max;
+  }, 0);
+  let seq = maxSeq + 1;
+  let code = `${parent}.${seq}`;
+  while (drafts.some((d) => (d.wbsCode ?? '').trim() === code)) {
+    seq += 1;
+    code = `${parent}.${seq}`;
+  }
+  const refs = reqs.map((r) => normalizedReqNoKey(r.reqNo ?? '')).filter(Boolean);
+  const first = reqs[0];
+  const labels = reqs.map((r) => `${r.reqNo ?? '未编号'}《${(r.title ?? '').slice(0, 18)}》`).join('、');
+  const title = `执行验收：${refs[0] ?? 'AC'} 等 ${refs.length || 1} 项`;
+  const p0 = reqs.some((r) => /p0/i.test(r.priority ?? ''));
+  const row: PrdPlanDraft = {
+    title,
+    description: `执行以下验收项并留存证据：${labels}。做什么：按 PRD 验收标准逐条执行正常、异常与边界场景，记录实际结果与证据；边界：只做验收执行与缺陷登记，不扩展实现范围；完成定义：每条验收项有明确通过/失败结论，失败项登记缺陷与修复建议。`,
+    durationDays: 2,
+    startDate: '',
+    reqNos: refs,
+    status: 'todo' as PlanStatus,
+    kind: 'normal' as PlanKind,
+    complexity: 3,
+    wbsCode: code,
+    parentCode: parent,
+    phaseCode: parent,
+    priority: p0 ? 'p0' : 'p1',
+    sourceSection: usableSourceSection(first?.sourceRef) ?? '§11 验收标准',
+    deliverable: '验收记录与缺口清单',
+    acceptanceRefs: refs,
+    taskType: 'test',
+    estimateDays: 2,
+  };
+  const prevSibling = siblings[siblings.length - 1]?.wbsCode;
+  if (prevSibling) row.dependsOn = [prevSibling];
+  drafts.push(row);
+  return row;
+}
+
+/** 2026-11-22：P0 的 FR/NFR/EX 找不到任何可承接任务时，不能退化成「需求追溯与覆盖核对」卡。
+ *  生成一条可执行的实现任务，保证 P0 在导入后真的有交付动作；只在真实任务配额未满时调用，
+ *  配额已满时由调用方把 P0 挂到最接近的真实任务（允许单卡关联超 6 条）。 */
+function createPrdRequirementPlan(
+  drafts: PrdCoveragePlan[],
+  req: PrdRequirementLite,
+): PrdPlanDraft {
+  const lastMs = [...drafts].reverse().find((d) => resolvePrdKind(d.title, d.kind, d.wbsCode) === 'milestone');
+  const parent = lastMs?.wbsCode?.trim() || 'M1';
+  const siblings = drafts.filter((d) => resolvePrdKind(d.title, d.kind, d.wbsCode) === 'normal'
+    && (d.parentCode ?? '').trim() === parent);
+  const maxSeq = siblings.reduce((max, d) => {
+    const m = /(?:^|\.)(\d+)$/.exec((d.wbsCode ?? '').trim());
+    return m ? Math.max(max, Number(m[1])) : max;
+  }, 0);
+  let seq = maxSeq + 1;
+  let code = `${parent}.${seq}`;
+  while (drafts.some((d) => (d.wbsCode ?? '').trim() === code)) {
+    seq += 1;
+    code = `${parent}.${seq}`;
+  }
+  const titleText = `${req.title ?? ''}`.trim() || req.reqNo || 'P0 需求';
+  const title = `实现：${titleText.slice(0, 24)}`;
+  const body = `${req.reqNo ?? '未编号'}《${titleText.slice(0, 30)}》`;
+  const text = `${titleText}\n${req.content ?? ''}`;
+  const taskType = /测试|验收|验证|回归|稳定性|性能|内存|兼容/.test(text)
+    ? 'test'
+    : /界面|页面|主题|图标|交互|托盘|日志/.test(text)
+      ? 'frontend'
+      : /安装|打包|更新|发布|部署/.test(text)
+        ? 'ops'
+        : 'backend';
+  const row: PrdPlanDraft = {
+    title,
+    description: `实现并验收 PRD 需求：${body}。做什么：按原文完成功能/非功能约束，补齐正常流程、边界条件与异常处理；边界：不扩展到 P2/P3 范围，不新增无关需求；完成定义：实现可运行、关键路径通过、留下可复核的验收证据。`,
+    durationDays: 2,
+    startDate: '',
+    reqNos: [normalizedReqNoKey(req.reqNo ?? '')].filter(Boolean),
+    status: 'todo' as PlanStatus,
+    kind: 'normal' as PlanKind,
+    complexity: 2,
+    wbsCode: code,
+    parentCode: parent,
+    phaseCode: parent,
+    priority: 'p0',
+    sourceSection: usableSourceSection(req.sourceRef) ?? '§6',
+    deliverable: '需求实现与验收证据',
+    taskType,
+    estimateDays: 2,
   };
   const prevSibling = siblings[siblings.length - 1]?.wbsCode;
   if (prevSibling) row.dependsOn = [prevSibling];
@@ -3021,7 +3414,8 @@ function ensurePrdAcceptanceCoverage(
         ?? requirements.find((r) => normalizedReqNoKey(r.reqNo ?? '') === normalizedReqNoKey(no));
       if (hit) group.push(hit);
     }
-    if (group.length > 0) createPrdCoveragePlan(drafts, group);
+    // 验收项溢出必须由真实验收任务承接；覆盖核对卡只会制造「P0 只被覆盖卡承接」的假覆盖。
+    if (group.length > 0) createPrdAcceptancePlan(drafts, group);
   }
 }
 
@@ -3197,8 +3591,13 @@ function preparePrdImportPlanRows(
   rows: PrdImportPlanItem[],
   requirements?: Array<{ reqNo?: string; type?: string; priority?: string; sourceRef?: string; title?: string }>,
 ): void {
+  // 2026-11-21：importPrd/previewPrdImport 都会调用本函数；预览阶段生成的覆盖卡会原样带回导入，
+  // 导入再跑一次 ensure 就会生成重复卡。这里先移除模型/预览的覆盖卡，再统一重建一次，保证幂等。
+  dropPrdCoveragePlans(rows as PrdCoveragePlan[]);
   splitOversizedAcceptancePlans(rows);
   if (requirements && requirements.length > 0) ensurePrdRequirementCoverage(requirements, rows);
+  // 2026-11-21：重建后立即按唯一引用压缩；不能等到解析收口，否则导入路径会绕过压缩。
+  compactPrdCoveragePlans(rows as PrdCoveragePlan[], (requirements ?? []) as PrdRequirementLite[]);
   const p2Refs = new Set<string>();
   for (const r of requirements ?? []) {
     if (/p[23]/i.test(r.priority ?? '') && r.reqNo) p2Refs.add(normalizedReqNoKey(r.reqNo));
@@ -3209,6 +3608,18 @@ function preparePrdImportPlanRows(
     fillPlanDescription(p, p2Refs);
     normalizeNormalPlanDuration(p);
     applyIsolatedExecutionBoundary(p);
+  }
+  // 2026-11-21：覆盖卡增删和 normal 工期归一都会改变里程碑子项集合/合计，必须在质量门前重算；
+  // 否则解析预览里 M5=18、导入侧子项变成 24，质量门会误判为「源数据工期不符」而阻断正常导入。
+  // ⚠ 顺序不能早于 normalizeNormalPlanDuration：1/2 天 normal 会被改写成 1~5 天，提前汇总必失真。
+  const recomputedDurations = milestoneDurations(
+    rows.map((p, i) => ({ kind: resolvePrdKind(p.title, p.kind, p.wbsCode), durationDays: p.durationDays, title: p.title, wbsCode: p.wbsCode, parentCode: p.parentCode })),
+    (i) => isGapFillPlan({ title: rows[i]?.title, description: rows[i]?.description }),
+  );
+  for (let i = 0; i < rows.length; i += 1) {
+    if (resolvePrdKind(rows[i].title, rows[i].kind, rows[i].wbsCode) !== 'milestone') continue;
+    rows[i].durationDays = Math.max(1, recomputedDurations[i] ?? 1);
+    rows[i].estimateDays = rows[i].durationDays;
   }
 }
 
@@ -3247,6 +3658,7 @@ function ensurePrdRequirementCoverage(
   // 先按「重平衡前」的关联快照判定真正的未覆盖需求；重平衡移除的低相关项不能被误算成孤儿。
   const normals = drafts.filter((d) => resolvePrdKind(d.title, d.kind, d.wbsCode) === 'normal');
   if (normals.length === 0) return;
+  let normalCount = normals.length;
   const linked = new Set<string>();
   for (const p of normals) {
     for (const ref of p.reqNos ?? []) linked.add(normalizedReqNoKey(ref));
@@ -3261,9 +3673,9 @@ function ensurePrdRequirementCoverage(
     ...drainOverloadedPrdPlans(requirements, drafts),
   ];
   const seenPending = new Set(pending.map((r) => normalizedReqNoKey(r.reqNo ?? '')).filter(Boolean));
-  for (const r of uncovered) {
-    // 重平衡阶段已进入覆盖队列的需求不重复处理。
-    if (seenPending.has(normalizedReqNoKey(r.reqNo ?? ''))) continue;
+  /** 2026-11-22：P0 的唯一出路是真实现/验收任务。依次尝试同章节、语义、验收任务；
+   *  都没有时新建一条实现/验收任务；真实任务配额已满则挂到最空的真实任务。 */
+  const attachP0ToReal = (r: PrdRequirementLite): boolean => {
     const rs = usableSourceSection(r.sourceRef);
     let target: PrdCoveragePlan | undefined;
     if (rs) {
@@ -3272,7 +3684,48 @@ function ensurePrdRequirementCoverage(
         return !!ps && (ps.includes(rs) || rs.includes(ps));
       });
     }
-    if (!target) target = findPrdSemanticTarget(r, normals)?.target;
+    if (!target) target = findPrdSemanticTarget(r, normals, undefined, true)?.target;
+    if (!target && (r.type ?? '').toUpperCase() === 'AC') {
+      target = [...normals]
+        .filter((p) => p.taskType === 'test' || p.taskType === 'verify')
+        .sort((a, b) => prdPlanReqKeys(a).length - prdPlanReqKeys(b).length)[0];
+    }
+    if (target) {
+      if (r.reqNo && !(target.reqNos ?? []).includes(r.reqNo)) {
+        target.reqNos = [...(target.reqNos ?? []), r.reqNo];
+      }
+      return true;
+    }
+    if (normalCount < PRD_PARSE_MAX_NORMALS) {
+      if ((r.type ?? '').toUpperCase() === 'AC') createPrdAcceptancePlan(drafts, [r]);
+      else createPrdRequirementPlan(drafts, r);
+      normalCount += 1;
+      return true;
+    }
+    const fallback = [...normals].sort((a, b) => prdPlanReqKeys(a).length - prdPlanReqKeys(b).length)[0];
+    if (fallback && r.reqNo && !(fallback.reqNos ?? []).includes(r.reqNo)) {
+      fallback.reqNos = [...(fallback.reqNos ?? []), r.reqNo];
+      return true;
+    }
+    return false;
+  };
+  // 重平衡/排水带出的 P0 也可能只剩覆盖卡；先给它们找真实任务，找得到的就从 pending 移除。
+  for (let i = pending.length - 1; i >= 0; i -= 1) {
+    if (/p0/i.test(pending[i].priority ?? '') && attachP0ToReal(pending[i])) pending.splice(i, 1);
+  }
+  for (const r of uncovered) {
+    // 重平衡阶段已进入覆盖队列的需求不重复处理。
+    if (seenPending.has(normalizedReqNoKey(r.reqNo ?? ''))) continue;
+    const isP0 = /p0/i.test(r.priority ?? '');
+    const rs = usableSourceSection(r.sourceRef);
+    let target: PrdCoveragePlan | undefined;
+    if (rs) {
+      target = normals.find((p) => {
+        const ps = usableSourceSection(p.sourceSection);
+        return !!ps && (ps.includes(rs) || rs.includes(ps));
+      });
+    }
+    if (!target) target = findPrdSemanticTarget(r, normals, undefined, isP0)?.target;
     // AC 没有语义命中时，优先落到验收/测试任务；仍没有合适承接才进入覆盖核对。
     if (!target && (r.type ?? '').toUpperCase() === 'AC') {
       target = [...normals]
@@ -3281,13 +3734,28 @@ function ensurePrdRequirementCoverage(
         .find((p) => prdPlanReqKeys(p).length < PRD_MAX_REQS_PER_NORMAL);
     }
     if (!target) {
+      // 2026-11-22：P0 不能退化成覆盖核对卡。优先新建可执行实现任务；真实任务配额已满时，
+      // 挂到当前最空的真实任务（允许单卡关联超过 6 条，质量门只告警），而不是制造假覆盖。
+      if (isP0) {
+        if (normalCount < PRD_PARSE_MAX_NORMALS) {
+          createPrdRequirementPlan(drafts, r);
+          normalCount += 1;
+          continue;
+        }
+        const fallback = [...normals].sort((a, b) => prdPlanReqKeys(a).length - prdPlanReqKeys(b).length)[0];
+        if (fallback && r.reqNo && !(fallback.reqNos ?? []).includes(r.reqNo)) {
+          fallback.reqNos = [...(fallback.reqNos ?? []), r.reqNo];
+          continue;
+        }
+      }
       pending.push(r);
       seenPending.add(normalizedReqNoKey(r.reqNo ?? ''));
       continue;
     }
     // 2026-11-18：兜底指派也必须按 reqNos ∪ acceptanceRefs 检查容量，
     // 否则「先排水、后补未覆盖」仍可能把第 7/8 条塞回同一张卡（最新一轮 8 条即此路径）。
-    if (prdPlanReqKeys(target).length >= PRD_MAX_REQS_PER_NORMAL) {
+    // 2026-11-22：P0 例外——宁可让一张真实卡关联 7 条并告警，也不能把 P0 丢进覆盖核对卡。
+    if (prdPlanReqKeys(target).length >= PRD_MAX_REQS_PER_NORMAL && !isP0) {
       const key = normalizedReqNoKey(r.reqNo ?? '');
       if (key && !seenPending.has(key)) {
         seenPending.add(key);
@@ -3543,11 +4011,14 @@ export const PlanService = {
    * 并回传破坏面 { strippedTasksArchived, strippedReqLinks }——原实现只返回 boolean，
    * 待办变孤儿、矩阵「已关联计划」列少一条这两处变化全静默（用户报的「RTM 关联需求记录消失」有一半是这个）。
    */
-  purge(id: string): { deleted: boolean; strippedTasksArchived: number; strippedReqLinks: number } {
+  purge(id: string): { deleted: boolean; reason?: 'not_found' | 'not_archived'; strippedTasksArchived: number; strippedReqLinks: number } {
     const db = getDb();
     const row = db.prepare('SELECT id, title, req_ids, linked_task_id, archived FROM plan_tasks WHERE id = ?').get(id) as
       (PurgePlanRow & { archived: number }) | undefined;
-    if (!row?.archived) return { deleted: false, strippedTasksArchived: 0, strippedReqLinks: 0 };
+    // P2-8：区分「不存在」与「未归档」——旧实现对两者都回 { deleted:false } + 200，
+    // 调用方无法判断是幂等成功还是被拒绝（未归档行被静默保留，用户以为删掉了）。
+    if (!row) return { deleted: false, reason: 'not_found', strippedTasksArchived: 0, strippedReqLinks: 0 };
+    if (!row.archived) return { deleted: false, reason: 'not_archived', strippedTasksArchived: 0, strippedReqLinks: 0 };
     const derivedTaskId = derivedTaskOfPurgedPlan(db, row);
     const strippedReqLinks = countLiveReqLinks(db, row.req_ids);
     let deleted = false;
@@ -3590,9 +4061,9 @@ export const PlanService = {
 
   /**
    * 通用需求 → 计划草稿（PRD INT-5）：把通用需求条目转为计划任务（追加到目标项目计划尾部）。
-   * 标题带 [需求] 前缀；同项目查重（同标题已存在则报错提示）。
+   * 标题带 [需求] 前缀；同项目查重（同标题已存在则复用既有行，不再返回 400）。
    */
-  createFromReq(reqEntryId: string, projectId: string): { plan: PlanTaskRow } {
+  createFromReq(reqEntryId: string, projectId: string): { plan: PlanTaskRow; reused: boolean } {
     const db = getDb();
     const entry = db.prepare('SELECT title, content FROM req_entries WHERE id = ?').get(reqEntryId) as { title: string; content: string } | undefined;
     if (!entry) throw new Error('通用需求不存在');
@@ -3600,10 +4071,13 @@ export const PlanService = {
     const dup = db.prepare(
       "SELECT id FROM plan_tasks WHERE project_id = ? AND title = ? AND archived = 0",
     ).get(projectId, `[需求] ${entry.title}`) as { id: string } | undefined;
-    if (dup) throw new Error('该需求已转存为计划任务，请勿重复转存');
+    if (dup) {
+      const existing = this.get(dup.id);
+      if (existing) return { plan: existing, reused: true };
+    }
     // T00555 / PRD INT-5：来源标注——描述首行标注来源通用需求，便于计划侧溯源
     this.createBatch(projectId, [{ title: `[需求] ${entry.title}`, description: `来源：通用需求「${entry.title}」\n\n${entry.content ?? ''}` }]);
-    return { plan: this.list(projectId).at(-1)! };
+    return { plan: this.list(projectId).at(-1)!, reused: false };
   },
 
   /**
@@ -3789,7 +4263,8 @@ export const PlanService = {
     if (!ws) throw new Error('Excel 中无工作表');
 
     const errors: Array<{ row: number; message: string }> = [];
-    const parsed: Array<{ title: string; description: string; startDate: string; durationDays: number; assignee: string; status: PlanStatus }> = [];
+    const parsed: Array<{ title: string; description: string; startDate: string; endDate: string; durationDays: number; assignee: string; status: PlanStatus; kind: PlanKind; complexity: number | null; progress: number }> = [];
+    let skippedSample = 0;
 
     // T00553：按表头名映射列（兼容任意列序）——导出列序调整后固定列序解析会把日期当工期
     const colMap: Record<string, number> = {};
@@ -3803,6 +4278,8 @@ export const PlanService = {
       else if (h.includes('工期') || h.includes('工时')) colMap['duration'] = n;
       else if (h.includes('进度')) colMap['progress'] = n;
       else if (h.includes('状态')) colMap['status'] = n;
+      else if (h.includes('类型') || h.includes('种类')) colMap['kind'] = n;
+      else if (h.includes('复杂度') || h.toLowerCase().includes('complexity')) colMap['complexity'] = n;
       else if (h.includes('负责人')) colMap['assignee'] = n;
     });
     if (!colMap['title'] || !colMap['start']) throw new Error('表头缺少「标题」或「开始日期」列，请使用导出/模板同构的文件');
@@ -3821,6 +4298,8 @@ export const PlanService = {
       const durationRaw = cell('duration');
       const assignee = cell('assignee');
       const statusRaw = cell('status').toLowerCase() || 'todo';
+      // 模板自带的一行示例（描述里明写「导入前请删除本行」）不应因为用户忘了删就落库成真实计划
+      if (description.includes('导入前请删除本行')) { skippedSample += 1; return; }
       if (!title && !description && !startDate && !durationRaw && !endDate) return; // 整行空跳过
       const fail = (message: string) => errors.push({ row: rowNumber, message });
 
@@ -3832,12 +4311,28 @@ export const PlanService = {
       const duration = resolveDuration(durationRaw, start, endDate);
       if (duration === null) { fail(`工期非法：${durationRaw || '(空)'}（应为 ≥1 的整数，或提供开始/结束日期自动换算）`); return; }
       if (!PLAN_STATUSES.has(statusRaw as PlanStatus)) { fail(`状态非法：${statusRaw}（应为 todo/doing/done/blocked）`); return; }
+      // 类型/复杂度/进度：导出件回灌时按原值保留，避免「导出→导入」把里程碑降级成普通任务、
+      // 把已完成行读成 0%（状态 done + 进度 0 在列表里自相矛盾）。
+      const kindRaw = cell('kind');
+      const kind: PlanKind = /里程碑|阶段|milestone/i.test(kindRaw) ? 'milestone'
+        : /日常|daily/i.test(kindRaw) ? 'daily' : 'normal';
+      const cxRaw = Number(cell('complexity'));
+      const complexity = Number.isFinite(cxRaw) && cxRaw >= 1 && cxRaw <= 5 ? Math.round(cxRaw) : null;
+      const pgRaw = Number(cell('progress'));
+      const progress = Number.isFinite(pgRaw) ? Math.min(100, Math.max(0, Math.round(pgRaw))) : (statusRaw === 'done' ? 100 : 0);
+      let end = '';
+      if (endDate) { try { end = fmt(parseDate(endDate)); } catch { end = ''; } }
       seenTitles.add(title);
-      parsed.push({ title, description, startDate: start, durationDays: duration, assignee, status: statusRaw as PlanStatus });
+      parsed.push({ title, description, startDate: start, endDate: end, durationDays: duration, assignee, status: statusRaw as PlanStatus, kind, complexity, progress });
     });
 
     if (errors.length > 0) return { inserted: 0, errors };
-    if (parsed.length === 0) return { inserted: 0, errors: [{ row: 0, message: '未解析到任何数据行' }] };
+    if (parsed.length === 0) {
+      return {
+        inserted: 0,
+        errors: [{ row: 0, message: skippedSample > 0 ? '仅含模板示例行（已自动跳过），请填写真实计划后再导入' : '未解析到任何数据行' }],
+      };
+    }
     if (parsed.length > 5000) throw new Error('单次导入上限 5000 行，请分批导入');
 
     const db = getDb();
@@ -3846,15 +4341,16 @@ export const PlanService = {
       const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM plan_tasks WHERE project_id = ? AND archived = 0').get(projectId) as { m: number }).m;
       const ins = db.prepare(
         `INSERT INTO plan_tasks (id, project_id, title, description, start_date, end_date, duration_days,
-           progress, status, assignee, sort_order, linked_task_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, '', ?, 0, ?, ?, ?, NULL, ?, ?)`,
+           progress, status, assignee, sort_order, linked_task_id, created_at, updated_at, kind, complexity)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
       );
       const cal = loadCalendar();
       parsed.forEach((p, i) => {
-        // T00561：各行日期独立——开始日用自己的（空则今天），end 按工作日计算，不联动他人
+        // T00561：各行日期独立——开始日用自己的（空则今天），结束日优先用文件里的值（导出件回灌保真），
+        // 文件未给或非法时才按工期+工作日历推算
         const start = p.startDate || fmt(new Date());
-        const end = calcEndDate(start, p.durationDays, cal);
-        ins.run(uuid(), projectId, p.title, p.description, start, end, p.durationDays, p.status, p.assignee, maxOrder + 1 + i, t, t);
+        const end = p.endDate || calcEndDate(start, p.durationDays, cal);
+        ins.run(uuid(), projectId, p.title, p.description, start, end, p.durationDays, p.progress, p.status, p.assignee, maxOrder + 1 + i, t, t, p.kind, p.complexity);
       });
     })();
     return { inserted: parsed.length, errors: [] };
@@ -3869,7 +4365,15 @@ export const PlanService = {
     // T01361（S6551）：入参具体化为 string|null|undefined——调用点均传 DB TEXT 列值，行为等价
     const esc = (s: string | null | undefined) => (s ?? '').replaceAll('|', String.raw`\|`).replaceAll('\n', ' ');
     const lines: string[] = [];
-    lines.push(`# ${name} · 全量导出`, '', `> 生成时间：${new Date().toISOString().slice(0, 19).replace('T', ' ')}　|　来源：MTask 项目管理`, '');
+    const tzLabel = localTzLabel();
+    lines.push(`# ${name} · 全量导出`, '', `> 生成时间：${fmtDateTime(new Date())}（${tzLabel}）　|　来源：MTask 项目管理`, '');
+    // P2-9：先取需求矩阵条数再拼目录（无需求就不出现死链）
+    const reqsForToc = this.listRequirements(projectId);
+    lines.push(
+      `**目录**：[任务清单](#mtask-tasks)　·　[项目计划 / WBS](#mtask-plans)`
+      + (reqsForToc.length > 0 ? '　·　[需求跟踪矩阵](#mtask-reqs)' : ''),
+      '',
+    );
     // 任务清单
     const tasks = db.prepare(
       `SELECT task_no, title, status, priority, verified FROM tasks WHERE project_id = ? AND archived = 0 ORDER BY task_no`,
@@ -3877,9 +4381,8 @@ export const PlanService = {
     pushTaskTable(lines, tasks, esc);
     // WBS 计划
     pushPlanTable(lines, this.list(projectId), esc);
-    // 需求跟踪矩阵
-    const reqs = this.listRequirements(projectId);
-    if (reqs.length > 0) pushReqTable(lines, reqs, esc);
+    // 需求跟踪矩阵（目录阶段已取过一次，复用同一份，避免同请求两次全表查询）
+    if (reqsForToc.length > 0) pushReqTable(lines, reqsForToc, esc);
     return lines.join('\n');
   },
 
@@ -3889,38 +4392,62 @@ export const PlanService = {
     ws.columns = [
       { header: '标题', key: 'title', width: 36 },
       { header: '描述', key: 'description', width: 40 },
+      { header: '类型', key: 'kind', width: 11 },
       { header: '开始日期', key: 'start_date', width: 14 },
       { header: '结束日期', key: 'end_date', width: 14 },
       { header: '工期(工作日)', key: 'duration_days', width: 14 },
       { header: '进度(%)', key: 'progress', width: 10 },
       { header: '状态', key: 'status', width: 10 },
+      { header: '复杂度', key: 'complexity', width: 9 },
       { header: '负责人', key: 'assignee', width: 14 },
     ];
-    for (const r of rows) ws.addRow({ title: r.title, description: r.description, start_date: r.start_date, end_date: r.end_date, duration_days: r.duration_days, progress: r.progress, status: r.status, assignee: r.assignee });
-    applyPlanSheetStyle(ws, ['start_date', 'end_date', 'duration_days', 'progress', 'status']);
+    for (const r of rows) {
+      ws.addRow({
+        title: r.title, description: r.description, kind: planKindLabel(r.kind),
+        start_date: planDateValue(r.start_date), end_date: planDateValue(r.end_date),
+        duration_days: r.duration_days, progress: r.progress, status: r.status,
+        complexity: r.complexity ?? null, assignee: r.assignee,
+      });
+    }
+    applyPlanSheetStyle(ws, ['kind', 'start_date', 'end_date', 'duration_days', 'progress', 'status', 'complexity']);
+    ws.getColumn('start_date').numFmt = 'yyyy-mm-dd';
+    ws.getColumn('end_date').numFmt = 'yyyy-mm-dd';
+    ws.autoFilter = { from: 'A1', to: 'J1' };
+    applyPlanDataStyle(ws, ['description']);
     const hws = wb.addWorksheet('节假日', { views: [{ state: 'frozen', ySplit: 1 }] });
     hws.columns = [{ header: '日期', key: 'date', width: 14 }, { header: '名称', key: 'name', width: 24 }];
-    for (const h of this.listHolidays()) hws.addRow(h);
+    for (const h of this.listHolidays()) hws.addRow({ date: planDateValue(h.date), name: h.name });
     applyPlanSheetStyle(hws, ['date']);
+    hws.getColumn('date').numFmt = 'yyyy-mm-dd';
+    hws.autoFilter = { from: 'A1', to: 'B1' };
+    applyPlanDataStyle(hws, []);
     const out = await wb.xlsx.writeBuffer();
     return Buffer.from(out);
   },
 
-  /** 模板：表头 + 1 行示例（列序与导出完全一致 8 列，T00500 验证修正：字段/样式三路径一致） */
+  /** 模板：表头 + 1 行示例（列序与导出完全一致，T00500 验证修正：字段/样式三路径一致）
+   *  「类型」「复杂度」随导出一并回灌（里程碑/日常不降级、复杂度不丢）；示例行描述带「导入前请删除本行」标记，
+   *  导入时自动跳过——用户忘删也不会落成一条假计划。 */
   async templateExcel(): Promise<Buffer> {    const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('项目计划', { views: [{ state: 'frozen', ySplit: 1 }] }); // 冻结表头
     ws.columns = [
       { header: '标题', key: 'title', width: 36 },
       { header: '描述', key: 'description', width: 40 },
+      { header: '类型', key: 'kind', width: 11 },
       { header: '开始日期', key: 'start_date', width: 14 },
       { header: '结束日期', key: 'end_date', width: 14 },
       { header: '工期(工作日)', key: 'duration_days', width: 14 },
       { header: '进度(%)', key: 'progress', width: 10 },
       { header: '状态', key: 'status', width: 10 },
+      { header: '复杂度', key: 'complexity', width: 9 },
       { header: '负责人', key: 'assignee', width: 14 },
     ];
-    ws.addRow({ title: '示例：完成登录模块联调', description: '示例描述（导入前请删除本行）', start_date: '2026-09-14', end_date: '2026-09-16', duration_days: 3, progress: 0, assignee: '张三', status: 'todo' });
-    applyPlanSheetStyle(ws, ['start_date', 'end_date', 'duration_days', 'progress', 'status']);
+    ws.addRow({ title: '示例：完成登录模块联调', description: '示例描述（导入前请删除本行）', kind: '任务', start_date: planDateValue('2026-09-14'), end_date: planDateValue('2026-09-16'), duration_days: 3, progress: 0, assignee: '张三', status: 'todo', complexity: 2 });
+    applyPlanSheetStyle(ws, ['kind', 'start_date', 'end_date', 'duration_days', 'progress', 'status', 'complexity']);
+    ws.getColumn('start_date').numFmt = 'yyyy-mm-dd';
+    ws.getColumn('end_date').numFmt = 'yyyy-mm-dd';
+    ws.autoFilter = { from: 'A1', to: 'J1' };
+    applyPlanDataStyle(ws, ['description']);
     // 示例行：斜体灰字提示 + 浅分隔线（模板专属）
     const sample = ws.getRow(2);
     sample.font = { italic: true, color: { argb: 'FF808080' }, size: 10 };
@@ -4652,7 +5179,9 @@ export const PlanService = {
       writeBackImportPlanLinks(db, { t, planItems, planTargets, planIds, findReqId, unlinkedReqNos, linkedReqIds });
       // 2.5) T02090 口径 A：补 child 边 + 新建里程碑的包络/进度重算（口径与逐段说明见
       //  applyImportMilestoneChildEdges；⚠ 必须在全部边写完之后统一重算）
-      applyImportMilestoneChildEdges(db, { t, planItems, planKinds, planTargets, planIds });
+      // 2026-11-21：先把跨阶段任务的重复 child 边降级为 serial，再补唯一父边。
+      const extraParents = normalizeImportSingleChildParent(db, { planItems, planKinds, planTargets, planIds });
+      applyImportMilestoneChildEdges(db, { t, planItems, planKinds, planTargets, planIds, extraParents });
       // 3) 可选：WBS → 待办任务（便于 AI 推进执行），待办同样携带 req_ids（口径见 createPrdImportTodos）
       taskCount = createPrdImportTodos(db, {
         t, projectId, createTasks: !!input.createTasks, planItems, planKinds, planTargets, planIds, findReqId, reqByNo,

@@ -1,35 +1,34 @@
 /**
  * T05747（A+B0+D 组合 · 总调度）：PushDispatcher——把一条 MTask 待办按「B0 主链路 → A 兜底 → D 应急」路由。
  *
- * 为什么需要独立调度层：B0（CodeBuddy 本地网关直推）是推送，A（MCP 就绪池）是拉取，
- * 两者失败语义完全不同；D 是人工确认的 GUI 直驱，绝不能自动执行。把路由、降级原因、
- * 尝试记录集中在一处，避免 RelayDispatchService / SupervisorExecutor / 路由层各写一套。
+ * T06246/T06247/T06255/T06264（十期）：在原路由上补三件事：
+ * 1) 每次通道尝试写 dispatch_attempts（跨通道审计，不替代 queue_jobs）；
+ * 2) 增加 options：actor / allowD / allowFallbackA / idempotencyKey，自动调度与 API 可禁 D；
+ * 3) 返回稳定错误码与 attemptId，前端不再靠中文 detail 猜分支。
  *
  * 通道语义：
  * - B0：复用 RelayDispatchService.dispatchTask（Queue + submit/poll/ticket 状态机），
  *       platform 固定 `codebuddy-gateway`，工具 id 显式传入；
  * - A：把任务放回 MCP 就绪池（monitor_ready=1, ai_state=''），等外部 Agent 拉取；
- *       手动指定 Txxxx 本来就零代码可用（claimTask 不要求 monitor_ready），A 是自动排水的兜底；
- * - D：不自动开 GUI。仅把任务标 failed + monitor_preferred_platform='d-gui'，等人工确认后
- *       由 T05749 的 GUI 直驱能力执行；三通道都不可用时才走到这里。
+ * - D：不自动开 GUI。仅标记 failed + monitor_preferred_platform='d-gui'，等人工确认。
  *
- * 审计：每次尝试写一条 `dispatch` 日志（taskNo/channel/attempt/state/queueId/jobId/ticket/
- * fallbackReason），runId 同时落在 queue_jobs.ticket，可由队列视图回溯；不新增表。
+ * 审计：dispatch_attempts 是跨通道查询源；logService 仍保留结构化 JSON 供日志页检索。
  */
 import { getDb } from '../db/connection';
 import { getSetting } from './AppSettings';
-import { ConfigService } from './ConfigService';
 import { TaskService, type TaskView } from './TaskService';
 import { dispatchTask, armReady, type RelayDispatchResult } from './RelayDispatchService';
 import { logService } from './LogService';
+import { recordAttempt, findRecentIdempotency } from './DispatchAttempts';
+import { readPolicy, resolveB0Tool, sanitizeEndpoint, type DispatchPolicy } from './DispatchPolicy';
 
 const B0_PLATFORM = 'codebuddy-gateway';
 const A_PLATFORM = 'mcp';
 const D_PLATFORM = 'd-gui';
-const B0_TOOL_KEY = 'dispatch.b0ToolId';
 
 export type DispatchChannel = 'auto' | 'b0' | 'a' | 'd';
 export type DispatchState = 'running' | 'done' | 'ready' | 'manual' | 'failed';
+export type DispatchActor = 'manual' | 'auto' | 'api';
 
 export interface DispatchAttempt {
   channel: 'B0' | 'A' | 'D';
@@ -39,6 +38,10 @@ export interface DispatchAttempt {
   queueId?: string;
   jobId?: string;
   ticket?: string;
+  /** 稳定错误码（成功时为空） */
+  code?: string;
+  /** 本次通道尝试的审计行 id */
+  attemptId?: string;
 }
 
 export interface DispatchResult {
@@ -51,14 +54,18 @@ export interface DispatchResult {
   /** B0 失败转 A 的原因（成功走 B0/A 且无降级时为空） */
   fallbackReason?: string;
   detail: string;
+  code?: string;
+  /** 最后一次通道尝试的审计行 id（兼容 P1 响应字段） */
+  attemptId?: string;
 }
 
-interface AIToolLite {
-  id: string;
-  name: string;
-  type: string;
-  endpoint?: string;
-  enabled?: boolean;
+export interface DispatchOptions {
+  actor?: DispatchActor;
+  /** 自动/API 必须 false；手动 D 仍由前端二次确认后调用 channel='d' */
+  allowD?: boolean;
+  /** B0 失败后是否允许归位 A；自动策略读 dispatch.allowFallbackA */
+  allowFallbackA?: boolean;
+  idempotencyKey?: string;
 }
 
 function audit(event: Record<string, unknown>): void {
@@ -83,33 +90,28 @@ function taskLabel(task: TaskView): string {
 }
 
 /** 派发前置校验：只接 todo/未归档/非执行中；已 done 的任务需先重新打开 */
-function ensureDispatchable(task: TaskView): string | null {
+function ensureDispatchable(task: TaskView): { code: string; detail: string } | null {
   const no = task.task_no ?? task.id;
-  if (task.archived) return `任务 ${no} 已归档，不能派发`;
-  if (task.status !== 'todo') return `任务 ${no} 当前 status=${task.status}，仅 todo 可派发`;
-  if (task.ai_state === 'running') return `任务 ${no} 正在执行中（ai_state=running），避免双跑已拒绝`;
+  if (task.archived) return { code: 'TASK_ARCHIVED', detail: `任务 ${no} 已归档，不能派发` };
+  if (task.status !== 'todo') return { code: 'TASK_NOT_TODO', detail: `任务 ${no} 当前 status=${task.status}，仅 todo 可派发` };
+  if (task.ai_state === 'running') return { code: 'TASK_RUNNING', detail: `任务 ${no} 正在执行中（ai_state=running），避免双跑已拒绝` };
   return null;
 }
 
-/** 找 B0 工具：显式配置优先；否则取第一条 enabled 的 codebuddy-gateway 工具 */
-function resolveB0Tool(): { tool: AIToolLite | null; reason?: string } {
-  const tools = ConfigService.list() as unknown as AIToolLite[];
-  const candidates = tools.filter((t) => t.type === B0_PLATFORM && t.enabled !== false);
-  const preferredId = (getSetting(B0_TOOL_KEY) ?? '').trim();
-  if (preferredId) {
-    const hit = candidates.find((t) => t.id === preferredId);
-    if (!hit) return { tool: null, reason: `配置 ${B0_TOOL_KEY}=${preferredId} 未命中 enabled 的 ${B0_PLATFORM} 工具` };
-    return { tool: hit };
-  }
-  if (!candidates.length) return { tool: null, reason: `未配置 ${B0_PLATFORM} 类型的 AI 工具` };
-  return { tool: candidates[0] };
+/** 失败文本 → 稳定错误码；不把原始响应体塞进 UI。 */
+function classifyB0Error(detail: string): string {
+  if (/未配置|未命中|不提供模型列表/i.test(detail)) return 'B0_NOT_CONFIGURED';
+  if (/401|403|鉴权|Authentication|Unauthorized|口令/i.test(detail)) return 'B0_AUTH_FAILED';
+  if (/超时|timeout|ETIMEDOUT/i.test(detail)) return 'B0_TIMEOUT';
+  if (/结果流|SSE|已结束且未捕获/i.test(detail)) return 'B0_STREAM_LOST';
+  return 'B0_UNREACHABLE';
 }
 
 /** A 兜底：把任务放回 MCP 就绪池；若 B0 失败时 RelayDispatch 已归位，则不重复自增 monitor_retry */
 function tryA(task: TaskView, reason: string | undefined): DispatchAttempt {
   try {
     const current = TaskService.getById(task.id);
-    if (!current) return { channel: 'A', ok: false, state: 'failed', detail: '任务已不存在，无法归位就绪池' };
+    if (!current) return { channel: 'A', ok: false, state: 'failed', detail: '任务已不存在，无法归位就绪池', code: 'TASK_NOT_FOUND' };
     const ready = getDb().prepare('SELECT monitor_ready FROM tasks WHERE id = ?').get(task.id) as { monitor_ready: number } | undefined;
     if (!ready || ready.monitor_ready !== 1) armReady(task.id, A_PLATFORM);
     audit({
@@ -128,6 +130,7 @@ function tryA(task: TaskView, reason: string | undefined): DispatchAttempt {
       ok: false,
       state: 'failed',
       detail: `归位 MCP 就绪池失败：${e instanceof Error ? e.message : String(e)}`,
+      code: 'A_NOT_READY',
     };
   }
 }
@@ -150,6 +153,7 @@ function escalateD(task: TaskView, reason: string): DispatchAttempt {
       ok: false,
       state: 'manual',
       detail: `B0/A 均不可用，已转 D 应急：任务标记 ai_state=failed、monitor_preferred_platform=${D_PLATFORM}，需人工确认后执行 GUI 直驱。原因：${reason}`,
+      code: 'D_MANUAL_ONLY',
     };
   } catch (e) {
     return {
@@ -157,6 +161,7 @@ function escalateD(task: TaskView, reason: string): DispatchAttempt {
       ok: false,
       state: 'failed',
       detail: `转 D 应急失败：${e instanceof Error ? e.message : String(e)}`,
+      code: 'D_MANUAL_ONLY',
     };
   }
 }
@@ -164,36 +169,103 @@ function escalateD(task: TaskView, reason: string): DispatchAttempt {
 function toAttempt(r: RelayDispatchResult): DispatchAttempt {
   return {
     channel: 'B0',
-    ok: r.state === 'running' || r.state === 'done',
-    state: r.state,
+    ok: r.ok,
+    // 审计口径：失败统一落 failed，避免 dispatch_attempts 里出现「ready 但其实没派出去」导致重试上限失效
+    state: r.ok ? r.state : 'failed',
     detail: r.detail,
     queueId: r.queueId,
     jobId: r.jobId,
     ticket: r.ticket,
+    code: r.ok ? undefined : classifyB0Error(r.detail),
   };
+}
+
+/** 每条通道尝试落审计；attemptId 会回填到响应，供前端直接定位。 */
+function persistAttempt(
+  task: TaskView,
+  attempt: DispatchAttempt,
+  actor: DispatchActor,
+  idempotencyKey: string | undefined,
+  fallbackReason?: string,
+): DispatchAttempt {
+  try {
+    const id = recordAttempt({
+      taskId: task.id,
+      taskNo: task.task_no,
+      channel: attempt.channel,
+      state: attempt.state,
+      queueId: attempt.queueId,
+      jobId: attempt.jobId,
+      ticket: attempt.ticket,
+      fallbackReason,
+      detail: attempt.detail,
+      actor,
+      idempotencyKey,
+    });
+    attempt.attemptId = id;
+  } catch (e) {
+    // 审计失败不得阻断派发，但要在日志里可见，避免「UI 有结果、审计没记录」静默漂移
+    audit({ event: 'dispatch_attempt_write_failed', taskNo: taskLabel(task), channel: attempt.channel, detail: String(e) });
+  }
+  return attempt;
 }
 
 /**
  * 派发入口。channel 默认 auto（B0→A→D）；显式指定时只走该通道（b0 失败不降级）。
- * 调用方可以是 REST 路由、脚本或后续 supervisor 扩展。
+ * options 让自动调度显式禁 D；手动入口沿用默认 allowD=true（D 仍需用户显式选 channel='d'）。
  */
-export async function dispatch(taskRef: string, channel: DispatchChannel = 'auto'): Promise<DispatchResult> {
+export async function dispatch(
+  taskRef: string,
+  channel: DispatchChannel = 'auto',
+  options: DispatchOptions = {},
+): Promise<DispatchResult> {
   const task = lookupTask(taskRef);
   if (!task) {
     return {
       ok: false, taskNo: taskRef, state: 'failed', channel: 'B0', attempts: [],
-      detail: `任务不存在：${taskRef}`,
+      detail: `任务不存在：${taskRef}`, code: 'TASK_NOT_FOUND',
     };
   }
   const invalid = ensureDispatchable(task);
+  const idem = (options.idempotencyKey ?? '').trim();
+  // 幂等优先于状态机：首次 B0 已把任务置 running 时，同一键重试应返回「已受理」而不是 TASK_RUNNING
+  if (idem) {
+    const recent = findRecentIdempotency(idem, new Date(Date.now() - 5 * 60_000).toISOString());
+    if (recent) {
+      return {
+        ok: false,
+        taskNo: taskLabel(task),
+        state: recent.state as DispatchState,
+        channel: recent.channel as 'B0' | 'A' | 'D',
+        attempts: [{
+          channel: recent.channel as 'B0' | 'A' | 'D',
+          ok: recent.state === 'running' || recent.state === 'done' || recent.state === 'ready',
+          state: recent.state as DispatchState,
+          detail: recent.detail || '相同幂等键的首次派发记录',
+          queueId: recent.queue_id ?? undefined,
+          jobId: recent.job_id ?? undefined,
+          ticket: recent.ticket ?? undefined,
+          attemptId: recent.id,
+        }],
+        detail: '相同幂等键的派发请求已受理，请勿重复提交',
+        code: 'DISPATCH_DUPLICATE',
+        attemptId: recent.id,
+      };
+    }
+  }
   if (invalid) {
     return {
-      ok: false, taskNo: taskLabel(task), state: 'failed', channel: 'B0', attempts: [], detail: invalid,
+      ok: false, taskNo: taskLabel(task), state: 'failed', channel: 'B0', attempts: [], detail: invalid.detail, code: invalid.code,
     };
   }
 
+  const actor = options.actor ?? 'manual';
+  const allowD = options.allowD ?? true;
+  const allowFallbackA = options.allowFallbackA ?? true;
+
   const attempts: DispatchAttempt[] = [];
   let fallbackReason: string | undefined;
+  let lastAttemptId: string | undefined;
 
   // 1) B0 主链路
   if (channel === 'auto' || channel === 'b0') {
@@ -201,69 +273,96 @@ export async function dispatch(taskRef: string, channel: DispatchChannel = 'auto
     if (!tool) {
       fallbackReason = reason ?? 'B0 工具未配置';
       const a: DispatchAttempt = {
-        channel: 'B0', ok: false, state: 'ready', detail: `B0 未派发：${fallbackReason}`,
+        channel: 'B0', ok: false, state: 'failed', detail: `B0 未派发：${fallbackReason}`, code: 'B0_NOT_CONFIGURED',
       };
-      attempts.push(a);
-      audit({ event: 'dispatch', taskNo: taskLabel(task), channel: 'B0', attempt: 1, state: 'ready', fallbackReason });
+      attempts.push(persistAttempt(task, a, actor, idem, fallbackReason));
+      lastAttemptId = a.attemptId;
+      audit({ event: 'dispatch', taskNo: taskLabel(task), channel: 'B0', attempt: 1, state: 'ready', fallbackReason, actor });
       if (channel === 'b0') {
-        return { ok: false, taskNo: taskLabel(task), state: 'ready', channel: 'B0', attempts, fallbackReason, detail: a.detail };
+        return { ok: false, taskNo: taskLabel(task), state: 'ready', channel: 'B0', attempts, fallbackReason, detail: a.detail, code: a.code, attemptId: lastAttemptId };
       }
     } else {
       let r: RelayDispatchResult;
       try {
-        r = await dispatchTask(task.id, B0_PLATFORM, tool.id);
+        r = await dispatchTask(task.id, B0_PLATFORM, tool.id, 'dispatch');
       } catch (e) {
         r = {
           ok: false, state: 'ready', detail: `B0 派发异常：${e instanceof Error ? e.message : String(e)}`,
         };
       }
-      const a = toAttempt(r);
+      const a = persistAttempt(task, toAttempt(r), actor, idem, fallbackReason);
+      lastAttemptId = a.attemptId;
       attempts.push(a);
       audit({
         event: 'dispatch', taskNo: taskLabel(task), channel: 'B0', attempt: 1, state: r.state,
-        detail: r.detail, queueId: r.queueId, jobId: r.jobId, ticket: r.ticket,
+        detail: r.detail, queueId: r.queueId, jobId: r.jobId, ticket: r.ticket, actor,
       });
       if (a.ok) {
         return {
           ok: true, taskNo: taskLabel(task), state: a.state, channel: 'B0',
-          attempts, detail: a.detail,
+          attempts, detail: a.detail, attemptId: lastAttemptId,
         };
       }
       fallbackReason = r.detail;
       if (channel === 'b0') {
-        return { ok: false, taskNo: taskLabel(task), state: a.state, channel: 'B0', attempts, fallbackReason, detail: a.detail };
+        return { ok: false, taskNo: taskLabel(task), state: a.state, channel: 'B0', attempts, fallbackReason, detail: a.detail, code: a.code, attemptId: lastAttemptId };
       }
     }
   }
 
   // 2) A 兜底（拉取式就绪池）
-  if (channel === 'auto' || channel === 'a') {
-    const a = tryA(task, fallbackReason);
+  if ((channel === 'auto' || channel === 'a') && allowFallbackA) {
+    const a = persistAttempt(task, tryA(task, fallbackReason), actor, idem, fallbackReason);
+    lastAttemptId = a.attemptId;
     attempts.push(a);
     if (a.ok) {
       return {
         ok: true, taskNo: taskLabel(task), state: 'ready', channel: 'A',
-        attempts, fallbackReason, detail: a.detail,
+        attempts, fallbackReason, detail: a.detail, attemptId: lastAttemptId,
       };
     }
     fallbackReason = `${fallbackReason ? `${fallbackReason}；` : ''}${a.detail}`;
     if (channel === 'a') {
-      return { ok: false, taskNo: taskLabel(task), state: a.state, channel: 'A', attempts, fallbackReason, detail: a.detail };
+      return { ok: false, taskNo: taskLabel(task), state: a.state, channel: 'A', attempts, fallbackReason, detail: a.detail, code: a.code, attemptId: lastAttemptId };
     }
   }
 
-  // 3) D 应急（人工确认）
-  const d = escalateD(task, fallbackReason ?? '显式指定 D 应急');
+  // 3) D 应急（仅人工/显式请求；自动与 API 一律不自动 D）
+  if (!allowD) {
+    return {
+      ok: false, taskNo: taskLabel(task), state: 'failed', channel: 'A', attempts,
+      fallbackReason, detail: '自动派发失败；D 通道仅人工确认，不自动执行。请检查 B0/A 或人工处理',
+      code: 'D_MANUAL_ONLY', attemptId: lastAttemptId,
+    };
+  }
+  const d = persistAttempt(task, escalateD(task, fallbackReason ?? '显式指定 D 应急'), actor, idem, fallbackReason);
+  lastAttemptId = d.attemptId;
   attempts.push(d);
   return {
     ok: false, taskNo: taskLabel(task), state: d.state, channel: 'D',
-    attempts, fallbackReason, detail: d.detail,
+    attempts, fallbackReason, detail: d.detail, code: d.code, attemptId: lastAttemptId,
   };
+}
+
+/** 自动调度专用入口：强制禁 D，可读策略决定是否允许 A 兜底。 */
+export function dispatchAuto(
+  taskRef: string,
+  policy: DispatchPolicy,
+  idempotencyKey?: string,
+  actor: DispatchActor = 'auto',
+): Promise<DispatchResult> {
+  return dispatch(taskRef, policy.defaultChannel, {
+    actor,
+    allowD: false,
+    allowFallbackA: policy.allowFallbackA,
+    idempotencyKey,
+  });
 }
 
 /** 只读状态：供设置页/脚本判断 B0 是否就绪、A 是否开启、D 是否待人工 */
 export function status() {
-  const b0 = resolveB0Tool();
+  const policy = readPolicy();
+  const b0 = resolveB0Tool(policy);
   const supervisorEnabled = getSetting('supervisor.enabled') === '1';
   const readyCount = getDb().prepare(
     'SELECT COUNT(*) AS n FROM tasks WHERE monitor_ready = 1 AND archived = 0 AND status = \'todo\'',
@@ -272,13 +371,13 @@ export function status() {
     'SELECT COUNT(*) AS n FROM tasks WHERE ai_state = \'failed\' AND monitor_preferred_platform = \'d-gui\' AND archived = 0',
   ).get() as { n: number };
   return {
-    defaultChannel: 'auto' as DispatchChannel,
+    defaultChannel: policy.defaultChannel as DispatchChannel,
     order: ['B0', 'A', 'D'],
     b0: {
       configured: Boolean(b0.tool),
       toolId: b0.tool?.id ?? null,
       toolName: b0.tool?.name ?? null,
-      endpoint: b0.tool?.endpoint ?? null,
+      endpoint: sanitizeEndpoint(b0.tool?.endpoint),
       reason: b0.reason ?? null,
     },
     a: {
@@ -291,7 +390,22 @@ export function status() {
       failedTasks: failedCount.n,
       platform: D_PLATFORM,
     },
+    auto: {
+      enabled: policy.autoEnabled,
+      runnable: policy.autoEnabled && policy.scopeProjectIds.length > 0 && Boolean(b0.tool),
+      defaultChannel: policy.defaultChannel,
+      b0ToolId: policy.b0ToolId,
+      scopeProjectIds: policy.scopeProjectIds,
+      trigger: policy.trigger,
+      intervalMs: policy.intervalMs,
+      cooldownMs: policy.cooldownMs,
+      maxPerTick: policy.maxPerTick,
+      maxAttempts: policy.maxAttempts,
+      allowFallbackA: policy.allowFallbackA,
+      allowAutoD: false,
+      retentionDays: policy.retentionDays,
+    },
   };
 }
 
-export const PushDispatcher = { dispatch, status };
+export const PushDispatcher = { dispatch, dispatchAuto, status };

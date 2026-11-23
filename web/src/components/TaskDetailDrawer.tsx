@@ -8,6 +8,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, imageUrl, type CustomField, type Project, type Task, type TaskFieldValuesPayload } from '../api/client';
 import { GitCommitTab } from '../components/GitCommitTab'; // 八期 §3.2：任务详情抽屉「Git」页
+import { DispatchMenu } from './DispatchMenu'; // T06252：任务详情手动派发入口
+import { DispatchRecent } from './DispatchRecent'; // T06267：最近派发审计回显
 import { MarkdownContent } from '../ui/Markdown';
 import { ResultDiffPanel } from '../ui/ResultDiff'; // T01607：结果历史 diff/回滚——与行内共用同一组件
 import { TaskEventTimeline } from '../components/TaskEventTimeline';
@@ -38,7 +40,10 @@ type BlockerRow = {
  * T01570：抽屉保存后向父级回报的「定点补丁」——只带本次真正改写的字段。
  * 父页据此把新值就地合并进列表与抽屉自身，行内区块即时同步，不必再靠整表重载才看到变化。
  */
-export type TaskPatch = Partial<Pick<Task, 'description' | 'handle_result'>>;
+export type TaskPatch = Partial<Pick<Task,
+  'description' | 'handle_result' | 'dispatch_last_at' | 'dispatch_last_state' | 'dispatch_auto' |
+  'ai_state' | 'status'
+>>;
 
 const STATUS_LABEL: Record<string, string> = { todo: '待办', done: '已完成' };
 
@@ -120,6 +125,7 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
   readonly flash?: (m: string) => void;
 }) {
   const [tab, setTab] = useState<TaskDetailTab>(initialTab ?? 'desc');
+  const [dispatchRefresh, setDispatchRefresh] = useState(0);
   const [editing, setEditing] = useState<null | 'desc' | 'result'>(null);
   const [busy, setBusy] = useState(false);
   // 本地镜像可编辑字段，避免父级刷新覆盖未保存草稿（抽屉按 task.id 作 key，切换任务即重挂载）
@@ -317,6 +323,20 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
       setSummaryBusy(false);
     }
   }
+
+  const refreshAfterDispatch = useCallback(async () => {
+    try {
+      const fresh = await api.get<Task>(`/tasks/${encodeURIComponent(task.id)}`);
+      onChanged({
+        status: fresh.status,
+        ai_state: fresh.ai_state,
+        dispatch_auto: fresh.dispatch_auto,
+        dispatch_last_at: fresh.dispatch_last_at,
+        dispatch_last_state: fresh.dispatch_last_state,
+      });
+    } catch { /* 刷新失败不回滚派发结果，SSE/列表轮询会兜底 */ }
+    setDispatchRefresh((v) => v + 1);
+  }, [task.id, onChanged]);
 
   const tabs: Array<{ key: TaskDetailTab; label: string; icon: React.ReactNode }> = [
     { key: 'desc', label: '描述', icon: <FileText size={13} /> },
@@ -631,12 +651,14 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
   return (
     <SlideOver open title={task.title} onClose={onClose} width={480}>
       {/* 头部徽标 */}
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
         <Badge tone={task.status === 'done' ? 'success' : 'accent'}>{STATUS_LABEL[task.status] ?? task.status}</Badge>
         <Badge tone={priorityTone(task.priority)}>{priorityBadgeLabel(task.priority)}</Badge>
         {task.verified && <Badge tone="success">已验证</Badge>}
         {task.pinned && <Badge tone="accent"><Pin size={12} aria-hidden /> 置顶</Badge>}
         {task.task_no && <Badge>{task.task_no}</Badge>}
+        <span style={{ flex: 1 }} />
+        <DispatchMenu task={task} onDispatched={() => void refreshAfterDispatch()} />
       </div>
 
       {/* 标签页 */}
@@ -658,9 +680,10 @@ export function TaskDetailDrawer({ task, projectId, initialTab, onClose, onChang
         ))}
       </div>
 
+      <DispatchRecent taskId={task.id} taskNo={task.task_no} refreshToken={dispatchRefresh} />
+
       {/* 描述 */}
       {tab === 'desc' && renderDescTab()}
-
       {/* 处理结果 */}
       {tab === 'result' && renderResultTab()}
 

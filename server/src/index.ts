@@ -17,6 +17,7 @@ import { changeBus } from './services/ChangeBus';
 import { startDailyBackupTimer } from './services/BackupService'; // T01061-FR5.1：每日自动备份
 import { RecurringService, TokenService } from './services/RecurringService'; // T01073：循环任务 + API Token
 import { SupervisorService } from './services/SupervisorService'; // T01273：监督器 tick（含 T01270 会话停滞兜底）
+import { DispatchScheduler } from './services/DispatchScheduler'; // T06263：十期自动派发调度（独立于 supervisor）
 import { reconcileLinkedPlanStatuses } from './services/PlanService';
 import { reconcileReqStatuses } from './services/reqStatusSync'; // T02087：需求状态启动对账
 import { reconcileDerivedFrom } from './services/derivedOrigin'; // T02320：派生单溯源（正文首行「来源：Txxxx」）启动回填
@@ -31,11 +32,14 @@ import { maybeOrganizeMemories } from './services/MemoryMaintenanceService'; // 
 
 const PORT = Number(process.env.MTask_PORT ?? 39876);
 const HOST = '127.0.0.1';
+// 数据迁移备份含图片 base64，实测可达 94MB，远超普通接口上限；只给导入端点单独抬高，其他接口仍守 30MB。
+const MIGRATION_IMPORT_LIMIT = '256mb';
 
 const app = express();
 app.disable('x-powered-by'); // S5689：funnel/cloudflared 隧道开启时不把框架信息带出公网
 // 尽早拦截 console，使 server ready / 请求日志等后续输出都能进入日志缓冲
 logService.init();
+app.use('/api/settings/import', express.json({ limit: MIGRATION_IMPORT_LIMIT }));
 // 上限覆盖截图粘贴：单图解码后 ≤ 8MB（TaskImageService 内校验），base64 膨胀约 4/3
 app.use(express.json({ limit: '30mb' }));
 
@@ -232,97 +236,167 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
   // T00711（D-3 修复）：请求体超限（如 PRD 上传 > 30mb）映射 413 + 可操作中文提示，不再冒 500
   const payloadErr = err as Error & { type?: string; status?: number; statusCode?: number };
   if (payloadErr?.type === 'entity.too.large' || payloadErr?.status === 413 || payloadErr?.statusCode === 413) {
-    return res.status(413).json({ error: '文件超过 30MB 上限，请拆分或压缩后再上传' });
+    return res.status(413).json({ error: '文件超过服务器允许的上传上限，请压缩或拆分后再上传' });
   }
   console.error('[mtask] unhandled error:', err);
   res.status(500).json({ error: err.message ?? 'internal error' });
 });
 
+/** 启动计时：冷启动曾把首包 /app.js 拖到 30s，分项耗时用于回归对比（见 docs/ui-review 评审报告 P0-1） */
+const bootT0 = Date.now();
 initSchema();
-// T05208（裁决方案 B）：存量「方案设计/测试用例」文档按同主题唯一命中补显式关联边。
-// 幂等且只补空值——已挂接的文档不会被改写；判不出/歧义的保持未关联，读取时退回单文档行为。
-try {
-  const prdDocLinked = backfillPrdDocLinks();
-  if (prdDocLinked > 0) console.log(`[mtask] prd-doc link backfill: ${prdDocLinked} document(s) linked to primary PRD`);
-} catch (e) {
-  console.error('[mtask] prd-doc link backfill failed:', e);
+{
+  const schemaMs = Date.now() - bootT0;
+  if (schemaMs > 300) console.log(`[startup] schema init ${schemaMs}ms`);
 }
-// T00470：启动对账——直写库场景（AI 脚本回写）绕过同步钩子时，兜底对齐待办→计划状态
-try {
-  const fixed = reconcileLinkedPlanStatuses();
-  if (fixed > 0) console.log(`[mtask] plan-task reconcile: ${fixed} plan record(s) aligned to done`);
-} catch (e) {
-  console.error('[mtask] plan-task reconcile failed:', e);
-}
-// T02087：需求状态对账——同一兜底家族的需求侧成员：关联计划/待办全部 done 的需求归位
-// （旧版本从未派生过的存量 + 直写库绕过钩子的变更，都在这里对齐；changed 与无关联行不动）
-try {
-  const reqFixed = reconcileReqStatuses();
-  if (reqFixed > 0) console.log(`[mtask] req-status reconcile: ${reqFixed} requirement(s) re-derived`);
-} catch (e) {
-  console.error('[mtask] req-status reconcile failed:', e);
-}
-// T02090：里程碑进度对账——兜底家族第三名成员：带子项（deps child）的里程碑按子项 done 数
-// 收敛 progress/status（T02042 实测「子项全 done 里程碑仍 0%」的存量 + 直写库绕过聚合的变更）。
-//  必须排在 plan-task reconcile **之后**：那一步按「关联待办 done → 计划 done」单向对齐，
-//  已按 milestoneHasChildren 排除聚合作主的里程碑；这里再按子项实况做权威聚合。
-try {
-  const msFixed = reconcileMilestoneProgresses();
-  if (msFixed > 0) console.log(`[mtask] milestone-progress reconcile: ${msFixed} milestone(s) re-aggregated`);
-} catch (e) {
-  console.error('[mtask] milestone-progress reconcile failed:', e);
-}
-// T02320：派生单溯源对账——兜底家族第四名成员。历史建单把派生关系只写进正文首行「来源：Txxxx」
-// 而 derived_from 为空 ⇒ 结论从未被自动归并回母单（实测 4 张完成单即此形态）；这里按同一判据回填，
-// 母单编号查无的行只计数不猜。
-try {
-  const rec = reconcileDerivedFrom();
-  if (rec.backfilled > 0 || rec.missingOrigin > 0) {
-    console.log(`[mtask] derived-from reconcile: ${rec.backfilled} task(s) backfilled, ${rec.missingOrigin} 来源编号查无母单（不回填）, scanned ${rec.scanned}`);
+
+/**
+ * 启动维护队列（P0-1 修复）：对账/回填/一次性补算都是幂等兜底，不该阻塞「服务可服务」。
+ * 旧实现把它们串在 app.listen 之前同步跑完——库越大越久，期间端口虽已绑定但事件循环被占死，
+ * 首批请求（/app.js、/api/plans）只能干等，实测 30s。现改为 listen 之后逐项 setImmediate 执行：
+ *  - 每项之间让出事件循环，首批请求先被服务；
+ *  - 单项耗时 >200ms 打日志，方便定位下一次冒出来的长任务；
+ *  - MTASK_SKIP_STARTUP_MAINTENANCE=1 可整体跳过（压测/回归用，不改变正常语义）。
+ */
+const startupQueue: Array<{ name: string; run: () => void }> = [
+  {
+    // T05208（裁决方案 B）：存量「方案设计/测试用例」文档按同主题唯一命中补显式关联边。
+    // 幂等且只补空值——已挂接的文档不会被改写；判不出/歧义的保持未关联，读取时退回单文档行为。
+    name: 'prd-doc-link',
+    run: () => {
+      const n = backfillPrdDocLinks();
+      if (n > 0) console.log(`[mtask] prd-doc link backfill: ${n} document(s) linked to primary PRD`);
+    },
+  },
+  {
+    // T00470：启动对账——直写库场景（AI 脚本回写）绕过同步钩子时，兜底对齐待办→计划状态
+    name: 'plan-task-reconcile',
+    run: () => {
+      const fixed = reconcileLinkedPlanStatuses();
+      if (fixed > 0) console.log(`[mtask] plan-task reconcile: ${fixed} plan record(s) aligned to done`);
+    },
+  },
+  {
+    // T02087：需求状态对账——同一兜底家族的需求侧成员：关联计划/待办全部 done 的需求归位
+    // （旧版本从未派生过的存量 + 直写库绕过钩子的变更，都在这里对齐；changed 与无关联行不动）
+    name: 'req-status-reconcile',
+    run: () => {
+      const fixed = reconcileReqStatuses();
+      if (fixed > 0) console.log(`[mtask] req-status reconcile: ${fixed} requirement(s) re-derived`);
+    },
+  },
+  {
+    // T02090：里程碑进度对账——带子项（deps child）的里程碑按子项 done 数收敛 progress/status。
+    //  必须排在 plan-task reconcile **之后**：那一步按「关联待办 done → 计划 done」单向对齐，
+    //  已按 milestoneHasChildren 排除聚合作主的里程碑；这里再按子项实况做权威聚合。
+    name: 'milestone-progress-reconcile',
+    run: () => {
+      const fixed = reconcileMilestoneProgresses();
+      if (fixed > 0) console.log(`[mtask] milestone-progress reconcile: ${fixed} milestone(s) re-aggregated`);
+    },
+  },
+  {
+    // T02320：派生单溯源对账——历史建单把派生关系只写进正文首行「来源：Txxxx」而 derived_from 为空
+    // ⇒ 结论从未被自动归并回母单；这里按同一判据回填，母单编号查无的行只计数不猜。
+    name: 'derived-from-reconcile',
+    run: () => {
+      const rec = reconcileDerivedFrom();
+      if (rec.backfilled > 0 || rec.missingOrigin > 0) {
+        console.log(`[mtask] derived-from reconcile: ${rec.backfilled} task(s) backfilled, ${rec.missingOrigin} 来源编号查无母单（不回填）, scanned ${rec.scanned}`);
+      }
+    },
+  },
+  {
+    // T01061-FR5.1：每日自动备份——首启即备会整库拷贝（222MB 库实测数百 ms~数十秒），挪进队列并再宽限 30s
+    name: 'daily-backup-check',
+    run: () => startDailyBackupTimer(30_000),
+  },
+  {
+    // T01073-FR5.5：循环任务到期生成（tick 从 1 小时收紧到 60 秒）；每次每条规则仍最多生成 1 份
+    name: 'recurring-tick',
+    run: () => RecurringService.tick(),
+  },
+  {
+    // T04150（PRD MEM-307/F9）：记忆月度整理复用同一调度点，内部按 30 天节流，幂等可重跑
+    name: 'memory-organize',
+    run: () => maybeOrganizeMemories(),
+  },
+  {
+    // T03227（PM-201⑥）：迭代结束日在本次运行之前被跨过、且还没有周报卡的迭代，启动时各补一张。
+    //  判据自带幂等（候选=「无 weekly_card 事件」），故只在此跑一轮、不挂小时定时器。
+    name: 'iteration-weekly-cards',
+    run: () => {
+      const bf = IterationService.backfillWeeklyCards();
+      if (bf.generated.length > 0) console.log(`[iterations] 周报卡补生成 ${bf.generated.length} 张（扫描 ${bf.scanned} 个无卡迭代）`);
+    },
+  },
+  {
+    // T02949 方案 A：历史派生单补标一轮——旧版本只能手动点「+ 待裁决」，已回传且结论明确请求裁决的单仍是空态
+    name: 'task-ruling-backfill',
+    run: () => {
+      const marked = TaskService.backfillRuling();
+      if (marked) console.log(`[ruling] 历史派生单补标 ${marked} 条为待裁决`);
+    },
+  },
+  {
+    // T01368 后续（P1）：running 超时兜底改为定时收敛；启动即收敛一轮挪到这里，避免占住就绪窗口
+    name: 'stale-running-guard',
+    run: () => startStaleRunningGuard(60000),
+  },
+  {
+    // T03237（PM-205）：日快照启动即采一轮（大库全表聚合），之后再每 30 分钟刷新当天读数
+    name: 'metric-snapshot',
+    run: () => MetricSnapshotService.startSnapshotTimer(),
+  },
+  {
+    // T01064 后续：task_events 保留期清理（默认 90 天，events.retentionDays 可配，0 = 不清理）
+    name: 'event-retention',
+    run: () => startEventRetentionTimer(),
+  },
+  {
+    // T02144：导出令牌临时文件回收（启动清一轮 + 每小时兜底）
+    name: 'report-tmp-sweeper',
+    run: () => startReportTmpSweeper(),
+  },
+];
+
+/** 逐项执行启动维护队列；每项之后 setImmediate 让出事件循环，首批请求可与维护工作交错 */
+function runStartupMaintenance(index = 0): void {
+  if (process.env.MTASK_SKIP_STARTUP_MAINTENANCE === '1') {
+    console.log('[startup] maintenance skipped by MTASK_SKIP_STARTUP_MAINTENANCE=1');
+    return;
   }
-} catch (e) {
-  console.error('[mtask] derived-from reconcile failed:', e);
+  if (index >= startupQueue.length) {
+    console.log(`[startup] maintenance done in ${Date.now() - bootT0}ms (ready+maintenance)`);
+    return;
+  }
+  const item = startupQueue[index];
+  const startedAt = Date.now();
+  try {
+    item.run();
+  } catch (e) {
+    console.error(`[startup] ${item.name} failed:`, e);
+  }
+  const cost = Date.now() - startedAt;
+  if (cost > 200) console.log(`[startup] ${item.name} ${cost}ms`);
+  setImmediate(() => runStartupMaintenance(index + 1));
 }
 app.listen(PORT, HOST, () => {
-  console.log(`[mtask] server ready at http://${HOST}:${PORT}`);
+  console.log(`[mtask] server ready at http://${HOST}:${PORT} (boot ${Date.now() - bootT0}ms)`);
   console.log(`[mtask] health: http://${HOST}:${PORT}/api/health`);
-  // T01061-FR5.1：每日自动备份（当天首启即备 + 每小时检查日期翻转）
-  startDailyBackupTimer();
-  // T01073-FR5.5：循环任务到期生成（启动即跑一轮 + 每分钟检查）
-  // T05819：tick 从 1 小时收紧到 60 秒，与 cron 的分钟级精度对齐；每次每条规则仍最多生成 1 份。
-  try { RecurringService.tick(); } catch (e) { console.error('[recurring] 启动 tick 失败:', e); }
-  // T04150（PRD MEM-307/F9）：记忆月度整理复用同一调度点，内部按 30 天节流，幂等可重跑。
-  try { maybeOrganizeMemories(); } catch (e) { console.error('[memory] 启动整理失败:', e); }
+  // P0-1：对账/备份/快照等重活全部转入 startupQueue（见上），这里只注册轻量定时器与周期性调度，
+  // 保证 ready 日志之后的第一批请求立刻能被服务。
   setInterval(() => {
     try { RecurringService.tick(); } catch { /* 单轮失败不中断定时 */ }
     try { maybeOrganizeMemories(); } catch (e) { console.error('[memory] 定期整理失败:', e); }
   }, 60_000);
-  // T03227（PM-201⑥）：迭代结束日在本次运行之前被跨过、且还没有周报卡的迭代，启动时各补一张。
-  //  判据自带幂等（候选=「无 weekly_card 事件」），故只在此跑一轮、不挂小时定时器：
-  //  挂着跑会让「今天才结束」的迭代提前拿到卡，与本条要求的「关闭期间跨过」不是同一件事。
-  try {
-    const bf = IterationService.backfillWeeklyCards();
-    if (bf.generated.length > 0) console.log(`[iterations] 周报卡补生成 ${bf.generated.length} 张（扫描 ${bf.scanned} 个无卡迭代）`);
-  } catch (e) { console.error('[iterations] 周报卡补生成失败:', e); }
   // T01273-FR2.1：监督器 tick（启动即跑一轮 + 按 supervisor.intervalMs 周期，默认 30s）。
   // T01270 的会话停滞兜底已并入该 tick（观测层不受熔断开关影响），故移除其独立定时器；
   // 决策层受 supervisor.enabled 熔断开关控制（默认关闭），无监督对象时空转返回（NFR-1）。
   // T01311：定时器收拢进 SupervisorService.startScheduler——持有句柄才能支持 intervalMs 热重载。
   SupervisorService.startScheduler();
-  // T01368 后续（P1）：running 超时兜底改为定时收敛，移出列表/详情读路径（去掉只读接口的写锁竞争）
-  startStaleRunningGuard(60000);
-  // T02949 方案 A：历史派生单补标一轮——旧版本只能手动点「+ 待裁决」，已回传且结论明确请求裁决的单
-  // 仍是空态；启动时按严格规则补，命中才写（不重判已收口单，详见 TaskService.backfillRuling）。
-  try {
-    const marked = TaskService.backfillRuling();
-    if (marked) console.log(`[ruling] 历史派生单补标 ${marked} 条为待裁决`);
-  } catch (e) { console.error('[ruling] 历史补标失败:', e); }
-  // T01064 后续：task_events 保留期清理（默认 90 天，events.retentionDays 可配，0 = 不清理）
-  startEventRetentionTimer();
-  // T02144：导出令牌临时文件回收（启动清一轮 + 每小时兜底）——未下载即放弃的 PPTX/XLSX 不再永久残留
-  startReportTmpSweeper();
-  // T03237（PM-205）：日快照启动即采一轮，之后每 30 分钟刷新当天读数（过去日期冻结、不回填）
-  MetricSnapshotService.startSnapshotTimer();
+  // T06263：自动派发独立调度，不依赖 supervisor.enabled，也不消耗其 LLM 预算
+  DispatchScheduler.startScheduler();
   // T03196（PM-401）：Webhook 待重试投递续跑 + 每日逾期事件扫描（重启后 pending 记录可继续重试）
   WebhookService.startDeliveryTimer();
   // T03312：勾选「后端启动时自动开启隧道」时按 POST /start 同一套门禁自动拉起。
@@ -334,6 +408,10 @@ app.listen(PORT, HOST, () => {
     },
     (e) => console.error('[mtask] tunnel auto-start failed:', e),
   );
+  // P0-1：维护队列在 ready 之后逐项执行（每项之间让出事件循环）。
+  // 再宽限一段：单项对账在 200MB 库上仍可能连续占住事件循环数秒~数十秒，先让首屏静态资源/接口跑完。
+  const maintenanceDelay = Number(process.env.MTASK_STARTUP_DELAY_MS ?? 8000);
+  setTimeout(() => setImmediate(() => runStartupMaintenance()), Number.isFinite(maintenanceDelay) ? maintenanceDelay : 8000);
 });
 
 // 异步队列轮询器：周期性地将已受理（sending+有 ticket）的 Job 收口。

@@ -20,6 +20,9 @@ export function normalizePlanTitle(title: string): string {
     .replace(/^\s*\d+(?:\.\d+)*\s*(?:M\d+)?\s*/i, '')
     .replace(/^\s*M\d+\s*/i, '')
     .replace(/^REQ-\d+\s*/i, '')
+    // 2026-11-21：覆盖卡由系统按（2）…（12）追加序号；同题去重必须先去掉尾部序号，
+    // 否则 12 张语义完全相同的覆盖卡会被质量门统计成 0 组重复。
+    .replace(/\s*[（(]\s*\d+\s*[)）]\s*$/i, '')
     // 只去空白/标点/符号，**不能**用 [\s\W_]：\W 会把中文一并删掉，
     // 纯中文标题会全部归一化为 ''，跨片同题去重直接失效（质量门 A-02 实测捕获）。
     .replaceAll(/[\s\p{P}\p{S}]+/gu, '')

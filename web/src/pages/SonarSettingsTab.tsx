@@ -45,7 +45,7 @@ interface TestRow {
 
 interface TestResult {
   server?: { ok: boolean; version?: string; edition?: string; status?: string };
-  scanner?: { ok: boolean; version?: string };
+  scanner?: { ok: boolean; version?: string; note?: string };
   java?: { ok: boolean };
   project?: { ok: boolean; projectKey?: string };
   errors: Array<{ kind: string; message: string; hint: string }>;
@@ -72,9 +72,11 @@ const EMPTY_CFG: ConfigView = {
 
 // T05788：输入框收缩并受控——boxSizing 让 padding/border 计入宽度（全局无 border-box reset，
 // 缺它时 width:100% 会溢出容器被右栏裁切）；maxWidth 限制最长，minWidth:0 防止 flex 子项撑破左栏。
-const fieldStyle: React.CSSProperties = { width: '100%', maxWidth: 480, minWidth: 0, boxSizing: 'border-box', padding: '7px 10px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' };
+const fieldStyle: React.CSSProperties = { width: '100%', maxWidth: 480, minWidth: 0, minHeight: 36, boxSizing: 'border-box', padding: '7px 10px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' };
 const labelStyle: React.CSSProperties = { display: 'block', fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginBottom: 4 };
-const btnStyle: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 5, padding: '6px 12px', fontSize: 'var(--fs-s)', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer' };
+const btnStyle: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 5, minHeight: 36, boxSizing: 'border-box', padding: '6px 12px', fontSize: 'var(--fs-s)', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer' };
+/** 主按钮：此前只挂了不存在的 .primary 类，390 下退化成 19px 原生按钮；改为显式样式。 */
+const primaryBtnStyle: React.CSSProperties = { ...btnStyle, padding: '6px 16px', borderColor: 'var(--accent)', background: 'var(--accent)', color: '#fff' };
 
 /** T05773：右栏信息卡片。卡片不承载表单，纯展示；标题与正文分区固定，便于左右栏对齐。 */
 function SonarCard({ title, extra, children }: { readonly title: string; readonly extra?: ReactNode; readonly children: ReactNode }) {
@@ -190,6 +192,27 @@ export function SonarSettingsTab() {
     }
   }
 
+  /** 清除 Token：独立确认，且只提交 token 字段——不能顺带保存地址/扫描器/projectKey 的未保存草稿。 */
+  async function clearToken() {
+    const ok = await askConfirm('清除已保存的 Sonar Token？清除后需要重新录入才能访问需要认证的实例；此动作不可撤销。');
+    if (!ok) return;
+    setBusy('save');
+    setError('');
+    setNotice('');
+    try {
+      const r = await api.put<ConfigView>('/settings/sonar', { token: '' });
+      // 只回填 Token 状态，保留用户尚未保存的其他草稿，避免「清除 Token」顺手覆盖表单。
+      setCfg((prev) => ({ ...prev, tokenConfigured: r.tokenConfigured, tokenMasked: r.tokenMasked }));
+      setTokenDraft('');
+      setRevealed('');
+      setNotice('Token 已清除；其他未保存的修改未提交');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy('');
+    }
+  }
+
   /** 查看原文：二次确认在服务端也设了门（confirm 缺失即 400），这里的弹窗不是唯一防线 */
   async function reveal() {
     const ok = await askConfirm('查看 Sonar Token 原文会写入审计记录（谁、何时、看了哪台服务器的 Token）。确认继续？');
@@ -237,9 +260,10 @@ export function SonarSettingsTab() {
   async function test() {
     setBusy('test');
     setError('');
+    setNotice('');
     setRows([]);
     try {
-      const body: Record<string, unknown> = { serverUrl: serverDraft };
+      const body: Record<string, unknown> = { serverUrl: serverDraft, scannerPath: scannerDraft };
       if (tokenDraft.trim()) body.token = tokenDraft.trim();
       const firstKey = keys.find((k) => k.projectKey)?.projectKey ?? '';
       if (firstKey) body.projectKey = firstKey;
@@ -256,7 +280,9 @@ export function SonarSettingsTab() {
         {
           label: '扫描器（sonar-scanner -v）',
           ok: r.scanner?.ok === true,
-          detail: r.scanner?.ok ? r.scanner.version ?? '' : msgOf('no-scanner'),
+          detail: r.scanner?.ok
+            ? `${r.scanner.version ?? ''}${r.scanner.note ? ` · ${r.scanner.note}` : ''}`
+            : msgOf('no-scanner'),
           hint: r.scanner?.ok ? '' : hintOf('no-scanner'),
         },
         {
@@ -273,7 +299,6 @@ export function SonarSettingsTab() {
     }
   }
 
-  const tokenShown = revealed || (cfg.tokenConfigured ? cfg.tokenMasked : '');
   const serverTest = rows.find((r) => r.label.startsWith('服务器状态'));
 
   return (
@@ -301,9 +326,15 @@ export function SonarSettingsTab() {
         @media (max-width: 1024px) {
           .sonar-config-grid { grid-template-columns: minmax(0, 1fr) !important; }
         }
+        /* 窄屏把 projectKey 行拆成两行：项目选择占满一行，projectKey + 删除按钮占下一行，避免名称被压成省略号。 */
+        @media (max-width: 640px) {
+          .sonar-key-row { flex-wrap: wrap !important; }
+          .sonar-key-row [data-t03375="key-project"] { flex: 1 1 100% !important; }
+          .sonar-key-row [data-t03375="key-value"] { flex: 1 1 calc(100% - 44px) !important; }
+        }
       `}</style>
 
-      <div className="sonar-config-left" data-t05788="sonar-left" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div className="sonar-config-left" data-t05788="sonar-left" aria-busy={loading} style={{ display: 'flex', flexDirection: 'column', gap: 14, opacity: loading ? 0.65 : 1, pointerEvents: loading ? 'none' : 'auto' }}>
       <div style={{ marginBottom: 2 }}>
         <SettingsHelpIcon
           icon={ScanLine}
@@ -365,12 +396,12 @@ export function SonarSettingsTab() {
               : <button type="button" style={btnStyle} data-t03373="reveal" onClick={() => void reveal()} disabled={busy === 'reveal'} aria-label="查看 Token 原文"><Eye size={14} /> 查看原文</button>
           )}
           {cfg.tokenConfigured && !revealed && !tokenDraft.trim() && (
-            <button type="button" style={btnStyle} data-t03373="clear" onClick={() => void save(true)} disabled={busy === 'save'} aria-label="清除已保存的 Token">清除</button>
+            <button type="button" style={btnStyle} data-t03373="clear" onClick={() => void clearToken()} disabled={busy === 'save'} aria-label="清除已保存的 Token">清除</button>
           )}
         </div>
         <div data-t03373="token-state" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4 }}>
-          {cfg.tokenConfigured ? `当前：${tokenShown}（AES-256-GCM 密文落库；查看原文需二次确认并写审计）` : '未配置 Token；匿名可读的实例可留空。'}
-          {revealed && <b style={{ color: 'var(--warn)', marginLeft: 8 }}>原文已展开 — 离开页签或点「隐藏」即清除</b>}
+          {cfg.tokenConfigured ? `当前：${cfg.tokenMasked}（AES-256-GCM 密文落库；查看原文需二次确认并写审计）` : '未配置 Token；匿名可读的实例可留空。'}
+          {revealed && <b style={{ color: 'var(--warn)', marginLeft: 8 }}>原文仅在输入框展开；点「隐藏」或离开页签即清除</b>}
         </div>
       </HoverCard>
 
@@ -413,7 +444,7 @@ export function SonarSettingsTab() {
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {keys.map((k, i) => (
-            <div key={`${k.projectId || 'new'}-${i}`} data-t03375="key-row" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <div key={`${k.projectId || 'new'}-${i}`} data-t03375="key-row" className="sonar-key-row" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
               <select
                 data-t03375="key-project"
                 aria-label={`映射项目 ${i + 1}`}
@@ -473,7 +504,7 @@ export function SonarSettingsTab() {
       </HoverCard>
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-        <button type="button" className="primary" data-t03372="save" onClick={() => void save()} disabled={busy === 'save'}>
+        <button type="button" style={primaryBtnStyle} data-t03372="save" onClick={() => void save()} disabled={busy === 'save'}>
           <Save size={14} /> {busy === 'save' ? '保存中…' : '保存配置'}
         </button>
         <button type="button" style={btnStyle} data-t03374="test" onClick={() => void test()} disabled={busy === 'test'}>
@@ -556,10 +587,10 @@ export function SonarSettingsTab() {
           </div>
         </SonarCard>
 
-        <SonarCard title="Token 查看审计">
+        <SonarCard title="Token 查看审计" extra={<span data-t03373="audit-count" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>{audit.length} 条</span>}>
           <div className="sonar-card-scroll" data-t03373="audit-list" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: 3 }}>
             {audit.length === 0 && <span data-t03373="audit-empty">暂无查看记录（审计只记时间与服务器地址，不记 Token 本身）</span>}
-            {audit.slice(0, 5).map((a, i) => (
+            {audit.map((a, i) => (
               <span key={`${a.revealedAt}-${i}`} data-t03373="audit-row">
                 {a.revealedAt.replace('T', ' ').slice(0, 19)} · {auditResultText(a)} · {a.serverUrl || '（未配置地址）'}
               </span>

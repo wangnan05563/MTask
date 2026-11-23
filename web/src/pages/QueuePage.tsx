@@ -21,6 +21,7 @@ import { NoticeToast, useNotice } from '../ui/notice';
 import { useProjectList } from '../ui/projectList';
 import { BTN_DANGER_OUTLINE, BTN_DISABLED, BTN_ICON, BTN_PRIMARY, BTN_SECONDARY_MD } from '../ui/primitives';
 import { computeQueueMetrics, type JobFilter } from './queueMetrics';
+import { DispatchRecordsPanel } from './DispatchRecordsPanel'; // T06266：内部派发队列只读视图
 import { withContextCapacity } from '../utils/modelContext';
 import {
   JobTable, PoolPanel, QueueComposer, QueueEmptyState, QueueHeadline, QueueMonitor,
@@ -99,6 +100,8 @@ function QueueToolButton({ label, hint, icon, onClick, disabled, ariaLabel, styl
 }
 
 export function QueuePage() {
+  // T06266：人工队列 / 派发记录二级视图；内部队列不参与人工发送/编辑动作
+  const [view, setView] = useState<'queues' | 'dispatch'>('queues');
   const { notice, flash, dismiss } = useNotice();
 
   const [queues, setQueues] = useState<Queue[]>([]);
@@ -579,6 +582,10 @@ export function QueuePage() {
     }
   }
 
+  if (view === 'dispatch') {
+    return <section><DispatchRecordsPanel onBack={() => setView('queues')} /></section>;
+  }
+
   // ───────── 渲染 ─────────
 
   const sendDisabled = busy || !active || Boolean(active.paused) || active.status === 'running' || pendingCount === 0;
@@ -596,6 +603,13 @@ export function QueuePage() {
         </span>
         <span style={{ flex: 1 }} />
         {active && <QueueHeadline queue={active} metrics={metrics} />}
+        <QueueToolButton
+          label="派发记录"
+          hint="查看 B0/A 自动派发与监督中继的内部队列（只读）"
+          icon={<Send size={14} />}
+          onClick={() => setView('dispatch')}
+          style={BTN_SECONDARY_MD}
+        />
       </div>
 
       {/* 工具条 */}

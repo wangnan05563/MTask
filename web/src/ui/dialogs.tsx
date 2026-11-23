@@ -9,6 +9,8 @@ import { Check, X } from 'lucide-react';
 
 export interface AskInputOptions {
   title: string;
+  /** 可选正文说明（危险操作确认等需要多行提示；不设置时保持原有单标题外观） */
+  description?: string;
   defaultValue?: string;
   placeholder?: string;
   okText?: string;
@@ -35,8 +37,9 @@ const panelStyle: CSSProperties = {
   background: 'var(--card-bg)',
   borderRadius: 8,
   padding: 20,
-  minWidth: 340,
-  maxWidth: 480,
+  minWidth: 'min(340px, calc(100vw - 32px))',
+  maxWidth: 'min(480px, calc(100vw - 32px))',
+  boxSizing: 'border-box',
   boxShadow: '0 8px 30px rgba(0, 0, 0, 0.18)',
   fontFamily: 'system-ui, sans-serif',
 };
@@ -86,8 +89,11 @@ function InputDialog({ options, onSubmit }: InputDialogProps) {
 
   return (
     <div style={overlayStyle}>
-      <div ref={panelRef} style={panelStyle}>
+      <div ref={panelRef} style={panelStyle} role="dialog" aria-modal="true" aria-label={options.title}>
         <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, marginBottom: 12 }}>{options.title}</div>
+        {options.description && (
+          <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', marginBottom: 10 }}>{options.description}</div>
+        )}
         <input
           ref={ref}
           value={value}
@@ -147,7 +153,7 @@ function ConfirmDialog({ message, onSubmit, zIndex = 1000 }: ConfirmDialogProps)
 
   return (
     <div style={{ ...overlayStyle, zIndex }}>
-      <div ref={panelRef} style={panelStyle}>
+      <div ref={panelRef} style={panelStyle} role="alertdialog" aria-modal="true" aria-label="确认操作">
         <div style={{ fontSize: 'var(--fs-l)', marginBottom: 16, whiteSpace: 'pre-wrap' }}>{message}</div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           <button className="ghost" onClick={() => onSubmit(false)} title="取消 — 取消并关闭确认" aria-label="取消：取消并关闭确认" style={{ padding: '6px 14px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}><X size={14} style={{ verticalAlign: '-2px' }} />取消</button>
@@ -254,7 +260,7 @@ function InputDialogEx({ options, onSubmit }: InputDialogExProps) {
 
   return (
     <div style={overlayStyle}>
-      <div ref={panelRef} style={panelStyle}>
+      <div ref={panelRef} style={panelStyle} role="dialog" aria-modal="true" aria-label={options.title}>
         <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, marginBottom: 12 }}>{options.title}</div>
         <label style={fieldLabel}>{options.select.label}</label>
         <select value={sel} onChange={(e) => setSel(e.target.value)} aria-label={options.select.label}
@@ -305,4 +311,78 @@ export function askInputEx(options: AskInputExOptions): Promise<AskInputExResult
       />
     ));
   });
+}
+
+/**
+ * P1-5：结果清单弹窗（导入错误的可操作化展示）。
+ * 与 askConfirm 的「一句话提示」不同，这里保留**完整清单**：整文件级原因置顶、行级错误逐条列出，
+ * 并提供「复制清单」——用户不必再从一闪而过的 flash 里抄错误。
+ */
+export interface ReportDialogOptions {
+  title: string;
+  intro?: string;
+  items?: string[];
+  footnote?: string;
+}
+
+interface ReportDialogProps {
+  readonly options: ReportDialogOptions;
+  readonly onClose: () => void;
+}
+
+function ReportDialog({ options, onClose }: ReportDialogProps) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [copied, setCopied] = useState(false);
+  const items = options.items ?? [];
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    globalThis.addEventListener('keydown', onKey);
+    return () => globalThis.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  const copyAll = async () => {
+    const text = [options.title, options.intro ?? '', ...items, options.footnote ?? ''].filter(Boolean).join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setCopied(false);
+    }
+  };
+  return (
+    <div style={overlayStyle}>
+      <div ref={panelRef} role="dialog" aria-modal="true" aria-label={options.title}
+        style={{ ...panelStyle, minWidth: 420, maxWidth: 640, maxHeight: '76vh', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, marginBottom: 8 }}>{options.title}</div>
+        {options.intro && (
+          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', marginBottom: 10 }}>{options.intro}</div>
+        )}
+        {items.length > 0 && (
+          <ol aria-label="错误清单" style={{ margin: 0, paddingLeft: 20, overflowY: 'auto', maxHeight: '46vh', fontSize: 'var(--fs-s)', lineHeight: 1.7, color: 'var(--text)' }}>
+            {items.map((it) => <li key={it}>{it}</li>)}
+          </ol>
+        )}
+        {options.footnote && (
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 10 }}>{options.footnote}</div>
+        )}
+        <div style={{ marginTop: 14, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          {items.length > 0 && (
+            <button onClick={() => void copyAll()} title="复制完整错误清单到剪贴板" aria-label="复制错误清单"
+              style={{ padding: '6px 14px', cursor: 'pointer', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text-secondary)' }}>
+              {copied ? '已复制' : '复制清单'}
+            </button>
+          )}
+          <button onClick={onClose} title="关闭" aria-label="关闭"
+            style={{ padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <Check size={14} style={{ verticalAlign: '-2px' }} />知道了
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 打开结果清单弹窗（无返回值；关闭即结束） */
+export function showReport(options: ReportDialogOptions): void {
+  mountDialog((close) => <ReportDialog options={options} onClose={close} />);
 }

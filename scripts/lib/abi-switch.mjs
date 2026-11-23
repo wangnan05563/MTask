@@ -89,18 +89,57 @@ function findElectronFromRelease(root) {
   return null;
 }
 
+/**
+ * 从 Windows 卸载注册表解析 MTask 的实际安装目录。
+ * 安装器允许改目录（本机就装在 F:\Program Files\MTask），只查 PROGRAMFILES 会漏。
+ */
+function installedAppBasesFromRegistry() {
+  if (process.platform !== 'win32') return [];
+  const keys = [
+    'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+    'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+    'HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+  ];
+  const bases = [];
+  for (const key of keys) {
+    const r = spawnSync('reg', ['query', key, '/s', '/f', 'MTask', '/t', 'REG_SZ'], {
+      encoding: 'utf8', timeout: 10000, windowsHide: true,
+    });
+    if (r.status !== 0 || !r.stdout) continue;
+    for (const line of r.stdout.split(/\r?\n/)) {
+      const m = /^\s*(DisplayIcon|InstallLocation|UninstallString)\s+REG_SZ\s+(.+?)\s*$/i.exec(line);
+      if (!m) continue;
+      const kind = m[1].toLowerCase();
+      let value = m[2].trim().replace(/^"|"$/g, '');
+      if (kind === 'displayicon') {
+        value = value.replace(/,\d+$/, '').trim();
+        if (value) bases.push(path.dirname(value));
+      } else if (kind === 'installlocation') {
+        if (value) bases.push(value);
+      } else if (kind === 'uninstallstring') {
+        const quoted = /^"([^"]+)"/.exec(value);
+        const bare = /^(\S+)/.exec(value);
+        const exe = quoted ? quoted[1] : bare ? bare[1] : '';
+        if (exe) bases.push(path.dirname(exe));
+      }
+    }
+  }
+  return bases;
+}
+
 /** 从已安装的 MTask 桌面应用找 Electron ABI 二进制（release 被整体清理后的兜底）。 */
 function findElectronFromInstalledApp() {
   const local = process.env.LOCALAPPDATA || '';
   const programFiles = process.env.PROGRAMFILES || '';
   const programFilesX86 = process.env['PROGRAMFILES(X86)'] || '';
-  const bases = [
+  const bases = [...new Set([
     path.join(local, 'Programs', 'MTask'),
     path.join(local, 'Programs', 'mtask'),
     path.join(local, 'MTask'),
     path.join(programFiles, 'MTask'),
     path.join(programFilesX86, 'MTask'),
-  ].filter(Boolean);
+    ...installedAppBasesFromRegistry(),
+  ])].filter(Boolean);
   for (const base of bases) {
     const p = path.join(
       base, 'resources', 'app.asar.unpacked',

@@ -5,7 +5,8 @@
  * 所以这里既不读也不写 status，任何列表/看板/状态门的消费路径都不需要改口径。
  *
  * 存储：字段定义挂项目（project_fields），值挂任务（task_field_values）。
- * 「字段归档」与「选项停用」都是软删——值不会被抹掉，重新启用前历史仍可追溯；
+ * 「字段归档」与「选项停用」都是软删——值不会被抹掉；字段恢复后历史值重新参与呈现，
+ * 选项停用期间历史值仍按 label 可追溯。
  * 只有项目/任务被物理删除时才靠 FK 级联清值。
  */
 import { getDb } from '../db/connection';
@@ -21,6 +22,8 @@ export interface FieldOptionView {
   id: string;
   label: string;
   archived: boolean;
+  /** 当前仍指向该选项的任务值行数；0 表示可硬删 */
+  usage_count: number;
 }
 
 export interface ProjectFieldView {
@@ -34,6 +37,8 @@ export interface ProjectFieldView {
   archived_at: string | null;
   created_at: string;
   updated_at: string;
+  /** 当前仍指向该字段的任务值行数；用于评估归档影响和禁止改类型 */
+  usage_count: number;
 }
 
 /** 列表行带出的字段值：`display` 是给人看的文本（单选项回 label），`value` 是落库原值 */
@@ -76,7 +81,7 @@ function parseOptions(raw: string): FieldOptionView[] {
     if (!o || typeof o !== 'object') continue;
     const r = o as Record<string, unknown>;
     if (typeof r.id !== 'string' || typeof r.label !== 'string') continue;
-    out.push({ id: r.id, label: r.label, archived: r.archived === true });
+    out.push({ id: r.id, label: r.label, archived: r.archived === true, usage_count: 0 });
   }
   return out;
 }
@@ -93,7 +98,39 @@ function toView(r: ProjectFieldRow): ProjectFieldView {
     archived_at: r.archived_at,
     created_at: r.created_at,
     updated_at: r.updated_at,
+    usage_count: 0,
   };
+}
+
+/**
+ * 挂引用计数：字段总量 + 每个选项当前值行数。
+ * 设置页据此显示「N 个任务在用」，并在已引用选项上禁用删除、在有值时禁用改类型。
+ */
+function attachUsage(views: ProjectFieldView[]): ProjectFieldView[] {
+  if (views.length === 0) return views;
+  const db = getDb();
+  const fieldIds = views.map((v) => v.id);
+  const totals = new Map<string, number>();
+  const optionCounts = new Map<string, Map<string, number>>();
+  for (let i = 0; i < fieldIds.length; i += LOOKUP_BATCH) {
+    const chunk = fieldIds.slice(i, i + LOOKUP_BATCH);
+    const rows = db.prepare(
+      `SELECT field_id, value, COUNT(*) AS n FROM task_field_values
+        WHERE field_id IN (${chunk.map(() => '?').join(',')})
+        GROUP BY field_id, value`,
+    ).all(...chunk) as Array<{ field_id: string; value: string; n: number }>;
+    for (const row of rows) {
+      totals.set(row.field_id, (totals.get(row.field_id) ?? 0) + row.n);
+      const byValue = optionCounts.get(row.field_id) ?? new Map<string, number>();
+      byValue.set(row.value, row.n);
+      optionCounts.set(row.field_id, byValue);
+    }
+  }
+  return views.map((v) => ({
+    ...v,
+    usage_count: totals.get(v.id) ?? 0,
+    options: v.options.map((o) => ({ ...o, usage_count: optionCounts.get(v.id)?.get(o.id) ?? 0 })),
+  }));
 }
 
 function rowById(fieldId: string): ProjectFieldRow | undefined {
@@ -137,7 +174,7 @@ function normOptions(raw: unknown, prev: FieldOptionView[]): FieldOptionView[] {
     if (seenLabels.has(label)) throw new Error(`选项「${label}」重复`);
     seenLabels.add(label);
     const id = typeof o.id === 'string' && prevById.has(o.id) ? o.id : uuid();
-    out.push({ id, label, archived: o.archived === true });
+    out.push({ id, label, archived: o.archived === true, usage_count: 0 });
   }
   if (out.length === 0) throw new Error('单选字段必须提供至少一个选项');
   return out;
@@ -259,7 +296,7 @@ export const FieldService = {
       `SELECT * FROM project_fields WHERE project_id = ? ${opts.includeArchived ? '' : 'AND archived = 0'}
         ORDER BY sort_weight, created_at`,
     ).all(projectId) as ProjectFieldRow[];
-    return rows.map(toView);
+    return attachUsage(rows.map(toView));
   },
 
   create(projectId: string, input: { name?: unknown; type?: unknown; options?: unknown }): ProjectFieldView {
@@ -298,18 +335,35 @@ export const FieldService = {
     db.prepare('UPDATE project_fields SET name = ?, type = ?, options = ?, updated_at = ? WHERE id = ?')
       .run(name, type, JSON.stringify(options), now(), fieldId);
     notifyChange('tasks');
-    return toView(mustField(fieldId));
+    return attachUsage([toView(mustField(fieldId))])[0];
   },
 
-  /** 归档字段：值保留在库。归档后列表/抽屉不再展示，但历史值可查（不清行） */
+  /** 归档字段：值保留在库。归档后列表/抽屉不再展示，恢复后历史值重新参与呈现 */
   archive(fieldId: string): ProjectFieldView {
     const row = mustField(fieldId);
-    if (row.archived === 1) return toView(row);
+    if (row.archived === 1) return attachUsage([toView(row)])[0];
     getDb().prepare('UPDATE project_fields SET archived = 1, archived_at = ?, updated_at = ? WHERE id = ?')
       .run(now(), now(), fieldId);
     // 归档会从列表徽标与抽屉里撤下该字段，任务内容没变但呈现变了，同样要走 tasks 通道
     notifyChange('tasks');
-    return toView(mustField(fieldId));
+    return attachUsage([toView(mustField(fieldId))])[0];
+  },
+
+  /**
+   * 恢复归档字段：先校验项目内没有同名的现行字段，再清 archived/archived_at。
+   * 历史值不恢复可见——它们一直在库里，恢复字段后自动重新进入列表与抽屉取数。
+   */
+  restore(fieldId: string): ProjectFieldView {
+    const row = mustField(fieldId);
+    if (row.archived !== 1) return attachUsage([toView(row)])[0];
+    const conflict = getDb().prepare(
+      'SELECT id FROM project_fields WHERE project_id = ? AND name = ? AND archived = 0 AND id <> ?',
+    ).get(row.project_id, row.name, fieldId) as { id: string } | undefined;
+    if (conflict) throw new Error(`已存在同名字段「${row.name}」，请先改名或归档该字段后再恢复`);
+    getDb().prepare('UPDATE project_fields SET archived = 0, archived_at = NULL, updated_at = ? WHERE id = ?')
+      .run(now(), fieldId);
+    notifyChange('tasks');
+    return attachUsage([toView(mustField(fieldId))])[0];
   },
 
   /** 任务可编辑的字段 + 当前值（抽屉「自定义字段」页取数，两件事一次给全） */
@@ -391,7 +445,7 @@ export const FieldService = {
         const type = (FIELD_TYPES.has(r.type) ? r.type : 'text') as FieldType;
         const field: ProjectFieldView = {
           id: r.field_id, project_id: '', name: r.name, type, options: parseOptions(r.options),
-          sort_weight: 0, archived: false, archived_at: null, created_at: '', updated_at: '',
+          sort_weight: 0, archived: false, archived_at: null, created_at: '', updated_at: '', usage_count: 0,
         };
         const list = out.get(r.task_id) ?? [];
         list.push({ field_id: r.field_id, name: r.name, type, value: r.value, display: displayOf(field, r.value) });

@@ -79,8 +79,15 @@ function useOverlayDismiss(active: boolean, busy: boolean, close: () => void) {
     const onDocClick = (e: MouseEvent) => {
       if (e.target === ref.current && !busy) close();
     };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !busy) close();
+    };
     document.addEventListener('click', onDocClick);
-    return () => document.removeEventListener('click', onDocClick);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('click', onDocClick);
+      document.removeEventListener('keydown', onKeyDown);
+    };
   }, [active, busy, close]);
   return ref;
 }
@@ -228,8 +235,13 @@ export function ReqPage() {
 
   async function removeCategory(cat: ReqCategory) {
     const cnt = cat.reqCount ?? 0;
+    const archivedCnt = cat.archivedCount ?? 0;
     // 影响面文案先算好再插值：避免模板字面量嵌套（内层模板写在外层 ${} 里）
-    const impact = cnt > 0 ? `其下 ${cnt} 条通用需求将一并删除，` : '';
+    // 已归档条目也会随 ON DELETE CASCADE 物理删除，必须显式提示，避免「只删分类」的误判
+    const parts: string[] = [];
+    if (cnt > 0) parts.push(`其下 ${cnt} 条未归档通用需求`);
+    if (archivedCnt > 0) parts.push(`${archivedCnt} 条已归档通用需求`);
+    const impact = parts.length ? `将一并删除：${parts.join('、')}，` : '';
     const ok = await askConfirm(`确认删除分类「${cat.name}」？${impact}此操作不可恢复。`);
     if (!ok) return;
     try {
@@ -366,8 +378,10 @@ export function ReqPage() {
     const targetName = projects.find((x) => x.id === planProjectId)?.name ?? '所选项目';
     setPlanBusy(true);
     try {
-      await api.post('/plans/from-req', { reqEntryId: p.id, projectId: planProjectId });
-      flash(`已将「${p.title}」转存到「${targetName}」的项目计划`);
+      const r = await api.post<{ plan: unknown; reused?: boolean }>('/plans/from-req', { reqEntryId: p.id, projectId: planProjectId });
+      flash(r?.reused
+        ? `该需求已转存为计划任务，请勿重复转存`
+        : `已将「${p.title}」转存到「${targetName}」的项目计划`);
       setPlanEntry(null);
     } catch (e) { flash(e instanceof Error ? e.message : String(e)); }
     finally { setPlanBusy(false); }
@@ -525,12 +539,21 @@ export function ReqPage() {
         .tbtn-anim:active svg { transform: scale(.88); }
         .arena-row.item-pressing { transform: scale(.985); } /* T00489：仅按住行触发 */
         .arena-row:hover { background: var(--surface-2); }
-        .abtn { opacity: 0; visibility: hidden; transition: opacity .15s ease, visibility 0s linear .15s; }
+        .abtn { opacity: 0; visibility: visible; pointer-events: none; transition: opacity .15s ease; }
         /* T00469 的 hover/active 两档曾在本页原样再抄一遍：页面级样式在文档里更靠后且特异性更高，
            会把 App.tsx 修正过特异性后的「按下回弹」盖成 0.9 档。T04547 收回单源，
            本页只保留自己独有的「行悬浮才显形」规则。 */
         .abtn svg { transition: transform .15s ease; }
-        .arena-row:hover .abtn, .arena-row:focus-within .abtn { opacity: 1; visibility: visible; transition: opacity .15s ease, visibility 0s; }
+        .arena-row:hover .abtn, .arena-row:focus-within .abtn { opacity: 1; pointer-events: auto; }
+        /* 触屏没有 hover：行内复制/编辑/归档/更多必须常显，否则移动端完全点不到 */
+        @media (hover: none), (pointer: coarse) { .abtn { opacity: 1; pointer-events: auto; } }
+        /* 窄屏：行内操作常显后会挤占标题宽度（390px 实测标题被压成 0）。
+           让头部换行：星标/置顶 → 标题独占一行 → 操作按钮一行，保证标题始终可读。 */
+        @media (max-width: 640px) {
+          .arena-row .row-head { flex-wrap: wrap; }
+          .arena-row .row-title-btn { flex: 1 0 100%; order: 2; }
+          .arena-row .row-head > .abtn { order: 3; }
+        }
         @keyframes rowflush { 0% { background: var(--accent-soft); } 100% { background: transparent; } }
         .arena-row.flush { animation: rowflush 1.4s ease; }
         .item-dragging { opacity: .5; box-shadow: 0 8px 20px rgba(0,0,0,.25); border-color: var(--accent) !important; }
@@ -550,7 +573,7 @@ export function ReqPage() {
           style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}>
           <FolderPlus size={13} />
         </button>
-        {activeCat && (
+        {activeCat && !isAllFav(activeCat) && (
           <>
           <button onClick={() => { const c = categories.find((c) => c.id === activeCat); if (c) void renameCategory(c); }}
             style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}
@@ -774,7 +797,7 @@ export function ReqPage() {
               ) : (
                 <>
                   {/* T00494 调整：去掉拖拽把手图标（整行即可拖拽） */}
-<div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+<div className="row-head" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     {/* 标题可点击，切换内容展开/收起（默认收起，降低信息密度） */}
                     {/* T02146：置顶图标提到标题按钮的**兄弟位**——HTML 不允许 button 套 button
                         （dev React 报 validateDOMNesting，生产构建只是剥掉告警，DOM 依旧非法）。
@@ -908,7 +931,8 @@ export function ReqPage() {
       {taskCopyEntry && (
         <div ref={taskCopyOverlayRef}
           style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(420px, 92vw)', boxShadow: '0 8px 30px rgba(0,0,0,.18)' }}>
+          <div role="dialog" aria-modal="true" aria-label="复制到待办任务"
+            style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(420px, 92vw)', boxShadow: '0 8px 30px rgba(0,0,0,.18)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600 }}>
               <ListTodo size={14} style={{ color: 'var(--accent)' }} /> 复制到待办任务
               <span style={{ flex: 1 }} />
@@ -951,7 +975,8 @@ export function ReqPage() {
       {planEntry && (
         <div ref={planOverlayRef}
           style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(420px, 92vw)', boxShadow: '0 8px 30px rgba(0,0,0,.18)' }}>
+          <div role="dialog" aria-modal="true" aria-label="转计划 — 选择目标项目"
+            style={{ background: 'var(--card-bg)', borderRadius: 8, width: 'min(420px, 92vw)', boxShadow: '0 8px 30px rgba(0,0,0,.18)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-m)', fontWeight: 600 }}>
               <CalendarRange size={14} style={{ color: 'var(--accent)' }} /> 转计划 — 选择目标项目
               <span style={{ flex: 1 }} />

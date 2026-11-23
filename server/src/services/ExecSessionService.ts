@@ -511,7 +511,7 @@ export const ExecSessionService = {
         });
         continue;
       }
-      const r = await dispatchTask(taskId, row.platform);
+      const r = await dispatchTask(taskId, row.platform, undefined, 'relay');
       if (!r.ok && r.state === 'ready' && !r.queueId) armReady(taskId, row.platform);
       entries.push({ taskId, taskNo: task.task_no, dispatched: true, state: r.state, ok: r.ok, reason: r.reason, detail: r.detail });
     }

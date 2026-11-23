@@ -55,7 +55,22 @@ export const api = {
   get: <T>(path: string, signal?: AbortSignal) => request<T>(path, signal ? { signal } : {}),
   post: <T>(path: string, data?: unknown, signal?: AbortSignal) =>
     request<T>(path, { method: 'POST', body: data === undefined ? undefined : JSON.stringify(data), ...(signal ? { signal } : {}) }),
-  patch: <T>(path: string, data?: unknown) =>
+  /**
+   * POST 已序列化 JSON（File/Blob 原样上传）：数据迁移导入 94MB 备份时跳过前端 JSON.stringify，
+   * 避免大对象二次序列化把主线程冻结十几秒、并让进度态无法先绘制。
+   */
+  async postRaw<T>(path: string, body: BodyInit, contentType = 'application/json', signal?: AbortSignal): Promise<T> {
+    const res = await fetch(`${apiBase}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': contentType, ...(accessToken ? { 'X-Access-Token': accessToken } : {}) },
+      body,
+      signal,
+    });
+    const resBody = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((resBody as { error?: string }).error ?? `HTTP ${res.status}`);
+    return resBody as T;
+  },
+   patch: <T>(path: string, data?: unknown) =>
     request<T>(path, { method: 'PATCH', body: JSON.stringify(data ?? {}) }),
   put: <T>(path: string, data?: unknown) =>
     request<T>(path, { method: 'PUT', body: JSON.stringify(data ?? {}) }), // T00770：PRD 反向更新走全量覆盖 PUT
@@ -266,6 +281,11 @@ export interface Task {
   gitLinks?: GitInlineLink[];
   /** 八期 §3.1.1：关联总数——列表「+N」角标据此显示（N = gitLinkCount − 1） */
   gitLinkCount?: number;
+  /** T06247：最近一次派发时间/结果（详情页「最近派发」与自动闸门回显） */
+  dispatch_last_at?: string | null;
+  dispatch_last_state?: string;
+  /** T06244：任务级自动派发闸门（null/未返回=跟随全局，0=禁止，1=允许） */
+  dispatch_auto?: number | null;
   created_at: string;
   updated_at: string;
   images: TaskImage[];
@@ -389,6 +409,8 @@ export interface CustomFieldOption {
   label: string;
   /** 已被引用的选项只能停用（仍按 label 展示历史值），不进填写候选 */
   archived: boolean;
+  /** 当前仍指向该选项的任务值行数；>0 时禁止硬删 */
+  usage_count: number;
 }
 
 export interface CustomField {
@@ -402,6 +424,8 @@ export interface CustomField {
   archived_at: string | null;
   created_at: string;
   updated_at: string;
+  /** 当前仍指向该字段的任务值行数；用于展示引用量并禁止改类型 */
+  usage_count: number;
 }
 
 export interface TaskFieldValue {
@@ -532,7 +556,142 @@ export interface Queue {
   created_at: string;
   /** T01434：队列级暂停——true 时发送/提交被拒绝 */
   paused?: number;
+  /** T06245：manual=人工编排队列；dispatch/relay=内部派发队列（只在派发记录中展示） */
+  kind?: 'manual' | 'dispatch' | 'relay';
   jobs?: QueueJob[];
+}
+
+/* ---------- T06247/T06261：派发菜单、策略与审计 ---------- */
+
+export type DispatchChannel = 'auto' | 'b0' | 'a' | 'd';
+export type DispatchState = 'running' | 'done' | 'ready' | 'manual' | 'failed';
+
+export interface DispatchAttemptView {
+  channel: 'B0' | 'A' | 'D';
+  ok: boolean;
+  state: DispatchState;
+  detail: string;
+  queueId?: string;
+  jobId?: string;
+  ticket?: string;
+  code?: string;
+  attemptId?: string;
+}
+
+export interface DispatchResultView {
+  ok: boolean;
+  taskNo: string;
+  state: DispatchState;
+  channel: 'B0' | 'A' | 'D';
+  attempts: DispatchAttemptView[];
+  fallbackReason?: string;
+  detail: string;
+  code?: string;
+  attemptId?: string;
+}
+
+export interface DispatchAttemptRow {
+  id: string;
+  task_id: string;
+  task_no: string | null;
+  channel: 'B0' | 'A' | 'D' | string;
+  state: DispatchState | string;
+  queue_id: string | null;
+  job_id: string | null;
+  ticket: string | null;
+  fallback_reason: string;
+  detail: string;
+  actor: 'manual' | 'auto' | 'api' | string;
+  idempotency_key: string;
+  created_at: string;
+}
+
+export interface DispatchCandidateView {
+  id: string;
+  task_no: string | null;
+  title: string;
+  project_id: string;
+  project_name: string;
+  priority: string;
+  created_at: string;
+  dispatch_auto: number | null;
+  dispatch_last_at: string | null;
+  dispatch_last_state: string;
+  monitor_preferred_platform: string | null;
+  cooldown_remaining_ms: number;
+  failed_attempts: number;
+  eligible: boolean;
+  skip_reason: string;
+}
+
+export interface DispatchConfigView {
+  autoEnabled: boolean;
+  defaultChannel: 'auto' | 'b0';
+  b0ToolId: string;
+  scopeProjectIds: string[];
+  trigger: 'ready' | 'interval';
+  intervalMs: number;
+  cooldownMs: number;
+  maxPerTick: number;
+  maxAttempts: number;
+  allowFallbackA: boolean;
+  allowAutoD: false;
+  retentionDays: number;
+  updatedAt: string;
+  b0: {
+    configured: boolean;
+    toolId: string | null;
+    toolName: string | null;
+    endpoint: string;
+    reason: string | null;
+  };
+  runnable: boolean;
+  blockedReason: string;
+}
+
+export interface DispatchRuntimeView {
+  running: boolean;
+  lastRunAt: string | null;
+  nextRunAt: string | null;
+  intervalMs: number;
+  candidates: number;
+  eligibleCandidates: number;
+  today: { success: number; failed: number; skipped: number };
+  lastResult?: {
+    ran: boolean;
+    reason: string;
+    candidateCount: number;
+    dispatched: number;
+    success: number;
+    failed: number;
+    skipped: number;
+    durationMs: number;
+    finishedAt: string;
+    results: Array<{ taskNo: string; ok: boolean; state: string; channel: string; detail: string; code?: string }>;
+  } | null;
+}
+
+export interface DispatchAutoStatus extends DispatchRuntimeView {
+  enabled: boolean;
+  defaultChannel: 'auto' | 'b0';
+  b0ToolId: string;
+  scopeProjectIds: string[];
+  trigger: 'ready' | 'interval';
+  cooldownMs: number;
+  maxPerTick: number;
+  maxAttempts: number;
+  allowFallbackA: boolean;
+  allowAutoD: false;
+  retentionDays: number;
+}
+
+export interface DispatchStatusView {
+  defaultChannel: DispatchChannel;
+  order: string[];
+  b0: { configured: boolean; toolId: string | null; toolName: string | null; endpoint: string; reason: string | null };
+  a: { supervisorEnabled: boolean; readyTasks: number; note: string };
+  d: { manualOnly: boolean; failedTasks: number; platform: string };
+  auto: DispatchAutoStatus;
 }
 
 /** T01271-FR1.4：执行会话关联任务摘要 */
@@ -606,8 +765,10 @@ export interface ReqCategory {
   sort_weight: number;
   created_at: string;
   updated_at: string;
-  /** 分类列表接口附带的条目数量 */
+  /** 分类列表接口附带的条目数量（未归档） */
   reqCount?: number;
+  /** 分类列表接口附带的已归档条目数量；删除分类会级联删除，确认文案需覆盖 */
+  archivedCount?: number;
 }
 
 export interface ReqEntry {

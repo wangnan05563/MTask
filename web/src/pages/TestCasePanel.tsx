@@ -49,7 +49,9 @@ export function TestCasePanel({ projectId, focusReqId, focusSeq, onLocateReq, on
   const [multi, setMulti] = useSessionState<boolean>('tc.multi', false);
   const [selIds, setSelIds] = useSessionState<string[]>('tc.selIds', []);
   const [page, setPage] = useSessionState<number>('tc.page', 0);
-  const [pageSize, setPageSize] = useSessionState<number>('tc.pageSize', 200);
+  // 默认每页 60（原 200）：302 条用例按 200 渲染时首屏 7.7 万 DOM 节点、开面板约 3.5s，
+  // 60 条足够一屏阅读且首开明显更快；需要一口气看更多时工具栏可切回 200。
+  const [pageSize, setPageSize] = useSessionState<number>('tc.pageSize', 60);
   const [expandedId, setExpandedId] = useSessionState<string>('tc.expanded', '');
   const [newTitle, setNewTitle] = useSessionState<string>('tc.newTitle', '');
   const [filterOpen, setFilterOpen] = useSessionState<boolean>('tc.filterOpen', false);

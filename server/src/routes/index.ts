@@ -680,6 +680,10 @@ api.post('/backups/restore', (req, res) => {
 // T05791-FR：删除指定备份快照（物理文件 + 状态一致性）。路径参数经 deleteBackup 的 FILE_RE 白名单校验，
 // 挡路径穿越；鉴权走全局 accessToken/CSRF 中间件（本机管理员才有令牌），与恢复/数据维护同一权限面。
 api.delete('/backups/:name', (req, res) => {
+  // 与数据库维护页危险操作一致：备份快照物理删除必须由前端输入确认码，后端复核。
+  if (req.body?.confirm !== 'CONFIRM_DELETE') {
+    return res.status(403).json({ error: '确认码不正确：删除备份快照必须提交 CONFIRM_DELETE' });
+  }
   const name = typeof req.params?.name === 'string' ? String(req.params.name) : '';
   try {
     const removed = deleteBackup(name);
@@ -1144,12 +1148,17 @@ function toParentIdColumn(parentId: unknown): string | null | undefined {
 }
 
 api.patch('/tasks/:id', (req, res) => {
-  const { title, description, priority, status, verified, aiSummary, handleResult, pinned, categoryId, parentId, color, aiState, derivedFrom, archived } = req.body ?? {}; // T00566：aiState AI 处理状态 // T00490：color 记录字体颜色 // T00779：archived 归档（派生单闭环）
+  const { title, description, priority, status, verified, aiSummary, handleResult, pinned, categoryId, parentId, color, aiState, derivedFrom, archived, dispatchAuto } = req.body ?? {}; // T00566：aiState AI 处理状态 // T00490：color 记录字体颜色 // T00779：archived 归档（派生单闭环） // T06244：dispatchAuto 任务级自动派发闸门
   // T02070 裁决（待办状态二元口径）：tasks 表无 CHECK 约束，本端点与 POST /tasks 是仅有的两个
   // 非类型化写入口。第三值（doing/blocked）不会报错却会让任务从「待办/已完成」两页签同时消失并
   // 脱离 AI 待处理/监控队列，故在边界拒收，而不是让脏数据进库。
   const invalid = checkTaskPatchFields(status, archived);
   if (invalid) { res.status(400).json({ error: invalid }); return; }
+  // T06244：dispatchAuto 三态闸门——null=跟随全局，0=禁止，1=允许；其它值拒收
+  if (dispatchAuto !== undefined && dispatchAuto !== null && dispatchAuto !== 0 && dispatchAuto !== 1) {
+    res.status(400).json({ error: 'dispatchAuto 仅允许 null / 0 / 1' });
+    return;
+  }
   // T00450：parentId 挂接/换父/解除（null）——同项目校验；父任务不可挂到自己或其后代（两级层级下后代不存在，仅防自挂）
   if (parentId !== undefined) {
     const parentError = checkParentChange(req.params.id, parentId);
@@ -1158,7 +1167,7 @@ api.patch('/tasks/:id', (req, res) => {
   // T00566 二轮：状态**自动驱动**（REST 侧同样不依赖技能）——显式 aiState 优先；
   // 否则按语义推导：验证失败→failed；标记完成→unread；回传处理结果→unread
   const autoAiState = computeAutoAiState({ aiState, verified, status, handleResult });
-  res.json(TaskService.update(req.params.id, { title, description, priority, status, verified, ai_summary: aiSummary, handle_result: handleResult, pinned, category_id: categoryId, parent_id: toParentIdColumn(parentId), color, ai_state: autoAiState, derived_from: derivedFrom, archived })); // T00779：archived 归档
+  res.json(TaskService.update(req.params.id, { title, description, priority, status, verified, ai_summary: aiSummary, handle_result: handleResult, pinned, category_id: categoryId, parent_id: toParentIdColumn(parentId), color, ai_state: autoAiState, derived_from: derivedFrom, archived, dispatch_auto: dispatchAuto })); // T00779：archived 归档
 });
 
 api.post('/tasks/move', (req, res) => {
@@ -1212,6 +1221,10 @@ api.patch('/fields/:id', (req, res) => {
 
 api.post('/fields/:id/archive', (req, res) => {
   wsWrap(res, () => FieldService.archive(req.params.id));
+});
+
+api.post('/fields/:id/restore', (req, res) => {
+  wsWrap(res, () => FieldService.restore(req.params.id));
 });
 
 api.get('/tasks/:id/field-values', (req, res) => {
@@ -1966,8 +1979,10 @@ api.post('/aitools/:id/set-default', (req, res) => {
 });
 
 // ---------- 队列 ----------
-api.get('/queues', (_req, res) => {
-  res.json(QueueService.list());
+api.get('/queues', (req, res) => {
+  // T06245：默认只返回人工队列；派发记录页显式 ?kind=all 才读取内部 dispatch/relay 队列
+  const kind = req.query.kind === 'all' ? 'all' : 'manual';
+  res.json(QueueService.list(kind));
 });
 
 // 队列消费汇总（列表卡片进度条的数据源）。
@@ -1988,9 +2003,11 @@ api.get('/queues/:id', (req, res) => {
 });
 
 api.post('/queues', (req, res) => {
-  const { name, date } = req.body ?? {};
+  const { name, date, kind } = req.body ?? {};
   if (!name || !date) return res.status(400).json({ error: 'name 与 date 必填' });
-  res.status(201).json(QueueService.create(name, date));
+  // T06245：公开路由只允许人工队列，内部 dispatch/relay 队列仅由服务层创建
+  if (kind && kind !== 'manual') return res.status(400).json({ error: '公开队列只能创建 manual 类型' });
+  res.status(201).json(QueueService.create(name, date, 'manual'));
 });
 
 // 队列重命名：名称自定义的另一半——新建时前端默认给「{日期} 开发队列」，用户可改成自己的语义名
@@ -3037,7 +3054,8 @@ function createTaskFromSource(table: 'prompts' | 'req_entries', sourceId: string
   if (!getDb().prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw new Error('目标项目不存在');
   const prefix = table === 'prompts' ? '[提示词]' : '[通用需求]';
   // T00445 教训：多渠道创建易重复——同项目同标题已存在则直接返回既有任务，不重复插入
-  const exist = getDb().prepare('SELECT id FROM tasks WHERE project_id = ? AND title = ? LIMIT 1').get(projectId, `${prefix} ${src.title}`) as { id: string } | undefined;
+  // 只复用未归档任务：已归档任务不可见，若复用它会出现「提示已复用但列表里找不到」的假成功
+  const exist = getDb().prepare('SELECT id FROM tasks WHERE project_id = ? AND title = ? AND archived = 0 LIMIT 1').get(projectId, `${prefix} ${src.title}`) as { id: string } | undefined;
   if (exist) return { taskId: exist.id, projectId, reused: true };
   const id = uuid();
   // T00910：复制到待办的任务一并分配全局唯一任务编号 task_no（与 TaskService.create 一致），否则复制出的待办在列表无编号
@@ -3495,6 +3513,8 @@ api.get('/settings/export', exportGate('settings-export', undefined, { defer: tr
   // 又不再像中间件那样对整包做 gzipSync（实测 64MB 明文一次压，同步阻塞 3s 级，正是本轮要消掉的东西）。
   const wantGzip = /\bgzip\b/i.test(String(req.headers['accept-encoding'] ?? ''));
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  // 与导出内容同源的默认文件名，前端可原样落盘；避免浏览器/桌面壳各自再拼一套日期规则。
+  res.setHeader('Content-Disposition', `attachment; filename="mtask-backup-${new Date().toISOString().slice(0, 10)}.json"`);
   if (wantGzip) {
     res.setHeader('Content-Encoding', 'gzip');
     // 同一 URL 因 Accept-Encoding 有两种表示，显式声明，与 H5 中间件同口径
@@ -3515,10 +3535,16 @@ api.get('/settings/export', exportGate('settings-export', undefined, { defer: tr
 });
 
 api.post('/settings/import', async (req, res) => {
-  const { data, mode } = req.body ?? {};
-  if (mode !== 'overwrite' && mode !== 'keep' && mode !== 'merge') {
+  const payload = (req.body ?? {}) as Record<string, unknown>;
+  // 兼容两种请求体：旧版 { data: <bundle>, mode } 包装，以及新版直接把备份文件 JSON 原样流式上传
+  // （mode 走 query）——后者避免浏览器为 94MB 文件再做一次 JSON.stringify 导致主线程长卡顿。
+  const wrapped = !('app' in payload) && 'data' in payload;
+  const bundle = wrapped ? payload.data : payload;
+  const rawMode = payload.mode ?? req.query.mode;
+  if (rawMode !== 'overwrite' && rawMode !== 'keep' && rawMode !== 'merge') {
     return res.status(400).json({ error: 'mode 必填（overwrite|keep|merge）' });
   }
+  const mode = rawMode;
   // T03274（UX-14③④）：覆盖会清空全部业务表——先把现场做成可恢复快照；快照失败则中止，不改任何数据
   let snapshot: { name: string; size: number } | null = null;
   if (mode === 'overwrite') {
@@ -3529,7 +3555,7 @@ api.post('/settings/import', async (req, res) => {
     }
   }
   try {
-    res.json({ ...importBundle(data, mode), snapshot });
+    res.json({ ...importBundle(bundle, mode), snapshot });
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }

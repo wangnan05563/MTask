@@ -95,10 +95,12 @@ export function CardArtifactStrip({ artifact }: { readonly artifact: ReportArtif
  * 卡片结果区的溯源 + 产物一体块：按 cardKey 取最近一次生成落下的快照与最近一份产物。
  * `refreshKey` 由面板在生成结束时变化（如 done 的文件名），触发重取；无历史时整块不渲染。
  */
-export function AiProvenanceSection({ cardKey, projectId, refreshKey }: {
+export function AiProvenanceSection({ cardKey, projectId, refreshKey, nameHint }: {
   readonly cardKey: string;
   readonly projectId?: string | null;
   readonly refreshKey?: string | number | null;
+  /** 产物名提示（如项目名）：多项目共用一个卡时，避免把别的项目的旧产物当成本次产物显示 */
+  readonly nameHint?: string | null;
 }) {
   const [prov, setProv] = useState<CardProvenanceView | null>(null);
   const [artifact, setArtifact] = useState<ReportArtifactView | null>(null);
@@ -108,11 +110,15 @@ export function AiProvenanceSection({ cardKey, projectId, refreshKey }: {
     api.get<{ ok: boolean; provenance: CardProvenanceView | null }>(`/plans/ai-card-provenance?cardKey=${encodeURIComponent(cardKey)}${pid}`)
       .then((r) => { if (alive) setProv(r.provenance ?? null); })
       .catch(() => { /* 无快照或接口异常：不渲染即可，不打断主流程 */ });
-    api.get<{ ok: boolean; artifacts: ReportArtifactView[] }>(`/report/artifacts?cardKey=${encodeURIComponent(cardKey)}&limit=1`)
-      .then((r) => { if (alive) setArtifact(r.artifacts?.[0] ?? null); })
+    api.get<{ ok: boolean; artifacts: ReportArtifactView[] }>(`/report/artifacts?cardKey=${encodeURIComponent(cardKey)}&limit=${nameHint ? 5 : 1}`)
+      .then((r) => {
+        if (!alive) return;
+        const list = r.artifacts ?? [];
+        setArtifact((nameHint ? list.find((a) => a.path.includes(nameHint)) : list[0]) ?? null);
+      })
       .catch(() => { /* 同上 */ });
     return () => { alive = false; };
-  }, [cardKey, projectId, refreshKey]);
+  }, [cardKey, projectId, refreshKey, nameHint]);
   if (!prov && !artifact) return null;
   return (
     <div data-t03262="card-provenance" data-card={cardKey}>

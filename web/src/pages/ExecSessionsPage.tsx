@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { Activity, Loader2, Pin, RefreshCw, RotateCcw } from 'lucide-react';
+import { Activity, Info, Loader2, Pin, RefreshCw, RotateCcw } from 'lucide-react';
 import { api, type ExecSession } from '../api/client';
 import { EmptyState } from '../ui/EmptyState';
 import { focusTaskByNo } from '../ui/focusTask';
@@ -388,6 +388,11 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
       )}
 
       {error && <div style={{ fontSize: 'var(--fs-m)', color: 'var(--danger)', flexShrink: 0 }}>加载失败：{error}</div>}
+
+      {/* T06266：B0 是任务级直推，不产生 exec_session；此处只保留外部会话观测与重派语义 */}
+      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+        <Info size={12} /> B0 派发不在这里显示：请在任务详情「最近派发」或队列页「派发记录」查看；本页「重派」仍只针对外部执行会话。
+      </div>
 
       <div
         ref={splitRef}

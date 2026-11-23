@@ -277,7 +277,12 @@ function lectureJournalView(view: GenJobView | null): unknown {
   return { ...view, sections: view.sections.map((s) => ({ ...s, label: lectureSectionLabel(s.key as LectureSectionKey) })) };
 }
 
-planApi.get('/code-review-lecture/jobs/latest', (_req, res) => wrap(res, () => lectureJournalView(latestJob(LECTURE_CARD_KEY))));
+planApi.get('/code-review-lecture/jobs/latest', (req, res) => wrap(res, () => {
+  const projectIds = toStr(req.query.projectIds).split(',').map((s) => s.trim()).filter(Boolean);
+  const hours = Number(req.query.hours);
+  const maxAgeMs = Number.isFinite(hours) && hours > 0 ? hours * 3600_000 : undefined;
+  return lectureJournalView(latestJob(LECTURE_CARD_KEY, { projectIds, ...(maxAgeMs ? { maxAgeMs } : {}) }));
+}));
 
 /**
  * T03192（G-3）/T03316：讲稿 job 级成功率样本。只上报「完整一轮」的终态——仅大纲是中间交付，不进分母。
@@ -1454,7 +1459,15 @@ planApi.patch('/:id', (req, res) => {
 
 // T01874：彻底删除不可逆，前端先取连带影响（派生待办归档数 / 需求关联失配数）写进确认文案；DELETE 回传实际破坏面
 planApi.get('/:id/purge-impact', (req, res) => wrap(res, () => PlanService.purgeImpact(req.params.id)));
-planApi.delete('/:id', (req, res) => wrap(res, () => PlanService.purge(req.params.id)));
+// P2-8：彻底删除只允许已归档行；未归档/不存在给出可区分的状态码与原因，不再 200 + deleted:false
+planApi.delete('/:id', (req, res) => {
+  const r = PlanService.purge(req.params.id);
+  if (!r.deleted) {
+    if (r.reason === 'not_found') return res.status(404).json({ error: '计划不存在或已被删除', code: 'not_found' });
+    return res.status(409).json({ error: '该计划尚未归档，禁止彻底删除；请先归档再删除', code: 'not_archived' });
+  }
+  res.json(r);
+});
 
 // ---------- 归档（T00442 扩展：删除改归档，归档菜单提供恢复/彻底删除） ----------
 // T02284：归档区是增长最快的数据集之一，补 limit/offset + keyword/projectId 服务端筛选（口径同 /tasks：

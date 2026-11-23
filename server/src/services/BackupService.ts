@@ -32,10 +32,17 @@ export interface BackupMeta {
 }
 
 /** 最近一次自动/手动备份的结果记录（供设置页展示状态） */
-let lastRun: { file: string; at: string; reason: string } | null = null;
+type BackupReason = 'auto' | 'manual' | 'history';
+let lastRun: { file: string; at: string; reason: BackupReason } | null = null;
 let lastError: string | null = null;
 
 export function backupStatus(): { lastRun: typeof lastRun; lastError: string | null; keep: number } {
+  // lastRun 原本只存在内存，服务重启后即使备份目录已有快照，页面仍显示「最近：暂无」。
+  // 首次查询时用目录里最新的快照兜底；reason 标为 history，避免把历史文件误报成刚完成的备份。
+  if (!lastRun) {
+    const latest = listBackups()[0];
+    if (latest) lastRun = { file: latest.name, at: latest.mtime, reason: 'history' };
+  }
   return { lastRun, lastError, keep: KEEP };
 }
 
@@ -156,8 +163,13 @@ export function maybeDailyBackup(): void {
   }
 }
 
-/** 每小时检查一次日期翻转（跨天后自动备份当天第一份） */
-export function startDailyBackupTimer(): void {
+/**
+ * 每小时检查一次日期翻转（跨天后自动备份当天第一份）。
+ * P0-1：首启备份会整库拷贝，大库（200MB+）足以把就绪后的首批请求拖慢；
+ * `deferFirstCheckMs > 0` 时把「当天首备」推迟一小段，让页面先加载出来。
+ */
+export function startDailyBackupTimer(deferFirstCheckMs = 0): void {
   setInterval(maybeDailyBackup, 3600000);
-  maybeDailyBackup();
+  if (deferFirstCheckMs > 0) setTimeout(maybeDailyBackup, deferFirstCheckMs);
+  else maybeDailyBackup();
 }

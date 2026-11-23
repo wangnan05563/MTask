@@ -37,6 +37,7 @@ const SUITES = [
   't02278-probe-usage-test.mjs', // 自带隔离实例（不吃传入 baseUrl），见脚本头
   't00781-writeback-dedupe-test.mjs',
   't01921-reqno-uniqueness-test.mjs',
+  'plan-roundtrip-test.mjs', // P0-2：计划导出→导入往返保真（D2 回归）
 ];
 
 const selected = SUITES.filter((f) => only.length === 0 || only.some((o) => f.startsWith(o)));

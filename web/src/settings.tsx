@@ -273,6 +273,27 @@ body {
   animation: flow-sweep 1.8s linear infinite;
 }
 
+/* T05791：数据库维护页——窄屏（手机 390px）不再让 190px 表清单与数据区硬并排挤压横向滚动；
+   表清单改为整行、限高滚动，工具栏与触控目标放大到 36px 以上。 */
+.dbadmin-page .dbadmin-backup-row {
+  flex: 0 0 auto; /* 列向 flex 容器限高滚动时，行不可被压缩，否则换行内容会越出 32px 行高 */
+}
+.dbadmin-page .dbadmin-toolbar button,
+.dbadmin-page .dbadmin-toolbar .dbadmin-file-label,
+.dbadmin-page .dbadmin-backup-row button {
+  min-height: 36px;
+}
+@media (max-width: 720px) {
+  .dbadmin-page .dbadmin-layout { flex-direction: column !important; align-items: stretch !important; }
+  .dbadmin-page .dbadmin-sidebar { width: auto !important; max-height: 220px; overflow-y: auto !important; }
+  .dbadmin-page .dbadmin-toolbar { gap: 8px !important; }
+  .dbadmin-page .dbadmin-toolbar button,
+  .dbadmin-page .dbadmin-toolbar .dbadmin-file-label { min-height: 38px; padding: 7px 12px; }
+  .dbadmin-page .dbadmin-backup-row { flex-wrap: wrap; }
+  .dbadmin-page .dbadmin-backup-row > span:first-child { flex: 1 0 100% !important; min-width: 100%; white-space: normal !important; overflow: visible !important; text-overflow: clip !important; word-break: break-all; }
+  .dbadmin-page .dbadmin-backup-row button { min-height: 38px; padding: 6px 10px; }
+}
+
 /* T01068-FR4.4 + 无障碍：prefers-reduced-motion 下降级全部流光动画，避免眩晕。
    文字流光回退为实色文字；进度条/按钮/骨架回退为静态填充；光晕呼吸关闭。满足「reduced-motion 下自动降级」。 */
 @media (prefers-reduced-motion: reduce) {

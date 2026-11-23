@@ -1,9 +1,10 @@
 import { useEffect, useReducer, useRef, useState, useSyncExternalStore } from 'react';
+import aboutBusinessCard from '../assets/about-business-card.webp'; // 关于页顶部品牌名片（由 docs/assets 名片稿生成 WebP，避免直接打包 2.6MB PNG）
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { api, type TaskCategory } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { FONT_OPTIONS, FONT_SIZE_OPTIONS, useSettings, type ImportMode } from '../settings';
-import { AlignLeft, ArrowLeftRight, Ban, Download, ExternalLink, FileUp, FolderPlus, LayoutGrid, MonitorCog, Moon, Pencil, RefreshCw, RotateCcw, Save, Settings2, ShieldCheck, Sun, Tags, Trash2 } from 'lucide-react';
+import { AlignLeft, AlertTriangle, ArrowLeftRight, Ban, CheckCircle2, Download, ExternalLink, FileUp, FolderPlus, LayoutGrid, Loader2, MonitorCog, Moon, Pencil, PlugZap, RefreshCw, RotateCcw, Save, Settings2, Sun, Tags, Trash2 } from 'lucide-react';
 import { getLang, setLang, onLangChange, type Lang } from '../i18n'; // T01071-FR5.4：i18n 底座
 import { usePersistentState } from '../ui/session'; // T03271（UX-09③）：Tab 选中态跨页面/跨会话保持（沿用 T02977 口径）
 import { SETTINGS_TAB_LABELS, filterSettingsGroups, normalizeSettingsTab } from '../ui/settingsTabs'; // T03271（UX-09①②）：页签与分组单源
@@ -32,6 +33,7 @@ import { LogsPage } from './LogsPage';
 import { ArchivePage } from './ArchivePage';
 import { RecurringTab, ApiTokensTab } from './RecurringTokensTabs'; // T01073：循环任务 + API Token
 import { SupervisorPanel } from './SupervisorPanel'; // T01286：监督状态与审计（FR-5.2~5.4）
+import { DispatchPolicyPanel } from './DispatchPolicyPanel'; // T06264：十期自动派发策略与 B0 状态
 import { DashboardPage } from './DashboardPage'; // T01154：仪表盘迁入设置页
 import { CustomFieldsTab } from './CustomFieldsTab'; // T03231（PM-203）：项目级自定义字段
 import { SonarSettingsTab } from './SonarSettingsTab'; // T03371（八期 §3.4.1）：SonarQube 环境配置子页
@@ -202,6 +204,7 @@ export function SettingsPage() {
       {active === 'general' && <GeneralTab />}
       {active === 'dashboard' && <DashboardPage />} {/* T01154：仪表盘迁入设置页 */}
       {active === 'supervisor' && <SupervisorPanel />} {/* T01286：监督状态与审计（FR-5.2~5.4） */}
+      {active === 'dispatch' && <DispatchPolicyPanel />} {/* T06264：派发策略页签 */}
       {active === 'migration' && <MigrationTab />}
       {active === 'dbadmin' && <DbAdminTab />}
       {active === 'categories' && <CategoriesTab />}
@@ -565,78 +568,171 @@ function GeneralTab() {
   );
 }
 
+type MigrationNotice = { kind: 'success' | 'error'; text: string };
+type MigrationBusy = 'export' | 'read' | 'import' | null;
+
+const MIGRATION_CORE_TABLES = ['projects', 'tasks', 'ai_tools', 'prompts', 'prompt_categories', 'queues', 'queue_jobs', 'task_images'] as const;
+const MIGRATION_IMPORT_MAX_BYTES = 250 * 1024 * 1024;
+
+function formatMigrationBytes(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let v = n;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v >= 10 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+}
+
+/** 导入前做与后端一致的核心表校验：避免用户确认破坏性覆盖后才发现选错文件。 */
+function validateMigrationBundle(raw: unknown): { ok: true; rowCount: number } | { ok: false; error: string } {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: '顶层不是对象' };
+  const obj = raw as Record<string, unknown>;
+  if (obj.app !== 'mtask') return { ok: false, error: '缺少 app=mtask 标识，不是 MTask 备份' };
+  if (obj.version !== 1) return { ok: false, error: `版本 ${String(obj.version)} 不受支持（当前仅支持 version 1）` };
+  if (!obj.data || typeof obj.data !== 'object' || Array.isArray(obj.data)) return { ok: false, error: '缺少 data 数据体' };
+  const tables = obj.data as Record<string, unknown>;
+  const missing = MIGRATION_CORE_TABLES.filter((t) => !Array.isArray(tables[t]));
+  if (missing.length) return { ok: false, error: `缺少核心表：${missing.join('、')}` };
+  let rowCount = 0;
+  for (const rows of Object.values(tables)) if (Array.isArray(rows)) rowCount += rows.length;
+  return { ok: true, rowCount };
+}
+
 /** 数据迁移：全量导出 / 导入。明确面向换机重装场景 */
 function MigrationTab() {
   const fileRef = useRef<HTMLInputElement>(null);
   const [mode, setMode] = useState<ImportMode>('merge');
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState('');
-  const [fname, setFname] = useState('');
+  const [busy, setBusy] = useState<MigrationBusy>(null);
+  const [notice, setNotice] = useState<MigrationNotice | null>(null);
+  const [fileMeta, setFileMeta] = useState<{ name: string; size: number } | null>(null);
+  const noticeTimer = useRef<number | null>(null);
 
-  const flash = (msg: string) => {
-    setNotice(msg);
-    setTimeout(() => setNotice(''), 4000);
+  useEffect(() => () => {
+    if (noticeTimer.current !== null) window.clearTimeout(noticeTimer.current);
+  }, []);
+
+  const flash = (text: string, kind: MigrationNotice['kind'] = 'success') => {
+    setNotice({ text, kind });
+    if (noticeTimer.current !== null) window.clearTimeout(noticeTimer.current);
+    noticeTimer.current = window.setTimeout(() => {
+      setNotice(null);
+      noticeTimer.current = null;
+    }, 5000);
   };
 
-  /** 全量导出：调后端把全部用户数据导出为 JSON 并下载到本地文件 */
+  /** 全量导出：直接下载服务端字节流，不再「解析成对象→重新 stringify」，避免大库双份内存。 */
   async function doExport() {
+    if (busy) return;
+    setBusy('export');
     try {
-      setBusy(true);
-      const bundle = await api.get<unknown>('/settings/export');
-      const blob = new Blob([JSON.stringify(bundle)], { type: 'application/json' });
+      const { blob, filename } = await api.getDownload('/settings/export');
+      if (blob.size <= 2) throw new Error('导出内容为空，请稍后重试');
+      const dt = new Date().toISOString().slice(0, 10);
+      const safeName = filename.endsWith('.json') ? filename : `mtask-backup-${dt}.json`;
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      const dt = new Date().toISOString().slice(0, 10);
       a.href = url;
-      a.download = `mtask-backup-${dt}.json`;
+      a.download = safeName;
+      a.style.display = 'none';
+      document.body.appendChild(a);
       a.click();
-      URL.revokeObjectURL(url);
-      flash('导出成功，已将全部用户数据保存为备份文件');
+      a.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      flash(`导出成功：${safeName}（${formatMigrationBytes(blob.size)}）`);
     } catch (e) {
-      flash(e instanceof Error ? e.message : String(e));
+      flash(`导出失败：${e instanceof Error ? e.message : String(e)}`, 'error');
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
-  /** 读取所选文件，确认后用选择策略导入 */
+  /** 读取所选文件 → 校验 → 确认 → 导入。破坏性确认放在文件合法性校验之后。 */
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = ''; // 允许再次选择同一文件
     if (!file) return;
-    setFname(file.name);
-    const ok = await askConfirm(
-      `将从「${file.name}」导入备份数据（策略：${IMPORT_MODE_LABELS[mode]}）。\n` +
-      (mode === 'overwrite'
-        ? '覆盖会清空并替换当前应用内的全部数据。导入前会自动创建数据库快照，可在「设置 → 数据维护」恢复；快照创建失败则中止导入、数据保持不变。确认继续？'
-        : '确认继续？'),
-    );
-    if (!ok) return;
-    const text = await file.text();
-    let data: unknown;
-    try { data = JSON.parse(text); } catch { flash('文件解析失败：不是有效的 JSON 备份文件'); return; }
+    setFileMeta({ name: file.name, size: file.size });
+    setNotice(null);
+    if (file.size === 0) {
+      setFileMeta(null);
+      flash('导入失败：备份文件为空', 'error');
+      return;
+    }
+    if (file.size > MIGRATION_IMPORT_MAX_BYTES) {
+      setFileMeta(null);
+      flash(`导入失败：备份文件 ${formatMigrationBytes(file.size)}，超过 ${formatMigrationBytes(MIGRATION_IMPORT_MAX_BYTES)} 上限`, 'error');
+      return;
+    }
+    const selectedMode = mode;
+    setBusy('read');
     try {
-      setBusy(true);
-      const r = await api.post<{ imported: number; skippedDuplicateNames?: number; snapshot?: { name: string; size: number } | null; nameConflicts?: Array<{ name: string; owners: Array<{ id: string; name: string }> }> }>('/settings/import', { data, mode });
-      // T02945：keep/merge 撞项目重名的行按行跳过（导入是恢复性操作，不整单失败）——跳过了必须说，否则用户以为全量导入了
+      let text: string;
+      try {
+        text = await file.text();
+      } catch {
+        setFileMeta(null);
+        flash('导入失败：无法读取该文件', 'error');
+        return;
+      }
+      let data: unknown;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        setFileMeta(null);
+        flash('文件解析失败：不是有效的 JSON 备份文件', 'error');
+        return;
+      }
+      const checked = validateMigrationBundle(data);
+      if (!checked.ok) {
+        setFileMeta(null);
+        flash(`备份文件无效：${checked.error}`, 'error');
+        return;
+      }
+      // 校验完即释放 94MB 级对象/字符串，后续直接把原文件交给浏览器流式上传，避免二次 stringify 冻结主线程。
+      data = null;
+      text = '';
+      setBusy(null);
+      const ok = await askConfirm(
+        `将从「${file.name}」导入备份数据（策略：${IMPORT_MODE_LABELS[selectedMode]}；共 ${checked.rowCount} 条记录）。\n` +
+        (selectedMode === 'overwrite'
+          ? '覆盖会清空并替换当前应用内的全部数据。导入前会自动创建数据库快照，可在「设置 → 数据库维护」恢复；快照创建失败则中止导入、数据保持不变。确认继续？'
+          : selectedMode === 'keep'
+            ? '仅导入当前不存在的记录，已有记录不会被覆盖。确认继续？'
+            : '同 ID 记录会用备份值覆盖，新记录追加；项目重名行会跳过。确认继续？'),
+      );
+      if (!ok) {
+        setFileMeta(null);
+        return;
+      }
+      setBusy('import');
+      const r = await api.postRaw<{ imported: number; skippedDuplicateNames?: number; skippedDependents?: number; snapshot?: { name: string; size: number } | null; nameConflicts?: Array<{ name: string; owners: Array<{ id: string; name: string }> }> }>(
+        `/settings/import?mode=${encodeURIComponent(selectedMode)}`,
+        file,
+      );
       const skipped = r.skippedDuplicateNames ?? 0;
-      flash(`导入完成，共写入 ${r.imported} 条记录。`
-        + (r.snapshot ? `覆盖前快照已保存为 ${r.snapshot.name}，可在「设置 → 数据维护」恢复。` : '')
-        + (skipped > 0 ? `其中 ${skipped} 行因项目名与库内重名被跳过（占用行 id 见导入响应/控制台）。` : '')
-        + '可切换其他页面查看，或刷新以重载列表');
-      if (skipped > 0) console.warn('[settings/import] 项目名冲突跳过的行：', r.nameConflicts);
-      setFname('');
+      const skippedDependents = r.skippedDependents ?? 0;
+      const conflictNames = (r.nameConflicts ?? []).map((c) => c.name).filter(Boolean);
+      const shownNames = conflictNames.slice(0, 3).join('、') + (conflictNames.length > 3 ? ` 等 ${conflictNames.length} 个` : '');
+      let msg = r.imported === 0 && selectedMode === 'keep' && skipped === 0
+        ? '导入完成：备份记录均已存在，按「保留现有」策略未改动。'
+        : `导入完成，共写入 ${r.imported} 条记录。`;
+      if (r.snapshot) msg += ` 覆盖前快照已保存为 ${r.snapshot.name}（${formatMigrationBytes(r.snapshot.size)}），可在「设置 → 数据库维护」恢复。`;
+      if (skipped > 0) msg += ` ${skipped} 个项目因名称与库内重名被跳过${shownNames ? `（${shownNames}）` : ''}${skippedDependents > 0 ? `，其关联的 ${skippedDependents} 条任务/图片未导入` : ''}，请核对相关数据。`;
+      else if (r.imported > 0) msg += ' 可切换到其他页面查看，或刷新以重载列表。';
+      flash(msg);
+      setFileMeta(null);
     } catch (err) {
-      flash(err instanceof Error ? err.message : String(err));
+      setFileMeta(null);
+      flash(`导入失败：${err instanceof Error ? err.message : String(err)}`, 'error');
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
   const subOpts = (label: string, desc: string, m: ImportMode) => (
     // aria-label 显式提供可访问名称：label 文本嵌在 span 内，部分辅助技术难以聚合
-    <label key={m} aria-label={`${label}：${desc}`} style={{ display: 'flex', gap: 8, padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card-bg)', cursor: 'pointer', alignItems: 'flex-start' }}>
-      <input type="radio" name="mode" checked={mode === m} onChange={() => setMode(m)} />
+    <label key={m} data-migration-mode={m} aria-label={`${label}：${desc}`} style={{ display: 'flex', gap: 8, padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--card-bg)', cursor: busy ? 'default' : 'pointer', alignItems: 'flex-start', opacity: busy ? .7 : 1 }}>
+      <input type="radio" name="mode" checked={mode === m} disabled={!!busy} onChange={() => setMode(m)} />
       <span>
         <span style={{ fontWeight: 600 }}>{label}</span>
         <span style={{ display: 'block', fontSize: 'var(--fs-m)', color: 'var(--text-secondary)' }}>{desc}</span>
@@ -644,45 +740,106 @@ function MigrationTab() {
     </label>
   );
 
+  const busyText: Record<Exclude<MigrationBusy, null>, string> = {
+    export: '正在导出全部数据，文件较大时可能需要数秒…',
+    read: '正在读取并校验备份文件…',
+    import: '正在写入备份数据，请勿关闭页面…',
+  };
+
   return (
-    <div style={{ maxWidth: 620 }}>
+    <div data-migration-page aria-label="数据迁移" aria-busy={busy ? 'true' : undefined} style={{ maxWidth: 620 }}>
       <div style={{ marginBottom: 14 }}>
         <SettingsHelpIcon
           icon={ArrowLeftRight}
           label="数据迁移"
-          ariaDescription="用于换电脑或重装系统时迁移用户数据：先在旧机导出备份文件，再到新机安装本应用后导入即可。"
-          description={<>用于<strong>换电脑或重装系统</strong>时迁移用户数据：先在旧机导出备份文件，再到新机安装本应用后导入即可。</>}
+          ariaDescription="用于换电脑或重装系统时迁移核心用户数据：先在旧机导出备份文件，再到新机安装本应用后导入即可。先导出、后导入，覆盖导入会自动留快照。"
+          description={<>用于<strong>换电脑或重装系统</strong>时迁移核心用户数据：先在旧机导出备份文件，再到新机安装本应用后导入即可。</>}
         />
       </div>
 
-      <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 14, marginBottom: 14, background: 'var(--card-bg)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600, marginBottom: 6 }}><Download size={14} /> 数据导出</div>
-        <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 10 }}>
-          将当前应用的全部项目、任务、配置、提示词与队列数据打包为单个 JSON 文件。
+      <div data-migration-export-card style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 14, marginBottom: 14, background: 'var(--card-bg)' }}>
+        <div role="heading" aria-level={2} style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600, marginBottom: 6 }}><Download size={14} aria-hidden="true" /> 数据导出</div>
+        <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 6 }}>
+          将当前应用的核心数据（项目、任务、图片、提示词、记忆、队列与配置）打包为单个 JSON 文件。
         </div>
-        <button onClick={() => void doExport()} disabled={busy} title="导出数据 — 把全部用户数据下载为备份文件" aria-label="导出数据：把全部用户数据导出为备份文件" style={{ fontSize: 'var(--fs-m)', padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-          <Save size={13} /> 导出备份
+        <div data-migration-scope-note style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', marginBottom: 10 }}>
+          当前备份范围暂不含计划、PRD、需求矩阵、测试用例等业务数据。
+        </div>
+        <div data-migration-sensitive-warning style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 'var(--fs-s)', color: 'var(--warn)', marginBottom: 10, lineHeight: 1.6 }}>
+          <AlertTriangle size={13} aria-hidden="true" style={{ flex: '0 0 auto', marginTop: 1 }} />
+          <span>备份包含 API 密钥等敏感信息，请仅保存在可信位置，不要公开分享。</span>
+        </div>
+        <button
+          onClick={() => void doExport()}
+          disabled={!!busy}
+          aria-busy={busy === 'export'}
+          title="导出数据 — 把全部用户数据下载为备份文件"
+          aria-label="导出数据：导出核心数据备份文件"
+          style={{ fontSize: 'var(--fs-m)', padding: '6px 14px', minHeight: 36, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: busy ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+        >
+          {busy === 'export' ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} aria-hidden="true" /> : <Save size={13} aria-hidden="true" />} {busy === 'export' ? '导出中…' : '导出备份'}
         </button>
       </div>
 
-      <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 14, background: 'var(--card-bg)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600, marginBottom: 6 }}><FileUp size={14} /> 数据导入</div>
+      <div data-migration-import-card style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 14, background: 'var(--card-bg)' }}>
+        <div role="heading" aria-level={2} style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600, marginBottom: 6 }}><FileUp size={14} aria-hidden="true" /> 数据导入</div>
         <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 10 }}>
-          选择之前导出的备份文件导入。请先选择冲突处理策略。
+          选择之前导出的备份文件，校验通过后再确认导入。请先选择冲突处理策略。
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+        <div role="radiogroup" aria-label="冲突处理策略" data-migration-modes style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
           {subOpts('合并（推荐）', '导入记录与现有记录合并：ID 相同则用导入值覆盖，新记录追加。', 'merge')}
           {subOpts('保留现有', '仅导入当前不存在的记录，不覆盖已有数据。', 'keep')}
-          {subOpts('覆盖全部', '清空并完全替换当前全部数据，以备份文件为准。', 'overwrite')}
+          {subOpts('覆盖全部', '清空并完全替换当前全部数据，以备份文件为准；覆盖前自动留快照。', 'overwrite')}
         </div>
-        {fname && <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 8 }}>已选择：{fname}</div>}
-        <button onClick={() => fileRef.current?.click()} disabled={busy} title="选择备份文件 — 打开文件选择器选取 JSON 备份并导入" aria-label="选择备份文件：选取 JSON 备份并导入" style={{ fontSize: 'var(--fs-m)', padding: '6px 14px', background: 'var(--card-bg)', color: 'var(--text)', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-          <FileUp size={13} /> 选择文件导入
+        {fileMeta && (
+          <div data-migration-filename style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 8, overflowWrap: 'anywhere' }}>
+            已选择：{fileMeta.name}（{formatMigrationBytes(fileMeta.size)}）
+          </div>
+        )}
+        <button
+          onClick={() => fileRef.current?.click()}
+          disabled={!!busy}
+          aria-busy={busy === 'read' || busy === 'import'}
+          title="选择备份文件 — 打开文件选择器选取 JSON 备份并导入"
+          aria-label="选择备份文件：选取 JSON 备份并导入"
+          style={{ fontSize: 'var(--fs-m)', padding: '6px 14px', minHeight: 36, background: 'var(--card-bg)', color: 'var(--text)', borderRadius: 6, cursor: busy ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+        >
+          {busy === 'read' || busy === 'import' ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} aria-hidden="true" /> : <FileUp size={13} aria-hidden="true" />}
+          {busy === 'read' ? '解析中…' : busy === 'import' ? '导入中…' : '选择文件导入'}
         </button>
-        <input ref={fileRef} type="file" accept=".json,application/json" aria-label="选择备份文件（.json）导入" style={FILE_INPUT_SR_ONLY} onChange={(e) => void onFile(e)} />
+        <input ref={fileRef} type="file" accept=".json,application/json" disabled={!!busy} aria-label="选择备份文件（.json）导入" style={FILE_INPUT_SR_ONLY} onChange={(e) => void onFile(e)} />
       </div>
 
-      {notice && <div style={{ marginTop: 10, fontSize: 'var(--fs-m)', color: 'var(--accent)' }}>{notice}</div>}
+      {busy && (
+        <div data-migration-progress role="status" aria-live="polite" style={{ marginTop: 10, fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} aria-hidden="true" /> {busyText[busy]}
+        </div>
+      )}
+      {notice && (
+        <div
+          data-migration-notice={notice.kind}
+          role={notice.kind === 'error' ? 'alert' : 'status'}
+          aria-live={notice.kind === 'error' ? 'assertive' : 'polite'}
+          aria-atomic="true"
+          style={{
+            marginTop: 10,
+            padding: '9px 12px',
+            border: `1px solid ${notice.kind === 'error' ? 'var(--danger)' : 'var(--success)'}`,
+            borderRadius: 8,
+            background: 'var(--card-bg)',
+            color: notice.kind === 'error' ? 'var(--danger)' : 'var(--success)',
+            fontSize: 'var(--fs-m)',
+            lineHeight: 1.6,
+            display: 'flex',
+            gap: 8,
+            alignItems: 'flex-start',
+            overflowWrap: 'anywhere',
+          }}
+        >
+          {notice.kind === 'error' ? <AlertTriangle size={15} aria-hidden="true" style={{ flex: '0 0 auto', marginTop: 1 }} /> : <CheckCircle2 size={15} aria-hidden="true" style={{ flex: '0 0 auto', marginTop: 1 }} />}
+          <span>{notice.text}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -702,21 +859,60 @@ function AboutTab() {
   }, []);
 
   return (
-    <div style={{ maxWidth: 520 }}>
-      <div style={{ marginTop: 12, padding: 16, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--card-bg)' }}>
-        <div style={{ fontSize: 'var(--fs-title)', fontWeight: 600 }}>{APP_NAME}</div>
-        <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginTop: 4 }}>{APP_DESC}</div>
-        <div style={{ marginTop: 10, display: 'grid', gap: 4, fontSize: 'var(--fs-m)' }}>
-          <div>版本：v{version}</div>
-          <div>开发者：南屿轻舟</div>
-          <div>邮箱：<a href="mailto:107038953@qq.com" style={{ color: 'var(--accent)' }}>107038953@qq.com</a></div>
-          <div>技术栈：Electron · React · Express · SQLite</div>
+    <div style={{ maxWidth: 760 }}>
+      {/* 关于页顶部原「应用信息简洁栏」替换为品牌名片；版本与许可状态以轻量浮层保留，
+          下方只留一行应用标识与许可说明，邮箱由名片图承载，避免重复。 */}
+      <div
+        data-about-business-card="true"
+        style={{
+          marginTop: 12,
+          position: 'relative',
+          overflow: 'hidden',
+          border: '1px solid var(--border)',
+          borderRadius: 12,
+          background: '#05070f',
+          boxShadow: '0 16px 40px rgba(0, 0, 0, 0.22)',
+        }}
+      >
+        <img
+          src={aboutBusinessCard}
+          alt="南屿轻舟 · 赛博朋克亚克力名片"
+          style={{ display: 'block', width: '100%', height: 'auto' }}
+        />
+        <div
+          aria-label={`当前版本 v${version}，MIT 开源许可`}
+          style={{
+            position: 'absolute', top: 12, right: 12, display: 'flex', alignItems: 'center', gap: 6,
+            pointerEvents: 'none',
+          }}
+        >
+          <span style={{
+            padding: '5px 9px', borderRadius: 999, fontSize: 'var(--fs-xs)', fontWeight: 600,
+            color: '#dff6ff', background: 'rgba(3, 8, 20, 0.72)',
+            border: '1px solid rgba(89, 196, 255, 0.55)',
+            boxShadow: '0 0 18px rgba(89, 196, 255, 0.22)',
+            backdropFilter: 'blur(8px)',
+          }}>v{version}</span>
+          <span style={{
+            padding: '5px 8px', borderRadius: 999, fontSize: 'var(--fs-xs)',
+            color: '#ffd9f1', background: 'rgba(30, 4, 24, 0.72)',
+            border: '1px solid rgba(255, 122, 205, 0.45)',
+          }}>MIT</span>
         </div>
-        {/* 纵向 flex + gap 提供显式间距：两个文本都包 span，消除 JSX 换行产生的歧义空格 */}
-        <div style={{ marginTop: 14, fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span>本应用基于 MIT 协议开源，界面组件使用开源图标库 lucide-react。</span>
-          <span>如有问题与建议，请在项目仓库提交 Issue。</span>
-        </div>
+      </div>
+
+      <div style={{
+        marginTop: 10, display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '4px 12px',
+        fontSize: 'var(--fs-m)', color: 'var(--text-secondary)',
+      }}>
+        <span style={{ fontWeight: 600, color: 'var(--text)' }}>{APP_NAME}</span>
+        <span>{APP_DESC}</span>
+      </div>
+
+      {/* 纵向 flex + gap 提供显式间距：两个文本都包 span，消除 JSX 换行产生的歧义空格 */}
+      <div style={{ marginTop: 8, fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <span>本应用基于 MIT 协议开源，界面组件使用开源图标库 lucide-react。</span>
+        <span>如有问题与建议，请在项目仓库提交 Issue。</span>
       </div>
 
       {/* 版本更新模块：GitHub 仓库配置 + 自动检测最新 Release */}
@@ -754,6 +950,20 @@ function updateBtnStyle(primary: boolean): React.CSSProperties {
     background: primary ? 'var(--accent)' : 'var(--card-bg)',
     color: primary ? 'var(--accent-text)' : 'var(--text)',
     border: primary ? 'none' : '1px solid var(--border-strong)',
+  };
+}
+
+/** 更新区图标按钮外观：与文字按钮同色系，但收成 32×32 的方形热区；名称与功能靠 title/aria-label 承载 */
+function updateIconBtnStyle(primary: boolean): React.CSSProperties {
+  return {
+    ...updateBtnStyle(primary),
+    width: 32,
+    height: 32,
+    padding: 0,
+    justifyContent: 'center',
+    borderRadius: 8,
+    boxSizing: 'border-box',
+    flex: '0 0 auto',
   };
 }
 
@@ -843,14 +1053,35 @@ function UpdateConfigForm({ cfg, repoDraft, tokenDraft, busy, onRepoDraft, onTok
       </div>
 
       <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <button onClick={onSave} disabled={busy !== null} title="保存配置 — 仓库地址留空表示回退内置地址" aria-label="保存更新配置" style={updateBtnStyle(true)}>
-          <Save size={13} /> {busy === 'save' ? '保存中…' : '保存配置'}
+        <button
+          onClick={onSave}
+          disabled={busy !== null}
+          title={busy === 'save' ? '保存配置 — 正在保存…' : '保存配置 — 仓库地址留空表示回退内置地址'}
+          aria-label="保存更新配置"
+          aria-busy={busy === 'save'}
+          style={updateIconBtnStyle(true)}
+        >
+          <Save size={16} aria-hidden="true" />
         </button>
-        <button onClick={onTest} disabled={busy !== null} title="测试连接 — 验证地址可达并读取最新 Release 版本号；留空测试内置地址" aria-label="测试 GitHub 连接" style={updateBtnStyle(false)}>
-          <ShieldCheck size={13} /> {busy === 'test' ? '测试中…' : '测试连接'}
+        <button
+          onClick={onTest}
+          disabled={busy !== null}
+          title={busy === 'test' ? '测试连接 — 正在验证…' : '测试连接 — 验证地址可达并读取最新 Release 版本号；留空测试内置地址'}
+          aria-label="测试 GitHub 连接"
+          aria-busy={busy === 'test'}
+          style={updateIconBtnStyle(false)}
+        >
+          <PlugZap size={16} aria-hidden="true" />
         </button>
-        <button onClick={onCheck} disabled={busy !== null} title="检查更新 — 拉取当前生效地址的最新 Release 并与当前版本比较" aria-label="检查更新" style={updateBtnStyle(false)}>
-          <RefreshCw size={13} /> {busy === 'check' ? '检查中…' : '检查更新'}
+        <button
+          onClick={onCheck}
+          disabled={busy !== null}
+          title={busy === 'check' ? '检查更新 — 正在检查…' : '检查更新 — 拉取当前生效地址的最新 Release 并与当前版本比较'}
+          aria-label="检查更新"
+          aria-busy={busy === 'check'}
+          style={updateIconBtnStyle(false)}
+        >
+          <RefreshCw size={16} aria-hidden="true" />
         </button>
       </div>
     </>
