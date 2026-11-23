@@ -19,6 +19,8 @@
     "verify:t06244": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t06244-dispatch.mts",
     "verify:t06273-persist": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t06273-policy-persist.mts",
     "verify:t06274-busy": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t06274-busy.mts",
+    "verify:t06325": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t06325-channel-naming.mts",
+    "verify:t06325-ui": "node scripts/tests/verify-t06325-ui.mjs",
     "test:api": "node scripts/run-api-tests.mjs",
     "verify:plan-roundtrip": "node scripts/tests/plan-roundtrip-test.mjs",
     "verify:head-selfconsistency": "node node_modules/tsx/dist/cli.mjs scripts/verify-head-selfconsistency.mts",

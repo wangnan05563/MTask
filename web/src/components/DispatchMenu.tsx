@@ -9,6 +9,7 @@
  * - 提交中禁用按钮，防止重复点击；请求带 10 分钟桶的幂等键。
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { AlertTriangle, CheckCircle2, ChevronDown, Clock, Loader2, Send, ShieldAlert, XCircle } from 'lucide-react';
 import { api, type DispatchAttemptView, type DispatchChannel, type DispatchResultView, type DispatchStatusView, type Task } from '../api/client';
 import {
@@ -177,7 +178,7 @@ export function DispatchMenu({ task, onDispatched }: Props) {
       >
         <Send size={13} /> 派发 <ChevronDown size={12} />
       </button>
-      {open && (
+      {open && createPortal(
         <div
           ref={panelRef}
           role="dialog"
@@ -276,7 +277,8 @@ export function DispatchMenu({ task, onDispatched }: Props) {
           <div style={{ marginTop: 7, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
             自动调度的候选需同时满足：待办、未归档、未搁置、AI 状态为空、已就绪、未被显式指定给其他平台。
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   );
