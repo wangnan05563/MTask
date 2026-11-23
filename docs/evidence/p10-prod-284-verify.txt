@@ -1,0 +1,15 @@
+# 生产 0.1.1123.284 部署后核验（2026-11-23 21:37 / 22:04 CST）
+
+- 独立复核（2026-11-23 22:04:35）：`F:\Program\MTask.exe` FileVersion `0.1.1123.284`；`resources\app.asar` 145,381,432 B，SHA256 `19DD1E540B53AE145C3748F07AE8830E76DB7BFBE513106F44327FAA42A03E45`；`/api/health` `{"ok":true,"service":"mtask-server"}`；`netstat` 显示 `127.0.0.1:39877 LISTENING PID 4680`。
+- 数据库只读核验（2026-11-23 22:05:27）：`mtask.db` 222,457,856 B；`PRAGMA quick_check=ok`；tasks total 3376、done 3149、running 0；projects 59。部署前快照 `F:\p10-284-before.db` 为 total 3376、done 3138、running 0；完成数 +11 来自切换窗口内既有任务推进，无数据丢失。
+- 注册表与卸载入口：`DisplayName=MTask 0.1.112-2.283`、`DisplayVersion=0.1.112-2.283`、`UninstallString="F:\Program\Uninstall MTask.exe" /allusers`；`F:\Program\Uninstall MTask.exe` 不存在。手工复制切换未刷新 Apps & Features 记录，卸载入口仍是旧版且失效，待正式安装器冒烟时修复。
+- 生产目录：`F:\Program`
+- 运行进程：5 个 `MTask.exe`，主窗口标题 `MTask · AI 任务开发管理工具`，`Responding=True`
+- `F:\Program\MTask.exe` FileVersion：`0.1.1123.284`
+- `F:\Program\resources\app.asar`：145,381,432 B，SHA256 `19DD1E540B53AE145C3748F07AE8830E76DB7BFBE513106F44327FAA42A03E45`
+- `/api/health`：`{"ok":true,"service":"mtask-server"}`
+- 生产页面：`http://127.0.0.1:39877/` 可加载，标题 `MTask · AI 任务开发管理工具`，页面显示 `● 后端已连接`，任务列表共 265 条（当前项目）
+- 旧包回滚目录：`F:\Program.rollback283-20261123-210051`
+- 切换前遗留的不完整目录：`F:\Program.incomplete-20261123-210051`
+- 部署前 DB 快照：`F:\p10-284-before.db`（222,457,856 B，2026-11-23 19:37:08）
+- 备注：首轮部署脚本因终止判定过早失败，导致 `F:\Program` 被拆成两个 `Program.failed-*` 片段；本次最终部署以完整 `.283` 备份 `Program.backup-20261123-1450` 为回滚源，用隔离 worktree 的 `win-unpacked` 完整复制到 `F:\Program` 并成功启动 `.284`。

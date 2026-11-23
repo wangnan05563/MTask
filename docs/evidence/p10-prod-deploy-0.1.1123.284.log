@@ -1,0 +1,15 @@
+2026-11-23 21:00:51 === deploy 0.1.1123.284 final START ===
+2026-11-23 21:00:52 stage=D:\code\tmp\p10-release-c7d61fc\release\win-unpacked prod=F:\Program
+2026-11-23 21:01:05 kill[0] 错误: 无法终止 PID 36516 (属于 PID 25924 子进程)的进程。 | 原因: 没有此任务的实例在运行。 |  | 成功: 已终止 PID 35000 (属于 PID 38744 子进程)的进程。 | 成功: 已终止 PID 27760 (属于 PID 38744 子进程)的进程。 | 成功: 已终止 PID 14792 (属于 PID 41864 子进程)的进程。 | 错误: 无法终止 PID 25924 (属于 PID 20576 子进程)的进程。 | 原因: 没有此任务的实例在运行。 |  | 错误: 无法终止 PID 38744 (属于 PID 20576 子进程)的进程。 | 原因: 没有此任务的实例在运行。 |  | 错误: 无法终止 PID 41864 (属于 PID 20576 子进程)的进程。 | 原因: 没有此任务的实例在运行。 |  | 成功: 已终止 PID 47960 (属于 PID 49320 子进程)的进程。 | 成功: 已终止 PID 25884 (属于 PID 49320 子进程)的进程。 | 成功: 已终止 PID 20576 (属于 PID 49320 子进程)的进程。 | 成功: 已终止 PID 25436 (属于 PID 49320 子进程)的进程。 | 成功: 已终止 PID 49320 (属于 PID 38476 子进程)的进程。
+2026-11-23 21:03:29 port39877=0
+2026-11-23 21:03:40 move F:\Program.backup-20261123-1450 -> F:\Program.rollback283-20261123-210051 rc=0 移动了　        1 个目录。
+2026-11-23 21:03:52 kill[0] 错误: 没有找到进程 "MTask.exe"。
+2026-11-23 21:05:24 port39877=0
+2026-11-23 21:05:27 move F:\Program -> F:\Program.incomplete-20261123-210051 rc=0 移动了　        1 个目录。
+2026-11-23 21:05:27 copy: robocopy staging -> F:\Program
+2026-11-23 21:05:33 copy: robocopy exit=1
+2026-11-23 21:05:35 new version=0.1.1123.284 asar=19DD1E540B53AE145C3748F07AE8830E76DB7BFBE513106F44327FAA42A03E45
+2026-11-23 21:05:45 start: F:\Program\MTask.exe
+2026-11-23 21:06:14 health ok {"ok":true,"service":"mtask-server","time":"2026-11-23T13:06:14.562Z"}
+2026-11-23 21:07:00 final port=1
+2026-11-23 21:07:01 === deploy SUCCESS version=0.1.1123.284 rollback=F:\Program.rollback283-20261123-210051 incomplete=F:\Program.incomplete-20261123-210051 ===
