@@ -14,3 +14,5 @@
 "13","UI-12/13 派发记录","verify-t06325-ui.mjs","PASS","04-dispatch-records-1500.png","说明不含 B0/A 代号"
 "14","UI-14/15 执行会话","verify-t06325-ui.mjs","PASS","05-exec-sessions-1500.png","CodeBuddy 网关说明；无 B0 派发旧文案"
 "15","UI-16 JS 异常","verify-t06325-ui.mjs","PASS","cdp-t06325.json 的 jsErrors=[]","全流程无页面异常"
+"16","Git 关联","MCP mtask_link_git_commit","linked=1 / skipped=2 / resolved=3","Git links API 查询","451c283、f77a80d、05f1749 三笔提交均在 task_git_links；errors=[]"
+"17","MTask 回写","MCP result + REST 复核","status=done / verified=true / ai_state=unread","REST /api/tasks/by-no/T06325","处理结果含二次闭环；updated_at=2026-11-23T14:56:14Z"

@@ -49,6 +49,7 @@
 | `npm run verify:t06273-persist` | 7 / 7 PASS |
 | `npm run verify:t06325-ui` | 17 / 17 PASS（隔离后端 39886 + Chrome CDP） |
 | Web 构建 | `npm run build:web` PASS（tsc + vite，1855 modules，48.94s） |
+| MTask 回写 | `status=done`、`verified=true`、`ai_state=unread`；三笔提交 `task_git_links` 全部命中 |
 
 完整矩阵与证据见 `04-测试与验证矩阵.csv`，截图与日志在 `evidence/`：
 
@@ -58,12 +59,13 @@
 - `04-dispatch-records-1500.png`：派发记录说明
 - `05-exec-sessions-1500.png`：执行会话说明
 - `cdp-t06325.json`：17 项断言的原始结果与菜单文本
-- `t06325-verify-*.log`、`t06325-build-web-portal.log`：各验证命令原始输出
+- `t06325-verify-*.log`、`t06325-build-web-final.log`：各验证命令原始输出（portal 构建中间日志仅作过程记录）
 
 ## 产物与提交
 
 - 源码提交：`451c2834ab81489eaea7f7cf9c8ed2908fe6b61c`（30 个源码文件，+420/−178）
-- 后续校正提交：抽屉内派发菜单 portal 修复、两套验证脚本（`scripts/tests` 被 `.gitignore` 忽略，需 `git add -f`）、`package.json` 验证命令、本目录文档
+- 后续提交：`f77a80d94c254517dfbd7c547dd50f0cbad32dd7`（portal 修复、两套验证、`package.json` 与文档）；`05f17490cad091f4372c89faa9f082ead9d058e1`（最终构建通过记录）
+- Git 关联：三笔提交均写入 `task_git_links`（`linked=1 skipped=2 resolved=3 errors=[]`）
 - UI 实测 JSON：`D:\tmp\mtask-t06325\ui\cdp-t06325.json`
 
 ## 复现
