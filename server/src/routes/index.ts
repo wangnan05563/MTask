@@ -55,7 +55,7 @@ import { ProjectExportService } from '../services/ProjectExportService'; // T032
 import { estimateApi } from './estimates'; // T02037（估算视图 E3）：/api/estimates*，PRD §8
 import { historyApi } from './history'; // T00589：历史资产（转移/统计）
 import { supervisorApi } from './supervisor'; // T01286：监督状态/审计/配置（FR-5.2~5.4）
-import { dispatchApi } from './dispatch'; // T05747：B0/A/D 派发手动入口与状态（PushDispatcher）
+import { dispatchApi } from './dispatch'; // T05747：CodeBuddy 网关 / MCP 就绪池 / 人工确认派发手动入口与状态（PushDispatcher）
 import { webhooksApi } from './webhooks'; // T03196（PM-401）：项目级 outbound Webhook（配置/测试/投递日志）
 import { gitLinksApi } from './gitLinks'; // 八期 §4.2：任务↔提交关联端点（摘要批量/抽屉首屏/清单懒加载/绑定解绑/git-log 上提）
 import { gitExtractApi } from './gitExtract'; // 八期 §3.3：Git 增量资产提取（范围摘要/SSE 执行/一次性令牌下载）
@@ -3631,7 +3631,7 @@ api.use(sonarScanApi); // 八期 §3.4.2：/sonar/scan*（完整路径声明，�
 // ---------- 监督器（T01286）：状态看板 / 审计视图 / 熔断与中继配置 ----------
 api.use('/supervisor', supervisorApi);
 
-// ---------- T05747：B0（CodeBuddy 网关）/ A（MCP 就绪池）/ D（人工确认）派发 ----------
+// ---------- T05747：CodeBuddy 网关 / MCP 就绪池 / 人工确认派发 ----------
 api.use('/dispatch', dispatchApi);
 
 // ---------- T04151（PRD MEM-402）：长期记忆 REST（CRUD + 待确认队列 + 产品标签） ----------

@@ -33,7 +33,7 @@ import { LogsPage } from './LogsPage';
 import { ArchivePage } from './ArchivePage';
 import { RecurringTab, ApiTokensTab } from './RecurringTokensTabs'; // T01073：循环任务 + API Token
 import { SupervisorPanel } from './SupervisorPanel'; // T01286：监督状态与审计（FR-5.2~5.4）
-import { DispatchPolicyPanel } from './DispatchPolicyPanel'; // T06264：十期自动派发策略与 B0 状态
+import { DispatchPolicyPanel } from './DispatchPolicyPanel'; // T06264：十期自动派发策略与 CodeBuddy 网关状态
 import { DashboardPage } from './DashboardPage'; // T01154：仪表盘迁入设置页
 import { CustomFieldsTab } from './CustomFieldsTab'; // T03231（PM-203）：项目级自定义字段
 import { SonarSettingsTab } from './SonarSettingsTab'; // T03371（八期 §3.4.1）：SonarQube 环境配置子页

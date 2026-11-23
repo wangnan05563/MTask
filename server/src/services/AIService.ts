@@ -14,8 +14,8 @@ import { isRateLimitError, sleepMs } from '../util/rateLimit'; // T03700：限�
 import { recordUsage } from '../util/aiUsageRecord'; // T03296：写入单源下沉 util，直连适配器的卡可复用同一口径
 import { classifyItems, type BatchCategory, type BatchItem, type BatchPriority, type ClassifyItemsResult } from './classifyBatch'; // T03297：批量分类分批调用与结果合并
 import { buildOptimizePrompt } from './optimizePrompt'; // T04808：提示词构造单源（含「仅标题」分支）
-import { armTaskReady, armTaskRunning } from './taskArming'; // T05747：B0 异步失败
-import { buildQueueWebContext } from './WebSearchService'; // T06076：队列任务轻量联网检索/超时 → A 就绪池（纯 SQL 单源，避免与 Relay 循环依赖）
+import { armTaskReady, armTaskRunning } from './taskArming'; // T05747：CodeBuddy 网关异步失败
+import { buildQueueWebContext } from './WebSearchService'; // T06076：队列任务轻量联网检索/超时 → MCP 就绪池（纯 SQL 单源，避免与 Relay 循环依赖）
 
 /** 模型未配置时的统一提示，保持与产品语境一致的表达 */
 const MODEL_UNCONFIGURED = '所选模型未配置，请先在「模型管理」为该工具填写默认模型';
@@ -849,7 +849,7 @@ export const AIService = {
       const { type, config } = runtimeWithModel(job.tool_id);
       const adapter = getAdapter(type);
       // T05796：CLI 由 MTask 直接 spawn；先按 Relay 同一口径把任务置 running 出池，
-      // 再提交，避免任务仍留在 A 就绪池被平台重复认领。B0 的归位由 dispatchTask 负责，不改。
+      // 再提交，避免任务仍留在 MCP 就绪池被平台重复认领。CodeBuddy 网关的归位由 dispatchTask 负责，不改。
       if (type === 'cli-process') armTaskRunning(job.task_id, 'cli-process');
       // 异步工具走 submit（受理后返回 ticket）；同步工具回退为一次 send 即时完成
       if (typeof adapter.submit === 'function') {
@@ -858,7 +858,7 @@ export const AIService = {
           // 同步提交失败（cwd 不存在、prompt 文件生成失败等）不会进入 poll 路径，
           // 这里立即归位 A，避免任务停在 running 而队列 job 已 failed。
           armTaskReady(job.task_id, 'mcp');
-          logService.log('WARN', 'ai', `CLI 提交失败，已回退 A 就绪池：task=${job.task_id.slice(0, 8)}，${submitted.error ?? '未知原因'}`);
+          logService.log('WARN', 'ai', `CLI 提交失败，已回退 MCP 就绪池：task=${job.task_id.slice(0, 8)}，${submitted.error ?? '未知原因'}`);
         }
         return submitted;
       }
@@ -880,14 +880,14 @@ export const AIService = {
       const elapsed = Date.now() - submitted;
       // 喂饱平台查询后：仅当仍 running 且已超时才降级为 timeout，避免短暂轮询被误判
       let result = await adapter.poll(ticket, config);
-      // T05796：B0 与 CLI Process 的结果都只存在于适配器内存/进程输出中，QueueService 的
+      // T05796：CodeBuddy 网关与 CLI Process 的结果都只存在于适配器内存/进程输出中，QueueService 的
       // autoComplete 只置 done 不写结论；这里统一把最终 Markdown 落到 handle_result。
       const isAsyncAgent = type === 'codebuddy-gateway' || type === 'cli-process';
       if (result.status === 'success' && isAsyncAgent) {
         try {
           const content = (result.content ?? '').trim();
           const stamp = new Date().toISOString();
-          const channelLabel = type === 'codebuddy-gateway' ? 'B0（CodeBuddy 网关）' : 'CLI Process';
+          const channelLabel = type === 'codebuddy-gateway' ? 'CodeBuddy 网关' : 'CLI Process';
           const body = content
             ? `${content}\n\n---\n- 通道：${channelLabel}\n- 回执：\`${ticket}\`\n- 完成时间：${stamp}`
             : `## ${channelLabel}执行完成\n\n未返回文本结果。\n\n- 回执：\`${ticket}\`\n- 完成时间：${stamp}`;
@@ -901,7 +901,7 @@ export const AIService = {
       }
       if (isAsyncAgent && (result.status === 'failed' || result.status === 'timeout')) {
         // T05747/T05796：异步受理后的失败/超时，PushDispatcher 早已返回 running；
-        // 在这里把任务归位 A 就绪池（monitor_ready=1 + 清 ai_state），完成「推送失败自动降级 A」。
+        // 在这里把任务归位 MCP 就绪池（monitor_ready=1 + 清 ai_state），完成「推送失败自动降级就绪池」。
         // 只处理仍为 todo 且未归档的任务，避免把用户已手工完成/归档的任务重新拉回池子。
         try {
           const current = TaskService.getById(job.task_id);
@@ -910,9 +910,9 @@ export const AIService = {
             const reason = result.error ?? `${type} 执行未成功`;
             logService.log('WARN', 'dispatch', JSON.stringify({
               event: 'fallback', taskNo: current.task_no ?? current.id, channel: 'A', attempt: 2,
-              state: 'ready', from: type === 'codebuddy-gateway' ? 'B0' : 'CLI', fallbackReason: reason, ticket,
+              state: 'ready', from: type === 'codebuddy-gateway' ? 'CodeBuddy 网关' : 'CLI', fallbackReason: reason, ticket,
             }));
-            logService.log('WARN', 'ai', `${type} 执行${result.status === 'timeout' ? '超时' : '失败'}，已回退 A 就绪池：task=${job.task_id.slice(0, 8)}，${reason}`);
+            logService.log('WARN', 'ai', `${type} 执行${result.status === 'timeout' ? '超时' : '失败'}，已回退 MCP 就绪池：task=${job.task_id.slice(0, 8)}，${reason}`);
           }
         } catch (e) {
           logService.log('ERROR', 'ai', `${type} → A 回退失败：task=${job.task_id.slice(0, 8)}，${e instanceof Error ? e.message : String(e)}`);

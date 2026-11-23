@@ -5,9 +5,9 @@
 import { useEffect, useState } from 'react';
 import { ChevronDown, Clock } from 'lucide-react';
 import { api, type DispatchAttemptRow } from '../api/client';
+import { dispatchChannelName, dispatchChannelTone, humanizeDispatchText } from '../ui/dispatchChannel';
 
-const CHANNEL_TONE: Record<string, string> = { B0: 'var(--accent)', A: 'var(--warn)', D: 'var(--danger)' };
-const STATE_LABEL: Record<string, string> = { running: '已受理', done: '已完成', ready: '就绪池', manual: '待人工', failed: '失败' };
+const STATE_LABEL: Record<string, string> = { running: '已受理', done: '已完成', ready: '已回就绪池', manual: '待人工确认', failed: '失败' };
 
 function fmt(iso: string): string {
   const d = new Date(iso);
@@ -65,16 +65,16 @@ export function DispatchRecent({ taskId, taskNo, refreshToken = 0 }: { readonly 
           {items.map((it) => (
             <div key={it.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 'var(--fs-xs)', lineHeight: 1.55 }}>
               <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{fmt(it.created_at)}</span>
-              <span style={{ color: CHANNEL_TONE[it.channel] ?? 'var(--text)', fontWeight: 600, flexShrink: 0 }}>{it.channel}</span>
+              <span style={{ color: dispatchChannelTone(it.channel), fontWeight: 600, flexShrink: 0 }}>{dispatchChannelName(it.channel)}</span>
               <span style={{ color: it.state === 'failed' ? 'var(--danger)' : it.state === 'running' || it.state === 'done' ? 'var(--success)' : 'var(--text)', flexShrink: 0 }}>{STATE_LABEL[it.state] ?? it.state}</span>
               <span style={{ flex: 1, minWidth: 0, color: 'var(--text-secondary)', wordBreak: 'break-word' }}>
-                {it.detail}
+                {humanizeDispatchText(it.detail)}
                 {(it.queue_id || it.job_id || it.ticket) && (
                   <span style={{ display: 'block', color: 'var(--text-muted)', fontSize: 'var(--fs-xs)' }}>
                     {it.queue_id ? `队列 ${it.queue_id.slice(0, 8)}` : ''}{it.job_id ? ` · job ${it.job_id.slice(0, 8)}` : ''}{it.ticket ? ` · ticket ${it.ticket.slice(0, 10)}` : ''}
                   </span>
                 )}
-                {it.fallback_reason && <span style={{ display: 'block', color: 'var(--warn)' }}>降级：{it.fallback_reason}</span>}
+                {it.fallback_reason && <span style={{ display: 'block', color: 'var(--warn)' }}>降级：{humanizeDispatchText(it.fallback_reason)}</span>}
               </span>
             </div>
           ))}

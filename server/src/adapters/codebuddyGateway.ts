@@ -1,5 +1,5 @@
 /**
- * T05747（A+B0+D 组合 · B0 主链路）：CodeBuddy Remote Control 本地网关适配器。
+ * T05747（CodeBuddy 网关主链路）：CodeBuddy Remote Control 本地网关适配器。
  *
  * 为什么单独成适配器：WorkBuddy 桌面端把 CodeBuddy CLI 的 HTTP 网关暴露在回环地址，
  * 提供 `POST /api/v1/runs` 异步受理 + `GET /api/v1/runs/:runId/stream` SSE 结果流。
@@ -215,7 +215,7 @@ async function consumeRunStream(ticket: string, config: ToolConfig, state: RunSt
       // 404 = 订阅晚于完成：没有历史可补，判失败并让 PushDispatcher 降级
       finalize(state, 'failed', undefined,
         res.status === 404
-          ? '结果流已结束且未捕获（执行过快或服务重启）——请检查网关是否已登录，必要时走 A 兜底'
+          ? '结果流已结束且未捕获（执行过快或服务重启）——请检查网关是否已登录，必要时转 MCP 就绪池兜底'
           : gatewayHttpError(res.status, body));
       return;
     }
@@ -265,7 +265,7 @@ async function consumeRunStream(ticket: string, config: ToolConfig, state: RunSt
       try { await reader.cancel(); } catch { /* 已结束的流 cancel 失败无影响 */ }
     }
     if (state.finalizedAt === undefined) {
-      // 流自然结束但没收到 completed：不要拿 streaming 片段冒充最终结论，判失败交给 A 兜底
+      // 流自然结束但没收到 completed：不要拿 streaming 片段冒充最终结论，判失败交给 MCP 就绪池兜底
       finalize(state, 'failed', undefined,
         `SSE 流结束但未收到 completed${state.partial ? `（已收到 ${state.partial.length} 字符片段）` : ''}`);
     }
@@ -405,7 +405,7 @@ export class CodeBuddyGatewayAdapter implements AIAdapter {
       }
       return {
         status: 'failed',
-        error: '结果流已结束且未捕获（可能执行过快或 MTask 服务重启）——请检查 WorkBuddy 网关登录态，必要时走 A 兜底',
+        error: '结果流已结束且未捕获（可能执行过快或 MTask 服务重启）——请检查 WorkBuddy 网关登录态，必要时转 MCP 就绪池兜底',
       };
     } catch (e) {
       return { status: 'failed', error: `查询 CodeBuddy 执行状态失败：${describeError(e)}` };

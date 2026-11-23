@@ -3,13 +3,20 @@
  *
  * 交互边界：
  * - 先做前端前置校验（归档/非 todo/running），服务端仍会再校验一次；
- * - 菜单只列当前状态可用的通道；B0 未配置时禁用并直接显示原因；
- * - 自动通道会展示 B0→A→D 三段 attempts；自动调度永不自动 D，手动 D 必须二次确认；
+ * - 菜单只列当前状态可用的通道；CodeBuddy 网关未配置时禁用并直接显示原因；
+ * - 自动通道会展示「CodeBuddy 网关 → MCP 就绪池 → 人工确认」三段 attempts；
+ *   自动调度永不自动进入人工确认，手动人工确认必须二次确认；
  * - 提交中禁用按钮，防止重复点击；请求带 10 分钟桶的幂等键。
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { AlertTriangle, CheckCircle2, ChevronDown, Clock, Loader2, Send, ShieldAlert, XCircle } from 'lucide-react';
 import { api, type DispatchAttemptView, type DispatchChannel, type DispatchResultView, type DispatchStatusView, type Task } from '../api/client';
+import {
+  DISPATCH_CHANNEL_LEGEND,
+  dispatchChannelName,
+  dispatchErrorCodeLabel,
+  humanizeDispatchText,
+} from '../ui/dispatchChannel';
 import { BADGE, BADGE_TONE, BTN_SECONDARY, FIELD } from '../ui/primitives';
 
 function errText(e: unknown): string {
@@ -45,10 +52,14 @@ function attemptLine(a: DispatchAttemptView) {
   return (
     <div key={`${a.channel}-${a.state}-${a.attemptId ?? ''}`} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, padding: '3px 0', fontSize: 'var(--fs-xs)' }}>
       <span style={{ color: tone.color, flexShrink: 0, marginTop: 1 }}>{tone.icon}</span>
-      <span style={{ fontWeight: 600, flexShrink: 0 }}>{a.channel}</span>
+      <span style={{ fontWeight: 600, flexShrink: 0 }}>{dispatchChannelName(a.channel)}</span>
       <span style={{ color: tone.color, flexShrink: 0 }}>{stateLabel(a.state)}</span>
-      {a.code && <span style={{ color: 'var(--danger)', flexShrink: 0, fontSize: 'var(--fs-xs)' }}>{a.code}</span>}
-      <span style={{ color: 'var(--text-secondary)', minWidth: 0, wordBreak: 'break-word' }}>{a.detail}</span>
+      {a.code && (
+        <span title={`错误码：${a.code}`} style={{ color: 'var(--danger)', flexShrink: 0, fontSize: 'var(--fs-xs)' }}>
+          {dispatchErrorCodeLabel(a.code)}
+        </span>
+      )}
+      <span style={{ color: 'var(--text-secondary)', minWidth: 0, wordBreak: 'break-word' }}>{humanizeDispatchText(a.detail)}</span>
     </div>
   );
 }
@@ -103,7 +114,7 @@ export function DispatchMenu({ task, onDispatched }: Props) {
 
   async function submit(channel: DispatchChannel) {
     if (blockedReason || busy) return;
-    if (channel === 'd' && !window.confirm('D 通道只做人工确认：会把任务标记为需人工处理，不会自动打开 GUI。继续？')) return;
+    if (channel === 'd' && !window.confirm('人工确认只做状态标记：会把任务标记为需人工确认，不会自动打开 GUI。继续？')) return;
     setBusy(channel);
     setSubmitError('');
     setResult(null);
@@ -139,11 +150,18 @@ export function DispatchMenu({ task, onDispatched }: Props) {
   }
 
   const b0Ready = Boolean(status?.b0.configured);
+  const gatewayHint = status?.b0.reason ? humanizeDispatchText(status.b0.reason) : '未配置 CodeBuddy 网关工具';
   const channelOptions: Array<{ key: DispatchChannel; label: string; hint: string; disabled?: boolean }> = [
-    { key: 'auto', label: '自动（B0 → A → D）', hint: b0Ready ? 'B0 失败先回 MCP 就绪池；均失败转人工确认（手动入口，D 不自动执行）' : 'B0 未配置，将直接尝试 A，必要时转人工确认' },
-    { key: 'b0', label: '仅 B0（CodeBuddy 网关）', hint: b0Ready ? `直推 ${status?.b0.toolName ?? 'CodeBuddy 网关'}` : status?.b0.reason ?? '未配置 B0 工具', disabled: !b0Ready },
-    { key: 'a', label: '仅 A（MCP 就绪池）', hint: '把任务放回就绪池，等外部 Agent 自己来领' },
-    { key: 'd', label: 'D（人工确认）', hint: '只标记待人工处理，不自动开 GUI' },
+    {
+      key: 'auto',
+      label: '自动派发（网关 → 就绪池 → 人工）',
+      hint: b0Ready
+        ? 'CodeBuddy 网关失败先回 MCP 就绪池；均失败转人工确认（仅手动入口，不自动执行）'
+        : 'CodeBuddy 网关未配置，将直接尝试 MCP 就绪池，必要时转人工确认',
+    },
+    { key: 'b0', label: 'CodeBuddy 网关', hint: b0Ready ? `直推 ${status?.b0.toolName ?? 'CodeBuddy 网关'}` : gatewayHint, disabled: !b0Ready },
+    { key: 'a', label: 'MCP 就绪池', hint: '把任务放回就绪池，等外部 Agent 自己来领' },
+    { key: 'd', label: '人工确认', hint: '只标记待人工确认，不自动打开 GUI' },
   ];
 
   return (
@@ -153,7 +171,7 @@ export function DispatchMenu({ task, onDispatched }: Props) {
         type="button"
         onClick={() => setOpen((v) => !v)}
         disabled={Boolean(blockedReason)}
-        title={blockedReason || '派发任务：自动 / B0 / A / D'}
+        title={blockedReason || '派发任务：自动 / CodeBuddy 网关 / MCP 就绪池 / 人工确认'}
         aria-label={blockedReason ? `派发不可用：${blockedReason}` : '派发任务'}
         style={{ ...BTN_SECONDARY, display: 'inline-flex', alignItems: 'center', gap: 4, opacity: blockedReason ? 0.5 : 1, cursor: blockedReason ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap' }}
       >
@@ -191,6 +209,9 @@ export function DispatchMenu({ task, onDispatched }: Props) {
                   <AlertTriangle size={12} /> 派发状态加载失败：{statusError}
                 </div>
               )}
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: 6 }}>
+                通道口径：{DISPATCH_CHANNEL_LEGEND}
+              </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                 {channelOptions.map((opt) => (
                   <button
@@ -216,19 +237,21 @@ export function DispatchMenu({ task, onDispatched }: Props) {
           )}
           {submitError && (
             <div style={{ marginTop: 7, fontSize: 'var(--fs-xs)', color: 'var(--danger)', display: 'flex', gap: 5 }}>
-              <AlertTriangle size={12} /> {submitError}
+              <AlertTriangle size={12} /> {humanizeDispatchText(submitError)}
             </div>
           )}
           {result && (
             <div style={{ marginTop: 8, paddingTop: 7, borderTop: '1px solid var(--border)', fontSize: 'var(--fs-xs)' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 4 }}>
                 <b style={{ color: stateTone(result.state).color }}>{stateLabel(result.state)}</b>
-                <span style={{ color: 'var(--text-muted)' }}>最终通道 {result.channel}</span>
+                <span style={{ color: 'var(--text-muted)' }}>最终通道 {dispatchChannelName(result.channel)}</span>
                 {result.attemptId && <span style={{ color: 'var(--text-muted)' }} title={result.attemptId}>审计 {result.attemptId.slice(0, 8)}</span>}
               </div>
               {result.attempts.map(attemptLine)}
               {result.fallbackReason && (
-                <div style={{ marginTop: 4, color: 'var(--text-muted)', wordBreak: 'break-word' }}>降级原因：{result.fallbackReason}</div>
+                <div style={{ marginTop: 4, color: 'var(--text-muted)', wordBreak: 'break-word' }}>
+                  降级原因：{humanizeDispatchText(result.fallbackReason)}
+                </div>
               )}
               {result.attempts.some((a) => a.ticket) && (
                 <div style={{ marginTop: 4, color: 'var(--text-muted)' }}>

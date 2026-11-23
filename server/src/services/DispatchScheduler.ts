@@ -138,7 +138,7 @@ async function runTick(opts: { force?: boolean; dryRun?: boolean; actor?: Dispat
   const policy = readPolicy();
   if (!policy.autoEnabled && !opts.force && !opts.dryRun) return empty('disabled');
   if (!policy.scopeProjectIds.length) return empty('incomplete');
-  // 试运行只看候选与策略，不要求 B0 已配好；真实派发必须有可用网关
+  // 试运行只看候选与策略，不要求 CodeBuddy 网关已配好；真实派发必须有可用网关
   if (!opts.dryRun && !readConfigView().b0.configured) return empty('incomplete');
 
   runtime.running = true;

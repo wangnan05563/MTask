@@ -605,7 +605,7 @@ export function QueuePage() {
         {active && <QueueHeadline queue={active} metrics={metrics} />}
         <QueueToolButton
           label="派发记录"
-          hint="查看 B0/A 自动派发与监督中继的内部队列（只读）"
+          hint="查看 CodeBuddy 网关 / MCP 就绪池自动派发与监督中继的内部队列（只读）"
           icon={<Send size={14} />}
           onClick={() => setView('dispatch')}
           style={BTN_SECONDARY_MD}

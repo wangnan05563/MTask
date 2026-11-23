@@ -91,7 +91,7 @@ const writeEnabled: ConfigWriter = (b) => {
 const writeReadyMarkEnabled: ConfigWriter = (b) => {
   if (typeof b.readyMarkEnabled !== 'boolean') return false;
   setSetting(READY_MARK_KEY, b.readyMarkEnabled ? '1' : '0');
-  logService.log('WARN', 'supervisor', `就绪排水${b.readyMarkEnabled ? '已开启（A 兜底可拉取）' : '已关闭（仅排水停更，决策层不受影响）'}`);
+  logService.log('WARN', 'supervisor', `就绪排水${b.readyMarkEnabled ? '已开启（MCP 就绪池可拉取）' : '已关闭（仅排水停更，决策层不受影响）'}`);
   return true;
 };
 

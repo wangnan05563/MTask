@@ -6,6 +6,7 @@
  */
 import { getDb } from '../db/connection';
 import { v4 as uuid } from 'uuid';
+import type { DispatchChannelCode } from './DispatchChannels';
 
 export interface DispatchAttemptRow {
   id: string;
@@ -26,7 +27,7 @@ export interface DispatchAttemptRow {
 export interface DispatchAttemptInput {
   taskId: string;
   taskNo: string | null;
-  channel: string;
+  channel: DispatchChannelCode;
   state: string;
   queueId?: string;
   jobId?: string;

@@ -518,7 +518,7 @@ export interface QueueJob {
   sent_at?: string | null;
   /** 收口时刻（success/failed/timeout 才有） */
   finished_at?: string | null;
-  /** 异步受理标识（B0 / CLI / 中继类工具） */
+  /** 异步受理标识（CodeBuddy 网关 / CLI / 中继类工具） */
   ticket?: string | null;
   /** 异步提交时刻（超时判定基准） */
   submitted_at?: string | null;

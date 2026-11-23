@@ -385,7 +385,7 @@ function readIntervalMs(): number {
   return Number.isFinite(n) && n >= INTERVAL_MIN_MS ? n : DEFAULT_INTERVAL_MS;
 }
 
-/** T05741：就绪标记开关，缺失/空串默认 true（保持 A 兜底可用）；仅显式 0/false/off/no 关闭 */
+/** T05741：就绪标记开关，缺失/空串默认 true（保持 MCP 就绪池兜底可用）；仅显式 0/false/off/no 关闭 */
 function readReadyMarkEnabled(): boolean {
   const raw = getSetting(READY_MARK_KEY);
   if (raw == null || raw.trim() === '') return true;
@@ -677,8 +677,8 @@ export const SupervisorService = {
     // 内部按 1h 节流并自行兜错，故可每轮无脑调用；放在决策之前，避免被下方任何 early return 跳过。
     pruneMonitorRuns();
     const probe = this.probe();
-    // T05741（A 兜底 FR-3.1）：就绪排水与决策层解耦——supervisor.enabled=false 只停决策 LLM，
-    // 默认仍执行 markMonitorReady，否则 mtask_list_ready_tasks 恒空、A 兜底不可用。
+    // T05741（MCP 就绪池兜底 FR-3.1）：就绪排水与决策层解耦——supervisor.enabled=false 只停决策 LLM，
+    // 默认仍执行 markMonitorReady，否则 mtask_list_ready_tasks 恒空、MCP 就绪池兜底不可用。
     // readyMarkEnabled=0 时保持旧语义（完全停摆），供「只关排水」的显式场景使用。
     const readyMarked = readReadyMarkEnabled() ? TaskService.markMonitorReady() : 0;
     if (!readEnabled()) return { ran: false, reason: 'disabled', stalledMarked, probe, readyMarked };

@@ -2,7 +2,7 @@
  * T06264/T06265/T06266/T06271（十期）：设置 → 派发策略。
  *
  * 页面回答三个问题：
- * 1) 现在能不能派（B0/A/D 状态卡 + 自动是否可运行）；
+ * 1) 现在能不能派（CodeBuddy 网关 / MCP 就绪池 / 人工确认 状态卡 + 自动是否可运行）；
  * 2) 自动派发按什么规则跑（项目范围、默认通道、周期、冷却、上限）；
  * 3) 下一轮会推哪些任务（候选预览 / dry-run / 立即跑一轮）。
  *
@@ -13,6 +13,7 @@ import {
   AlertTriangle, CheckCircle2, Clock, Loader2, Play, RefreshCw, Save, Send, ShieldAlert, XCircle,
 } from 'lucide-react';
 import { api, type AITool, type DispatchCandidateView, type DispatchConfigView, type DispatchStatusView, type Project } from '../api/client';
+import { DISPATCH_CHANNEL_LEGEND, dispatchChannelName, humanizeDispatchText } from '../ui/dispatchChannel';
 import { BADGE, BADGE_TONE, BTN_PRIMARY, BTN_SECONDARY_MD, FIELD_CARD, FIELD_LABEL, FIELD_SM, SELECT } from '../ui/primitives';
 
 function errText(e: unknown): string {
@@ -191,23 +192,24 @@ export function DispatchPolicyPanel() {
           <b style={{ fontSize: 'var(--fs-m)' }}><Send size={15} style={{ color: 'var(--accent)' }} /> 派发通道状态</b>
           <span style={{ flex: 1 }} />
           <button onClick={() => void load()} style={BTN_SECONDARY_MD} title="刷新状态"><RefreshCw size={12} /> 刷新</button>
-          <button onClick={() => void test()} disabled={busy === 'test' || !status?.b0.configured} style={BTN_SECONDARY_MD} title={status?.b0.configured ? '只探测 health/auth，不发送真实任务' : status?.b0.reason ?? 'B0 未配置'}>
+          <button onClick={() => void test()} disabled={busy === 'test' || !status?.b0.configured} style={BTN_SECONDARY_MD} title={status?.b0.configured ? '只探测 health/auth，不发送真实任务' : humanizeDispatchText(status?.b0.reason) || 'CodeBuddy 网关未配置'}>
             {busy === 'test' ? <Loader2 size={12} className="aispin" /> : <ShieldAlert size={12} />} 测试连接
           </button>
         </div>
+        <div style={{ ...hint, marginBottom: 8 }}>通道口径：{DISPATCH_CHANNEL_LEGEND}</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(210px,1fr))', gap: 8 }}>
           <div style={{ padding: 8, border: '1px solid var(--border)', borderRadius: 8 }}>
-            <div style={row}><b>B0 CodeBuddy 网关</b><span style={pill(status?.b0.configured ? 'success' : 'danger')}>{status?.b0.configured ? '已配置' : '未配置'}</span></div>
-            <div style={{ ...hint, marginTop: 4 }}>{status?.b0.toolName ?? status?.b0.reason ?? '未配置'}</div>
+            <div style={row}><b>CodeBuddy 网关</b><span style={pill(status?.b0.configured ? 'success' : 'danger')}>{status?.b0.configured ? '已配置' : '未配置'}</span></div>
+            <div style={{ ...hint, marginTop: 4 }}>{status?.b0.toolName ?? (status?.b0.reason ? humanizeDispatchText(status.b0.reason) : '未配置')}</div>
             <div style={{ ...hint, marginTop: 2, wordBreak: 'break-all' }}>{status?.b0.endpoint || '—'}</div>
           </div>
           <div style={{ padding: 8, border: '1px solid var(--border)', borderRadius: 8 }}>
-            <div style={row}><b>A MCP 就绪池</b><span style={pill('warning')}>{status?.a.readyTasks ?? 0} 条待拉取</span></div>
+            <div style={row}><b>MCP 就绪池</b><span style={pill('warning')}>{status?.a.readyTasks ?? 0} 条待拉取</span></div>
             <div style={{ ...hint, marginTop: 4 }}>{status?.a.supervisorEnabled ? '监督器已开启' : '监督器关闭（不影响自动派发）'}</div>
           </div>
           <div style={{ padding: 8, border: '1px solid var(--border)', borderRadius: 8 }}>
-            <div style={row}><b>D 人工应急</b><span style={pill('neutral')}>{status?.d.failedTasks ?? 0} 条待确认</span></div>
-            <div style={{ ...hint, marginTop: 4 }}>只标记人工，不自动开 GUI</div>
+            <div style={row}><b>人工确认</b><span style={pill('neutral')}>{status?.d.failedTasks ?? 0} 条待确认</span></div>
+            <div style={{ ...hint, marginTop: 4 }}>只标记待人工确认，不自动打开 GUI</div>
           </div>
           <div style={{ padding: 8, border: '1px solid var(--border)', borderRadius: 8 }}>
             <div style={row}>
@@ -232,7 +234,7 @@ export function DispatchPolicyPanel() {
         <div style={card}>
           <div style={{ ...row, marginBottom: 10 }}>
             <b style={{ fontSize: 'var(--fs-m)' }}>自动派发策略</b>
-            <span style={hint}>空项目范围 = 不启用；自动链路永不执行 D。</span>
+            <span style={hint}>空项目范围 = 不启用；自动链路永不执行人工确认。</span>
             <span style={{ flex: 1 }} />
             <button onClick={() => void save()} disabled={busy === 'save'} style={BTN_PRIMARY}>
               {busy === 'save' ? <Loader2 size={13} className="aispin" /> : <Save size={13} />} 保存
@@ -246,17 +248,17 @@ export function DispatchPolicyPanel() {
             <label style={{ display: 'flex', flexDirection: 'column' }}>
               <span style={FIELD_LABEL}>默认通道</span>
               <select value={config.defaultChannel} onChange={(e) => update('defaultChannel', e.target.value as 'auto' | 'b0')} style={SELECT}>
-                <option value="auto">自动（B0 → A）</option>
-                <option value="b0">仅 B0</option>
+                <option value="auto">自动（网关 → 就绪池）</option>
+                <option value="b0">仅 CodeBuddy 网关</option>
               </select>
             </label>
             <label style={{ display: 'flex', flexDirection: 'column' }}>
-              <span style={FIELD_LABEL}>B0 工具</span>
+              <span style={FIELD_LABEL}>CodeBuddy 网关工具</span>
               <select value={config.b0ToolId} onChange={(e) => update('b0ToolId', e.target.value)} style={SELECT}>
                 <option value="">未指定（取第一条 enabled）</option>
                 {b0Tools.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
               </select>
-              {b0Tools.length === 0 && <span style={{ ...hint, color: 'var(--warn)', marginTop: 3 }}>没有 enabled 的 codebuddy-gateway 工具</span>}
+              {b0Tools.length === 0 && <span style={{ ...hint, color: 'var(--warn)', marginTop: 3 }}>没有已启用的 CodeBuddy 网关工具</span>}
             </label>
             <label style={{ display: 'flex', flexDirection: 'column' }}>
               <span style={FIELD_LABEL}>触发方式</span>
@@ -268,14 +270,14 @@ export function DispatchPolicyPanel() {
             {numberField('扫描间隔', config.intervalMs, 5000, 3600000, 'ms', (n) => update('intervalMs', n), '5 秒 ~ 1 小时；保存后热重载')}
             {numberField('冷却窗口', config.cooldownMs, 60000, 86400000, 'ms', (n) => update('cooldownMs', n), '同一任务两次自动派发的最小间隔')}
             {numberField('每轮上限', config.maxPerTick, 1, 20, '条', (n) => update('maxPerTick', n), '串行提交，避免压垮网关')}
-            {numberField('最大尝试', config.maxAttempts, 1, 10, '次', (n) => update('maxAttempts', n), '连续失败达到上限后转人工')}
+            {numberField('最大尝试', config.maxAttempts, 1, 10, '次', (n) => update('maxAttempts', n), '连续失败达到上限后转人工确认')}
             {numberField('审计保留', config.retentionDays, 1, 365, '天', (n) => update('retentionDays', n), '每天清理一次 dispatch_attempts')}
             <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 'var(--fs-s)' }}>
               <input type="checkbox" checked={config.allowFallbackA} onChange={(e) => update('allowFallbackA', e.target.checked)} />
-              B0 失败后回落 A 就绪池
+              CodeBuddy 网关失败后回落 MCP 就绪池
             </label>
             <div style={{ ...FIELD_CARD, padding: 8, fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>
-              自动 D：<b style={{ color: 'var(--danger)' }}>关闭（硬边界）</b>。D 仅允许人工在任务详情确认。
+              自动人工确认：<b style={{ color: 'var(--danger)' }}>关闭（硬边界）</b>。人工确认仅允许在任务详情手动触发。
             </div>
           </div>
 
@@ -361,8 +363,8 @@ export function DispatchPolicyPanel() {
                   <div key={`${r.taskNo}-${r.channel}`} style={{ display: 'flex', gap: 6, alignItems: 'flex-start' }}>
                     {r.ok ? <CheckCircle2 size={12} style={{ color: 'var(--success)' }} /> : <XCircle size={12} style={{ color: 'var(--danger)' }} />}
                     <span style={{ color: 'var(--accent)' }}>{r.taskNo}</span>
-                    <span>{r.channel} · {r.state}</span>
-                    <span style={{ ...hint, flex: 1, wordBreak: 'break-word' }}>{r.detail}</span>
+                    <span>{dispatchChannelName(r.channel)} · {r.state}</span>
+                    <span style={{ ...hint, flex: 1, wordBreak: 'break-word' }}>{humanizeDispatchText(r.detail)}</span>
                   </div>
                 ))}
               </div>

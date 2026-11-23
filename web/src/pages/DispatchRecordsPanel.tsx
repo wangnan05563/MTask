@@ -1,7 +1,7 @@
 /**
  * T06266（十期）：队列页「派发记录」只读视图。
  *
- * 与人工队列分开：这里只读 kind=dispatch/relay 的内部队列，展示 B0/A 单条或自动派发、
+ * 与人工队列分开：这里只读 kind=dispatch/relay 的内部队列，展示 CodeBuddy 网关 / MCP 就绪池单条或自动派发、
  * 监督中继产生的 job；不提供发送/编辑/删除，避免用户把内部执行链路当人工队列操作。
  */
 import { useCallback, useEffect, useState } from 'react';
@@ -9,7 +9,7 @@ import { AlertTriangle, ArrowLeft, Loader2, RefreshCw, RotateCcw, Send } from 'l
 import { api, type Queue, type QueueJob, type QueueJobSummary } from '../api/client';
 import { BADGE, BADGE_TONE, BTN_SECONDARY_MD, FIELD_SM } from '../ui/primitives';
 
-const KIND_LABEL: Record<string, string> = { dispatch: 'B0/A 派发', relay: '监督中继' };
+const KIND_LABEL: Record<string, string> = { dispatch: '网关/就绪池派发', relay: '监督中继' };
 const JOB_STATUS: Record<string, string> = {
   queued: '排队', sending: '发送中', success: '成功', failed: '失败', timeout: '超时', draft: '草稿',
 };

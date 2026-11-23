@@ -1335,7 +1335,7 @@ ${a.result}`;
   // T01280（PRD FR-3.1 / §6.1）：外部平台拉取就绪待办——执行层入口（拉取式）
   server.registerTool('mtask_list_ready_tasks', {
     title: '拉取就绪任务',
-    description: '外部 AI 平台拉取可执行的就绪待办。仅返回：未被认领（ai_state 为空）、status=todo、monitor_ready=1（监督器已判定无未完成前置依赖）、且平台偏好匹配（monitor_preferred_platform 为空或等于 platform）的任务，并按优先级排序。T05741 起 supervisor.enabled=0 时仍会标记就绪（readyMarkEnabled 默认 true），A 兜底不再恒空；readyMarkEnabled=0 才完全停排水。',
+    description: '外部 AI 平台拉取可执行的就绪待办。仅返回：未被认领（ai_state 为空）、status=todo、monitor_ready=1（监督器已判定无未完成前置依赖）、且平台偏好匹配（monitor_preferred_platform 为空或等于 platform）的任务，并按优先级排序。T05741 起 supervisor.enabled=0 时仍会标记就绪（readyMarkEnabled 默认 true），MCP 就绪池兜底不再恒空；readyMarkEnabled=0 才完全停排水。',
     inputSchema: {
       platform: z.string().optional().describe("请求方平台标识（如 'workbuddy' | 'trae'）；只返回无平台偏好或偏好等于该值的任务，缺省则不按平台过滤。大小写/空白不敏感（内部统一归一为小写）"),
       projectId: z.string().optional().describe('T05741：只返回指定项目的就绪任务（任务内部 projectId）；多项目共用一个 WorkBuddy 时用它隔离，缺省则不限项目'),

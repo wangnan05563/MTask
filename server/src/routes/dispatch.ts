@@ -1,15 +1,16 @@
 /**
- * T05747：B0/A/D 派发的手动入口与状态出口。
+ * T05747：CodeBuddy 网关 / MCP 就绪池 / 人工确认的派发手动入口与状态出口。
  * T06261/T06262/T06263（十期）：补配置、候选预览、立即跑一轮、连接测试、派发历史。
  *
  * 该路由只做参数校验与结果透传，挂载点 `api.use('/dispatch', dispatchApi)` 一行接线。
  * 安全：沿用 /api 的 accessTokenGuard；不返回 apiKey/口令，endpoint 只返回 host/path。
+ * T06325：机器值仍为 auto/b0/a/d；对外提示使用中文通道名，避免用户只看到代号。
  */
 import { Router } from 'express';
 import { PushDispatcher, type DispatchChannel } from '../services/PushDispatcher';
 import { ConfigService } from '../services/ConfigService';
 import {
-  readConfigView, savePolicy, sanitizeEndpoint, assertEndpointAllowed, resolveB0Tool, DispatchConfigConflictError,
+  readConfigView, savePolicy, sanitizeEndpoint, assertEndpointAllowed, resolveGatewayTool, DispatchConfigConflictError,
 } from '../services/DispatchPolicy';
 import { DispatchScheduler } from '../services/DispatchScheduler';
 import { listAttempts } from '../services/DispatchAttempts';
@@ -59,7 +60,7 @@ dispatchApi.post('/task', async (req, res) => {
     }
     const rawChannel = String(req.body?.channel ?? readConfigView().defaultChannel).toLowerCase() as DispatchChannel;
     if (!CHANNELS.has(rawChannel)) {
-      fail(res, 400, 'CONFIG_INVALID', `channel 需为 auto/b0/a/d，收到：${rawChannel}`);
+      fail(res, 400, 'CONFIG_INVALID', `channel 需为「自动 / CodeBuddy 网关 / MCP 就绪池 / 人工确认」之一（机器值 auto/b0/a/d），收到：${rawChannel}`);
       return;
     }
     const idempotencyKey = String(req.body?.idempotencyKey ?? '').trim();
@@ -130,7 +131,7 @@ dispatchApi.post('/test', async (req, res) => {
     const tool = requested
       ? ConfigService.getById(requested)
       : (() => {
-          const resolved = resolveB0Tool();
+          const resolved = resolveGatewayTool();
           return resolved.tool ? ConfigService.getById(resolved.tool.id) : null;
         })();
     if (!tool) {

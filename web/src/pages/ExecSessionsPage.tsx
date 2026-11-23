@@ -389,9 +389,9 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
 
       {error && <div style={{ fontSize: 'var(--fs-m)', color: 'var(--danger)', flexShrink: 0 }}>加载失败：{error}</div>}
 
-      {/* T06266：B0 是任务级直推，不产生 exec_session；此处只保留外部会话观测与重派语义 */}
+      {/* T06266：CodeBuddy 网关是任务级直推，不产生 exec_session；此处只保留外部会话观测与重派语义 */}
       <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
-        <Info size={12} /> B0 派发不在这里显示：请在任务详情「最近派发」或队列页「派发记录」查看；本页「重派」仍只针对外部执行会话。
+        <Info size={12} /> CodeBuddy 网关派发不在这里显示：请在任务详情「最近派发」或队列页「派发记录」查看；本页「重派」仍只针对外部执行会话。
       </div>
 
       <div

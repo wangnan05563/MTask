@@ -3437,8 +3437,9 @@ function isolatedTestPort(): string | null {
   return port;
 }
 
-/** 2026-11-17：任务卡执行边界。隔离项目里 B0/网关/部署类任务最容易误触生产端口，
- *  统一把「验证 39877/39876」改为当前测试端口，并追加 fake/mock 与禁止写生产的硬边界。 */
+/** 2026-11-17：任务卡执行边界。隔离项目里 CodeBuddy 网关/部署类任务最容易误触生产端口，
+ *  统一把「验证 39877/39876」改为当前测试端口，并追加 fake/mock 与禁止写生产的硬边界。
+ *  T06325：正则保留旧标题里的 B0 作为兼容检索词，生成文案只出现可读通道名。 */
 function applyIsolatedExecutionBoundary(p: { title: string; description?: string }): void {
   const port = isolatedTestPort();
   if (!port) return;
@@ -3450,9 +3451,9 @@ function applyIsolatedExecutionBoundary(p: { title: string; description?: string
       .replaceAll(/\b39877\b/g, port)
       .replaceAll(/\b39876\b/g, port);
   }
-  if (/B0|网关|端到端|集成测试|生产构建|部署验证/i.test(`${p.title} ${next}`)
+  if (/B0|CodeBuddy 网关|网关|端到端|集成测试|生产构建|部署验证/i.test(`${p.title} ${next}`)
     && !next.includes('执行边界：隔离测试环境')) {
-    next = `${next}\n执行边界：隔离测试环境使用 ${port} 端口与 fake/mock B0/网关；禁止启动、写入或变更生产 39877/39876；真实 B0 验收在发布前人工执行。`.trim();
+    next = `${next}\n执行边界：隔离测试环境使用 ${port} 端口与 fake/mock CodeBuddy 网关；禁止启动、写入或变更生产 39877/39876；真实 CodeBuddy 网关验收在发布前人工执行。`.trim();
   }
   if (next !== raw) p.description = next;
 }

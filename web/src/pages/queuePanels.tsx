@@ -11,6 +11,7 @@ import {
   Search, Trash2, Undo2,
 } from 'lucide-react';
 import type { AITool, Project, Queue, QueueJob, Task } from '../api/client';
+import { dispatchChannelName, dispatchChannelShortName } from '../ui/dispatchChannel';
 import { Badge, type BadgeTone } from '../ui/Badge';
 import { EmptyState } from '../ui/EmptyState';
 import { HoverCard } from '../ui/HoverCard';
@@ -854,7 +855,7 @@ export interface PoolRunSlotView {
   readonly title: string;
   readonly ai_state_at: string;
   readonly project_name: string;
-  /** T06268：平台/通道标识，B0 任务在池中一眼可辨 */
+  /** T06268：平台/通道标识，CodeBuddy 网关任务在池中一眼可辨 */
   readonly platform?: string | null;
   readonly channel?: 'B0' | 'A' | 'D';
 }
@@ -933,8 +934,8 @@ export function PoolPanel(props: PoolPanelProps) {
                   <Loader2 size={12} className="aispin" style={{ color: 'var(--accent)', flexShrink: 0 }} />
                   <span style={{ color: 'var(--accent)', flexShrink: 0 }}>{r.task_no ?? '—'}</span>
                   {r.channel && (
-                    <span style={{ ...PILL, color: r.channel === 'B0' ? 'var(--accent)' : r.channel === 'D' ? 'var(--danger)' : 'var(--warn)', flexShrink: 0 }} title={`平台：${r.platform ?? r.channel}`}>
-                      {r.channel === 'B0' ? 'B0 执行中' : r.channel === 'D' ? 'D 人工' : 'MCP'}
+                    <span style={{ ...PILL, color: r.channel === 'B0' ? 'var(--accent)' : r.channel === 'D' ? 'var(--danger)' : 'var(--warn)', flexShrink: 0 }} title={`平台：${r.platform ?? dispatchChannelName(r.channel)}`}>
+                      {dispatchChannelShortName(r.channel)}{r.channel === 'B0' ? '执行中' : r.channel === 'D' ? '待确认' : '待拉取'}
                     </span>
                   )}
                   <span title={`${r.title}（${r.project_name}）`} style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

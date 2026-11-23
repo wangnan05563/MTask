@@ -10,6 +10,7 @@
  */
 import { getDb } from '../db/connection';
 import { getSetting, setSetting } from './AppSettings';
+import { DISPATCH_CHANNEL_CODE, DISPATCH_PLATFORM, type DispatchChannelCode } from './DispatchChannels';
 
 const POOL_LIMIT_KEY = 'ai.pool.limit';
 /** 默认并发上限 3：单 Agent 同时啃 3 个以上任务时上下文互相污染的概率显著上升 */
@@ -25,7 +26,7 @@ export interface PoolRunSlot {
   project_name: string;
   /** T06268：任务被哪个平台/通道领走（取自 monitor_preferred_platform） */
   platform: string | null;
-  channel: 'B0' | 'A' | 'D';
+  channel: DispatchChannelCode;
 }
 
 export interface PoolStatus {
@@ -67,7 +68,11 @@ export function readPoolStatus(): PoolStatus {
   ).all() as PoolRunSlot[];
   for (const slot of running) {
     const platform = (slot.platform ?? '').toLowerCase().trim();
-    slot.channel = platform === 'codebuddy-gateway' ? 'B0' : platform === 'd-gui' ? 'D' : 'A';
+    slot.channel = platform === DISPATCH_PLATFORM.GATEWAY
+      ? DISPATCH_CHANNEL_CODE.GATEWAY
+      : platform === DISPATCH_PLATFORM.MANUAL
+        ? DISPATCH_CHANNEL_CODE.MANUAL
+        : DISPATCH_CHANNEL_CODE.READY_POOL;
   }
   const queued = (
     db.prepare(

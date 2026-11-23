@@ -207,7 +207,7 @@ const FEATURES: FeatureModule[] = [
       '页面下方「用量」面板按模型统计调用次数、Token 与耗时',
     ],
     tips: [
-      '支持类型：openai-compatible / claude / ollama / workbuddy / codebuddy-gateway（T05747 B0 本地网关直推）',
+      '支持类型：openai-compatible / claude / ollama / workbuddy / codebuddy-gateway（T05747 CodeBuddy 本地网关直推）',
       '密钥仅加密存储，界面只显示脱敏值；查看原文需二次确认',
       '配置不可用（额度/鉴权失败）时相关 AI 入口可见但禁用，并给出原因与修复动作，不会静默回退',
     ],

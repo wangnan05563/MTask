@@ -67,7 +67,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
     key: 'ops', label: '运维与诊断', icon: Wrench,
     tabs: [
       { key: 'supervisor', label: '监督与审计', icon: ShieldCheck, keywords: ['监督', '审计', '熔断', '队列', '监督审计'] },
-      { key: 'dispatch', label: '派发策略', icon: Send, keywords: ['派发', '推送', '自动派发', 'B0', 'CodeBuddy', '网关', '冷却', '候选'] },
+      { key: 'dispatch', label: '派发策略', icon: Send, keywords: ['派发', '推送', '自动派发', 'CodeBuddy', '网关', '冷却', '候选'] },
       { key: 'tunnel', label: '内网穿透', icon: Network, keywords: ['穿透', '隧道', '外网'] },
       { key: 'logs', label: '日志', icon: ScrollText, keywords: ['日志', '排障', '诊断'] },
     ],

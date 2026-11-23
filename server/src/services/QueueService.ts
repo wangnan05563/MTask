@@ -19,7 +19,7 @@ export interface QueueRow {
   created_at: string;
   /** T01434：队列级暂停——true 时拒绝 send/submit，移动端可半操作 */
   paused?: number;
-  /** T06245：manual=人工编排队列；dispatch=B0/A 内部派发；relay=监督中继 */
+  /** T06245：manual=人工编排队列；dispatch=CodeBuddy 网关 / MCP 就绪池内部派发；relay=监督中继 */
   kind?: 'manual' | 'dispatch' | 'relay';
 }
 
@@ -271,7 +271,7 @@ function autoCompleteQueueTask(
       return;
     }
     if (getSetting('queue.autoCompleteTask') === '1') {
-      // T05747：B0/Relay 派发在 armTask 时置 ai_state=running；队列成功回写若只改 status，
+      // T05747：CodeBuddy 网关/Relay 派发在 armTask 时置 ai_state=running；队列成功回写若只改 status，
       // 任务会停在「已 done 但 AI 运行中」的互斥态（前端仍转圈、MCP 也认为在执行）。
       // 这里随完成一次性把 running 收口为 unread（用户未读），非 running 的旧路径保持原行为。
       if (t.ai_state === 'running') {

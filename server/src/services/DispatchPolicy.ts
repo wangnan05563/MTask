@@ -107,7 +107,7 @@ export function readPolicy(): DispatchPolicy {
     cooldownMs: readInt(KEYS.cooldownMs, DEFAULTS.cooldownMs, 60_000, 86_400_000),
     maxPerTick: readInt(KEYS.maxPerTick, DEFAULTS.maxPerTick, 1, 20),
     maxAttempts: readInt(KEYS.maxAttempts, DEFAULTS.maxAttempts, 1, 10),
-    // PRD 硬边界：自动链路绝不执行 D，读侧也强制为 false
+    // PRD 硬边界：自动链路绝不执行人工确认，读侧也强制为 false
     allowFallbackA: readBool(KEYS.allowFallbackA, DEFAULTS.allowFallbackA),
     allowAutoD: false,
     retentionDays: readInt(KEYS.retentionDays, DEFAULTS.retentionDays, 1, 365),
@@ -120,8 +120,8 @@ export function listGatewayTools(): DispatchToolLite[] {
     .filter((tool) => tool.type === 'codebuddy-gateway' && tool.enabled !== false);
 }
 
-/** 与 PushDispatcher 共用同一口径：显式配置优先，否则取第一条 enabled 的 B0 工具。 */
-export function resolveB0Tool(policy = readPolicy()): { tool: DispatchToolLite | null; reason?: string } {
+/** 与 PushDispatcher 共用同一口径：显式配置优先，否则取第一条 enabled 的 CodeBuddy 网关工具。 */
+export function resolveGatewayTool(policy = readPolicy()): { tool: DispatchToolLite | null; reason?: string } {
   const candidates = listGatewayTools();
   const pick = (tool: DispatchToolLite | undefined): { tool: DispatchToolLite | null; reason?: string } => {
     if (!tool) return { tool: null };
@@ -134,7 +134,7 @@ export function resolveB0Tool(policy = readPolicy()): { tool: DispatchToolLite |
   };
   if (policy.b0ToolId) {
     const hit = candidates.find((tool) => tool.id === policy.b0ToolId);
-    if (!hit) return { tool: null, reason: `配置 dispatch.b0ToolId=${policy.b0ToolId} 未命中 enabled 的 codebuddy-gateway 工具` };
+    if (!hit) return { tool: null, reason: `已配置的 CodeBuddy 网关工具未找到（dispatch.b0ToolId=${policy.b0ToolId}），请检查工具是否启用` };
     return pick(hit);
   }
   if (!candidates.length) return { tool: null, reason: '未配置 codebuddy-gateway 类型的 AI 工具' };
@@ -159,25 +159,25 @@ export function sanitizeEndpoint(endpoint: string | undefined): string {
 }
 
 /**
- * B0 endpoint 安全边界（FR-5）：
+ * CodeBuddy 网关 endpoint 安全边界（FR-5）：
  * - 回环/本机允许 http；
  * - 远程必须 https；
  * - 带 userinfo 的 URL 一律拒绝（口令不能进 URL）。
  */
 export function assertEndpointAllowed(endpoint: string): void {
   const raw = (endpoint ?? '').trim();
-  if (!raw) throw new Error('B0 Endpoint 为空');
+  if (!raw) throw new Error('CodeBuddy 网关地址为空');
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    throw new Error('B0 Endpoint 不是合法 URL');
+    throw new Error('CodeBuddy 网关地址不是合法 URL');
   }
-  if (url.username || url.password) throw new Error('B0 Endpoint 不能包含用户名/口令');
+  if (url.username || url.password) throw new Error('CodeBuddy 网关地址不能包含用户名/口令');
   const host = url.hostname.toLowerCase();
   const loopback = host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
   if (!loopback && url.protocol !== 'https:') {
-    throw new Error('B0 Endpoint 远程地址必须使用 HTTPS（仅 localhost/127.0.0.1 允许 HTTP）');
+    throw new Error('CodeBuddy 网关远程地址必须使用 HTTPS（仅 localhost/127.0.0.1 允许 HTTP）');
   }
 }
 
@@ -205,15 +205,15 @@ function validateScope(ids: unknown): string[] {
   return unique;
 }
 
-function validateB0Tool(toolId: string): string {
+function validateGatewayTool(toolId: string): string {
   const trimmed = (toolId ?? '').trim();
   if (!trimmed) return '';
   const row = getDb().prepare('SELECT type, enabled, endpoint FROM ai_tools WHERE id = ? AND COALESCE(archived, 0) = 0').get(trimmed) as
     | { type: string; enabled: number; endpoint: string }
     | undefined;
-  if (!row) throw new Error(`b0ToolId 不存在：${trimmed}`);
-  if (row.type !== 'codebuddy-gateway') throw new Error(`b0ToolId 对应工具 type=${row.type}，必须为 codebuddy-gateway`);
-  if (!row.enabled) throw new Error('b0ToolId 对应工具未启用');
+  if (!row) throw new Error(`CodeBuddy 网关工具不存在：${trimmed}`);
+  if (row.type !== 'codebuddy-gateway') throw new Error(`所选工具不是 CodeBuddy 网关（type=${row.type}）`);
+  if (!row.enabled) throw new Error('CodeBuddy 网关工具未启用');
   assertEndpointAllowed(row.endpoint);
   return trimmed;
 }
@@ -238,17 +238,17 @@ export function savePolicy(input: Record<string, unknown>, expectedUpdatedAt?: s
     throw new DispatchConfigConflictError();
   }
   if (input.allowAutoD === true || input.allowAutoD === 1 || input.allowAutoD === '1') {
-    throw new Error('allowAutoD 必须为 false：D 通道仅允许人工确认');
+    throw new Error('allowAutoD 必须为 false：人工确认通道仅允许手动触发');
   }
   const defaultChannel = input.defaultChannel === 'b0' ? 'b0' : input.defaultChannel === 'auto' ? 'auto' : current.defaultChannel;
   if (input.defaultChannel !== undefined && input.defaultChannel !== 'auto' && input.defaultChannel !== 'b0') {
-    throw new Error('defaultChannel 仅允许 auto / b0');
+    throw new Error(`默认通道仅允许「自动 / CodeBuddy 网关」之一（机器值 auto / b0），收到：${String(input.defaultChannel)}`);
   }
   const trigger = input.trigger === 'interval' ? 'interval' : input.trigger === 'ready' ? 'ready' : current.trigger;
   if (input.trigger !== undefined && input.trigger !== 'ready' && input.trigger !== 'interval') {
     throw new Error('trigger 仅允许 ready / interval');
   }
-  const b0ToolId = input.b0ToolId === undefined ? current.b0ToolId : validateB0Tool(String(input.b0ToolId ?? ''));
+  const b0ToolId = input.b0ToolId === undefined ? current.b0ToolId : validateGatewayTool(String(input.b0ToolId ?? ''));
   const scopeProjectIds = validateScope(input.scopeProjectIds);
 
   const intField = (name: keyof DispatchPolicy, key: string, min: number, max: number): number => {
@@ -313,13 +313,13 @@ export interface DispatchConfigView extends DispatchPolicy {
 
 export function readConfigView(): DispatchConfigView {
   const policy = readPolicy();
-  const resolved = resolveB0Tool(policy);
+  const resolved = resolveGatewayTool(policy);
   const blocked = !policy.autoEnabled
     ? '自动派发已暂停'
     : !policy.scopeProjectIds.length
       ? '未选择项目范围（空数组=不启用）'
       : !resolved.tool
-        ? `B0 配置不完整：${resolved.reason ?? '未配置工具'}`
+        ? `CodeBuddy 网关配置不完整：${resolved.reason ?? '未配置工具'}`
         : '';
   return {
     ...policy,

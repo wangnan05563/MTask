@@ -74,9 +74,9 @@ function armTask(taskId: string, platform: string, state: RelayDispatchResult['s
  * 把单条任务经中继推送派发（FR-3.6）。
  * 调用方负责前置校验（任务存在/未归档/待办）——本函数只做派发与状态归位，避免第二套校验口径。
  *
- * T05747：新增可选 `toolIdOverride`——B0（CodeBuddy Gateway）与既有 supervisor 中继共用
+ * T05747：新增可选 `toolIdOverride`——CodeBuddy 网关与既有 supervisor 中继共用
  * 同一套 Queue/submit/poll/归位状态机，但两者工具 id 不同。不传时仍读原配置，零回归。
- * T06245：新增可选 `queueKind`——B0/自动派发传 dispatch，会话重派/监督中继传 relay；默认 relay 保持旧调用语义。
+ * T06245：新增可选 `queueKind`——CodeBuddy 网关/自动派发传 dispatch，会话重派/监督中继传 relay；默认 relay 保持旧调用语义。
  */
 export async function dispatchTask(
   taskId: string,

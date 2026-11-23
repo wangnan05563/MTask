@@ -1082,7 +1082,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('queues', 'kind', "kind TEXT NOT NULL DEFAULT 'manual'");
   db.exec("CREATE INDEX IF NOT EXISTS idx_queues_kind_date ON queues(kind, date DESC, created_at DESC)");
   db.exec("UPDATE queues SET kind='relay' WHERE kind='manual' AND name LIKE '监督派发（%'");
-  /* T06246 / T06248：跨通道派发审计（B0/A/D），不替代 queue_jobs 的执行状态权威。
+  /* T06246 / T06248：跨通道派发审计（CodeBuddy 网关 / MCP 就绪池 / 人工确认；机器值 B0/A/D），不替代 queue_jobs 的执行状态权威。
      只存展示与审计字段，不存任务正文、不存任何 token；按任务+时间与全局时间建索引。 */
   db.exec(`
     CREATE TABLE IF NOT EXISTS dispatch_attempts (
