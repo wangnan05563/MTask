@@ -6,6 +6,8 @@ import './theme/tokens.css';
 import './ui/components.css';
 // T06288：统一页面壳与筛选条布局
 import './ui/layout/pageShell.css';
+// T06289：左侧 5 项一级导航与顶栏子页签切换器
+import './ui/nav/primaryNav.css';
 // T00840：挂载关闭前「运行中任务」查询桥到 window，供桌面壳主进程 executeJavaScript 调用
 import './ui/runningTasks';
 

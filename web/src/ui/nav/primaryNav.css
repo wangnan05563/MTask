@@ -1,0 +1,280 @@
+/* T06289：左侧一级导航（5 项）+ 顶栏子页签切换器。色值全部复用主题变量。 */
+
+.mt-primary-nav {
+  --mt-nav-width: 240px;
+  width: var(--mt-nav-width);
+  flex: 0 0 var(--mt-nav-width);
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  height: 100vh;
+  box-sizing: border-box;
+  padding: 14px 12px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: var(--card-bg);
+  border-right: 1px solid var(--border);
+  z-index: 40;
+  transition: width .18s ease, flex-basis .18s ease, padding .18s ease;
+}
+
+.mt-primary-nav.is-collapsed {
+  --mt-nav-width: 64px;
+  padding: 14px 8px 20px;
+}
+
+.mt-nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 2px;
+}
+
+.mt-nav-mark {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.mt-nav-name {
+  font-size: var(--fs-m);
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.mt-primary-nav.is-collapsed .mt-nav-name,
+.mt-primary-nav.is-collapsed .mt-nav-label,
+.mt-primary-nav.is-collapsed .mt-nav-chevron {
+  display: none;
+}
+
+/* 折叠后内容宽仅 48px：品牌标与展开按钮竖排，避免 32+8+28 横向溢出把展开按钮裁掉 */
+.mt-primary-nav.is-collapsed .mt-nav-brand {
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+  padding: 2px 0;
+}
+
+.mt-primary-nav.is-collapsed .mt-nav-collapse {
+  margin-left: 0;
+}
+
+.mt-nav-collapse {
+  width: 28px;
+  height: 28px;
+  margin-left: auto;
+  flex: 0 0 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.mt-nav-collapse:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.mt-nav-groups {
+  display: grid;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.mt-nav-group {
+  display: grid;
+  gap: 2px;
+}
+
+.mt-nav-item {
+  width: 100%;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.mt-nav-item:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.mt-nav-group.is-active .mt-nav-item {
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.mt-nav-group.is-active .mt-nav-item svg {
+  color: var(--accent);
+}
+
+.mt-primary-nav.is-collapsed .mt-nav-item {
+  justify-content: center;
+  padding: 9px 0;
+}
+
+.mt-nav-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-m);
+}
+
+.mt-nav-chevron {
+  margin-left: auto;
+  display: inline-flex;
+  color: var(--text-muted);
+}
+
+.mt-nav-sub {
+  display: grid;
+  gap: 2px;
+  margin: 2px 0 4px 24px;
+  padding: 0;
+  list-style: none;
+}
+
+.mt-nav-subitem {
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--fs-s);
+  text-align: left;
+}
+
+.mt-nav-subitem:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.mt-nav-subitem[aria-current="page"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.mt-top-switcher {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  min-height: 56px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 24px;
+  background: var(--app-bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.mt-top-group {
+  font-size: var(--fs-l);
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.mt-top-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 9px;
+  background: var(--surface-2);
+}
+
+.mt-top-tab {
+  padding: 5px 12px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--fs-s);
+  white-space: nowrap;
+}
+
+.mt-top-tab:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.mt-top-tab[aria-selected="true"] {
+  background: var(--card-bg);
+  color: var(--accent);
+  font-weight: 600;
+  border: 1px solid var(--border);
+}
+
+.mt-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.mt-top-status {
+  font-size: var(--fs-s);
+  white-space: nowrap;
+}
+
+.mt-top-guide {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--card-bg);
+  color: var(--accent);
+}
+
+@media (max-width: 1180px) {
+  .mt-top-group {
+    display: none;
+  }
+}
+
+@media (max-width: 960px) {
+  .mt-top-switcher {
+    padding: 0 12px;
+    gap: 8px;
+  }
+
+  .mt-top-tabs {
+    overflow-x: auto;
+  }
+
+  .mt-top-status {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mt-primary-nav {
+    transition: none;
+  }
+}

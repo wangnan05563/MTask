@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type Dispatch, type SetStateAction } from 'react';
 import { TasksPage } from './pages/TasksPage';
+import { DashboardPage } from './pages/DashboardPage'; // T06289：Dashboard 从设置页提升为「首页」入口
 import { AIToolsPage } from './pages/AIToolsPage';
 import { QueuePage } from './pages/QueuePage';
 import { ExecSessionsPage } from './pages/ExecSessionsPage'; // T01271-FR1.4：执行会话观测面板
@@ -25,6 +26,8 @@ import { usePrdGen } from './stores/prdGenStore'; // T01038：原始需求生成
 import { aiImportStore } from './stores/aiImportStore'; // T01038：项目计划/PRD 导入运行态
 
 import { TABS, type Tab } from './ui/tabs'; // T03184（PM-102）：一级导航单源——命令面板页面列表同源生成
+import { PrimaryNav } from './ui/nav/PrimaryNav'; // T06289：左侧 5 项一级导航
+import { NAV_GROUPS, navGroupForTab } from './ui/nav/primaryNavGroups'; // T06289：一级入口分组与顶栏子页签单源
 import { applyDeepLink, buildDeepLink, readDeepLinkFromLocation } from './ui/deepLink'; // T03187（D-13）：深链契约单源
 
 // T00441：日志/归档入口从顶部菜单移入「设置」（内网穿透下方），顶部菜单收敛为高频功能
@@ -105,7 +108,15 @@ function focusPageSearch(el: HTMLInputElement | HTMLTextAreaElement): boolean {
 
 /** 应用外壳：导航 + 主题变量容器。颜色取自 CSS 变量，主题切换即时全局生效 */
 function Shell() {
-  const [tab, setTab] = useState<Tab>('tasks');
+  const [tab, setTab] = useState<Tab>('dashboard');
+  const [navCollapsed, setNavCollapsed] = useState<boolean>(() => {
+    try { return localStorage.getItem('mtask.nav.collapsed') === '1'; } catch { return false; }
+  });
+  const toggleNav = () => setNavCollapsed((cur) => {
+    const next = !cur;
+    try { localStorage.setItem('mtask.nav.collapsed', next ? '1' : '0'); } catch { /* 隐私模式忽略 */ }
+    return next;
+  });
   const [serverOk, setServerOk] = useState<boolean | null>(null);
   // T01836：启动自动检测到的新版本（仅提示，一键下载安装仍在「设置 → 版本更新」卡片内）
   const [updateHint, setUpdateHint] = useState<{ latestVersion: string; currentVersion: string } | null>(null);
@@ -208,20 +219,20 @@ function Shell() {
     return () => globalThis.removeEventListener('keydown', onKey);
   }, []);
 
-  // T03184（PM-102 / D-07）：数字键 1～9 直达对应一级菜单——仅在「非输入、无弹窗、非输入法组合」时生效。
-  // 输入框里的 1～9 是内容；弹窗打开时用户在做局部操作，切页会把上下文弄丢；IME 组合中的按键不能当快捷键。
+  // T06289：数字键 1～5 直达 5 个一级入口默认页——仅在「非输入、无弹窗、非输入法组合」时生效。
+  // 输入框里的 1～5 是内容；弹窗打开时用户在做局部操作，切页会把上下文弄丢；IME 组合中的按键不能当快捷键。
   useEffect(() => {
     const onDigit = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       if (e.isComposing) return;
-      if (!/^[1-9]$/.test(e.key)) return;
+      if (!/^[1-5]$/.test(e.key)) return;
       const anchor = e.target instanceof Element ? e.target : null;
       if (anchor?.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""]')) return;
       if (document.querySelector('dialog[open], [role="dialog"], [aria-modal="true"]')) return;
-      const target = TABS[Number(e.key) - 1];
+      const target = NAV_GROUPS[Number(e.key) - 1];
       if (!target) return;
       e.preventDefault();
-      setTab(target.key);
+      setTab(target.defaultTab);
     };
     globalThis.addEventListener('keydown', onDigit);
     return () => globalThis.removeEventListener('keydown', onDigit);
@@ -266,6 +277,7 @@ function Shell() {
   const pg = usePrdGen();
   const aiImp = useSyncExternalStore(aiImportStore.subscribe, aiImportStore.getSnapshot);
   const workbenchRunning = rs.streaming || pg.streaming || aiImp.busy;
+  const activeGroup = navGroupForTab(tab); // T06289：顶栏只展示当前一级入口下的二级页签
 
   // 连接状态三态（未知/正常/异常）的色值与文案：用 if 显式分支而非嵌套三元，可读性更好
   let statusColor = 'var(--text-muted)';
@@ -288,16 +300,13 @@ function Shell() {
     <div
       style={{
         fontFamily: 'var(--font-family)',
-        // 自适应尽量占满屏幕：width:100% 让小屏贴合，上限 1600px 让大屏充分铺展避免原 1080 固定宽度造成两侧大块空白
+        // T06289：外壳改为「左侧一级导航 + 内容区」；内容宽度由 PageShell 收口到 1440px
         width: '100%',
-        maxWidth: 1600,
-        margin: '0 auto',
+        minHeight: '100vh',
         boxSizing: 'border-box',
-        // T06288：全页基线边距 24px；页面内容再由 PageShell 收口到 1440px
-        padding: '0 24px 40px',
+        padding: 0,
         background: 'var(--app-bg)',
         color: 'var(--text)',
-        minHeight: '100vh',
       }}
     >
       {/* Markdown 作用域样式在应用根统一注入一次，供全部页面共享 */}
@@ -313,9 +322,6 @@ function Shell() {
       <style>{`button { border: none; cursor: pointer; transition: transform .12s ease; }
         button:disabled { cursor: default; opacity: .6; }
         button:active:not(:disabled) { transform: scale(0.95); }
-        /* T00475：导航默认大图标、悬浮整项平滑展开图标+文字（键盘 focus-visible 同样展开） */
-        .nav-btn .nav-label { display: inline-block; max-width: 0; opacity: 0; overflow: hidden; white-space: nowrap; transition: max-width .25s ease, opacity .2s ease; }
-        .nav-btn:hover .nav-label, .nav-btn:focus-visible .nav-label { max-width: 120px; opacity: 1; }
         /* T00486：全系统控件交互动画统一（参照任务菜单多选按钮 tbtn-anim 基准） */
         /* T00497：动态提示浮层化——固定右上与菜单栏同行空白区，不占文档流，杜绝控件串行/记录错位 */
         .flash-toast { position: fixed; top: 14px; right: 16px; z-index: 90; max-width: 42vw; padding: 5px 12px; border-radius: 8px; background: var(--card-bg); border: 1px solid var(--accent); color: var(--accent); font-size: var(--fs-s); box-shadow: 0 4px 14px rgba(0,0,0,.12); animation: toast-in .2s ease; }
@@ -366,11 +372,9 @@ function Shell() {
         .title-op:hover:not(:disabled) { transform: scale(1.15) rotate(8deg); }
         .title-op:active:not(:disabled) { transform: scale(.88); }
         /* 文字/功能按钮：整体轻微倾斜（幅度收敛避免文本难读），active 缩放 */
-        button:hover:not(:disabled):not(.tbtn-anim):not(.nav-btn):not(.abtn):not(.ghost):not(.row-title-btn):not(.task-op) { transform: rotate(-1.5deg); } /* T00494：记录标题按钮不参与悬浮旋转；T00513：task-op 行内按钮走倾斜缩放基准 */
-        /* T00890：导航按钮补齐悬浮微倾斜——被上方兜底 :not() 排除，需独立声明才具备统一反馈。
-           T04582：行标题按钮（row-title-btn）是任务/提示词/通用需求/通知中心/Git 树选范围五处的「数据标题」，
-           去除悬浮倾斜——标题区域悬浮不再 rotate/scale（便于选中复制）；导航与其余按钮的倾斜体系保持不变。 */
-        .nav-btn:hover:not(:disabled) { transform: scale(1.06) rotate(-2deg); }
+        button:hover:not(:disabled):not(.tbtn-anim):not(.abtn):not(.ghost):not(.row-title-btn):not(.task-op) { transform: rotate(-1.5deg); } /* T00494：记录标题按钮不参与悬浮旋转；T00513：task-op 行内按钮走倾斜缩放基准 */
+        /* T04582：行标题按钮（row-title-btn）是任务/提示词/通用需求/通知中心/Git 树选范围五处的「数据标题」，
+           去除悬浮倾斜——标题区域悬浮不再 rotate/scale（便于选中复制）；其余按钮的倾斜体系保持不变。 */
         button.row-title-btn:hover:not(:disabled) { transform: none; }
         button { transition: transform .18s ease, background-color .15s ease; }
         /* T02143：能力卡片容器（div role=button，内嵌角标按钮不能套在原生 button 里）补回全局
@@ -423,74 +427,66 @@ function Shell() {
         .tl-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
         .abtn:hover, .ghost:hover { background: var(--surface-2); }`}</style>
 
-      {/* 菜单行：置顶，导航项居左；后端连接状态用 margin-left:auto 推到右端且垂直居中，与菜单项同行。
-          T02174：窄窗口下导航项 + 行尾三枚动态元素（未读角标/连接状态/向导按钮）总宽必然超过容器，
-          nowrap 会把末元素顶出 nav 边框（456px 实测越界 142px）——改 wrap + rowGap 折行兜底，
-          与 TasksPage.renderToolbar 同口径；宽窗口仍是单行，布局不变。 */}
-      <nav style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4, rowGap: 6, margin: '0', padding: '12px 0', borderBottom: '1px solid var(--border)' }}>
-        {TABS.map((t, i) => {
-          // 菜单图标置于文字前：使用开源 lucide 图标库，与全局视觉一致
-          const Icon = t.icon;
-          return (
-            <button
-              key={t.key}
-              className="nav-btn"
-              onClick={() => setTab(t.key)}
-              title={`${t.label}（快捷键 ${i + 1}）`}
-              aria-label={t.label}
-              aria-keyshortcuts={String(i + 1)} // T03184：数字键 1～9 直达（输入框/弹窗内不生效）
-              style={{
-                padding: '7px 10px',
-                borderRadius: 6,
-                background: tab === t.key ? 'var(--accent)' : 'var(--card-bg)',
-                color: tab === t.key ? 'var(--accent-text)' : 'var(--text)',
-                cursor: 'pointer',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-              }}
-            >
-              <Icon size={18} />
-              <span className="nav-label">{t.label}</span>
-              {/* T01038：AI 工作台 Tab 运行中旋转指示（与卡片/控制台状态联动） */}
-              {t.key === 'report' && workbenchRunning && <Loader2 size={12} className="aispin" style={{ color: tab === t.key ? 'var(--accent-text)' : 'var(--accent)' }} />}
-            </button>
-          );
-        })}
-        {/* T05765：移除顶部「记忆」导航入口；记忆管理仍由「设置 → 数据 → 记忆管理」进入。 */}
-        {/* T01064-FR1.4：全局通知中心（铃铛 + 未读角标 + 事件下拉） */}
-        <NotifyBell />
-        {/* 后端连接状态：随 serverOk 动态更新，常驻菜单行最右侧。
-            色值与文案按三态（未知/正常/异常）显式计算，避免 JSX 中嵌套三元 */}
-        <HoverCard
-          card={backendInfo}
-          ariaLabel="后端连接地址"
-          cardW={380}
-          cardH={48}
-          openDelay={180}
-          style={{ marginLeft: 'auto', flexShrink: 0 }}
-        >
-          <span
-            title={backendInfo}
-            style={{ fontSize: 'var(--fs-s)', color: statusColor, cursor: 'help' }}
-          >
-            {statusText}
-          </span>
-        </HoverCard>
-        {/* T00706：常驻「向导」按钮（菜单行最右）——参考项目管理向导（T00665）。
-            T00735：去掉呼吸动画（task-breathe）改为静态、并去掉文字仅保留图标——
-            项目管理页曾出现「全局 + 页内」两个向导按钮，统一保留本按钮（页内重复项已删除） */}
-        {guide && (
-          <button
-            onClick={() => setGuideOpen(true)}
-            title={`使用向导 — 查看「${guide.title.split(' · ')[0]}」菜单各功能的使用说明与要点`}
-            aria-label="打开当前菜单使用向导"
-            style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '6px 8px', marginLeft: 10, borderRadius: 6, cursor: 'pointer', border: '1px solid var(--accent)', background: 'var(--card-bg)', color: 'var(--accent)' }}
-          >
-            <Compass size={15} />
-          </button>
-        )}
-      </nav>
+      {/* T06289：左侧 5 项一级导航 + 顶栏子页签切换器；后端状态/通知/向导收进顶栏右侧 */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', minHeight: '100vh' }}>
+        <PrimaryNav
+          activeTab={tab}
+          collapsed={navCollapsed}
+          onToggle={toggleNav}
+          onSelect={setTab}
+        />
+        <main style={{ flex: 1, minWidth: 0, minHeight: '100vh' }}>
+          <header className="mt-top-switcher" aria-label="页面切换">
+            <span className="mt-top-group">{activeGroup.label}</span>
+            {activeGroup.tabs.length > 1 && (
+              <div className="mt-top-tabs" role="tablist" aria-label={`${activeGroup.label}子页面`}>
+                {activeGroup.tabs.map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    className="mt-top-tab"
+                    role="tab"
+                    aria-selected={tab === item.key}
+                    onClick={() => setTab(item.key)}
+                  >
+                    {item.label}
+                    {item.key === 'report' && workbenchRunning && (
+                      <Loader2 size={11} className="aispin" style={{ marginLeft: 4, verticalAlign: 'middle' }} />
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="mt-top-actions">
+              {/* T01064-FR1.4：全局通知中心（铃铛 + 未读角标 + 事件下拉） */}
+              <NotifyBell />
+              {/* 后端连接状态：色值与文案按三态（未知/正常/异常）显式计算 */}
+              <HoverCard
+                card={backendInfo}
+                ariaLabel="后端连接地址"
+                cardW={380}
+                cardH={48}
+                openDelay={180}
+                style={{ flexShrink: 0 }}
+              >
+                <span title={backendInfo} className="mt-top-status" style={{ color: statusColor, cursor: 'help' }}>
+                  {statusText}
+                </span>
+              </HoverCard>
+              {/* T00706：常驻「向导」按钮——当前菜单首次进入自动弹出，也可随时手动唤起 */}
+              {guide && (
+                <button
+                  type="button"
+                  className="mt-top-guide"
+                  onClick={() => setGuideOpen(true)}
+                  title={`使用向导 — 查看「${guide.title.split(' · ')[0]}」菜单各功能的使用说明与要点`}
+                  aria-label="打开当前菜单使用向导"
+                >
+                  <Compass size={15} />
+                </button>
+              )}
+            </div>
+          </header>
 
       {/* T01836：启动自动检测新版本的一次性提示条——点击去「设置 → 版本更新」走一键下载/静默安装，
           关掉后本次会话不再弹（sessionStorage），不影响已是最新版本的静默场景 */}
@@ -565,19 +561,23 @@ function Shell() {
         </output>
       )}
 
-      {tab === 'tasks' && <TasksPage />}
-      {tab === 'aitools' && <AIToolsPage />}
-      {tab === 'prompts' && <PromptsPage />}
-      {tab === 'req' && <ReqPage />}
-      {tab === 'queue' && <QueuePage />}
-      {tab === 'exec-sessions' && <ExecSessionsPage />}
-      {tab === 'plan' && <PlanPage />}
-      {/* T01154：仪表盘迁入设置页（通用设置 tab 后） */}
-      {tab === 'report' && <ReportPage />}
-      {/* T00441：日志/归档入口移至「设置」页（内网穿透下方） */}
-      {tab === 'settings' && <SettingsPage />}
+          <div className="mt-page-host" style={{ padding: '24px 24px 40px' }}>
+            {tab === 'dashboard' && <DashboardPage />}
+            {tab === 'tasks' && <TasksPage />}
+            {tab === 'aitools' && <AIToolsPage />}
+            {tab === 'prompts' && <PromptsPage />}
+            {tab === 'req' && <ReqPage />}
+            {tab === 'queue' && <QueuePage />}
+            {tab === 'exec-sessions' && <ExecSessionsPage />}
+            {tab === 'plan' && <PlanPage />}
+            {tab === 'report' && <ReportPage />}
+            {/* T00441：日志/归档入口移至「设置」页（内网穿透下方） */}
+            {tab === 'settings' && <SettingsPage />}
+          </div>
+        </main>
+      </div>
 
-      {/* T00706：当前菜单的使用向导弹窗（首次进入自动弹出 / 导航右侧按钮唤起） */}
+      {/* T00706：当前菜单的使用向导弹窗（首次进入自动弹出 / 顶栏右侧按钮唤起） */}
       {guide && <PageGuideDialog open={guideOpen} onClose={closeGuide} title={guide.title} steps={guide.steps} />}
     </div>
   );

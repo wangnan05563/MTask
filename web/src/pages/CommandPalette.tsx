@@ -44,7 +44,7 @@ const NO_PROMPTS: Prompt[] = [];
 
 interface Item { group: string; label: string; hint: string; action: () => void }
 
-/** T03184：页面直达 = 导航单源——名称与顶部菜单逐字一致，九个一级页面（含「执行会话」）全部可搜 */
+/** T03184：页面直达 = 页面路由单源——全部页面（含首页/执行会话）可搜；T06289 起一级导航收敛为 5 组，分组见 ui/nav/primaryNavGroups。 */
 function buildPageItems(kwLower: string, onNavigate: (tab: Tab) => void): Item[] {
   const out: Item[] = [];
   for (const t of TABS) {
