@@ -17,6 +17,7 @@ import { relTime } from '../ui/format';
 import { OPTIMIZE_EMPTY_MESSAGE, resolveOptimizeInput } from '../ui/optimizeInput'; // T04808：与通用需求菜单共用输入源判定
 import { comparePrompts, type PromptSortKey } from '../ui/promptSort'; // T03248（AI-104④）：排序单源（含使用次数）
 import { missingPromptVars, parsePromptVars } from '../ui/promptTemplate'; // T03247（AI-104①②）：{{变量}} 解析（与服务端同口径）
+import { FilterBar, PageHeader, PageShell } from '../ui/layout'; // T06288：核心页统一页面壳、页头与吸顶筛选条
 
 /** T00636：剥离大模型常见 ``` 代码围栏（仅整段包裹时），供提示词优化结果回写前清洗 */
 function stripFence(text: string): string {
@@ -917,7 +918,7 @@ export function PromptsPage() {
     categoryCount: categories.length, search, reqFilter, viewScope, allFav: isAllFav(activeCat),
   });
   return (
-    <section>
+    <PageShell>
       {/* 悬浮操作按钮 + 行 hover 高亮 + 记录高亮动画：类名与任务页体验一致 */}
       <style>{`
         .arena-row { transition: background-color .15s ease, transform .12s ease; }
@@ -939,6 +940,12 @@ export function PromptsPage() {
         .item-over { box-shadow: inset 0 3px 0 var(--accent); border-color: var(--accent) !important; }
         .move-btn:hover { color: var(--accent); }
       `}</style>
+      <PageHeader
+        title="提示词"
+        description="按分类管理、发起与优化提示词模板；分类筛选与视图切换在滚动时保持可见。"
+        breadcrumbs={[{ label: 'AI 控制台' }, { label: '提示词' }]}
+      />
+      <FilterBar ariaLabel="提示词筛选">
       {/* 工具栏：分类切换与管理 */}
       <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <select value={activeCat} onChange={(e) => setActiveCat(e.target.value)}
@@ -1076,6 +1083,7 @@ export function PromptsPage() {
         <ResourceHint view={promptsView} label="提示词列表" />
         {notice && <output className="flash-toast">{notice}</output>}
       </div>
+      </FilterBar>
 
       {activeCatObj?.description && (
         <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 10 }}>{activeCatObj.description}</div>
@@ -1285,6 +1293,6 @@ export function PromptsPage() {
           tools={toolsView.data ?? []} toolId={launchToolId} onToolId={setLaunchToolId}
           busy={launchBusy} onCancel={() => { if (!launchBusy) setLaunchTarget(null); }} onConfirm={() => void confirmLaunch()} />
       )}
-    </section>
+    </PageShell>
   );
 }

@@ -18,6 +18,7 @@ import { blockBadgeNames, blockBadgeNode } from '../ui/blockBadge'; // T03229（
 import { GitBadge, GitBoardBadge, gitTruncatedNote } from '../ui/gitBadge'; // 八期 §3.1：任务↔提交关联徽标（列表行 + 看板卡）
 import { GitTreePickerModal } from '../ui/GitTreePickerModal'; // 八期 §3.1.5：未回写「手动关联」批量补录走同一取数弹窗
 import { OVERLAY_MASK } from '../ui/primitives'; // T03621：遮罩底走单源 --overlay 令牌（不自写 rgba）
+import { PageHeader, PageShell } from '../ui/layout'; // T06288：核心页统一页面壳与页头落位
 import { useGitSummaries } from '../utils/gitSummaries'; // 八期 §3.1.6：本页提交摘要一次批量解析 + 60s 缓存
 import { fieldBadgesNode } from '../ui/fieldBadges'; // T03231（PM-203②）：自定义字段值徽标（列表行展示）
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
@@ -5678,7 +5679,7 @@ export function TasksPage() {
   }
 
   return (
-    <section>
+    <PageShell>
       {/* 验证状态图标切换弹出的局部动画（key 重挂载时播放）；任务行悬停显隐操作区与背景灰显 */}
       <style>{`
         @keyframes verify-pop {
@@ -5744,6 +5745,11 @@ export function TasksPage() {
           50% { transform: scale(1.06); box-shadow: 0 0 0 5px rgba(37, 99, 235, 0); }
         }
       `}</style>
+      <PageHeader
+        title="任务"
+        description="统一查看待办、已完成与搁置任务；列表与看板共用同一套筛选和批量操作。"
+        breadcrumbs={[{ label: '工作台' }, { label: '任务' }]}
+      />
       {renderToolbar()}
       {/* T00771：新建项目后的工作空间绑定弹窗——见 renderWsPickDialog */}
       {renderWsPickDialog()}
@@ -5809,6 +5815,6 @@ export function TasksPage() {
           提交由服务端把结果追加到任务详情末尾（不覆盖），本面板只负责收集与展示 */}
       {/* T02949：派生单裁决面板——见 renderRulingDialog（具名函数承载，复杂度与主渲染体解耦） */}
       {renderRulingDialog()}
-    </section>
+    </PageShell>
   );
 }

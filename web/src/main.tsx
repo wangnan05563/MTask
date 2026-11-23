@@ -4,6 +4,8 @@ import { App } from './App';
 // T06287：接入设计 Token 与 Design System 原语样式；原语未被业务页引用时零视觉变化
 import './theme/tokens.css';
 import './ui/components.css';
+// T06288：统一页面壳与筛选条布局
+import './ui/layout/pageShell.css';
 // T00840：挂载关闭前「运行中任务」查询桥到 window，供桌面壳主进程 executeJavaScript 调用
 import './ui/runningTasks';
 

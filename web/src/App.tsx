@@ -293,7 +293,8 @@ function Shell() {
         maxWidth: 1600,
         margin: '0 auto',
         boxSizing: 'border-box',
-        padding: '0 16px 40px',
+        // T06288：全页基线边距 24px；页面内容再由 PageShell 收口到 1440px
+        padding: '0 24px 40px',
         background: 'var(--app-bg)',
         color: 'var(--text)',
         minHeight: '100vh',
