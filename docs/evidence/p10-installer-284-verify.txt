@@ -1,0 +1,41 @@
+TIME=2026-11-23 22:22:50
+=== INSTALL DIR ===
+MTASK_EXE=F:\Program\MTask.exe
+MTASK_EXE_SIZE=188813312
+MTASK_FILE_VERSION=0.1.1123.284
+MTASK_PRODUCT_VERSION=0.1.112.0
+INSTALL_TOP_ENTRIES=20
+INSTALL_TOP_NAMES=chrome_100_percent.pak,chrome_200_percent.pak,d3dcompiler_47.dll,debug.log,ffmpeg.dll,icudtl.dat,libEGL.dll,libGLESv2.dll,LICENSE.electron.txt,LICENSES.chromium.html,locales,MTask.exe,resources,resources.pak,snapshot_blob.bin,Uninstall MTask.exe,v8_context_snapshot.bin,vk_swiftshader_icd.json,vk_swiftshader.dll,vulkan-1.dll
+=== ASAR ===
+ASAR_SIZE=145381432
+ASAR_SHA256=19DD1E540B53AE145C3748F07AE8830E76DB7BFBE513106F44327FAA42A03E45
+=== UNINSTALLER ===
+UNINSTALLER=F:\Program\Uninstall MTask.exe
+UNINSTALLER_SIZE=222416
+UNINSTALLER_FILE_VERSION=0.1.1123.284
+=== REGISTRY ===
+UNINSTALL_KEY=Microsoft.PowerShell.Core\Registry::HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Uninstall\d85522ca-d69d-5d1e-91b2-58289d7d4f8f
+DISPLAY_NAME=MTask 0.1.112-3.284
+DISPLAY_VERSION=0.1.112-3.284
+INSTALL_LOCATION=[]
+UNINSTALL_STRING="F:\Program\Uninstall MTask.exe" /allusers
+PUBLISHER=
+ESTIMATED_SIZE=426721
+NO_MODIFY=1
+NO_REPAIR=1
+=== RUNTIME ===
+MTASK_PROCESS_COUNT=5
+PID=26836 START=2026-11-23 22:19:29 RESPONDING=True TITLE=[MTask · AI 任务开发管理工具] PATH=F:\Program\MTask.exe
+PID=33940 START=2026-11-23 22:19:49 RESPONDING=True TITLE=[] PATH=F:\Program\MTask.exe
+PID=44056 START=2026-11-23 22:20:14 RESPONDING=True TITLE=[] PATH=F:\Program\MTask.exe
+PID=47428 START=2026-11-23 22:19:49 RESPONDING=True TITLE=[] PATH=F:\Program\MTask.exe
+PID=49084 START=2026-11-23 22:19:52 RESPONDING=True TITLE=[] PATH=F:\Program\MTask.exe
+PORT_39877_LISTEN=TCP    127.0.0.1:39877        0.0.0.0:0              LISTENING       49084
+HEALTH={"ok":true,"service":"mtask-server","time":"2026-11-23T14:22:56.959Z"}
+ROOT_STATUS=200
+ROOT_LENGTH=3983
+ROOT_TITLE=MTask · AI 任务开发管理工具
+=== ROLLBACK DIRS ===
+ROLLBACK=F:\Program.preinstaller-20261123-221742 EXISTS=True MTaskVersion=0.1.1123.284
+ROLLBACK=F:\Program.rollback283-20261123-210051 EXISTS=True MTaskVersion=0.1.1122.283
+ROLLBACK=F:\Program.backup-20261123-0207 EXISTS=True MTaskVersion=0.1.1122.283

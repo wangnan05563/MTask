@@ -1,0 +1,14 @@
+2026-11-23 22:17:42 === installer smoke 0.1.1123.284 START ===
+2026-11-23 22:17:42 installer=D:\code\otherProjects\MTask\release\MTask Setup 0.1.1123.284.exe
+2026-11-23 22:17:43 installer size=114064313 sha256=68A57C6792B2D7F595E98AF717C871FEF07E58A88F7002A496C0A22FB3CE1BE8
+2026-11-23 22:17:43 db backup before installer
+2026-11-23 22:17:50 db snapshot=F:\p10-installer-before.db size=222457856
+2026-11-23 22:17:54 kill[0] 成功: 已终止 PID 36724 (属于 PID 40560 子进程)的进程。 | 成功: 已终止 PID 44828 (属于 PID 40560 子进程)的进程。 | 成功: 已终止 PID 4680 (属于 PID 40560 子进程)的进程。 | 成功: 已终止 PID 49204 (属于 PID 40560 子进程)的进程。 | 成功: 已终止 PID 40560 (属于 PID 46996 子进程)的进程。
+2026-11-23 22:18:06 move F:\Program -> F:\Program.preinstaller-20261123-221742 rc=0 移动了　        1 个目录。
+2026-11-23 22:18:06 run installer /S /allusers /D=F:\Program
+2026-11-23 22:19:17 installer exit=0
+2026-11-23 22:19:21 installed version=0.1.1123.284 asar=19DD1E540B53AE145C3748F07AE8830E76DB7BFBE513106F44327FAA42A03E45 uninstaller=True
+2026-11-23 22:19:25 registry DisplayName=MTask 0.1.112-3.284 DisplayVersion=0.1.112-3.284 InstallLocation= UninstallString="F:\Program\Uninstall MTask.exe" /allusers
+2026-11-23 22:19:39 start: F:\Program\MTask.exe
+2026-11-23 22:20:14 health ok {"ok":true,"service":"mtask-server","time":"2026-11-23T14:20:14.409Z"}
+2026-11-23 22:20:14 === installer smoke SUCCESS version=0.1.1123.284 preinstaller=F:\Program.preinstaller-20261123-221742 ===
