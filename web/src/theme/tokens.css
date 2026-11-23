@@ -1,0 +1,325 @@
+/**
+ * MTask Design Tokens v2 — T06286
+ * 文件职责：定义 primitive / semantic / component 三层 Token，提供 light / dark / high-contrast
+ * 三套预设主题，并补齐 chart / diff / gantt / canvas 专用 Token。
+ *
+ * 约束：
+ * 1. 页面与业务组件只允许使用 --mt-component-* 或 --mt-semantic-*，禁止直接引用 --mt-primitive-*。
+ * 2. 本文件是设计底座，不替换旧主题变量；接入与存量硬编码迁移分别由 T06287 / T06290 承接。
+ * 3. 命名规则：--mt-{category}-{role}-{state}。
+ */
+
+:root {
+  /* === primitive:start === */
+  /* neutral：浅色底、正文与边框 */
+  --mt-primitive-neutral-0: #ffffff;
+  --mt-primitive-neutral-25: #fcfcfd;
+  --mt-primitive-neutral-50: #f9fafb;
+  --mt-primitive-neutral-75: #edeeef;
+  --mt-primitive-neutral-100: #f3f4f6;
+  --mt-primitive-neutral-200: #e5e7eb;
+  --mt-primitive-neutral-300: #d1d5db;
+  --mt-primitive-neutral-400: #9ca3af;
+  --mt-primitive-neutral-500: #6b7280;
+  --mt-primitive-neutral-550: #646a75;
+  --mt-primitive-neutral-600: #4b5563;
+  --mt-primitive-neutral-700: #374151;
+  --mt-primitive-neutral-800: #1f2937;
+  --mt-primitive-neutral-900: #111827;
+  --mt-primitive-neutral-950: #030712;
+
+  /* zinc：深色主题表面与边框 */
+  --mt-primitive-zinc-950: #18181b;
+  --mt-primitive-zinc-900: #1e1e21;
+  --mt-primitive-zinc-875: #27272a;
+  --mt-primitive-zinc-850: #2a2a2e;
+  --mt-primitive-zinc-700: #3f3f46;
+  --mt-primitive-zinc-600: #52525b;
+
+  /* gray：深色主题文字层级 */
+  --mt-primitive-gray-150: #e5e7eb;
+  --mt-primitive-gray-250: #b8b8c0;
+  --mt-primitive-gray-350: #94949c;
+
+  /* blue：强调、链接、信息与图表 */
+  --mt-primitive-blue-50: #eff6ff;
+  --mt-primitive-blue-100: #dbeafe;
+  --mt-primitive-blue-200: #bfdbfe;
+  --mt-primitive-blue-300: #93c5fd;
+  --mt-primitive-blue-400: #60a5fa;
+  --mt-primitive-blue-450: #5b9bf8;
+  --mt-primitive-blue-500: #3b82f6;
+  --mt-primitive-blue-600: #2563eb;
+  --mt-primitive-blue-700: #1d4ed8;
+  --mt-primitive-blue-800: #1e40af;
+  --mt-primitive-blue-900: #1e3a8a;
+  --mt-primitive-blue-950: #0b1220;
+
+  /* green：成功与 diff 新增 */
+  --mt-primitive-green-25: #ecf5ef;
+  --mt-primitive-green-50: #ecfdf5;
+  --mt-primitive-green-500: #22c55e;
+  --mt-primitive-green-600: #16a34a;
+  --mt-primitive-green-650: #137638;
+  --mt-primitive-green-700: #15803d;
+  --mt-primitive-green-950: #052e16;
+
+  /* red：危险、删除与错误 */
+  --mt-primitive-red-25: #fbeded;
+  --mt-primitive-red-50: #fef2f2;
+  --mt-primitive-red-400: #f87171;
+  --mt-primitive-red-500: #ef4444;
+  --mt-primitive-red-600: #dc2626;
+  --mt-primitive-red-700: #c81e1e;
+  --mt-primitive-red-950: #3b0a0a;
+
+  /* amber：警告与待处理 */
+  --mt-primitive-amber-50: #fffbeb;
+  --mt-primitive-amber-400: #fbbf24;
+  --mt-primitive-amber-500: #f59e0b;
+  --mt-primitive-amber-600: #b45309;
+  --mt-primitive-amber-700: #92400e;
+  --mt-primitive-amber-950: #3f2d00;
+
+  /* 图表扩展色 */
+  --mt-primitive-purple-400: #a78bfa;
+  --mt-primitive-purple-600: #7c3aed;
+  --mt-primitive-cyan-400: #22d3ee;
+  --mt-primitive-cyan-500: #06b6d4;
+  --mt-primitive-cyan-600: #0891b2;
+  --mt-primitive-orange-400: #fb923c;
+  --mt-primitive-orange-500: #f97316;
+  --mt-primitive-teal-400: #2dd4bf;
+  --mt-primitive-teal-600: #0d9488;
+
+  /* 高对比主题原始色 */
+  --mt-primitive-hc-white: #ffffff;
+  --mt-primitive-hc-black: #000000;
+  --mt-primitive-hc-ink-10: #111111;
+  --mt-primitive-hc-ink-15: #1a1a1a;
+  --mt-primitive-hc-ink-90: #e6e6e6;
+  --mt-primitive-hc-yellow: #ffff00;
+  --mt-primitive-hc-yellow-soft: #ffff66;
+  --mt-primitive-hc-yellow-dim: #1a1a00;
+  --mt-primitive-hc-cyan: #00ffff;
+  --mt-primitive-hc-blue: #66ccff;
+  --mt-primitive-hc-green: #00ff66;
+  --mt-primitive-hc-magenta: #ff00ff;
+  --mt-primitive-hc-red: #ff4d4d;
+  --mt-primitive-hc-orange: #ff6600;
+  --mt-primitive-hc-gold: #ffcc00;
+  /* === primitive:end === */
+}
+
+:root,
+[data-theme='light'] {
+  color-scheme: light;
+
+  /* === semantic:light:start === */
+  --mt-semantic-bg-canvas: var(--mt-primitive-neutral-0);
+  --mt-semantic-bg-surface: var(--mt-primitive-neutral-50);
+  --mt-semantic-bg-elevated: var(--mt-primitive-neutral-0);
+  --mt-semantic-bg-subtle: var(--mt-primitive-neutral-100);
+  --mt-semantic-bg-hover: var(--mt-primitive-neutral-100);
+  --mt-semantic-text-primary: var(--mt-primitive-neutral-800);
+  --mt-semantic-text-secondary: var(--mt-primitive-neutral-600);
+  --mt-semantic-text-muted: var(--mt-primitive-neutral-550);
+  --mt-semantic-text-inverse: var(--mt-primitive-neutral-0);
+  --mt-semantic-border-default: var(--mt-primitive-neutral-200);
+  --mt-semantic-border-strong: var(--mt-primitive-neutral-300);
+  --mt-semantic-border-focus: var(--mt-primitive-blue-600);
+  --mt-semantic-accent-primary: var(--mt-primitive-blue-600);
+  --mt-semantic-accent-primary-hover: var(--mt-primitive-blue-700);
+  --mt-semantic-accent-soft: var(--mt-primitive-blue-50);
+  --mt-semantic-accent-on: var(--mt-primitive-neutral-0);
+  --mt-semantic-status-success-fg: var(--mt-primitive-green-700);
+  --mt-semantic-status-success-bg: var(--mt-primitive-green-50);
+  --mt-semantic-status-danger-fg: var(--mt-primitive-red-700);
+  --mt-semantic-status-danger-bg: var(--mt-primitive-red-50);
+  --mt-semantic-status-warn-fg: var(--mt-primitive-amber-700);
+  --mt-semantic-status-warn-bg: var(--mt-primitive-amber-50);
+  --mt-semantic-status-info-fg: var(--mt-primitive-blue-600);
+  --mt-semantic-status-info-bg: var(--mt-primitive-blue-50);
+  --mt-semantic-overlay: rgba(0, 0, 0, 0.35);
+  --mt-semantic-chart-1: var(--mt-primitive-blue-600);
+  --mt-semantic-chart-2: var(--mt-primitive-green-600);
+  --mt-semantic-chart-3: var(--mt-primitive-amber-600);
+  --mt-semantic-chart-4: var(--mt-primitive-purple-600);
+  --mt-semantic-chart-5: var(--mt-primitive-cyan-600);
+  --mt-semantic-chart-6: var(--mt-primitive-red-600);
+  --mt-semantic-chart-7: var(--mt-primitive-orange-500);
+  --mt-semantic-chart-8: var(--mt-primitive-teal-600);
+  --mt-semantic-chart-grid: var(--mt-primitive-neutral-200);
+  --mt-semantic-chart-axis: var(--mt-primitive-neutral-500);
+  --mt-semantic-chart-label: var(--mt-primitive-neutral-600);
+  --mt-semantic-diff-add-bg: var(--mt-primitive-green-25);
+  --mt-semantic-diff-add-fg: var(--mt-primitive-green-650);
+  --mt-semantic-diff-del-bg: var(--mt-primitive-red-25);
+  --mt-semantic-diff-del-fg: var(--mt-primitive-red-700);
+  --mt-semantic-diff-ctx-bg: var(--mt-primitive-neutral-75);
+  --mt-semantic-diff-ctx-fg: var(--mt-primitive-neutral-800);
+  --mt-semantic-gantt-bar-bg: var(--mt-primitive-blue-600);
+  --mt-semantic-gantt-bar-fg: var(--mt-primitive-neutral-0);
+  --mt-semantic-gantt-grid: var(--mt-primitive-neutral-200);
+  --mt-semantic-canvas-bg: var(--mt-primitive-neutral-50);
+  --mt-semantic-canvas-node-bg: var(--mt-primitive-neutral-0);
+  --mt-semantic-canvas-node-border: var(--mt-primitive-neutral-300);
+  --mt-semantic-canvas-edge: var(--mt-primitive-neutral-400);
+  /* === semantic:light:end === */
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* === semantic:dark:start === */
+  --mt-semantic-bg-canvas: var(--mt-primitive-zinc-950);
+  --mt-semantic-bg-surface: var(--mt-primitive-zinc-900);
+  --mt-semantic-bg-elevated: var(--mt-primitive-zinc-900);
+  --mt-semantic-bg-subtle: var(--mt-primitive-zinc-875);
+  --mt-semantic-bg-hover: var(--mt-primitive-zinc-875);
+  --mt-semantic-text-primary: var(--mt-primitive-gray-150);
+  --mt-semantic-text-secondary: var(--mt-primitive-gray-250);
+  --mt-semantic-text-muted: var(--mt-primitive-gray-350);
+  --mt-semantic-text-inverse: var(--mt-primitive-zinc-950);
+  --mt-semantic-border-default: var(--mt-primitive-zinc-700);
+  --mt-semantic-border-strong: var(--mt-primitive-zinc-600);
+  --mt-semantic-border-focus: var(--mt-primitive-blue-450);
+  --mt-semantic-accent-primary: var(--mt-primitive-blue-450);
+  --mt-semantic-accent-primary-hover: var(--mt-primitive-blue-400);
+  --mt-semantic-accent-soft: var(--mt-primitive-blue-950);
+  --mt-semantic-accent-on: var(--mt-primitive-blue-950);
+  --mt-semantic-status-success-fg: var(--mt-primitive-green-500);
+  --mt-semantic-status-success-bg: var(--mt-primitive-green-950);
+  --mt-semantic-status-danger-fg: var(--mt-primitive-red-400);
+  --mt-semantic-status-danger-bg: var(--mt-primitive-red-950);
+  --mt-semantic-status-warn-fg: var(--mt-primitive-amber-400);
+  --mt-semantic-status-warn-bg: var(--mt-primitive-amber-950);
+  --mt-semantic-status-info-fg: var(--mt-primitive-blue-400);
+  --mt-semantic-status-info-bg: var(--mt-primitive-blue-950);
+  --mt-semantic-overlay: rgba(0, 0, 0, 0.55);
+  --mt-semantic-chart-1: var(--mt-primitive-blue-400);
+  --mt-semantic-chart-2: var(--mt-primitive-green-500);
+  --mt-semantic-chart-3: var(--mt-primitive-amber-400);
+  --mt-semantic-chart-4: var(--mt-primitive-purple-400);
+  --mt-semantic-chart-5: var(--mt-primitive-cyan-400);
+  --mt-semantic-chart-6: var(--mt-primitive-red-400);
+  --mt-semantic-chart-7: var(--mt-primitive-orange-400);
+  --mt-semantic-chart-8: var(--mt-primitive-teal-400);
+  --mt-semantic-chart-grid: var(--mt-primitive-zinc-700);
+  --mt-semantic-chart-axis: var(--mt-primitive-gray-350);
+  --mt-semantic-chart-label: var(--mt-primitive-gray-250);
+  --mt-semantic-diff-add-bg: var(--mt-primitive-green-950);
+  --mt-semantic-diff-add-fg: var(--mt-primitive-green-500);
+  --mt-semantic-diff-del-bg: var(--mt-primitive-red-950);
+  --mt-semantic-diff-del-fg: var(--mt-primitive-red-400);
+  --mt-semantic-diff-ctx-bg: var(--mt-primitive-zinc-875);
+  --mt-semantic-diff-ctx-fg: var(--mt-primitive-gray-150);
+  --mt-semantic-gantt-bar-bg: var(--mt-primitive-blue-450);
+  --mt-semantic-gantt-bar-fg: var(--mt-primitive-zinc-950);
+  --mt-semantic-gantt-grid: var(--mt-primitive-zinc-700);
+  --mt-semantic-canvas-bg: var(--mt-primitive-zinc-950);
+  --mt-semantic-canvas-node-bg: var(--mt-primitive-zinc-900);
+  --mt-semantic-canvas-node-border: var(--mt-primitive-zinc-600);
+  --mt-semantic-canvas-edge: var(--mt-primitive-gray-350);
+  /* === semantic:dark:end === */
+}
+
+[data-theme='high-contrast'] {
+  color-scheme: dark;
+
+  /* === semantic:hc:start === */
+  --mt-semantic-bg-canvas: var(--mt-primitive-hc-black);
+  --mt-semantic-bg-surface: var(--mt-primitive-hc-black);
+  --mt-semantic-bg-elevated: var(--mt-primitive-hc-black);
+  --mt-semantic-bg-subtle: var(--mt-primitive-hc-ink-10);
+  --mt-semantic-bg-hover: var(--mt-primitive-hc-ink-15);
+  --mt-semantic-text-primary: var(--mt-primitive-hc-white);
+  --mt-semantic-text-secondary: var(--mt-primitive-hc-white);
+  --mt-semantic-text-muted: var(--mt-primitive-hc-ink-90);
+  --mt-semantic-text-inverse: var(--mt-primitive-hc-black);
+  --mt-semantic-border-default: var(--mt-primitive-hc-white);
+  --mt-semantic-border-strong: var(--mt-primitive-hc-white);
+  --mt-semantic-border-focus: var(--mt-primitive-hc-yellow);
+  --mt-semantic-accent-primary: var(--mt-primitive-hc-yellow);
+  --mt-semantic-accent-primary-hover: var(--mt-primitive-hc-yellow-soft);
+  --mt-semantic-accent-soft: var(--mt-primitive-hc-yellow-dim);
+  --mt-semantic-accent-on: var(--mt-primitive-hc-black);
+  --mt-semantic-status-success-fg: var(--mt-primitive-hc-green);
+  --mt-semantic-status-success-bg: var(--mt-primitive-hc-black);
+  --mt-semantic-status-danger-fg: var(--mt-primitive-hc-red);
+  --mt-semantic-status-danger-bg: var(--mt-primitive-hc-black);
+  --mt-semantic-status-warn-fg: var(--mt-primitive-hc-yellow);
+  --mt-semantic-status-warn-bg: var(--mt-primitive-hc-black);
+  --mt-semantic-status-info-fg: var(--mt-primitive-hc-blue);
+  --mt-semantic-status-info-bg: var(--mt-primitive-hc-black);
+  --mt-semantic-overlay: rgba(0, 0, 0, 0.85);
+  --mt-semantic-chart-1: var(--mt-primitive-hc-cyan);
+  --mt-semantic-chart-2: var(--mt-primitive-hc-yellow);
+  --mt-semantic-chart-3: var(--mt-primitive-hc-magenta);
+  --mt-semantic-chart-4: var(--mt-primitive-hc-green);
+  --mt-semantic-chart-5: var(--mt-primitive-hc-orange);
+  --mt-semantic-chart-6: var(--mt-primitive-hc-blue);
+  --mt-semantic-chart-7: var(--mt-primitive-hc-white);
+  --mt-semantic-chart-8: var(--mt-primitive-hc-gold);
+  --mt-semantic-chart-grid: var(--mt-primitive-hc-ink-90);
+  --mt-semantic-chart-axis: var(--mt-primitive-hc-white);
+  --mt-semantic-chart-label: var(--mt-primitive-hc-white);
+  --mt-semantic-diff-add-bg: var(--mt-primitive-hc-black);
+  --mt-semantic-diff-add-fg: var(--mt-primitive-hc-green);
+  --mt-semantic-diff-del-bg: var(--mt-primitive-hc-black);
+  --mt-semantic-diff-del-fg: var(--mt-primitive-hc-red);
+  --mt-semantic-diff-ctx-bg: var(--mt-primitive-hc-ink-10);
+  --mt-semantic-diff-ctx-fg: var(--mt-primitive-hc-white);
+  --mt-semantic-gantt-bar-bg: var(--mt-primitive-hc-yellow);
+  --mt-semantic-gantt-bar-fg: var(--mt-primitive-hc-black);
+  --mt-semantic-gantt-grid: var(--mt-primitive-hc-white);
+  --mt-semantic-canvas-bg: var(--mt-primitive-hc-black);
+  --mt-semantic-canvas-node-bg: var(--mt-primitive-hc-black);
+  --mt-semantic-canvas-node-border: var(--mt-primitive-hc-white);
+  --mt-semantic-canvas-edge: var(--mt-primitive-hc-ink-90);
+  /* === semantic:hc:end === */
+}
+
+:root {
+  /* === component:start === */
+  --mt-component-button-primary-bg: var(--mt-semantic-accent-primary);
+  --mt-component-button-primary-fg: var(--mt-semantic-accent-on);
+  --mt-component-button-primary-border: var(--mt-semantic-accent-primary);
+  --mt-component-button-primary-hover-bg: var(--mt-semantic-accent-primary-hover);
+  --mt-component-button-secondary-bg: var(--mt-semantic-bg-elevated);
+  --mt-component-button-secondary-fg: var(--mt-semantic-text-primary);
+  --mt-component-button-secondary-border: var(--mt-semantic-border-strong);
+  --mt-component-button-secondary-hover-bg: var(--mt-semantic-bg-hover);
+  --mt-component-button-danger-bg: var(--mt-semantic-status-danger-fg);
+  --mt-component-button-danger-fg: var(--mt-semantic-accent-on);
+  --mt-component-button-danger-border: var(--mt-semantic-status-danger-fg);
+  --mt-component-button-danger-hover-bg: var(--mt-semantic-status-danger-fg);
+  --mt-component-input-bg: var(--mt-semantic-bg-elevated);
+  --mt-component-input-fg: var(--mt-semantic-text-primary);
+  --mt-component-input-border: var(--mt-semantic-border-strong);
+  --mt-component-input-border-focus: var(--mt-semantic-border-focus);
+  --mt-component-card-bg: var(--mt-semantic-bg-elevated);
+  --mt-component-card-border: var(--mt-semantic-border-default);
+  --mt-component-table-header-bg: var(--mt-semantic-bg-subtle);
+  --mt-component-table-row-bg: var(--mt-semantic-bg-elevated);
+  --mt-component-table-row-hover-bg: var(--mt-semantic-bg-hover);
+  --mt-component-table-border: var(--mt-semantic-border-default);
+  --mt-component-nav-bg: var(--mt-semantic-bg-surface);
+  --mt-component-nav-active-bg: var(--mt-semantic-accent-soft);
+  --mt-component-nav-active-fg: var(--mt-semantic-accent-primary);
+  --mt-component-toast-bg: var(--mt-semantic-text-primary);
+  --mt-component-toast-fg: var(--mt-semantic-text-inverse);
+  --mt-component-drawer-bg: var(--mt-semantic-bg-elevated);
+  --mt-component-drawer-border: var(--mt-semantic-border-strong);
+  --mt-component-tag-bg: var(--mt-semantic-accent-soft);
+  --mt-component-tag-fg: var(--mt-semantic-accent-primary);
+  --mt-component-focus-ring: var(--mt-semantic-border-focus);
+
+  /* component 尺寸不跟主题变化 */
+  --mt-component-control-radius: 6px;
+  --mt-component-card-radius: 8px;
+  --mt-component-control-height: 30px;
+  --mt-component-focus-ring-width: 2px;
+  --mt-component-focus-ring-offset: 2px;
+  /* === component:end === */
+}
