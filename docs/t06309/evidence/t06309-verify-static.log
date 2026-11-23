@@ -1,0 +1,40 @@
+
+> mtask@0.1.1123.284 verify:t06309
+> node scripts/tests/run-esbuild-gate.mjs scripts/tests/verify-t06309-global-error.mts
+
+[PASS] G-01 兜底面板含 data 标识
+[PASS] G-02 兜底面板 role=alert + assertive
+[PASS] G-03 兜底面板标题与说明可关联
+[PASS] G-04 兜底面板提供重试与重载按钮
+[PASS] G-05 兜底面板渲染错误文案
+[PASS] G-06 兜底面板可键盘聚焦
+[PASS] G-07 错误详情使用原生 details
+[PASS] G-08 异步提示含 data 标识
+[PASS] G-09 异步提示 role=alert + assertive
+[PASS] G-10 异步提示提供关闭与重载按钮
+[PASS] G-11 异步提示渲染错误文案
+[PASS] G-12 Error 文案归一
+[PASS] G-13 字符串文案去空白
+[PASS] G-14 非 Error 对象读取 message
+[PASS] G-15 长文案截断
+[PASS] G-16 空值兜底
+[PASS] G-17 Failed to fetch 判为网络异常
+[PASS] G-18 Load failed / NetworkError 判为网络异常
+[PASS] G-19 AbortError 判为网络异常
+[PASS] G-20 普通运行时异常不误判
+[PASS] G-21 网络异常不进入全局提示
+[PASS] G-22 边界实现 getDerivedStateFromError
+[PASS] G-23 边界实现 componentDidCatch
+[PASS] G-24 监听 window error
+[PASS] G-25 监听 unhandledrejection
+[PASS] G-26 异步监听有清理
+[PASS] G-27 网络异常在提示前被过滤
+[PASS] G-28 入口包裹 GlobalErrorBoundary
+[PASS] G-29 入口包裹 GlobalErrorWatcher
+[PASS] G-30 入口引入兜底样式
+[PASS] G-31 样式定义兜底与提示条
+[PASS] G-32 按钮有 focus-visible 焦点环
+[PASS] G-33 使用 semantic token
+[PASS] G-34 固定层不改变布局
+
+[t06309-global-error] pass=34 fail=0

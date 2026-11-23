@@ -1,0 +1,13 @@
+序号,验证项,方式,结果,证据,备注
+1,静态与 SSR 注释/文案/过滤,G-01～G-34 共 34 项,34 PASS / 0 FAIL,evidence/t06309-verify-static.log,含入口接线与样式断言
+2,渲染异常兜底可见与文案,Chrome CDP 初始 crash,兜底面板出现；标题/说明/两个按钮完整,evidence/01-error-boundary.png,1258×802 覆盖视口
+3,兜底焦点与键盘可聚焦,CDP 检查 activeElement 与 tabIndex,焦点进入面板；两个按钮可聚焦,evidence/cdp-t06309.json,UI-05/06/08
+4,重试恢复,点击「重试当前页面」,兜底消失并恢复稳定区,evidence/cdp-t06309.json,UI-09b
+5,异步 throw 提示,setTimeout 抛错,提示条出现且文案含 async boom,evidence/02-global-error-toast.png,UI-10
+6,未处理 Promise 提示,Promise.reject,提示条出现且文案含 promise boom,evidence/cdp-t06309.json,UI-15
+7,网络异常不接管,Promise.reject TypeError Failed to fetch,900ms 内无提示条,evidence/cdp-t06309.json,UI-14；符合任务边界
+8,提示条关闭,点击关闭按钮,提示条消除,evidence/cdp-t06309.json,UI-13
+9,axe 兜底面板,axe-core 4.10.2 WCAG2A/AA,0 violations / 0 serious-critical,evidence/cdp-t06309.json,UI-09a；对应 AC-05 错误路径
+10,axe 全局提示条,axe-core 4.10.2 WCAG2A/AA,0 violations / 0 serious-critical,evidence/cdp-t06309.json,UI-12b；对应 AC-05 错误路径
+11,Web 类型检查,tsc --noEmit -p web/tsconfig.json,exit 0,evidence/t06309-typecheck-web.log,依赖恢复后复跑通过
+12,全站构建,npm --workspace web run build,exit 0（Vite 产物生成）,evidence/t06309-build-web.log,生产 bundle 构建通过

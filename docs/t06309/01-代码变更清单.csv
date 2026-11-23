@@ -1,0 +1,11 @@
+序号,文件,类型,改动点,说明,状态
+1,web/src/ui/GlobalErrorBoundary.tsx,新增,全局错误边界与异步监听,ErrorFallback/GlobalErrorBoundary/GlobalErrorWatcher/GlobalErrorToast/文案归一/网络异常过滤,已完成
+2,web/src/ui/globalError.css,新增,兜底面板与提示条样式,固定层覆盖、semantic token、focus-visible 焦点环、高对比兼容,已完成
+3,web/src/main.tsx,修改,应用入口包裹兜底,GlobalErrorBoundary > GlobalErrorWatcher > App；引入 globalError.css,已完成
+4,scripts/tests/verify-t06309-global-error.mts,新增,34 项静态/SSR 门,可访问标注、文案归一、网络异常排除、入口接线、样式检查,已完成
+5,scripts/tests/verify-t06309-ui.mjs,新增,19 项 Chrome UI 门,兜底出现/焦点/重试/异步提示/网络排除/axe 扫描,已完成
+6,scripts/tests/run-esbuild-gate.mjs,新增,独立 esbuild 门运行器,tsx/esbuild JS 包缺失时用平台二进制打包执行,已完成
+7,package.json,修改,新增验证脚本,verify:t06309 与 verify:t06309-ui,已完成
+8,docs/t06309/README.md,新增,任务报告,根因/实现/验证/缺口/证据,已完成
+9,docs/t06309/01-代码变更清单.csv,新增,变更清单,本文件,已完成
+10,docs/t06309/02-验证矩阵.csv,新增,验证矩阵,逐项结果与证据,已完成

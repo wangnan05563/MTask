@@ -1,0 +1,21 @@
+[PASS] UI-00 harness 打包成功
+[PASS] UI-01 临时静态服务器就绪 → {"port":39891}
+[PASS] UI-01b axe-core 注入成功
+[PASS] UI-02 初始渲染异常触发兜底面板 → {"role":"alert","live":"assertive","tabIndex":-1,"text":"MTASK 异常保护\n\n页面遇到异常\n\n当前页面渲染失败，错误已被拦截，不会影响已保存的任务数据。可以先重试当前页面；若仍无法恢复，请重新加载应用。\n\nT06309 render bomb\n查看错误详情\n重试当前页面\n重新加载应用\n\n错误信息已写入开发者控制台，可复制给维护人员排查。","active":true,"focusedTag":"DIV","width":1258,"height":802,"overflowX":0}
+[PASS] UI-03 兜底面板 role=alert + assertive
+[PASS] UI-04 兜底面板覆盖视口且无横向溢出
+[PASS] UI-05 焦点自动进入兜底面板
+[PASS] UI-06 兜底面板提供两个可键盘聚焦动作 → [{"text":"重试当前页面","focusable":true,"height":38},{"text":"重新加载应用","focusable":true,"height":38}]
+[PASS] UI-07 兜底面板文案可读
+[PASS] UI-08 兜底按钮可接受键盘焦点
+[PASS] UI-09a 兜底面板 axe 无 serious/critical → {"seriousOrCritical":[],"totalViolations":0}
+[PASS] UI-09b 点重试后恢复正常渲染
+[PASS] UI-10 异步 throw 触发全局提示条 → {"role":"alert","live":"assertive","text":"!\n页面发生异常\n\nT06309 async boom\n\n重新加载\n关闭","active":true}
+[PASS] UI-11 提示条 role=alert + assertive
+[PASS] UI-12 提示条获得焦点
+[PASS] UI-12b 全局提示条 axe 无 serious/critical → {"seriousOrCritical":[],"totalViolations":0}
+[PASS] UI-13 提示条可手动关闭
+[PASS] UI-14 Failed to fetch 不进入全局提示
+[PASS] UI-15 Promise rejection 触发全局提示
+
+[t06309-ui] pass=19 fail=0

@@ -1,0 +1,256 @@
+/**
+ * T06309：全局异常兜底样式。
+ * 只做固定层覆盖，不改变页面布局；颜色全部走 semantic token，兼容 light/dark/high-contrast。
+ */
+
+.mt-error-boundary {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  overflow: auto;
+  background: var(--mt-semantic-bg-canvas);
+  color: var(--mt-semantic-text-primary);
+  font-family: inherit;
+}
+
+.mt-error-boundary:focus-visible {
+  outline: 3px solid var(--mt-semantic-border-focus);
+  outline-offset: -3px;
+}
+
+.mt-error-boundary-card {
+  width: min(620px, 100%);
+  box-sizing: border-box;
+  padding: 28px 30px 24px;
+  border: 1px solid var(--mt-semantic-status-danger-fg);
+  border-top: 4px solid var(--mt-semantic-status-danger-fg);
+  border-radius: var(--mt-component-card-radius, 10px);
+  background: var(--mt-component-card-bg);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.16);
+}
+
+.mt-error-boundary-kicker {
+  margin: 0 0 8px;
+  color: var(--mt-semantic-status-danger-fg);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.mt-error-boundary-title {
+  margin: 0 0 10px;
+  color: var(--mt-semantic-text-primary);
+  font-size: clamp(22px, 3vw, 30px);
+  line-height: 1.25;
+}
+
+.mt-error-boundary-desc {
+  margin: 0 0 16px;
+  color: var(--mt-semantic-text-secondary);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.mt-error-boundary-message {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--mt-semantic-border-default);
+  border-radius: 6px;
+  background: var(--mt-semantic-status-danger-bg);
+  color: var(--mt-semantic-status-danger-fg);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.mt-error-boundary-detail {
+  margin: 0 0 18px;
+  color: var(--mt-semantic-text-secondary);
+  font-size: 13px;
+}
+
+.mt-error-boundary-detail summary {
+  cursor: pointer;
+  width: fit-content;
+  padding: 2px 0;
+}
+
+.mt-error-boundary-detail summary:focus-visible {
+  outline: 3px solid var(--mt-semantic-border-focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.mt-error-boundary-detail pre {
+  max-height: 180px;
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid var(--mt-semantic-border-default);
+  border-radius: 6px;
+  background: var(--mt-semantic-bg-canvas);
+  color: var(--mt-semantic-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.mt-error-boundary-actions,
+.mt-global-error-toast-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.mt-error-action {
+  min-height: 38px;
+  padding: 0 16px;
+  border: 1px solid var(--mt-semantic-border-strong);
+  border-radius: 7px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.mt-error-action.is-primary {
+  border-color: var(--mt-semantic-status-danger-fg);
+  background: var(--mt-semantic-status-danger-fg);
+  color: var(--mt-semantic-accent-on);
+}
+
+.mt-error-action.is-primary:hover {
+  filter: brightness(0.92);
+}
+
+.mt-error-action.is-secondary {
+  background: var(--mt-semantic-bg-elevated);
+  color: var(--mt-semantic-text-primary);
+}
+
+.mt-error-action.is-secondary:hover {
+  border-color: var(--mt-semantic-text-primary);
+}
+
+.mt-error-action.is-compact {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+.mt-error-action:focus-visible {
+  outline: 3px solid var(--mt-semantic-border-focus);
+  outline-offset: 2px;
+}
+
+.mt-error-boundary-hint {
+  margin: 14px 0 0;
+  color: var(--mt-semantic-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.mt-global-error-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 4000;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  align-items: center;
+  justify-content: space-between;
+  box-sizing: border-box;
+  width: min(680px, calc(100vw - 32px));
+  padding: 14px 16px;
+  transform: translateX(-50%);
+  border: 1px solid var(--mt-semantic-status-danger-fg);
+  border-left: 4px solid var(--mt-semantic-status-danger-fg);
+  border-radius: 10px;
+  background: var(--mt-component-card-bg);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22);
+  color: var(--mt-semantic-text-primary);
+}
+
+.mt-global-error-toast:focus-visible {
+  outline: 3px solid var(--mt-semantic-border-focus);
+  outline-offset: 3px;
+}
+
+.mt-global-error-toast-main {
+  display: flex;
+  flex: 1 1 420px;
+  gap: 10px;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.mt-global-error-toast-mark {
+  display: inline-grid;
+  flex: 0 0 22px;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-top: 1px;
+  border-radius: 50%;
+  background: var(--mt-semantic-status-danger-fg);
+  color: var(--mt-semantic-accent-on);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.mt-global-error-toast-copy {
+  min-width: 0;
+}
+
+.mt-global-error-toast-copy strong {
+  display: block;
+  margin-bottom: 3px;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.mt-global-error-toast-copy p {
+  margin: 0;
+  color: var(--mt-semantic-text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .mt-error-boundary {
+    padding: 14px;
+  }
+
+  .mt-error-boundary-card {
+    padding: 22px 18px 18px;
+  }
+
+  .mt-global-error-toast {
+    bottom: 14px;
+  }
+
+  .mt-global-error-toast-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mt-error-action,
+  .mt-global-error-toast {
+    transition: none;
+  }
+}
