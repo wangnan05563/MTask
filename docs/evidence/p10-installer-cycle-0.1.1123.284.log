@@ -59,7 +59,7 @@ Installer SHA256: 68A57C6792B2D7F595E98AF717C871FEF07E58A88F7002A496C0A22FB3CE1B
 - MTask.exe FileVersion: 0.1.1123.284
 - app.asar: 145,381,432 B, SHA256 19DD1E540B53AE145C3748F07AE8830E76DB7BFBE513106F44327FAA42A03E45
 - Uninstall MTask.exe: 222,416 B
-- Registry: DisplayName/DisplayVersion=MTask 0.1.112-3.284; UninstallString="F:\Program\Uninstall MTask.exe" /allusers; InstallLocation and Publisher remain empty
+- Registry: DisplayName/DisplayVersion=MTask 0.1.112-3.284; UninstallString="F:\Program\Uninstall MTask.exe" /allusers; installer left InstallLocation/Publisher empty; 2026-11-24 00:15 manual completion: InstallLocation=F:\Program, Publisher=MTask, DisplayIcon=F:\Program\MTask.exe,0, EstimatedSize=447500, InstallDate=20261123
 - Process count at final start: 5
 - Health: {"ok":true,"service":"mtask-server","time":"2026-11-23T15:51:34.827Z"}
 - Homepage: HTTP 200
