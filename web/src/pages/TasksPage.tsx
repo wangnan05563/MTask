@@ -171,6 +171,24 @@ interface BatchReceipt {
   skipped?: Array<{ ref: string; reason: string }>;
   at: string;
 }
+/** T06322（REQ-042 / 新 PRD §C3）：列表行密度三档。
+ *  行高口径：line-height 20px + 上下内边距 5/9/13px + 1px 上下边框 = 32/40/48px；
+ *  只改行高与标题字号，不改列结构/操作区布局；持久化到 localStorage，刷新与切页保持。 */
+type TaskDensity = 'compact' | 'comfortable' | 'loose';
+const TASK_DENSITY_STYLE: Record<TaskDensity, { padY: string; titleSize: string; lineHeight: string }> = {
+  compact: { padY: '5px', titleSize: '14px', lineHeight: '20px' },
+  comfortable: { padY: '9px', titleSize: '15px', lineHeight: '20px' },
+  loose: { padY: '13px', titleSize: '16px', lineHeight: '20px' },
+};
+const TASK_DENSITY_OPTIONS: ReadonlyArray<{ value: TaskDensity; label: string; hint: string }> = [
+  { value: 'compact', label: '紧凑', hint: '32px 行高' },
+  { value: 'comfortable', label: '舒适', hint: '40px 行高' },
+  { value: 'loose', label: '宽松', hint: '48px 行高' },
+];
+function normalizeTaskDensity(raw: string): TaskDensity {
+  return raw === 'comfortable' || raw === 'loose' ? raw : 'compact';
+}
+
 /** T03211（PM-105）：批量接口的逐条结果项 */
 interface BatchResultItem {
   id: string;
@@ -765,6 +783,14 @@ export function TasksPage() {
   const reuseBusy = useBusy('tasks.reuse');
   // 项目/模型为长期偏好，用 localStorage 持久化，切页与刷新后均保留；未选状态透传空串，不强制填充
   const [activeProject, setActiveProject] = usePersistentState('tasks.activeProject', '');
+  // T06322：列表行密度（紧凑/舒适/宽松）——持久化偏好，默认紧凑保持既有 32px 基线
+  const [densityRaw, setDensityRaw] = usePersistentState<string>('tasks.density', 'compact');
+  const density = normalizeTaskDensity(densityRaw);
+  const densityStyle = {
+    '--task-density-pad-y': TASK_DENSITY_STYLE[density].padY,
+    '--task-density-title-size': TASK_DENSITY_STYLE[density].titleSize,
+    '--task-density-line-height': TASK_DENSITY_STYLE[density].lineHeight,
+  } as CSSProperties;
   // T00786：工作空间全文检索面板显隐（建议相对工作空间选择器就近放置）
   const [wsSearchOpen, setWsSearchOpen] = useState(false);
   // T03250：工作空间只读问答面板显隐（紧跟全文检索入口）
@@ -4228,7 +4254,9 @@ export function TasksPage() {
   /** M6-6.1：任务行 style 预计算（避免 JSX 内联三元） */
   function buildTaskItemStyle(t: Task, sortMode: SortKey): React.CSSProperties {
     return {
-      borderBottom: '1px solid var(--surface-2)', padding: '6px 0', marginLeft: t.parent_id ? 28 : 0,
+      borderBottom: '1px solid var(--surface-2)', padding: 'var(--task-density-pad-y, 5px) 0',
+      fontSize: 'var(--task-density-title-size, 14px)', lineHeight: 'var(--task-density-line-height, 20px)',
+      marginLeft: t.parent_id ? 28 : 0,
       borderLeft: t.parent_id ? '2px solid var(--border-strong)' : undefined,
       paddingLeft: t.parent_id ? 10 : undefined,
       cursor: sortMode === 'manual' ? 'grab' : undefined,
@@ -4727,6 +4755,20 @@ export function TasksPage() {
         {/* T03176（D-14）：AI 不可用时工具条给一次原因 + 「去模型管理」，AI 按钮保留可见但禁用 */}
         {aiDown && readiness && <AiUnavailableHint r={readiness} compact />}
         {renderViewToggle()}
+        {/* T06322（REQ-042 / §C3）：列表行密度切换——三档 32/40/48px，只作用于列表视图；改造仅行高与标题字号，不改变列结构 */}
+        <select
+          data-t06322="density"
+          value={density}
+          onChange={(e) => setDensityRaw(e.target.value)}
+          disabled={viewMode !== 'list'}
+          title={viewMode === 'list'
+            ? '列表行密度 — 紧凑 32px / 舒适 40px / 宽松 48px；只调整行高与标题字号，不改变列结构'
+            : '列表行密度仅作用于列表视图，切回列表后可调'}
+          aria-label="列表行密度调节"
+          style={{ fontSize: 'var(--fs-s)', padding: '5px 6px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', cursor: viewMode === 'list' ? 'pointer' : 'not-allowed', opacity: viewMode === 'list' ? 1 : 0.55 }}
+        >
+          {TASK_DENSITY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{`${o.label} · ${o.hint}`}</option>)}
+        </select>
         {renderMultiSelectButton()}
         {/* T00481/T00720/T00728：全部收起/展开——描述、AI 摘要、处理结果三组折叠状态联动，覆盖待办+已完成全部列表；
             T00728：收起为高频操作优先——有展开内容时点击一律收起，全部收起后点击才展开；
@@ -5134,7 +5176,7 @@ export function TasksPage() {
           </div>
         )}
         {/* T03215（PM-304）：窗口化渲染——只渲染视口±overscan 行，其余用 ul 上下内边距占位撑出等总高的滚动区间 */}
-        <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom }}>{visibleTodo.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'todo', todoIds)}</Fragment>)}</ul>
+        <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom, ...densityStyle }}>{visibleTodo.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'todo', todoIds)}</Fragment>)}</ul>
         {/* T02283：取数失败时不渲染空态——「暂无待办任务」会把后端故障说成没活干（项目列表失败导致
             连 activeProject 都拿不到时同理） */}
         {visibleTodo.length === 0 && !multiSelect && tasksPhase !== 'error' && projectList.phase !== 'error' && (
@@ -5188,7 +5230,7 @@ export function TasksPage() {
               style={{ cursor: 'pointer' }} />
           </div>
         )}
-        <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom }}>{visibleDone.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'done', doneIds)}</Fragment>)}</ul>
+        <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom, ...densityStyle }}>{visibleDone.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'done', doneIds)}</Fragment>)}</ul>
         {visibleDone.length === 0 && tasksPhase !== 'error' && (
           <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>暂无已完成任务——完成任务后在此集中查看与验证。</div>
         )}
@@ -5215,7 +5257,7 @@ export function TasksPage() {
             label="搁置列表"
           />
         </div>
-        <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom }}>{visibleShelved.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'shelved', shelvedIds)}</Fragment>)}</ul>
+        <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom, ...densityStyle }}>{visibleShelved.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'shelved', shelvedIds)}</Fragment>)}</ul>
         {visibleShelved.length === 0 && shelvedPhase !== 'error' && (
           <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>暂无搁置任务——点击任务行的「搁置」按钮（归档按钮前）可把任务移到这里，AI 处理待办时自动忽略。</div>
         )}
