@@ -282,8 +282,6 @@ export function HoverCard({
       ref={triggerRef}
       data-t03394="hover-trigger"
       style={{ display: 'inline-flex', alignItems: 'center', minWidth: 0, ...style }}
-      aria-haspopup={card == null ? undefined : 'dialog'}
-      aria-expanded={isOpen}
       aria-describedby={isOpen ? descId : undefined}
     >
       {children}

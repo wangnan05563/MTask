@@ -266,7 +266,7 @@ function PlanProjectPicker({ projects, sortedProjects, projectId, setProjectId, 
         </span>
         {cur ? (
           <>
-            <span title={`已完成 ${cur.plan_done ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--success-soft, rgba(22,163,74,.12))', color: 'var(--success)' }}>{cur.plan_done ?? 0}</span>
+            <span title={`已完成 ${cur.plan_done ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--success-soft, rgba(22,163,74,.12))', color: 'var(--success-strong)' }}>{cur.plan_done ?? 0}</span>
             <span title={`进行中 ${cur.plan_doing ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{cur.plan_doing ?? 0}</span>
             <span title={`待开始 ${cur.plan_open ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--surface-2)', color: 'var(--text-muted)' }}>{cur.plan_open ?? 0}</span>
           </>
@@ -329,7 +329,7 @@ function PlanProjectPicker({ projects, sortedProjects, projectId, setProjectId, 
                 style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6, padding: 0, border: 'none', background: 'transparent', color: 'var(--text)', textAlign: 'left', cursor: projSortMode === 'default' ? 'grab' : 'pointer' }}>
                 {/* T02167：同任务页——名称 flex:1 + minWidth:0 才能收缩省略，三枚计划徽标 flexShrink:0 不让步 */}
                 <span style={{ flex: 1, minWidth: 0, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
-                <span title={`已完成 ${p.plan_done ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--success-soft, rgba(22,163,74,.12))', color: 'var(--success)' }}>{p.plan_done ?? 0}</span>
+                <span title={`已完成 ${p.plan_done ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--success-soft, rgba(22,163,74,.12))', color: 'var(--success-strong)' }}>{p.plan_done ?? 0}</span>
                 <span title={`进行中 ${p.plan_doing ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--accent-soft)', color: 'var(--accent)' }}>{p.plan_doing ?? 0}</span>
                 <span title={`待开始 ${p.plan_open ?? 0}`} style={{ flexShrink: 0, minWidth: 14, textAlign: 'center', fontSize: 'var(--fs-2xs)', borderRadius: 8, padding: '0 4px', background: 'var(--surface-2)', color: 'var(--text-muted)' }}>{p.plan_open ?? 0}</span>
               </button>

@@ -87,6 +87,8 @@ const themeCss = `
   --on-dark: #ffffff;
   --accent-soft: #eff6ff;
   --success: #15803d;
+  /* T06310：小号成功徽标在 success-soft 底上的专用深色文字（#15803d 对 #e3f4e9 仅 4.39:1） */
+  --success-strong: #0f6b32;
   /* T03431：原 #dc2626 在 --surface-2(#f3f4f6) 上仅 4.39:1、在 --accent-soft(#eff6ff) 上 4.44:1
      （diff 行的悬停底正是 accent-soft，删除行文字压线不达标）——压到 #c81e1e：上述两底 5.21/5.27，白字实底 5.74 */
   --danger: #c81e1e;
@@ -132,6 +134,7 @@ const themeCss = `
   --on-dark: #ffffff;
   --accent-soft: #1e293b;
   --success: #22c55e;
+  --success-strong: #6ee7a0;
   --danger: #f87171;
   --warn: #fbbf24;
   --overlay: rgba(0, 0, 0, 0.55);

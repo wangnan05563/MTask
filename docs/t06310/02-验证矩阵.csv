@@ -1,0 +1,9 @@
+序号,验证项,方式,结果,证据,备注
+1,修复前基线,真实 Chrome+生产 dist+10 页 axe WCAG2A/AA,14 条规则级 serious/critical（120 个节点）,evidence/a11y-baseline.log,HoverCard/PlatformLogo/滚动区/对比度/焦点环
+2,浅色全站复扫,verify-t06310-a11y.mjs 默认 light,15 PASS / 0 FAIL；10 页 serious/critical 0,evidence/a11y-run2.log；a11y-light-result.json,覆盖 10 个关键路径
+3,深色全站复扫,T06310_THEME=dark,16 PASS / 0 FAIL；10 页 serious/critical 0,evidence/a11y-dark.log；a11y-dark-result.json,含主题应用断言
+4,键盘焦点环,连按 Tab 进入主导航,2px 焦点环；浅色 5.21:1；深色 6.70:1,a11y-light-result.json；a11y-dark-result.json,A11Y-focus-01/02
+5,概览滚动区键盘可达,修复后 axe scrollable-region-focusable,0 违规,evidence/a11y-run2.log,A11Y-dashboard
+6,平台图标 ARIA,修复后 axe aria-prohibited-attr,0 违规（原 100 节点）,evidence/a11y-run2.log,A11Y-exec-sessions
+7,Web 类型检查,tsc --noEmit -p web/tsconfig.json,exit 0,evidence/typecheck.log,构建前检查
+8,全站构建,npm --workspace web run build,exit 0,evidence/build.log,Vite 产物生成

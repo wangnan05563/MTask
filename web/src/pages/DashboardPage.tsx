@@ -170,7 +170,7 @@ export function DashboardPage() {
             {(data.throughput.length === 0) ? (
               <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-s)', padding: '8px 0' }}>所选范围内暂无完成任务。</div>
             ) : (
-              <div style={{ display: 'flex', alignItems: 'flex-end', gap: 3, height: 120, overflowX: 'auto' }}>
+              <div role="region" aria-label="完成趋势图表（可横向滚动）" tabIndex={0} style={{ display: 'flex', alignItems: 'flex-end', gap: 3, height: 120, overflowX: 'auto' }}>
                 {data.throughput.map((t) => (
                   <div key={t.date} title={`${t.date}：完成 ${t.count} 条`} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end', minWidth: 22, flex: '0 0 auto', height: '100%' }}>
                     <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-secondary)', marginBottom: 2 }}>{t.count}</span>

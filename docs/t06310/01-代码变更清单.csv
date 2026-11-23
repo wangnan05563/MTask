@@ -1,0 +1,11 @@
+序号,文件,类型,改动点,说明,状态
+1,web/src/ui/HoverCard.tsx,修改,移除外层 span 不允许的 aria-haspopup/aria-expanded,弹层保留原生 dialog aria-label 与 aria-describedby,已完成
+2,web/src/ui/PlatformLogo.tsx,修改,平台图标增加 role=img,让 aria-label 合法承载平台名,已完成
+3,web/src/pages/TasksPage.tsx,修改,AI 运行/失败指示增加 role=img,保留原 aria-label 与动画,已完成
+4,web/src/pages/DashboardPage.tsx,修改,完成趋势滚动区增加 role=region/tabIndex=0/aria-label,键盘可进入横向滚动区,已完成
+5,web/src/settings.tsx,修改,新增 --success-strong 浅/深主题值,小号成功徽标专用高对比文字色,已完成
+6,web/src/pages/PlanPage.tsx,修改,两处已完成徽标改用 --success-strong,底色/尺寸/间距不变,已完成
+7,web/src/ui/nav/primaryNav.css,修改,品牌标 focus-visible 双层焦点环,实底反色内环+强调色外环,已完成
+8,scripts/tests/verify-t06310-a11y.mjs,新增,10 页真实 Chrome axe 扫描与焦点环探针,支持 light/dark 与本地 API 代理,已完成
+9,package.json,修改,新增 verify:t06310,node scripts/tests/verify-t06310-a11y.mjs,已完成
+10,docs/t06310/README.md,新增,任务报告,根因/修复/验证/边界/证据,已完成

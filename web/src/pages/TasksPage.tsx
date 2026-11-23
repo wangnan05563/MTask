@@ -3279,12 +3279,12 @@ export function TasksPage() {
         </span>
         {/* T00566：AI 处理状态动画（编号前）——running 转圈 / failed 红色警示脉动 / unread 未读圆点呼吸 / 已读或无状态不渲染 */}
         {t.ai_state === 'running' && (
-          <span title="AI 正在处理此任务" aria-label="AI 处理中" style={{ display: 'inline-flex', alignItems: 'center', color: 'var(--accent)' }}>
+          <span title="AI 正在处理此任务" role="img" aria-label="AI 处理中" style={{ display: 'inline-flex', alignItems: 'center', color: 'var(--accent)' }}>
             <Loader2 size={13} className="aispin" />
           </span>
         )}
         {t.ai_state === 'failed' && !isVerificationPassed(t) && (
-          <span className="ai-failed-pulse" title="AI 处理中断/失败 — 可重新处理或查看处理结果" aria-label="AI 处理失败" style={{ display: 'inline-flex', alignItems: 'center', color: 'var(--danger)' }}>
+          <span className="ai-failed-pulse" role="img" title="AI 处理中断/失败 — 可重新处理或查看处理结果" aria-label="AI 处理失败" style={{ display: 'inline-flex', alignItems: 'center', color: 'var(--danger)' }}>
             <AlertTriangle size={13} />
           </span>
         )}

@@ -107,6 +107,7 @@ export function PlatformLogo({ platform, size = 28 }: { readonly platform: strin
   return (
     <span
       data-lck="platform-logo"
+      role="img"
       title={`来源平台：${brand.label}`}
       aria-label={`来源平台：${brand.label}`}
       style={{

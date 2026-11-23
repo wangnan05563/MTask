@@ -48,6 +48,14 @@
   font-weight: 700;
 }
 
+/* T06310：品牌标是实底强调色，全局蓝色焦点环叠在同色底上不可见；
+   内圈用实底反色、外圈用强调色，键盘焦点在浅/深主题下都有 ≥3:1 边界。 */
+.mt-nav-mark:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--accent);
+}
+
 .mt-nav-name {
   font-size: var(--fs-m);
   font-weight: 600;
