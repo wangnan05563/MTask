@@ -52,6 +52,7 @@ import { logService } from '../services/LogService';
 import { dbAdminApi } from './dbadmin';
 import { memoriesApi } from './memories'; // T04151（PRD MEM-402）：长期记忆 REST 出口
 import { planApi } from './plans';
+import { modelRoutingApi } from './modelRouting'; // T06311（REQ-038 / PRD §B9）：模型路由与成本预算
 import { savedViewsApi } from './savedViews'; // T06303（REQ-009 / PRD §B1）：保存视图 REST
 import { iterationApi } from './iterations'; // T03186（PM-201）：迭代与燃尽，路径自带 /projects|/iterations 前缀故整体挂载
 import { materialTimingApi } from './materialTiming'; // T03189（G-1）：汇报材料耗时采样，路径自带 /report 前缀
@@ -2270,7 +2271,13 @@ api.post('/queues/:id/jobs', (req, res) => {
   try {
     res.status(201).json(QueueService.addJobs(req.params.id, items));
   } catch (e) {
-    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+    // T06311：toolId='auto' 的预算硬停返回 409，让前端能区分「参数错」与「预算拒绝」。
+    const err = e as { statusCode?: unknown; code?: unknown; decision?: unknown };
+    const status = typeof err.statusCode === 'number' ? err.statusCode : 400;
+    const body: Record<string, unknown> = { error: e instanceof Error ? e.message : String(e) };
+    if (typeof err.code === 'string') body.code = err.code;
+    if (err.decision) body.decision = err.decision;
+    res.status(status).json(body);
   }
 });
 
@@ -3859,6 +3866,7 @@ api.use('/dbadmin', dbAdminApi);
 
 // ---------- 项目计划（T00431，菜单位于周报前） ----------
 api.use('/plans', planApi);
+api.use('/ai/routing', modelRoutingApi); // T06311：模型路由与成本预算（不接管既有 /ai/* 调用口径）
 api.use('/saved-views', savedViewsApi); // T06303（REQ-009 / PRD §B1）：保存视图 CRUD/复制
 api.use(iterationApi); // T03186（PM-201 迭代与燃尽）：完整路径声明，不挂前缀（详见 routes/iterations.ts 头注）
 api.use(materialTimingApi); // T03189（G-1 汇报材料耗时）：同上，/report/material-timing/* 完整路径

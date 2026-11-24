@@ -3,6 +3,7 @@ import { ensureAgentRunSchema } from './agentRunSchema';
 import { ensureAgentRunRiskSchema } from './agentRunRiskSchema'; // T06299（REQ-007 / PRD §B7）：风险策略、审批与不可篡改审计
 import { ensureInboxSchema } from './inboxSchema';
 import { ensureSavedViewSchema } from './savedViewSchema'; // T06303（REQ-009 / PRD §B1）：保存视图配置表
+import { ensureModelRoutingSchema } from './modelRoutingSchema'; // T06311（REQ-038 / PRD §B9）：模型路由画像、预算与决策审计
 
 /** 首次启动建表。DDL 与 docs/技术设计.md 第 3 节保持一致。 */
 export function initSchema(): void {
@@ -1233,6 +1234,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureInboxSchema();
   // T06303（REQ-009 / PRD §B1）：保存视图配置表；只存筛选/排序/视图配置，不复制任务
   ensureSavedViewSchema();
+  // T06311（REQ-038 / PRD §B9）：模型路由与成本预算增量表；不动 ai_tools/队列/用量既有列
+  ensureModelRoutingSchema();
 
   seedPromptCategories();
   // 移动端随手记默认归属项目（收件箱）：确定性 id，保证每次启动只创建一次

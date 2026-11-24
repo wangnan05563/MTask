@@ -6,6 +6,7 @@ import { cacheGet, cacheSet, cacheClear } from '../util/ttl-cache';
 import { logService } from './LogService';
 import { getSetting } from './AppSettings';
 import { TaskService } from './TaskService';
+import { ModelRoutingService } from './ModelRoutingService'; // T06311（REQ-038 / PRD §B9）：toolId='auto' 时按任务特征与预算自动选模型
 import { notifyChange } from './ChangeBus';
 import type { SubmitResult, PollResult } from '../adapters/types';
 
@@ -590,12 +591,28 @@ export const QueueService = {
     if (!queue) throw new Error('队列不存在');
     if (queue.status === 'running') throw new Error('队列正在发送中，暂不可追加任务');
     const maxOrder = (db.prepare('SELECT COALESCE(MAX(order_index), -1) AS m FROM queue_jobs WHERE queue_id = ?').get(queueId) as { m: number }).m;
+    // T06311：toolId='auto' 走模型路由，落库仍写真实 ai_tools 外键；
+    // 路由/预算硬停必须在插入前抛出，避免 queue_jobs 留下不可执行的 auto 伪工具行。
+    const resolvedItems = items.map((item) => {
+      if (item.toolId !== 'auto') return item;
+      const task = TaskService.getById(item.taskId);
+      if (!task) throw new Error(`任务不存在：${item.taskId}`);
+      const decision = ModelRoutingService.route({
+        projectId: task.project_id,
+        taskId: task.id,
+        title: task.title,
+        description: task.description ?? '',
+        commit: true,
+      });
+      if (!decision.selectedToolId) throw new Error('模型路由未返回可用模型');
+      return { taskId: item.taskId, toolId: decision.selectedToolId };
+    });
     const insert = db.prepare(
       `INSERT INTO queue_jobs (id, queue_id, task_id, tool_id, order_index, status) VALUES (?, ?, ?, ?, ?, 'queued')`
     );
     const ids: string[] = [];
     db.transaction(() => {
-      items.forEach((item, i) => {
+      resolvedItems.forEach((item, i) => {
         const jobId = uuid();
         insert.run(jobId, queueId, item.taskId, item.toolId, maxOrder + 1 + i);
         ids.push(jobId);
