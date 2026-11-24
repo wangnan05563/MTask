@@ -2,7 +2,7 @@
  * T06301 表格视图验收 —— 视图切换 / 列宽拖拽 / 表头冻结 / 详情抽屉 / 截图证据。
  *
  * 用法：node scripts/tests/verify-t06301-table-view.mjs
- * 前置：npm run build:web；本地后端 39882 可访问。
+ * 前置：npm run build:web；本地后端可访问（默认 39877，可用 MTASK_API_PORT 覆盖）。
  * 产出默认：D:/tmp/t06301-table
  */
 import { spawn, execFileSync } from 'node:child_process';
@@ -16,7 +16,7 @@ const OUT = process.env.T06301_OUT || 'D:/tmp/t06301-table';
 const DIST = join(ROOT, 'web', 'dist');
 const PORT = Number(process.env.T06301_PORT || 39921);
 const CDP_PORT = Number(process.env.T06301_CDP_PORT || 9335);
-const API_PORT = Number(process.env.MTASK_API_PORT || 39882);
+const API_PORT = Number(process.env.MTASK_API_PORT || 39877);
 const CHROME = process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 const AXE = process.env.AXE_PATH || 'D:/tmp/t06309-axe/node_modules/axe-core/axe.min.js';
 const TOKEN_FILE = join(process.env.APPDATA || '', 'mtask', 'data', 'tunnel', 'tunnel-config.json');
