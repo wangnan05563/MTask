@@ -42,7 +42,7 @@ import { WorkspaceAskPanel } from '../ui/WorkspaceAskPanel'; // T03250：工作�
 import { AiPolishButton } from '../ui/AiPolishButton'; // T00796 二轮：正文 AI 美化（反馈/处理结果共用）
 import { AiUnavailableHint, aiBlocked, aiBlockedTitle, useAiReadiness, type AiReadiness } from '../ui/aiReadiness'; // T03176（D-14）：AI 不可用入口可见但禁用 + 原因/修复动作
 import { classifyResultMessage, createClassifyStore, runClassifyBatch, type ClassifyResponse, type ClassifyStoreState } from './tasksClassifyBatch'; // T02307：批量分类三态分流 + 账户级门禁/连续失败熔断
-import { Badge, Table, type BadgeTone, type TableColumn } from '../ui/components'; // T06301：表格视图复用 Design System 原语
+import { Badge, IconButton, Table, type BadgeTone, type TableColumn } from '../ui/components'; // T06301：表格视图复用 Design System 原语；T06334：摘要入口复用 IconButton
 
 /** 顶部 tab 三态：待办 / 已完成 / 搁置（S4323：具名类型别名替代内联联合类型） */
 type ActiveTab = 'todo' | 'done' | 'shelved';
@@ -3783,7 +3783,7 @@ export function TasksPage() {
         title={descExpanded[t.id] ? '收起 — 收起任务描述' : '展开 — 展开查看完整任务描述'}
         aria-label={descExpanded[t.id] ? '收起：收起任务描述' : '展开：展开查看完整任务描述'}
         className="task-op"
-        style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
+        style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', height: 24, boxSizing: 'border-box', padding: '2px 4px' }}
       >
         {descExpanded[t.id] ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
       </button>
@@ -3890,6 +3890,8 @@ export function TasksPage() {
         ) : (
           renderTitleDisplayButton(t, descToggleable, toggleDesc, markTitleRead)
         )}
+        {/* T06334：AI 梳理摘要图标入口，固定在描述展开按钮之前；仅非编辑态且有摘要时显示 */}
+        {t.ai_summary && !titleEditing && renderTaskSummaryToggle(t)}
         {/* 展开/收起按钮紧跟标题：有描述才显示，点击展开完整描述（默认收起不展示摘要，保持简洁）——T01384 与标题点击同口径 */}
         {t.description && renderDescToggleButton(t, toggleDesc)}
         {/* 处理结果展开图标：紧随任务详情（描述）展开图标之后，作为第二个交互图标。
@@ -4086,24 +4088,32 @@ export function TasksPage() {
     );
   }
 
-  /** AI 梳理摘要区：展开/收起查看（与描述展开同风格，默认收起） */
-  function renderTaskSummary(t: Task) {
+  /** T06334：AI 梳理摘要入口——纯图标按钮，复用 Design System，置于描述展开按钮之前 */
+  function renderTaskSummaryToggle(t: Task) {
+    const expanded = Boolean(summaryExpanded[t.id]);
     return (
-      <div style={{ marginLeft: 32, marginTop: 4 }}>
-        <button
-          onClick={() => setSummaryExpanded((p) => ({ ...p, [t.id]: !p[t.id] }))}
-          title={summaryExpanded[t.id] ? '收起摘要 — 收起 AI 梳理摘要' : '展开摘要 — 展开查看 AI 梳理摘要'}
-          aria-label={summaryExpanded[t.id] ? '收起：收起 AI 梳理摘要' : '展开：展开查看 AI 梳理摘要'}
-          style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 0', cursor: 'pointer' }}
-        >
-          {summaryExpanded[t.id] ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-          AI 梳理摘要
-        </button>
-        {summaryExpanded[t.id] && (
-          <pre style={{ margin: '4px 0 0', padding: 8, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 'var(--fs-s)', whiteSpace: 'pre-wrap' }}>
-            {t.ai_summary}
-          </pre>
-        )}
+      <IconButton
+        icon={<Sparkles size={13} />}
+        label={expanded ? 'AI梳理摘要：收起任务摘要' : 'AI梳理摘要：展开查看任务摘要'}
+        variant="ghost"
+        size="sm"
+        className="task-op"
+        data-t06334="summary-toggle"
+        aria-expanded={expanded}
+        onClick={() => setSummaryExpanded((p) => ({ ...p, [t.id]: !p[t.id] }))}
+      />
+    );
+  }
+
+  /** T06334：AI 梳理摘要正文——仅在展开态渲染，位置保持在任务行下方 */
+  function renderTaskSummaryPanel(t: Task) {
+    if (!summaryExpanded[t.id]) return null;
+    return (
+      <div data-t06334="summary-panel" style={{ marginLeft: 32, marginTop: 4 }}>
+        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 2 }}>AI 梳理摘要</div>
+        <pre style={{ margin: 0, padding: 8, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 'var(--fs-s)', whiteSpace: 'pre-wrap' }}>
+          {t.ai_summary}
+        </pre>
       </div>
     );
   }
@@ -4483,7 +4493,7 @@ export function TasksPage() {
         {/* 描述板块：T01384 grid-rows 0fr→1fr 过渡；重内容仅展开态渲染 */}
         {!descEditing && (t.description || t.images.length > 0) && (descExpanded[t.id] || descVis[t.id]) && renderDescSection(t)}
         {descEditing && renderTaskDescEditor(t, descDraft)}
-        {t.ai_summary && !draft && renderTaskSummary(t)}
+        {t.ai_summary && !draft && renderTaskSummaryPanel(t)}
         {draft && renderTaskDraft(t, draft)}
         {renderTaskResult(t)}
         {renderTaskFailback(t)}
