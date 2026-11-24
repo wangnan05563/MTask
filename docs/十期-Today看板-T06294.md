@@ -36,13 +36,13 @@
 ## 验证
 
 - 类型检查：`node node_modules/typescript/bin/tsc --noEmit -p server/tsconfig.json`、`-p web/tsconfig.json` 均 exit 0。
-- 前端构建：`npm run build:web` exit 0（vite 1875 modules，约 1m47s）。
+- 前端构建：`npm run build:web` exit 0（vite 构建成功，约 5m11s，产物 `index-BDLqqWd5.js`）。
 - 5k 任务门禁：`node node_modules/tsx/dist/cli.mjs server/scripts/verify-t06294-today.mts` PASS：
   - 5,264 条任务；`today_candidates=105` → 展示 7 条；`waiting=158`（failed 5 / unread 70 / verify 80 / ruling 3）；`running=3`（2 活跃会话 + 1 无会话兜底）；`alerts=2`。
   - 10 天前 100 条完成未读被排除；项目筛选、无会话 running 兜底、置顶排序均通过。
   - 聚合耗时 **18.1ms**（上一轮 47.1ms，受机器负载波动；含直读 50 个执行会话），远低于 AC-01 的 3s 预算。
 - 隔离 API/UI 验收使用生产库副本 + `MTask_PORT=5193`，不改生产库；结果见 `C:\pyfix_tmp\t06294-*.log`、`C:\pyfix_tmp\t06294-ui\`。
-  - 真实 `/api/stats/today` 返回 `today=7 / today_candidates=101 / waiting=351 / running=2 / alerts=2`。
+  - 真实 `/api/stats/today` 返回 `today=7 / today_candidates=101 / waiting=352 / running=1 / alerts=2`。
   - 浏览器验收：`node scripts/verify-t06294-visual.mjs`，首页 1440/1280/760 三档截图 + 首屏计时 + 横向溢出检查，结果见 `t06294-ui/visual-result.json`；实测首屏数据就绪 **790ms**，三档均无横向溢出，前端无未捕获异常。
   - 证据图：`docs/evidence/p10-ui/23-t06294-today-1440.png`、`24-t06294-today-1280.png`、`25-t06294-today-760.png`；机器可读结果 `docs/evidence/p10-ui/t06294-visual-result.json`。
 
@@ -51,4 +51,4 @@
 - MTask 任务模型当前没有截止日期与指派人字段，因此「今天做」用置顶 + 紧急/高优先级 + 最近更新作为当前行动信号，页面副标题明确写「从 N 条高优先级中取前 7」；不伪造到期/负责人语义。若后续补 due/assignee，应替换该排序口径而不是叠加。
 - 统计仪表盘的数据口径与 UI 原样保留；本次只改变挂载时机（按需展开），不改统计 SQL。
 - 本单不新增 Run 表查询 UI；「AI 正在跑」仍读现有 `exec_sessions` 与任务 `ai_state`，Run/RunStep 查询 API 由派生单 T06332 承接。
-- AC-01 的浏览器首屏已在真实 3.3k 生产库副本上验证：服务端正常启动维护完成后，首屏数据就绪 790ms；5k 聚合门禁 47.1ms。**冷库首次 API 调用（跳过启动维护、磁盘页缓存全冷）实测 2.8s，仍低于 3s，但浏览器冷启动全链路未单独测**；正常桌面应用启动后的首页首屏为本轮已证据化部分。
+- AC-01 的浏览器首屏已在真实 3.3k 生产库副本上验证：服务端正常启动维护完成后，首屏数据就绪 790ms；5k 聚合门禁 18.1ms。**冷库首次 API 调用（跳过启动维护、磁盘页缓存全冷）实测 2.8s，仍低于 3s，但浏览器冷启动全链路未单独测**；正常桌面应用启动后的首页首屏为本轮已证据化部分。
