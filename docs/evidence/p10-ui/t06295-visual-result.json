@@ -1,0 +1,201 @@
+{
+  "pass": 11,
+  "fail": 0,
+  "checks": [
+    {
+      "name": "INBOX-00 静态服务器 + API 代理就绪",
+      "ok": true,
+      "extra": {
+        "port": 39916,
+        "apiPort": 5194,
+        "token": true
+      }
+    },
+    {
+      "name": "INBOX-01 收件箱首屏渲染（真实构建 + 真实库副本 API）",
+      "ok": true,
+      "extra": {
+        "ready": true,
+        "hasPage": true,
+        "hasHeader": true,
+        "hasFilter": true,
+        "tabs": [
+          "全部\n218",
+          "待我决策\n8",
+          "AI 失败\n3",
+          "待验证\n158",
+          "系统\n49"
+        ],
+        "tabCount": 5,
+        "tabsVisible": 5,
+        "rows": 50,
+        "types": [
+          "ai_failed",
+          "decision",
+          "system"
+        ],
+        "unreadRows": 0,
+        "actionButtons": [
+          "打开任务",
+          "忽略",
+          "认领",
+          "AI 控制台",
+          "转任务"
+        ],
+        "targetOptions": [
+          "StudyWork",
+          "Vgril",
+          "AIComic",
+          "BEMP",
+          "EmoReply三期",
+          "BempDiff三期",
+          "Evaluation三期",
+          "MorningBrief二期",
+          "KarpathyWiki三期",
+          "XianyuHunter三期",
+          "BEMP11月迭代",
+          "QuietSentry",
+          "AirMirror",
+          "AutoClicker",
+          "BEMP审批&指导利率改造",
+          "MTask十期",
+          "AirMirror三期"
+        ],
+        "totalText": "共 218 条",
+        "hintText": "每条都提供认领 / 忽略 / 转任务或打开任务",
+        "bellOpen": 218,
+        "bellText": "99+",
+        "emptyState": false,
+        "viewport": {
+          "w": 1418,
+          "h": 902
+        },
+        "scrollWidth": 1418,
+        "textLen": 5841,
+        "firstTitle": "D通道实机验收失败样例：读取不存在路径",
+        "firstMeta": "AI 失败\nMTask十期\nT05782\n我\n4 分钟前",
+        "elapsedMs": 830
+      }
+    },
+    {
+      "name": "INBOX-02 五个分类页签与行内动作齐备",
+      "ok": true,
+      "extra": {
+        "tabCount": 5,
+        "tabs": [
+          "全部\n218",
+          "待我决策\n8",
+          "AI 失败\n3",
+          "待验证\n158",
+          "系统\n49"
+        ],
+        "actions": [
+          "打开任务",
+          "忽略",
+          "认领",
+          "AI 控制台",
+          "转任务"
+        ]
+      }
+    },
+    {
+      "name": "INBOX-03 顶栏角标 = open 数",
+      "ok": true,
+      "extra": {
+        "bell": 218,
+        "apiBefore": 218,
+        "apiAfter": 218
+      }
+    },
+    {
+      "name": "INBOX-04 打开页面清未读：unread=0、open 不变",
+      "ok": true,
+      "extra": {
+        "unread": 0,
+        "unreadRows": 0
+      }
+    },
+    {
+      "name": "INBOX-05 列表带真实任务行与项目/转入项目选择",
+      "ok": true,
+      "extra": {
+        "firstTitle": "D通道实机验收失败样例：读取不存在路径",
+        "firstMeta": "AI 失败\nMTask十期\nT05782\n我\n4 分钟前",
+        "targetOptions": [
+          "StudyWork",
+          "Vgril",
+          "AIComic",
+          "BEMP",
+          "EmoReply三期",
+          "BempDiff三期",
+          "Evaluation三期",
+          "MorningBrief二期",
+          "KarpathyWiki三期",
+          "XianyuHunter三期",
+          "BEMP11月迭代",
+          "QuietSentry",
+          "AirMirror",
+          "AutoClicker",
+          "BEMP审批&指导利率改造",
+          "MTask十期",
+          "AirMirror三期"
+        ]
+      }
+    },
+    {
+      "name": "INBOX-view-1440 无横向溢出且截图有效",
+      "ok": true,
+      "extra": {
+        "file": "01-inbox-1440.png",
+        "bytes": 165687,
+        "overflow": 0,
+        "rows": 50,
+        "tabs": 5,
+        "tabsVisible": 5
+      }
+    },
+    {
+      "name": "INBOX-view-1280 无横向溢出且截图有效",
+      "ok": true,
+      "extra": {
+        "file": "02-inbox-1280.png",
+        "bytes": 132591,
+        "overflow": 0,
+        "rows": 50,
+        "tabs": 5,
+        "tabsVisible": 5
+      }
+    },
+    {
+      "name": "INBOX-view-760 无横向溢出且截图有效",
+      "ok": true,
+      "extra": {
+        "file": "03-inbox-760.png",
+        "bytes": 105556,
+        "overflow": 0,
+        "rows": 50,
+        "tabs": 5,
+        "tabsVisible": 5
+      }
+    },
+    {
+      "name": "INBOX-06 分类筛选 AI 失败只显示该分类",
+      "ok": true,
+      "extra": {
+        "filtered": true,
+        "rows": 3,
+        "types": [
+          "ai_failed"
+        ],
+        "total": "共 3 条"
+      }
+    },
+    {
+      "name": "INBOX-07 无未捕获前端异常",
+      "ok": true,
+      "extra": {
+        "consoleErrors": []
+      }
+    }
+  ]
+}

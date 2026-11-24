@@ -785,6 +785,56 @@ export interface TodayView {
   alerts: TodayAlert[];
 }
 
+/** T06295（REQ-032）：收件箱条目；分类与状态枚举与后端 DDL 一致 */
+export type InboxType = 'decision' | 'ai_failed' | 'verify_pending' | 'system';
+export type InboxStatus = 'open' | 'ignored' | 'resolved';
+export type InboxSeverity = 'info' | 'warning' | 'danger';
+
+export interface InboxItem {
+  id: string;
+  type: InboxType;
+  source: 'task' | 'exec_session' | 'manual';
+  task_id: string | null;
+  task_no: string | null;
+  task_status: string | null;
+  run_id: string | null;
+  project_id: string | null;
+  project_name: string | null;
+  title: string;
+  body: string;
+  severity: InboxSeverity;
+  status: InboxStatus;
+  assignee: string;
+  unread: boolean;
+  resolution: string;
+  created_at: string;
+  updated_at: string;
+  claimed_at: string | null;
+  resolved_at: string | null;
+}
+
+export interface InboxCounts {
+  open: number;
+  unread: number;
+  decision: number;
+  ai_failed: number;
+  verify_pending: number;
+  system: number;
+}
+
+export interface InboxListResult {
+  items: InboxItem[];
+  total: number;
+  counts: InboxCounts;
+  generated_at: string;
+}
+
+export interface InboxSummary {
+  counts: InboxCounts;
+  generated_at: string;
+}
+
+
 export interface PromptCategory {
   id: string;
   name: string;

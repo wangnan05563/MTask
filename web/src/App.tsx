@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type Dispatch, type SetStateAction } from 'react';
 import { TasksPage } from './pages/TasksPage';
 import { DashboardPage } from './pages/DashboardPage'; // T06289：Dashboard 从设置页提升为「首页」入口
+import { InboxPage } from './pages/InboxPage'; // T06295（REQ-032）：可操作收件箱
 import { AIToolsPage } from './pages/AIToolsPage';
 import { QueuePage } from './pages/QueuePage';
 import { ExecSessionsPage } from './pages/ExecSessionsPage'; // T01271-FR1.4：执行会话观测面板
@@ -10,6 +11,7 @@ import { SettingsPage } from './pages/SettingsPage';
 import { ReportPage } from './pages/ReportPage';
 import { PlanPage } from './pages/PlanPage';
 import { NotifyBell } from './ui/NotifyBell'; // T01064-FR1.4：全局通知中心
+import { InboxBell } from './ui/InboxBell'; // T06295（REQ-032）：收件箱顶栏入口（角标=open）
 import { focusTaskByNo } from './ui/focusTask'; // T01057 建议：通知点击跨项目定位（写齐 focusId/项目/tab）
 import { api, apiBase, setAccessToken } from './api/client';
 import { HoverCard } from './ui/HoverCard'; // T06084：后端连接状态悬浮显示地址与端口
@@ -201,6 +203,16 @@ function Shell() {
       }
       if (!(e.ctrlKey || e.metaKey)) return;
       const k = e.key.toLowerCase();
+      // T06295（REQ-032）：Ctrl/Cmd+Shift+I 直达收件箱——输入态与弹窗内不抢键。
+      if (k === 'i' && e.shiftKey && !e.altKey) {
+        if (e.isComposing) return;
+        const anchor = e.target instanceof Element ? e.target : null;
+        if (anchor?.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""]')) return;
+        if (document.querySelector('dialog[open], [role="dialog"], [aria-modal="true"]')) return;
+        e.preventDefault();
+        setTab('inbox');
+        return;
+      }
       if (k === 'k') {
         e.preventDefault();
         setPaletteOpen(true);
@@ -458,6 +470,8 @@ function Shell() {
               </div>
             )}
             <div className="mt-top-actions">
+              {/* T06295（REQ-032）：收件箱入口——角标数=open 条目数，unread 仅小圆点 */}
+              <InboxBell />
               {/* T01064-FR1.4：全局通知中心（铃铛 + 未读角标 + 事件下拉） */}
               <NotifyBell />
               {/* 后端连接状态：色值与文案按三态（未知/正常/异常）显式计算 */}
@@ -563,6 +577,7 @@ function Shell() {
 
           <div className="mt-page-host" style={{ padding: '24px 24px 40px' }}>
             {tab === 'dashboard' && <DashboardPage />}
+            {tab === 'inbox' && <InboxPage />}
             {tab === 'tasks' && <TasksPage />}
             {tab === 'aitools' && <AIToolsPage />}
             {tab === 'prompts' && <PromptsPage />}

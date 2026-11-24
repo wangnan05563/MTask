@@ -18,6 +18,7 @@ import { readEventRetentionDays, setEventRetentionDays, pruneTaskEvents, countEv
 import { readPoolStatus, setPoolLimit } from '../services/ConcurrencyPool'; // T01066 后续：并行任务池单源
 import { ExecSessionService } from '../services/ExecSessionService'; // T01271：执行会话面板数据源
 import { buildTodayView } from '../services/TodayService'; // T06294（REQ-001）：Today View 首页聚合
+import { inboxService, InboxError, type InboxStatus, type InboxType } from '../services/InboxService'; // T06295（REQ-032）：可操作收件箱
 import { PushService } from '../services/PushService'; // T01440：Web Push
 import { TaskExportService, type ExportFormat } from '../services/TaskExportService'; // T01480：任务导出
 import { listBackups, runBackup, restoreBackup, backupStatus, deleteBackup, BackupDeleteError } from '../services/BackupService'; // T01061-FR5.1 / T05791
@@ -540,6 +541,67 @@ api.delete('/projects/:id', (req, res) => {
   try { WorkspaceService.clearSymbols(req.params.id); } catch { /* 索引清理失败不阻塞删除 */ }
   cacheClear('projects');
   res.status(204).end();
+});
+
+// ---------- 收件箱（T06295 / REQ-032 / PRD §A2） ----------
+// 分类筛选、认领、忽略、转任务；不接邮件。列表每次读取做幂等同步，open 条目必须由动作解决。
+function sendInboxError(res: import('express').Response, e: unknown): void {
+  if (e instanceof InboxError) {
+    res.status(e.statusCode).json({ error: e.message });
+    return;
+  }
+  res.status(500).json({ error: e instanceof Error ? e.message : '收件箱操作失败' });
+}
+
+api.get('/inbox/summary', (req, res) => {
+  try {
+    const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(inboxService.summary(projectId));
+  } catch (e) { sendInboxError(res, e); }
+});
+
+api.get('/inbox', (req, res) => {
+  try {
+    const type = typeof req.query.type === 'string' ? req.query.type as InboxType : '';
+    const status = typeof req.query.status === 'string' ? req.query.status as InboxStatus : 'open';
+    const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+    const result = inboxService.list({
+      type,
+      status,
+      projectId,
+      limit: Number(req.query.limit) || undefined,
+      offset: Number(req.query.offset) || undefined,
+    });
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(result);
+  } catch (e) { sendInboxError(res, e); }
+});
+
+api.post('/inbox/read', (req, res) => {
+  try {
+    const ids = req.body?.ids;
+    if (ids !== undefined && (!Array.isArray(ids) || ids.some((id: unknown) => typeof id !== 'string'))) {
+      res.status(400).json({ error: 'ids 必须是字符串数组' }); return;
+    }
+    const changed = inboxService.markRead((ids as string[] | undefined) ?? []);
+    res.json({ changed });
+  } catch (e) { sendInboxError(res, e); }
+});
+
+api.post('/inbox/:id/claim', (req, res) => {
+  try { res.json({ item: inboxService.claim(req.params.id) }); } catch (e) { sendInboxError(res, e); }
+});
+
+api.post('/inbox/:id/ignore', (req, res) => {
+  try { res.json({ item: inboxService.ignore(req.params.id) }); } catch (e) { sendInboxError(res, e); }
+});
+
+api.post('/inbox/:id/convert', (req, res) => {
+  try {
+    const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : '';
+    res.json(inboxService.convert(req.params.id, projectId));
+  } catch (e) { sendInboxError(res, e); }
 });
 
 // ---------- 任务 ----------

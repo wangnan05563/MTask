@@ -1,0 +1,341 @@
+/* T06295（REQ-032）：可操作收件箱。 */
+
+.mt-inbox-page {
+  max-width: 1440px;
+}
+
+.mt-inbox-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  padding: 2px;
+}
+
+.mt-inbox-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--fs-s);
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.mt-inbox-tab:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.mt-inbox-tab[data-active='true'] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.mt-inbox-tab-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+  text-align: center;
+}
+
+.mt-inbox-tab[data-active='true'] .mt-inbox-tab-count {
+  background: var(--card-bg);
+  color: var(--accent);
+}
+
+.mt-inbox-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.mt-inbox-field select {
+  height: 30px;
+  max-width: 190px;
+  padding: 0 26px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card-bg);
+  color: var(--text);
+  font-size: var(--fs-s);
+}
+
+.mt-inbox-target {
+  margin-left: auto;
+}
+
+.mt-inbox-flash,
+.mt-inbox-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: var(--fs-s);
+}
+
+.mt-inbox-flash {
+  border: 1px solid var(--success, var(--accent));
+  background: var(--success-soft, rgba(22, 163, 74, .12));
+  color: var(--success-strong, var(--text));
+}
+
+.mt-inbox-error {
+  border: 1px solid var(--danger);
+  background: var(--danger-soft, rgba(220, 38, 38, .1));
+  color: var(--danger);
+}
+
+.mt-inbox-error span {
+  flex: 1;
+  min-width: 0;
+}
+
+.mt-inbox-error button {
+  flex: 0 0 auto;
+  border: 1px solid var(--danger);
+  border-radius: 5px;
+  padding: 2px 8px;
+  background: var(--card-bg);
+  color: var(--danger);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+.mt-inbox-skeleton {
+  display: grid;
+  gap: 8px;
+}
+
+.mt-inbox-list-title {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.mt-inbox-total,
+.mt-inbox-hint {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: 400;
+}
+
+.mt-inbox-loading-line {
+  padding: 7px 16px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.mt-inbox-rows {
+  display: grid;
+}
+
+.mt-inbox-row {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--border);
+  transition: background .12s ease;
+}
+
+.mt-inbox-row:last-child {
+  border-bottom: 0;
+}
+
+.mt-inbox-row:hover {
+  background: var(--surface-2);
+}
+
+.mt-inbox-row[data-unread='true'] {
+  background: linear-gradient(90deg, var(--accent-soft), transparent 38%);
+}
+
+.mt-inbox-row-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+}
+
+.mt-inbox-row-icon[data-tone='danger'] { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, var(--border)); }
+.mt-inbox-row-icon[data-tone='warning'] { color: var(--warning, #b45309); border-color: color-mix(in srgb, var(--warning, #b45309) 35%, var(--border)); }
+.mt-inbox-row-icon[data-tone='accent'] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+.mt-inbox-row-icon[data-tone='neutral'] { color: var(--text-secondary); }
+
+.mt-inbox-row-main {
+  min-width: 0;
+}
+
+.mt-inbox-row-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.mt-inbox-row-title {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-m);
+  font-weight: 600;
+  line-height: 1.35;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.mt-inbox-row-title {
+  cursor: pointer;
+}
+
+button.mt-inbox-row-title:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.mt-inbox-unread {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.mt-inbox-resolution {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+}
+
+.mt-inbox-row-body {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 3px 0 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-s);
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.mt-inbox-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.mt-inbox-row-meta > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.mt-inbox-mono {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: var(--fs-2xs);
+}
+
+.mt-inbox-assignee {
+  color: var(--accent);
+}
+
+.mt-inbox-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+  max-width: 330px;
+}
+
+.mt-inbox-more {
+  display: flex;
+  justify-content: center;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 1080px) {
+  .mt-inbox-row {
+    grid-template-columns: 32px minmax(0, 1fr);
+  }
+
+  .mt-inbox-row-actions {
+    grid-column: 2;
+    justify-content: flex-start;
+    max-width: none;
+    margin-top: 2px;
+  }
+}
+
+@media (max-width: 960px) {
+  /* 页面壳在窄屏默认把 FilterBar 变横向滚动；收件箱分类页签多，改为换行，
+     避免分类入口被滚出可视区（760 档实测只剩状态/项目下拉）。 */
+  .mt-inbox-page .mt-page-filter {
+    flex-wrap: wrap;
+    overflow-x: visible;
+  }
+
+  .mt-inbox-target {
+    margin-left: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .mt-inbox-target {
+    margin-left: 0;
+  }
+
+  .mt-inbox-field select {
+    max-width: 150px;
+  }
+
+  .mt-inbox-row {
+    padding: 12px;
+    gap: 8px;
+  }
+
+  .mt-inbox-hint {
+    display: none;
+  }
+
+  .mt-inbox-row-title {
+    white-space: normal;
+  }
+}

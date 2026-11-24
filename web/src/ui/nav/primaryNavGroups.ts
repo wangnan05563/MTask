@@ -28,7 +28,10 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     label: '首页',
     icon: Home,
     defaultTab: 'dashboard',
-    tabs: [{ key: 'dashboard', label: '概览' }],
+    tabs: [
+      { key: 'dashboard', label: '概览' },
+      { key: 'inbox', label: '收件箱' }, // T06295（REQ-032）：首页二级页签
+    ],
   },
   {
     key: 'tasks',

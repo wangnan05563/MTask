@@ -1,4 +1,4 @@
-import { Activity, Boxes, CalendarRange, Home, Lightbulb, ListOrdered, ListTodo, ScrollText, Settings, Sparkles, type LucideIcon } from 'lucide-react';
+import { Activity, Boxes, CalendarRange, Home, Inbox, Lightbulb, ListOrdered, ListTodo, ScrollText, Settings, Sparkles, type LucideIcon } from 'lucide-react';
 
 /**
  * T03184（PM-102）：页面路由单源。
@@ -8,10 +8,11 @@ import { Activity, Boxes, CalendarRange, Home, Lightbulb, ListOrdered, ListTodo,
  * 本表保留全部页面键，确保旧链接、命令面板与深链仍能逐页直达。
  */
 
-export type Tab = 'dashboard' | 'tasks' | 'aitools' | 'prompts' | 'req' | 'plan' | 'queue' | 'report' | 'exec-sessions' | 'settings';
+export type Tab = 'dashboard' | 'inbox' | 'tasks' | 'aitools' | 'prompts' | 'req' | 'plan' | 'queue' | 'report' | 'exec-sessions' | 'settings';
 
 export const TABS: { key: Tab; label: string; icon: LucideIcon }[] = [
   { key: 'dashboard', label: '首页', icon: Home },
+  { key: 'inbox', label: '收件箱', icon: Inbox }, // T06295（REQ-032）：首页二级页签
   { key: 'tasks', label: '任务', icon: ListTodo },
   { key: 'aitools', label: '模型', icon: Boxes },
   { key: 'prompts', label: '提示词', icon: ScrollText },
