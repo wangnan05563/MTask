@@ -275,6 +275,20 @@ function parseRecentDays(input: string): number | undefined {
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
+function isNewsLikeText(text: string): boolean {
+  return /新闻|资讯|动态|日报|周报|早报|晚报|简报|热点|行业公告/.test(text);
+}
+
+/** GitHub 热点任务必须有“冒头/新项目/趋势/增速”等语义，不能只看 star（会命中 start/star 普通词）。 */
+function isGithubHotTask(text: string): boolean {
+  return /GitHub/i.test(text) && /冒头|新项目|trending|趋势|增速/i.test(text);
+}
+
+/** 发布类查询上下文：明确技术热点/版本发布，或资讯任务里的 release；普通开发任务的 release branch 不命中。 */
+function isTechHotTask(text: string): boolean {
+  return /技术热点|技术栈|版本发布|重大特性|开源事件/.test(text) || (isNewsLikeText(text) && /\brelease\b/i.test(text));
+}
+
 /**
  * 从任务标题/描述提取相关关键词。优先 AI 领域词，其次英文实体词；
  * 不把整段中文描述切碎塞进 query，避免稀释搜索意图。
@@ -315,11 +329,11 @@ export function buildSearchQuery(title: string, description: string): string {
     .trim();
   const date = extractDateToken(taskText);
   const terms = buildRelevanceTerms(title, description);
-  const isNews = /新闻|资讯|动态|日报|周报|早报|晚报|简报/.test(taskText);
+  const isNews = isNewsLikeText(taskText);
   // T06060：GitHub 冒头/增速/新项目类任务，直接查 trending/new projects/releases，
   // 不再退化成“GitHub star 新闻”这种会被 star 总量榜单淹没的查询。
-  const githubHot = /GitHub/i.test(taskText) && /冒头|新项目|star|star 数|趋势|trending|增速/i.test(taskText);
-  const techHot = /技术热点|技术栈|版本发布|重大特性|开源事件|release/i.test(taskText);
+  const githubHot = isGithubHotTask(taskText);
+  const techHot = isTechHotTask(taskText);
   // 「AI」是泛词，已有 AI coding / 具身智能等具体词时不再单列，避免稀释 query
   const specific = terms.filter((t) => t !== 'AI');
   let core = specific.length ? specific.slice(0, 6).join(' ') : (terms.includes('AI') ? 'AI' : '');
@@ -333,7 +347,8 @@ export function buildSearchQuery(title: string, description: string): string {
     core = 'AI 行业资讯';
   }
   if (!core) core = cleanTitle;
-  const suffix = isNews ? ' 新闻' : '';
+  // GitHub/技术热点查询已经含“项目/发布”语义，再拼“新闻”会把仓库结果稀释成新闻搜索。
+  const suffix = isNews && !githubHot && !techHot ? ' 新闻' : '';
   const query = `${core}${suffix}${date ? ` ${date}` : ''}`.trim();
   return query.slice(0, 180);
 }
@@ -341,8 +356,8 @@ export function buildSearchQuery(title: string, description: string): string {
 /** 英文检索查询：给 Bing/DDG 一个不被中文泛结果淹没的入口 */
 export function buildEnglishQuery(title: string, description: string): string {
   const taskText = `${title}\n${description}`;
-  const githubHot = /GitHub/i.test(taskText) && /冒头|新项目|star|star 数|趋势|trending|增速/i.test(taskText);
-  const techHot = /技术热点|技术栈|版本发布|重大特性|开源事件|release/i.test(taskText);
+  const githubHot = isGithubHotTask(taskText);
+  const techHot = isTechHotTask(taskText);
   if (githubHot) {
     const date = extractDateToken(taskText);
     return `GitHub trending repositories new projects releases open source news${date ? ` ${date}` : ''}`.trim().slice(0, 180);
@@ -470,6 +485,27 @@ async function searchAuthoritativeFeeds(
   return { items: ranked.items, errors };
 }
 
+/** 从一个包含 <h2><a href="/owner/repo"> 的 HTML 片段解析 Trending 条目。 */
+function parseGithubTrendingItem(body: string, since: string): WebSearchItem | null {
+  const hrefMatch = body.match(/<h2[^>]*>[\s\S]*?<a[^>]*href="\/([^"/]+)\/([^"/]+)"[^>]*>([\s\S]*?)<\/a>/i);
+  if (!hrefMatch) return null;
+  const owner = hrefMatch[1];
+  const repo = hrefMatch[2];
+  if (!/^[A-Za-z0-9_.-]+$/.test(owner) || !/^[A-Za-z0-9_.-]+$/.test(repo)) return null;
+  const title = stripHtml(hrefMatch[3]).replace(/\s+/g, ' ').trim() || `${owner}/${repo}`;
+  const descMatch = body.match(/<p[^>]*class="[^"]*col-9[^"]*"[^>]*>([\s\S]*?)<\/p>/i);
+  const desc = stripHtml(descMatch?.[1] ?? '');
+  const stars = body.match(/([\d,]+)\s+stars (?:this week|today)/i)?.[1] ?? '';
+  const periodLabel = since === 'daily' ? '今日' : '本周';
+  return {
+    title,
+    url: `https://github.com/${owner}/${repo}`,
+    snippet: `${desc}${stars ? ` · ${periodLabel}新增 ${stars} stars` : ''}`.slice(0, 500),
+    source: 'GitHub Trending',
+    score: 90,
+  };
+}
+
 /**
  * T06060：GitHub 上「冒头」的项目看的是近期增速，不是总 star。
  * GitHub Trending 页面直接给出「stars this week」，比通用搜索更容易拿到真实新项目；
@@ -481,40 +517,37 @@ async function searchGithubTrending(maxItems = 3, windowDays = 0, errors?: strin
   // 3 天窗口优先 daily；daily 无结果时第二次回落到 weekly，避免直接空段。
   const initialSince = windowDays > 0 && windowDays <= 3 ? 'daily' : 'weekly';
   let lastError = '';
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const since = attempt === 0 ? initialSince : 'weekly';
+  for (let attempt = 0; attempt < 3; attempt++) {
+    // 前两次走代理（本地网络通常需要），第三次直连兜底；避免代理抖动直接把“新项目”整段打成空。
+    const since = attempt === 0 ? initialSince : attempt === 1 ? 'weekly' : initialSince;
+    const useProxy = attempt < 2;
     try {
-      const html = await fetchText(`https://github.com/trending?since=${since}`, 12000, true);
-      const articles = [...html.matchAll(/<article\b[^>]*class="[^"]*Box-row[^"]*"[^>]*>([\s\S]*?)<\/article>/g)];
+      const html = await fetchText(`https://github.com/trending?since=${since}`, 12000, useProxy);
       const out: WebSearchItem[] = [];
+      const articles = [...html.matchAll(/<article\b[^>]*class="[^"]*Box-row[^"]*"[^>]*>([\s\S]*?)<\/article>/g)];
       for (const article of articles) {
-        const body = article[1];
-        const hrefMatch = body.match(/<h2[^>]*>[\s\S]*?<a[^>]*href="\/([^"/]+)\/([^"/]+)"[^>]*>([\s\S]*?)<\/a>/i);
-        if (!hrefMatch) continue;
-        const owner = hrefMatch[1];
-        const repo = hrefMatch[2];
-        if (!/^[A-Za-z0-9_.-]+$/.test(owner) || !/^[A-Za-z0-9_.-]+$/.test(repo)) continue;
-        const title = stripHtml(hrefMatch[3]).replace(/\s+/g, ' ').trim() || `${owner}/${repo}`;
-        const descMatch = body.match(/<p[^>]*class="[^"]*col-9[^"]*"[^>]*>([\s\S]*?)<\/p>/i);
-        const desc = stripHtml(descMatch?.[1] ?? '');
-        const stars = body.match(/([\d,]+)\s+stars (?:this week|today)/i)?.[1] ?? '';
-        const periodLabel = since === 'daily' ? '今日' : '本周';
-        const snippet = `${desc}${stars ? ` · ${periodLabel}新增 ${stars} stars` : ''}`.slice(0, 500);
-        out.push({
-          title,
-          url: `https://github.com/${owner}/${repo}`,
-          snippet,
-          source: 'GitHub Trending',
-          score: 90,
-        });
+        const item = parseGithubTrendingItem(article[1], since);
+        if (!item) continue;
+        out.push(item);
         if (out.length >= maxItems) break;
+      }
+      // 页面 class 改版时不再直接失败：退回到全页 <h2><a href="/owner/repo"> 扫描。
+      if (out.length === 0) {
+        for (const match of html.matchAll(/<h2[^>]*>/gi)) {
+          const start = match.index ?? 0;
+          const chunk = html.slice(start, start + 3000);
+          const item = parseGithubTrendingItem(chunk, since);
+          if (!item || out.some((it) => it.url === item.url)) continue;
+          out.push(item);
+          if (out.length >= maxItems) break;
+        }
       }
       if (out.length > 0) return out;
       lastError = `GitHub Trending（${since}）：未解析到条目（页面结构可能变化）`;
     } catch (e) {
       lastError = `GitHub Trending（${since}）：${e instanceof Error ? e.message : String(e)}`;
     }
-    if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 600));
+    if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 600));
   }
   if (lastError) errors?.push(lastError);
   return [];
@@ -741,7 +774,7 @@ export async function buildQueueWebContext(title: string, description: string): 
   const taskText = `${title}\n${description}`;
   const terms = buildRelevanceTerms(title, description);
   const dateToken = extractDateToken(taskText);
-  const isNews = /新闻|资讯|动态|日报|周报|早报|晚报|简报/.test(taskText);
+  const isNews = isNewsLikeText(taskText);
   const recentDays = parseRecentDays(taskText);
   // “当天/今日”必须按当天，且任务描述优先于标题：标题写“每日”不代表可以把前一日内容算作当天。
   // 只有描述本身没有“当天/今日”时，才把“每日推送”放宽到 2 天。
@@ -751,13 +784,13 @@ export async function buildQueueWebContext(title: string, description: string): 
   const english = buildEnglishQuery(title, description);
   if (!primary && !english) return '';
   // T06060：GitHub 冒头项目要增速榜，单独拉 Trending 页面，和通用搜索并行。
-  const githubHot = /GitHub/i.test(taskText) && /冒头|新项目|star|star 数|趋势|trending|增速/i.test(taskText);
-  const techHot = /技术热点|技术栈|版本发布|重大特性|开源事件|release/i.test(taskText);
+  const githubHot = isGithubHotTask(taskText);
+  const techHot = isTechHotTask(taskText);
 
   const queries = [...new Set([primary, english].filter(Boolean))];
   // 权威源定向补检：通用搜索被广告站占据时，直接查官方博客/研究站点
   const siteQuery = primary
-    ? `${english || primary} (site:openai.com OR site:anthropic.com OR site:github.blog OR site:arxiv.org OR site:jiqizhixin.com OR site:qbitai.com)`
+    ? `${english || primary} (site:openai.com OR site:anthropic.com OR site:github.blog OR site:arxiv.org OR site:jiqizhixin.com OR site:qbitai.com)`.slice(0, 180)
     : '';
   const queryList = [...new Set([...queries, siteQuery].filter(Boolean))];
   const merged: WebSearchItem[] = [];

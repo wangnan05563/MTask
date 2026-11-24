@@ -1,6 +1,7 @@
 import { getDb } from '../db/connection';
 import { v4 as uuid } from 'uuid';
 import { type TaskView } from './TaskService';
+import { parseTaskContract } from '../util/task-contract';
 import { cacheGet, cacheSet, cacheClear } from '../util/ttl-cache';
 import { logService } from './LogService';
 import { getSetting } from './AppSettings';
@@ -62,6 +63,12 @@ function isNewsLikeText(text: string): boolean {
   return /新闻|资讯|日报|周报|早报|晚报|简报|热点|行业动态|市场动态|AI动态|技术动态/i.test(text);
 }
 
+/** 从文本提取 http(s) 链接并去掉中英文尾随标点，用于来源白名单。 */
+function extractHttpUrls(text: string): string[] {
+  return [...new Set((text.match(/https?:\/\/[^\s)\]>"']+/g) ?? [])
+    .map((url) => url.replace(/[.,;:!?)\]}）】。，、；："'”’]+$/g, '')))];
+}
+
 /** URL 只在 scheme/host 上做归一；path 通常大小写敏感，不能整体 lowerCase */
 function normalizeSourceUrl(raw: string): string {
   const trimmed = raw.replace(/[.,;:!?)\]}）】。，、；："'”’]+$/g, '').replace(/\/$/, '');
@@ -77,13 +84,17 @@ function normalizeSourceUrl(raw: string): string {
 /** 按“条目起始行”切块：- / 1. / **1. / 第1条 / ① 都算一条，续行归入同一条 */
 function splitReceiptEntries(text: string): string[] {
   const startRe = /^[-*]\s+|^\*\*\d+[.、)]|^\d+[.、)]|^[①②③④⑤⑥⑦⑧⑨⑩]|^\*\*第\d+条|^第\d+条/;
-  const lines = text.split(/\r?\n/);
+  const rawLines = text.split(/\r?\n/);
+  // 去掉所有非空行的公共缩进后，只有顶格行才是条目起点；子 bullet 缩进时不另计一条。
+  const nonEmpty = rawLines.filter((line) => line.trim());
+  const minIndent = nonEmpty.length ? Math.min(...nonEmpty.map((line) => (line.match(/^\s*/)?.[0].length ?? 0))) : 0;
+  const lines = rawLines.map((line) => line.slice(minIndent));
   const blocks: string[] = [];
   let current: string[] | null = null;
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    if (startRe.test(trimmed)) {
+    if (!/^\s/.test(line) && startRe.test(trimmed)) {
       if (current) blocks.push(current.join('\n'));
       current = [trimmed];
     } else if (current) {
@@ -105,6 +116,11 @@ function parseWebContextItems(webContext: string): Array<{ title: string; url: s
     if (items.length >= 20) break;
   }
   return items;
+}
+
+/** “新项目”只认仓库根链接，避免把 github.com/owner/repo/issues 也算作新项目。 */
+function hasGithubRepo(text: string): boolean {
+  return /https?:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?![\/A-Za-z0-9_.-])/i.test(text);
 }
 
 /**
@@ -159,6 +175,7 @@ export function receiptWarnings(job: Pick<QueueJobRow, 'request_payload' | 'resp
   let description = '';
   let title = '';
   let webSources: string[] = [];
+  let descriptionSources: string[] = [];
   let webSearchState: WebSearchState = 'off';
   let webItemText = '';
   try {
@@ -166,12 +183,18 @@ export function receiptWarnings(job: Pick<QueueJobRow, 'request_payload' | 'resp
       title?: unknown;
       description?: unknown;
       webSources?: unknown;
+      descriptionSources?: unknown;
       webSearchState?: unknown;
       webItems?: unknown;
     };
     title = String(payload.title ?? '');
     description = String(payload.description ?? '');
     if (Array.isArray(payload.webSources)) webSources = payload.webSources.filter((url): url is string => typeof url === 'string');
+    if (Array.isArray(payload.descriptionSources)) {
+      descriptionSources = payload.descriptionSources.filter((url): url is string => typeof url === 'string');
+    }
+    // 兼容旧快照：没有 descriptionSources 字段时从描述现算，避免任务参考链接被误判。
+    if (descriptionSources.length === 0) descriptionSources = extractHttpUrls(description);
     if (payload.webSearchState === 'ok' || payload.webSearchState === 'empty' || payload.webSearchState === 'off') {
       webSearchState = payload.webSearchState;
     } else if (webSources.length > 0) {
@@ -189,15 +212,22 @@ export function receiptWarnings(job: Pick<QueueJobRow, 'request_payload' | 'resp
   const wantsSource = /来源|出处|引用|链接|标注/.test(description);
   const newsLike = isNewsLikeText(`${title}\n${description}`);
   const requiresSource = wantsSource || newsLike;
+  // 与提示词共用同一份结构化契约，避免“提示词要求 3 条、质量门识别 0 条”的规则漂移。
+  const contract = parseTaskContract(title, description);
+  // 任务描述里显式给出的参考链接也允许引用；除此之外的 URL 必须来自本次检索结果。
+  const allowedSources = [...webSources, ...descriptionSources];
+  const allowed = new Set(allowedSources.map(normalizeSourceUrl));
+  const cited = [...new Set(extractHttpUrls(text).map(normalizeSourceUrl))];
+  const unknown = cited.filter((url) => !allowed.has(url));
   if (webSearchState === 'empty') {
-    if (hasUrl) {
+    if (unknown.length > 0) {
       out.push({
         code: 'no_source',
         label: '检索失败但回执仍带链接',
-        detail: '本次检索没有可用来源，回执中的链接不可核验，疑似编造',
+        detail: `本次检索没有可用来源，回执中的链接不可核验，疑似编造：${unknown.slice(0, 3).join('、')}`,
         blocking: true,
       });
-    } else if (requiresSource) {
+    } else if (!hasUrl && requiresSource) {
       out.push({
         code: 'no_source',
         label: '检索无可用来源且回执无来源',
@@ -216,27 +246,21 @@ export function receiptWarnings(job: Pick<QueueJobRow, 'request_payload' | 'resp
         blocking: true,
       });
     }
-    // 来源必须来自发送时注入的检索结果；模型改写仓库名/路径同样视为不可核验。
-    if (webSources.length > 0 && hasUrl) {
-      const allowed = new Set(webSources.map(normalizeSourceUrl));
-      const cited = [...new Set((text.match(/https?:\/\/[^\s)\]>"']+/g) ?? []).map(normalizeSourceUrl))];
-      const unknown = cited.filter((url) => !allowed.has(url));
-      if (unknown.length > 0) {
-        out.push({
-          code: 'no_source',
-          label: '来源链接不在检索结果',
-          detail: `回执引用了未注入的来源：${unknown.slice(0, 3).join('、')}；链接必须原样复制检索结果，不得改写仓库名或路径`,
-          blocking: true,
-        });
-      }
+    // 来源必须来自发送时注入的检索结果或任务显式参考链接；模型改写仓库名/路径同样视为不可核验。
+    if (allowedSources.length > 0 && hasUrl && unknown.length > 0) {
+      out.push({
+        code: 'no_source',
+        label: '来源链接不在检索结果',
+        detail: `回执引用了未注入的来源：${unknown.slice(0, 3).join('、')}；链接必须原样复制检索结果或任务参考链接，不得改写仓库名或路径`,
+        blocking: true,
+      });
     }
   }
   // T06060/T06059：任务给出了硬格式（分段/行数），回执不能只“看起来像资讯”。
   // 这些格式规则只对资讯/热点类任务生效，避免开发任务的“整理 3 条/按模块分段”被误伤。
   if (newsLike) {
-    const sectionMatch = description.match(/按((?:[「“][^」”]+[」”][、，,]?)+)分段/);
-    if (sectionMatch) {
-      const names = [...sectionMatch[1].matchAll(/[「“]([^」”]+)[」”]/g)].map((m) => m[1]);
+    const names = contract.sections;
+    if (names.length > 0) {
       const missing = names.filter((name) => !text.includes(name));
       if (missing.length > 0) {
         out.push({
@@ -249,7 +273,7 @@ export function receiptWarnings(job: Pick<QueueJobRow, 'request_payload' | 'resp
       if (names.includes('新项目')) {
         const section = text.match(/新项目([\s\S]*?)(?=版本更新|其他动态|$)/)?.[1] ?? '';
         const sectionEmpty = /本期无|无符合条件|暂无/.test(section);
-        if (section && !sectionEmpty && !/https?:\/\/github\.com\/[^/\s]+\/[^/\s]+/i.test(section)) {
+        if (section && !sectionEmpty && !hasGithubRepo(section)) {
           out.push({
             code: 'format',
             label: '新项目段缺少 GitHub 仓库',
@@ -273,29 +297,26 @@ export function receiptWarnings(job: Pick<QueueJobRow, 'request_payload' | 'resp
         }
       }
     }
-    const lineLimit = description.match(/全文\s*(\d+)\s*行以内/);
-    if (lineLimit) {
+    if (contract.lineLimit !== undefined) {
       const nonEmptyLines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).length;
-      if (nonEmptyLines > Number(lineLimit[1])) {
+      if (nonEmptyLines > contract.lineLimit) {
         out.push({
           code: 'format',
           label: '超出任务行数限制',
-          detail: `任务要求全文不超过 ${lineLimit[1]} 行，回执非空行数为 ${nonEmptyLines}`,
+          detail: `任务要求全文不超过 ${contract.lineLimit} 行，回执非空行数为 ${nonEmptyLines}`,
           blocking: true,
         });
       }
     }
-    const countRange = description.match(/(\d+)\s*[-~至]\s*(\d+)\s*条/);
-    const countExact = countRange ? null : description.match(/(?:整理|筛选|输出|列出)\s*(\d+)\s*条/);
     const entryBlocks = splitReceiptEntries(text);
-    if (countRange || countExact) {
-      const min = countRange ? Number(countRange[1]) : Number(countExact![1]);
-      const max = countRange ? Number(countRange[2]) : min;
+    if (contract.countRange || contract.countExact !== undefined) {
+      const min = contract.countRange?.min ?? contract.countExact!;
+      const max = contract.countRange?.max ?? contract.countExact!;
       if (entryBlocks.length < min || entryBlocks.length > max) {
         out.push({
           code: 'format',
           label: '条目数量不符合任务要求',
-          detail: `任务要求 ${countRange ? `${min}–${max}` : min} 条，回执识别到 ${entryBlocks.length} 条`,
+          detail: `任务要求 ${contract.countRange ? `${min}–${max}` : min} 条，回执识别到 ${entryBlocks.length} 条`,
           blocking: true,
         });
       }
@@ -665,7 +686,9 @@ export const QueueService = {
         ORDER BY COALESCE(finished_at, sent_at, '') DESC`,
     ).all(taskId) as Array<{ id: string; queue_id: string; response_payload: string | null }>;
     const job = rows.find((r) => (r.response_payload ?? '').trim() === trimmed);
-    if (job) return this.adoptJob(job.queue_id, job.id, true).task;
+    // 旧入口同样不能绕过质量门：匹配到队列回执就按 force=false 处理，命中阻断项时返回错误，
+    // 用户需走队列采纳接口显式 force。匹配不到才保持旧 TaskService.adoptContent 的兼容路径。
+    if (job) return this.adoptJob(job.queue_id, job.id, false).task;
     return TaskService.adoptContent(taskId, content);
   },
 
@@ -837,8 +860,7 @@ export const QueueService = {
 
   /** 快照任务上下文到 request_payload（发送前固化，避免任务被改导致回执错位） */
   snapshotTaskContext(task: TaskView, projectName: string, webContext = ''): string {
-    const webSources = [...new Set((webContext.match(/https?:\/\/[^\s)\]>"']+/g) ?? [])
-      .map((url) => url.replace(/[.,;:!?)\]}）】。，、；："'”’]+$/g, '')))];
+    const webSources = extractHttpUrls(webContext);
     // no-source 上下文也可能包含诊断里的 URL；优先按上下文语义判定，不能只看 URL 数量。
     const noSourceContext = /^联网检索：已尝试公开搜索，但没有获取到可用来源/.test(webContext);
     const webSearchState: WebSearchState = !webContext ? 'off' : noSourceContext || webSources.length === 0 ? 'empty' : 'ok';
@@ -849,8 +871,9 @@ export const QueueService = {
       aiSummary: task.ai_summary,
       projectName,
       priority: task.priority,
-      // 用于回执来源链接核验：只允许引用发送时注入的检索结果
+      // 用于回执来源链接核验：检索结果 + 任务描述里显式给出的参考链接
       webSources,
+      descriptionSources: extractHttpUrls(task.description),
       webSearchState,
       webItems: parseWebContextItems(webContext),
     }, null, 2);

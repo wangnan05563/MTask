@@ -3,6 +3,8 @@
  * 参考：Continue BYO-Model、LibreChat provider 抽象（见同类产品分析报告 4.1）。
  */
 
+import { parseTaskContract, taskContractRules } from '../util/task-contract';
+
 export interface TaskContext {
   taskId: string;
   title: string;
@@ -132,56 +134,9 @@ export interface StreamResult {
  * T06058/T06059/T06060 实测：不同资讯任务的条数、分段、行数与侧重点差别很大，
  * 固定“恰好 3 条”会压掉任务本身要求；因此把任务描述当作格式最高优先级。
  */
+/** 任务契约渲染为提示词规则；解析逻辑统一在 util/task-contract，避免与质量门重复实现。 */
 function taskContractFor(context: TaskContext): string[] {
-  const text = `${context.title}\n${context.description}`;
-  const rules: string[] = [];
-  const lineLimit = text.match(/全文\s*(\d+)\s*行以内/);
-  if (lineLimit) rules.push(`全文不超过 ${lineLimit[1]} 行（按非空行计数，含分段标题；宁少勿多）。`);
-
-  const sectionMatch = text.match(/按((?:[「“][^」”]+[」”][、，,]?)+)分段/);
-  if (sectionMatch) {
-    const names = [...sectionMatch[1].matchAll(/[「“]([^」”]+)[」”]/g)].map((m) => m[1]);
-    if (names.length) {
-      rules.push(`必须原样使用以下分段标题逐段输出：${names.join(' / ')}；某段没有符合条件的内容就写「本期无」，不得改用其他分段名。`);
-      if (names.includes('版本更新')) {
-        rules.push('「发布 / 上线 / 新版本 / Introducing / 正式推出」类信息必须放在「版本更新」段，不得归入「其他动态」。');
-        rules.push('只要检索结果中存在发布类条目，「版本更新」段就必须逐条列出，不得写「本期无」；「其他动态」不得再重复这些发布类条目。');
-      }
-      if (names.includes('新项目')) {
-        rules.push('「新项目」段只能列 GitHub 仓库（URL 形如 github.com/owner/repo），不得把协议、博客文章或一般行业动态归入新项目。');
-      }
-    }
-  }
-
-  const range = text.match(/(\d+)\s*[-~至]\s*(\d+)\s*条/);
-  if (range) {
-    rules.push(`条目数量必须在 ${range[1]}–${range[2]} 条之间，不得少于 ${range[1]} 条或多于 ${range[2]} 条。`);
-    rules.push(`若高相关条目不足 ${range[1]} 条，必须补入检索结果中同领域、来源可靠的条目并标注相关性较弱；不得因某条官方页面「暂无摘要」就丢弃，少于 ${range[1]} 条即不合格。`);
-  } else {
-    const exact = text.match(/(?:整理|筛选|输出|列出)\s*(\d+)\s*条/);
-    if (exact) rules.push(`条目数量必须恰好 ${exact[1]} 条。`);
-  }
-
-  const focus = text.match(/侧重\s*([^。；\n]+)/);
-  if (focus) rules.push(`内容侧重：${focus[1]}；检索结果没有覆盖该方向时明确说明，不得用无关内容代替。`);
-
-  if (/每个项目一句话/.test(text)) {
-    rules.push('每个项目只用一句话，依次说清：它做什么、为什么突然火、和我的关系。');
-  }
-  if (/没有值得看的内容直接说没有|不要凑数/.test(text)) {
-    rules.push('没有符合条件的内容就直接写「本期无」或说明没有，不得凑数。');
-  }
-  if (/不要重复|避免重复/.test(text)) {
-    rules.push('避免重复描述同一事件；只从检索结果中挑选不同事件。');
-  }
-  if (/当天|今日|今天|每日|当日/.test(text)) {
-    rules.push('优先只选任务日期当天的内容；当天不足时，必须逐条标注实际发布日期并说明哪些不是当天，不得把前一日内容写成「今日」。');
-  }
-
-  if (rules.length) rules.push('任务描述中的条数、分段、行数、侧重点都是硬约束，不得套用通用 3 条模板。');
-  rules.push('数字、日期、公司名、链接必须与【联网检索结果】原文一致；不得换算、四舍五入、放大或缩小数量（例如 thousands 不得写成数万，99 不得写成约 990）。');
-  rules.push('来源链接必须整段复制检索结果中的 URL；GitHub 链接的 owner/repo 必须逐字核对，不得改写、缩写或替换仓库名。');
-  return rules;
+  return taskContractRules(parseTaskContract(context.title, context.description));
 }
 
 function isDevelopmentTask(context: TaskContext): boolean {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { QueueService, receiptWarnings } from '../src/services/QueueService';
 import { rankWebSearchItems } from '../src/services/WebSearchService';
+import { parseTaskContract } from '../src/util/task-contract';
 import { systemPromptFor } from '../src/adapters/types';
 
 const desc60 = '扫描最近三天的技术热点：GitHub 上近期冒头的项目（看增速而非总 star 数）、常用技术栈的重要版本发布或重大特性、值得关注的行业动态或开源事件。全文 10 行以内；每个项目一句话说清它做什么、为什么突然火、和我的关系；没有值得看的内容直接说没有，不要凑数。按「新项目」「版本更新」「其他动态」分段，无内容写「本期无」。';
@@ -101,4 +102,38 @@ const sameDay = rankWebSearchItems(dayItems, [], '2026-11-18', {
 });
 assert.deepEqual(sameDay.items.map((item) => item.url), ['https://example.com/news/today'], '严格当天窗口只能保留当天文章');
 
-console.log('queue-quality-check: 9 fixtures passed');
+// 单一契约解析：提示词和质量门共用 sections/count/lineLimit。
+const contract = parseTaskContract('技术热点简报', desc60);
+assert.deepEqual(contract.sections, ['新项目', '版本更新', '其他动态'], '契约应解析出任务分段');
+assert.equal(contract.lineLimit, 10, '契约应解析出全文行数');
+assert.equal(contract.countRange, undefined, 'desc60 没有 3-5 条区间');
+
+// 子 bullet 不应被算成新条目：3 条各带一个缩进说明，仍应识别为 3 条。
+const countDesc = '关注当天 AI 新闻，整理 3 条要点并标注来源。';
+const threeWithSubBullets = receiptWarnings({
+  request_payload: JSON.stringify({ title: 'AI 新闻', description: countDesc, webSources: sources, webSearchState: 'ok' }),
+  response_payload: '1. A。https://github.com/a/b\n   - 补充说明\n2. B。https://github.com/c/d\n   - 补充说明\n3. C。https://deepmind.google/blog/introducing-gemini-4-neon/\n   - 补充说明',
+});
+assert(!threeWithSubBullets.some((w) => w.label === '条目数量不符合任务要求'), '子 bullet 不应被计成额外条目');
+
+// “新项目”只认仓库根链接，/issues 子路径不能冒充新项目仓库。
+const issueLink = receiptWarnings({
+  request_payload: payload(desc60, sources),
+  response_payload: '**新项目**\n- a/b https://github.com/a/b/issues/1\n**版本更新**\n本期无\n**其他动态**\n本期无',
+});
+assert(issueLink.some((w) => w.label === '新项目段缺少 GitHub 仓库'), 'github.com/owner/repo/issues 不应算仓库根链接');
+
+// 任务描述里显式给出的参考链接属于合法来源，不应在“检索失败”时被误判为编造。
+const taskReference = receiptWarnings({
+  request_payload: JSON.stringify({
+    title: 'AI 新闻',
+    description: '阅读 https://example.com/reference 的公告，整理 2 条并标注来源。',
+    descriptionSources: ['https://example.com/reference'],
+    webSources: [],
+    webSearchState: 'empty',
+  }),
+  response_payload: '1. A 公告。https://example.com/reference\n2. B 公告。https://example.com/reference',
+});
+assert(!taskReference.some((w) => w.code === 'no_source'), '任务描述中的参考链接不应被判为编造来源');
+
+console.log('queue-quality-check: 13 fixtures passed');
