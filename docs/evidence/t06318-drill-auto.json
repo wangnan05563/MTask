@@ -1,0 +1,69 @@
+{
+  "ok": true,
+  "archive": "C:\\Users\\hspcadmin\\AppData\\Local\\Temp\\t06306-real-backup.tar.gz",
+  "archiveSha256": "67d1bf3b922bc9110cf3bdcd96228824ce9e8724115a5203b34962c53c8e4415",
+  "work": "C:\\Users\\hspcadmin\\AppData\\Local\\Temp\\t06318-drill-auto",
+  "prior": {
+    "files": 10,
+    "bytes": 223249777,
+    "durationMs": 4876
+  },
+  "restore1": {
+    "files": 10,
+    "bytes": 223249777,
+    "sqliteIntegrity": "ok"
+  },
+  "before": {
+    "integrity": "ok",
+    "tasks": 3386,
+    "done": 3251,
+    "projects": 59,
+    "plans": 2172,
+    "requirements": 2622,
+    "testcases": 529,
+    "execSessions": 2801
+  },
+  "incremental": {
+    "archiveSha256": "655421e68d2ddcac31cb6f9cf97904b987335e919d80393cf3a1d2f54e74b5d5",
+    "archiveSize": 103444159,
+    "files": 11,
+    "bytes": 223250256
+  },
+  "restore2": {
+    "files": 11,
+    "bytes": 223250256,
+    "sqliteIntegrity": "ok"
+  },
+  "marker": {
+    "id": "t06318-marker-task",
+    "task_no": "T06318-MARK",
+    "title": "T06318 增量迁移标记",
+    "status": "todo"
+  },
+  "after": {
+    "integrity": "ok",
+    "tasks": 3387,
+    "done": 3251,
+    "projects": 59,
+    "plans": 2172,
+    "requirements": 2622,
+    "testcases": 529,
+    "execSessions": 2801
+  },
+  "assertions": {
+    "源归档校验 ok": true,
+    "首恢复 SQLite ok": true,
+    "首恢复文件数与清单一致": true,
+    "首恢复字节与清单一致": true,
+    "旧库业务表完整可读": true,
+    "增量备份 ok": true,
+    "增量备份字节增加": true,
+    "增量恢复 SQLite ok": true,
+    "标记任务迁移成功": true,
+    "任务数 = 旧库 + 1": true,
+    "已完成数保持": true,
+    "迁移后完整性 ok": true
+  },
+  "failed": [],
+  "cleanup": true
+}

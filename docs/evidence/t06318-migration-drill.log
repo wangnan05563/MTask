@@ -1,0 +1,90 @@
+# T06318 迁移数据演练日志
+
+- 演练时间：2026-11-24 20:36–20:39（UTC+8）
+- 源归档：`C:\Users\hspcadmin\AppData\Local\Temp\t06306-real-backup.tar.gz`
+- 工作目录：`C:\Users\hspcadmin\AppData\Local\Temp\t06318-drill`
+- 边界：只演练正常旧数据迁移 + 增量备份；不测试损坏文件。
+
+## 1. 源归档校验
+
+```json
+{
+  "ok": true,
+  "archiveSha256": "67d1bf3b922bc9110cf3bdcd96228824ce9e8724115a5203b34962c53c8e4415",
+  "manifest": { "files": 10, "bytes": 223249777, "createdAt": "2026-11-24T18:49:00.348Z" },
+  "sidecar": { "present": true, "ok": true },
+  "sqliteIntegrity": "ok",
+  "durationMs": 4796
+}
+```
+
+## 2. 首次恢复（旧数据迁移）
+
+```json
+{
+  "ok": true,
+  "action": "restore",
+  "target": "C:\\Users\\hspcadmin\\AppData\\Local\\Temp\\t06318-drill\\restore1",
+  "restored": { "files": 10, "bytes": 223249777, "sqliteIntegrity": "ok" },
+  "errors": [],
+  "durationMs": 9060
+}
+```
+
+恢复库只读核对：
+
+```json
+{
+  "quick_check": "ok",
+  "integrity_check": "ok",
+  "tasks": 3386,
+  "done": 3251,
+  "projects": 59,
+  "plans": 2172,
+  "requirements": 2622,
+  "testcases": 529,
+  "execSessions": 2801
+}
+```
+
+## 3. 增量写入与二次备份
+
+在恢复库插入增量标记任务 `T06318-MARK`（tasks 3386 → 3387），再以恢复目录为数据源创建增量归档：
+
+```json
+{
+  "ok": true,
+  "action": "create",
+  "archiveSize": 103444203,
+  "archiveSha256": "1c60e11eb84c785a7ea985fe70fe14289c9a796c97e10659bb03074adf20745f",
+  "manifest": { "files": 11, "bytes": 223250251, "createdAt": "2026-11-24T20:37:09.076Z", "skipped": 3 },
+  "durationMs": 9235
+}
+```
+
+## 4. 增量归档恢复与标记核验
+
+```json
+{
+  "ok": true,
+  "action": "restore",
+  "target": "C:\\Users\\hspcadmin\\AppData\\Local\\Temp\\t06318-drill\\restore2",
+  "restored": { "files": 11, "bytes": 223250251, "sqliteIntegrity": "ok" },
+  "errors": [],
+  "durationMs": 8050
+}
+```
+
+```json
+{
+  "marker": {
+    "id": "t06318-marker-task",
+    "task_no": "T06318-MARK",
+    "title": "T06318 增量迁移标记",
+    "status": "todo"
+  },
+  "tasks": 3387,
+  "done": 3251,
+  "integrity_check": "ok"
+}
+```
