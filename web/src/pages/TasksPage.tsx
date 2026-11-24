@@ -253,12 +253,14 @@ const CSV_SOURCE_LABEL: Record<'github' | 'jira' | 'generic', string> = {
   generic: '通用 CSV（自动识别）',
 };
 /** T03267（PM-402②）：预览里可人工调整的字段；标题必选，其余留空即不导入该字段 */
-const CSV_MAP_FIELDS: Array<{ field: 'title' | 'description' | 'priority' | 'status' | 'category'; label: string; required?: boolean }> = [
+/** T06304：外部 ID 参与「来源+外部 ID」去重，Jira 的 Issue key / GitHub 的 number/id 都可映射到此 */
+const CSV_MAP_FIELDS: Array<{ field: 'title' | 'description' | 'priority' | 'status' | 'category' | 'externalId'; label: string; required?: boolean }> = [
   { field: 'title', label: '标题', required: true },
   { field: 'description', label: '描述' },
   { field: 'priority', label: '优先级' },
   { field: 'status', label: '状态' },
   { field: 'category', label: '分类' },
+  { field: 'externalId', label: '外部 ID' },
 ];
 
 /** T03211（PM-105）：全部项目视图的哨兵值——任务查询不带 projectId，选中集合可跨项目 */
@@ -1866,7 +1868,7 @@ export function TasksPage() {
   // T00457：批量操作——多选模式 + 选中任务集合（跨待办/已完成统一 id 集合）
   const [multiSelect, setMultiSelect] = useState(false);
   // T00446 / INT-6：CSV 导入预览状态
-  const [csvPreview, setCsvPreview] = useState<{ items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null; categoryName: string }>; errors: Array<{ row: number; message: string }> } | null>(null);
+  const [csvPreview, setCsvPreview] = useState<{ source?: string; items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null; categoryName: string; externalId?: string }>; errors: Array<{ row: number; message: string }> } | null>(null);
   const [csvImportKind, setCsvImportKind] = useState<'csv' | 'json'>('csv'); // T00556：导入类型分流
   // T03267（PM-402②）：CSV 来源识别与字段映射——改映射要按原文件重解析，故保留原始字节
   const [csvMeta, setCsvMeta] = useState<{ source: 'github' | 'jira' | 'generic'; headers: string[]; mapping: Record<string, string> } | null>(null);
@@ -2528,10 +2530,10 @@ export function TasksPage() {
   // ---------- T00446 / INT-6：CSV 任务导入（预览 → 确认） ----------
 
   type CsvPreviewPayload = {
-    source?: 'github' | 'jira' | 'generic';
+    source?: 'github' | 'jira' | 'generic' | 'json' | 'trello';
     headers?: string[];
     mapping?: Record<string, string>;
-    items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null; categoryName: string }>;
+    items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null; categoryName: string; externalId?: string }>;
     errors: Array<{ row: number; message: string }>;
   };
 
@@ -2544,7 +2546,7 @@ export function TasksPage() {
     const r = await api.postBinary<CsvPreviewPayload>(`/tasks/import-csv/preview?${q.toString()}`, buf);
     setCsvPreview(r);
     setCsvImportKind('csv');
-    setCsvMeta({ source: r.source ?? 'generic', headers: r.headers ?? [], mapping: r.mapping ?? {} });
+    setCsvMeta({ source: r.source === 'jira' || r.source === 'github' ? r.source : 'generic', headers: r.headers ?? [], mapping: r.mapping ?? {} });
     if (r.errors.length > 0) flash(`CSV 解析：${r.items.length} 条可导入，${r.errors.length} 行有问题——修正后重新上传`);
     else flash(`CSV 解析完成：${r.items.length} 条待确认导入`);
   }
@@ -2595,12 +2597,13 @@ export function TasksPage() {
     setBatchOpBusy(true);
     try {
       const path = csvImportKind === 'json' ? '/tasks/import-json/confirm' : '/tasks/import-csv/confirm';
-      const r = await api.post<{ ok: boolean; count: number }>(path, { projectId: activeProject, items: preview.items });
+      const source = csvImportKind === 'json' ? (csvPreview.source ?? 'json') : (csvMeta?.source ?? 'generic');
+      const r = await api.post<{ ok: boolean; count: number; skipped?: number }>(path, { projectId: activeProject, items: preview.items, source });
       setCsvPreview(null);
       void loadTasks(activeProject);
       // T03214（UX-02 ④）：导入结果落常驻回执——成功/跳过/失败分列带原因，短提示消失后仍可回看
       setBatchReceipt({ ...buildImportReceipt({ kind: csvImportKind, items: preview.items, errors: preview.errors, created: r.count }), at: new Date().toISOString() });
-      flash(`${csvImportKind === 'json' ? 'JSON' : 'CSV'} 导入完成：${r.count} 条任务已创建`, 'info');
+      flash(`${csvImportKind === 'json' ? 'JSON' : 'CSV'} 导入完成：${r.count} 条任务已创建${r.skipped ? `，${r.skipped} 条重复已跳过` : ''}`, 'info');
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       setBatchReceipt({ ...buildImportFailureReceipt(csvImportKind, reason), at: new Date().toISOString() });
@@ -5371,15 +5374,16 @@ export function TasksPage() {
           </div>
         )}
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-s)' }}>
-          <thead><tr>{['标题', '描述', '优先级', '状态', '分类'].map((h) => <th key={h} style={{ padding: '4px 6px', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', textAlign: 'left', borderBottom: '1px solid var(--border-strong)' }}>{h}</th>)}</tr></thead>
+          <thead><tr>{['标题', '描述', '优先级', '状态', '分类', '外部 ID'].map((h) => <th key={h} style={{ padding: '4px 6px', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', textAlign: 'left', borderBottom: '1px solid var(--border-strong)' }}>{h}</th>)}</tr></thead>
           <tbody>
             {csvPreview.items.map((it) => (
-              <tr key={`${it.title}|${it.description}|${it.priority}|${it.status}|${it.categoryId ?? ''}`}>
+              <tr key={`${it.title}|${it.description}|${it.priority}|${it.status}|${it.categoryId ?? ''}|${it.externalId ?? ''}`}>
                 <td style={{ padding: '4px 6px' }}>{it.title}</td>
                 <td style={{ padding: '4px 6px', color: 'var(--text-muted)', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.description}</td>
                 <td style={{ padding: '4px 6px' }}>{it.priority}</td>
                 <td style={{ padding: '4px 6px' }}>{it.status}</td>
                 <td style={{ padding: '4px 6px' }}>{it.categoryName || '—'}</td>
+                <td style={{ padding: '4px 6px', color: 'var(--text-muted)' }}>{it.externalId || '—'}</td>
               </tr>
             ))}
           </tbody>

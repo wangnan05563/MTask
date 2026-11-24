@@ -24,6 +24,7 @@ import { buildTodayView } from '../services/TodayService'; // T06294（REQ-001�
 import { inboxService, InboxError, type InboxStatus, type InboxType } from '../services/InboxService'; // T06295（REQ-032）：可操作收件箱
 import { PushService } from '../services/PushService'; // T01440：Web Push
 import { TaskExportService, type ExportFormat } from '../services/TaskExportService'; // T01480：任务导出
+import { listImportedKeys, markImported, normalizeExternalId, normalizeImportSource, type ImportSource } from '../services/ImportKeyService'; // T06304（REQ-010 / PRD §B2）：来源+外部 ID 去重
 import { listBackups, runBackup, restoreBackup, backupStatus, deleteBackup, BackupDeleteError } from '../services/BackupService'; // T01061-FR5.1 / T05791
 import { ConfigService } from '../services/ConfigService';
 import { AIProviderService } from '../services/AIProviderService'; // T05784：厂商预制目录（后端单源）
@@ -1600,9 +1601,11 @@ const CSV_FIELD_ALIAS: Record<string, string[]> = {
   priority: ['优先级', 'priority', 'severity'],
   status: ['状态', 'status', 'state'],
   category: ['分类', '类别', 'category', 'component'],
+  // T06304：外部 ID 用于「来源+外部 ID」去重；Jira Issue key、GitHub number/id、通用外部编号都收口在此
+  externalId: ['外部id', '外部 id', '外部编号', 'issue key', 'issuekey', 'key', 'id', '编号'],
 };
 /** 不映射 Labels：标签是自由文本，当分类用会把整类外部 CSV 判成「分类不存在」 */
-const CSV_FIELDS = ['title', 'description', 'priority', 'status', 'category'] as const;
+const CSV_FIELDS = ['title', 'description', 'priority', 'status', 'category', 'externalId'] as const;
 
 /** 表头映射：先精确匹配（含大小写不敏感），再按字段顺序各取首个命中列 */
 function mapCsvColumns(headers: string[]): Record<string, number> {
@@ -1670,7 +1673,7 @@ const STATUS_ALIAS: Record<string, string> = {
 type CsvImportResult =
   | { kind: 'skip' }
   | { kind: 'error'; message: string }
-  | { kind: 'item'; item: { title: string; description: string; priority: string; status: string; categoryId: string | null } };
+  | { kind: 'item'; item: { title: string; description: string; priority: string; status: string; categoryId: string | null; externalId: string } };
 
 /** 分类名 → 分类 id；名称缺失返回 null，不存在则给出错误 */
 function resolveCsvCategory(name: string, catByName: Map<string, string>): { id: string | null; error?: string } {
@@ -1679,19 +1682,31 @@ function resolveCsvCategory(name: string, catByName: Map<string, string>): { id:
   return hit ? { id: hit } : { id: null, error: '分类不存在：' + name };
 }
 
-/** 校验并归一化一行 CSV（标题/去重/状态/分类），供 /tasks/import-csv/preview 复用 */
+/** 校验并归一化一行 CSV（标题/外部 ID/状态/分类），供 /tasks/import-csv/preview 复用 */
 function buildCsvImportRow(
   r: string[],
   map: Record<string, number>,
   catByName: Map<string, string>,
   existTitles: Set<string>,
   seen: Set<string>,
+  importedKeys: Set<string>,
+  seenKeys: Set<string>,
+  source: ImportSource,
 ): CsvImportResult {
   const get = (key: string) => (map[key] === undefined ? '' : (r[map[key]] ?? '').trim());
   const title = get('title');
+  const externalId = normalizeExternalId(get('externalId'));
   if (!title && !r.some((c) => c.trim())) return { kind: 'skip' };
   if (!title) return { kind: 'error', message: '标题必填' };
-  if (existTitles.has(title) || seen.has(title)) return { kind: 'error', message: '标题重复：' + title };
+  // T06304：有外部 ID 时按「来源+外部 ID」判重；无外部 ID 才回退标题判重
+  if (externalId) {
+    if (importedKeys.has(externalId) || seenKeys.has(externalId)) {
+      return { kind: 'error', message: `来源+外部 ID 重复：${source}:${externalId}` };
+    }
+    seenKeys.add(externalId);
+  } else if (existTitles.has(title) || seen.has(title)) {
+    return { kind: 'error', message: '标题重复：' + title };
+  }
   const priority = PRIORITY_ALIAS[get('priority').toLowerCase()] ?? 'normal';
   const statusRaw = get('status').toLowerCase();
   const status = STATUS_ALIAS[statusRaw] ?? (statusRaw === 'completed' ? 'done' : 'todo');
@@ -1699,7 +1714,7 @@ function buildCsvImportRow(
   const cat = resolveCsvCategory(get('category'), catByName);
   if (cat.error) return { kind: 'error', message: cat.error };
   seen.add(title);
-  return { kind: 'item', item: { title, description: get('description'), priority, status, categoryId: cat.id } };
+  return { kind: 'item', item: { title, description: get('description'), priority, status, categoryId: cat.id, externalId } };
 }
 
 // 预览：解析 CSV → 校验 → 返回映射结果与行级错误（不入库）
@@ -1720,14 +1735,16 @@ api.post('/tasks/import-csv/preview', raw({ type: () => true, limit: '20mb' }), 
     if (map.title === undefined) return res.status(400).json({ error: '未找到标题列（可在字段映射里手动指定；支持列名：标题/名称/任务/Title/Summary 等）' });
     const catRows = getDb().prepare('SELECT id, name FROM task_categories').all() as Array<{ id: string; name: string }>;
     const catByName = new Map(catRows.map((c) => [c.name.trim(), c.id]));
-    const items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null }> = [];
+    const items: Array<{ title: string; description: string; priority: string; status: string; categoryId: string | null; externalId: string }> = [];
     const errors: Array<{ row: number; message: string }> = [];
     const seen = new Set<string>();
+    const seenKeys = new Set<string>();
+    const importedKeys = listImportedKeys(projectId, source);
     const existTitles = new Set(
       (getDb().prepare('SELECT title FROM tasks WHERE project_id = ? AND archived = 0').all(projectId) as Array<{ title: string }>).map((r) => r.title),
     );
     for (let i = 1; i < rows.length; i++) {
-      const res = buildCsvImportRow(rows[i], map, catByName, existTitles, seen);
+      const res = buildCsvImportRow(rows[i], map, catByName, existTitles, seen, importedKeys, seenKeys, source);
       if (res.kind === 'error') { errors.push({ row: i + 1, message: res.message }); continue; }
       if (res.kind === 'item') items.push(res.item);
     }
@@ -1740,21 +1757,39 @@ api.post('/tasks/import-csv/preview', raw({ type: () => true, limit: '20mb' }), 
   }
 });
 
-// 确认导入：复用 TaskService.create（task_no 分配/计划联动一致），跳过已存在标题
+// 确认导入：复用 TaskService.create（task_no 分配/计划联动一致），按来源+外部 ID 优先判重
 api.post('/tasks/import-csv/confirm', (req, res) => {
-  const { projectId, items } = req.body ?? {};
+  const { projectId, items, source: rawSource } = req.body ?? {};
   if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
   if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'items 必填' });
+  const source = normalizeImportSource(rawSource);
   try {
-    const created: string[] = [];
-    for (const it of items as Array<{ title: string; description?: string; priority?: string; status?: string; categoryId?: string | null }>) {
-      if (!it.title?.trim()) continue;
-      if (getDb().prepare('SELECT id FROM tasks WHERE project_id = ? AND title = ? AND archived = 0').get(projectId, it.title)) continue;
-      TaskService.create({ projectId, title: it.title, description: it.description, priority: (it.priority as TaskInput['priority']) ?? 'normal', status: (it.status as TaskInput['status']) ?? undefined, categoryId: it.categoryId ?? null });
-      created.push(it.title);
-    }
+    const db = getDb();
+    // T06304：整批单事务，任一条写入失败整体回滚，避免「导入一半」不可恢复
+    const run = db.transaction(() => {
+      const importedKeys = listImportedKeys(projectId, source, db);
+      let count = 0;
+      let skipped = 0;
+      for (const it of items as Array<{ title: string; description?: string; priority?: string; status?: string; categoryId?: string | null; externalId?: string }>) {
+        if (!it.title?.trim()) { skipped += 1; continue; }
+        const externalId = normalizeExternalId(it.externalId);
+        if (externalId && importedKeys.has(externalId)) { skipped += 1; continue; }
+        if (!externalId && db.prepare('SELECT id FROM tasks WHERE project_id = ? AND title = ? AND archived = 0').get(projectId, it.title)) {
+          skipped += 1;
+          continue;
+        }
+        const created = TaskService.create({ projectId, title: it.title, description: it.description, priority: (it.priority as TaskInput['priority']) ?? 'normal', status: (it.status as TaskInput['status']) ?? undefined, categoryId: it.categoryId ?? null });
+        if (externalId) {
+          markImported(projectId, source, externalId, created.id, db);
+          importedKeys.add(externalId);
+        }
+        count += 1;
+      }
+      return { count, skipped };
+    });
+    const result = run();
     notifyChange('tasks');
-    res.status(201).json({ ok: true, count: created.length });
+    res.status(201).json({ ok: true, ...result });
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
@@ -1773,20 +1808,24 @@ function firstStr(...vals: unknown[]): string {
   return '';
 }
 
+/** T06304：JSON 导入条目——外部 ID 用于「来源+外部 ID」去重 */
+type JsonImportItem = { title: string; description: string; priority?: string; externalId?: string };
+
 /** 把多种 JSON 形态归一为任务条目：数组 / {cards|tasks|items|issues:[]} / Trello board {lists:[{cards:[]}]} */
-function extractJsonImportItems(data: unknown): Array<{ title: string; description: string; priority?: string }> {
-  const toItem = (o: Record<string, unknown>): { title: string; description: string; priority?: string } | null => {
+function extractJsonImportItems(data: unknown): JsonImportItem[] {
+  const toItem = (o: Record<string, unknown>): JsonImportItem | null => {
     const title = firstStr(o.title, o.name, o.summary).trim();
     if (!title) return null;
     const description = firstStr(o.description, o.desc, o.details, o.content).trim();
     const pr = firstStr(o.priority).toLowerCase();
     const priority = PRIORITY_ALIAS[pr] ? pr : undefined;
-    return priority ? { title, description, priority } : { title, description };
+    const externalId = normalizeExternalId(firstStr(o.id, o.key, o.issueKey, o.issue_key, o.number, o.shortId));
+    return externalId ? { title, description, priority, externalId } : (priority ? { title, description, priority } : { title, description });
   };
   const fromArray = (arr: unknown[]) => arr
     .filter((x) => x !== null && typeof x === 'object')
     .map((x) => toItem(x as Record<string, unknown>))
-    .filter((x): x is { title: string; description: string; priority?: string } => x !== null);
+    .filter((x): x is JsonImportItem => x !== null);
   if (Array.isArray(data)) return fromArray(data);
   if (data !== null && typeof data === 'object') {
     const o = data as Record<string, unknown>;
@@ -1803,6 +1842,28 @@ function extractJsonImportItems(data: unknown): Array<{ title: string; descripti
   return [];
 }
 
+/** 按顶层形态与首条字段推断 JSON 来源；只用于去重命名空间与提示文案，不改变解析口径。 */
+function detectJsonImportSource(data: unknown): ImportSource {
+  if (Array.isArray(data)) {
+    const first = data.find((x) => x !== null && typeof x === 'object') as Record<string, unknown> | undefined;
+    if (first?.fields || first?.issueKey || first?.issue_key) return 'jira';
+    if (first?.html_url || first?.number !== undefined || first?.pull_request) return 'github';
+    return 'json';
+  }
+  if (data !== null && typeof data === 'object') {
+    const o = data as Record<string, unknown>;
+    if (Array.isArray(o.lists)) return 'trello';
+    for (const k of ['issues']) {
+      if (Array.isArray(o[k])) {
+        const first = (o[k] as unknown[]).find((x) => x !== null && typeof x === 'object') as Record<string, unknown> | undefined;
+        if (first?.fields || first?.issueKey || first?.issue_key) return 'jira';
+        if (first?.html_url || first?.number !== undefined) return 'github';
+      }
+    }
+  }
+  return 'json';
+}
+
 api.post('/tasks/import-json/preview', raw({ type: () => true, limit: '20mb' }), (req, res) => {
   const projectId = req.query.projectId;
   if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
@@ -1813,35 +1874,64 @@ api.post('/tasks/import-json/preview', raw({ type: () => true, limit: '20mb' }),
   } catch {
     return res.status(400).json({ error: 'JSON 解析失败：请上传有效的 Trello 导出或 JSON 数组文件' });
   }
+  const source = detectJsonImportSource(data);
   const items = extractJsonImportItems(data);
   if (items.length === 0) return res.status(400).json({ error: '未从 JSON 中识别到任务：支持数组、cards[]、tasks[]、Trello board lists[].cards[]' });
   const existing = new Set((getDb().prepare('SELECT title FROM tasks WHERE project_id = ? AND archived = 0').all(projectId) as Array<{ title: string }>).map((r) => r.title));
+  const importedKeys = listImportedKeys(projectId, source);
   const errors: Array<{ row: number; message: string }> = [];
   const seen = new Set<string>();
-  const valid: typeof items = [];
+  const seenKeys = new Set<string>();
+  const valid: JsonImportItem[] = [];
   items.forEach((it, i) => {
-    if (existing.has(it.title)) { errors.push({ row: i + 1, message: `标题已存在：${it.title}` }); return; }
-    if (seen.has(it.title)) { errors.push({ row: i + 1, message: `标题重复：${it.title}` }); return; }
+    const externalId = normalizeExternalId(it.externalId);
+    if (externalId) {
+      if (importedKeys.has(externalId) || seenKeys.has(externalId)) {
+        errors.push({ row: i + 1, message: `来源+外部 ID 重复：${source}:${externalId}` });
+        return;
+      }
+      seenKeys.add(externalId);
+    } else if (existing.has(it.title) || seen.has(it.title)) {
+      errors.push({ row: i + 1, message: `标题已存在：${it.title}` });
+      return;
+    }
     seen.add(it.title);
     valid.push(it);
   });
-  res.json({ items: valid.map((it) => ({ ...it, priority: it.priority ?? 'normal', status: 'todo', categoryId: null, categoryName: '' })), errors });
+  res.json({ source, items: valid.map((it) => ({ ...it, priority: it.priority ?? 'normal', status: 'todo', categoryId: null, categoryName: '' })), errors });
 });
 
 api.post('/tasks/import-json/confirm', (req, res) => {
-  const { projectId, items } = req.body ?? {};
+  const { projectId, items, source: rawSource } = req.body ?? {};
   if (typeof projectId !== 'string' || !projectId) return res.status(400).json({ error: 'projectId 必填' });
   if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'items 必填' });
+  const source = normalizeImportSource(rawSource ?? 'json');
   try {
-    let count = 0;
-    for (const it of items as Array<{ title: string; description?: string; priority?: string }>) {
-      if (!it.title?.trim()) continue;
-      if (getDb().prepare('SELECT id FROM tasks WHERE project_id = ? AND title = ? AND archived = 0').get(projectId, it.title)) continue;
-      TaskService.create({ projectId, title: it.title, description: it.description, priority: (it.priority as TaskInput['priority']) ?? 'normal' });
-      count += 1;
-    }
+    const db = getDb();
+    const run = db.transaction(() => {
+      const importedKeys = listImportedKeys(projectId, source, db);
+      let count = 0;
+      let skipped = 0;
+      for (const it of items as JsonImportItem[]) {
+        if (!it.title?.trim()) { skipped += 1; continue; }
+        const externalId = normalizeExternalId(it.externalId);
+        if (externalId && importedKeys.has(externalId)) { skipped += 1; continue; }
+        if (!externalId && db.prepare('SELECT id FROM tasks WHERE project_id = ? AND title = ? AND archived = 0').get(projectId, it.title)) {
+          skipped += 1;
+          continue;
+        }
+        const created = TaskService.create({ projectId, title: it.title, description: it.description, priority: (it.priority as TaskInput['priority']) ?? 'normal' });
+        if (externalId) {
+          markImported(projectId, source, externalId, created.id, db);
+          importedKeys.add(externalId);
+        }
+        count += 1;
+      }
+      return { count, skipped };
+    });
+    const result = run();
     notifyChange('tasks');
-    res.status(201).json({ ok: true, count });
+    res.status(201).json({ ok: true, ...result });
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }

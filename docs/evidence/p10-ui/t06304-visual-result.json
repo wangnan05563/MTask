@@ -1,0 +1,175 @@
+{
+  "pass": 12,
+  "fail": 0,
+  "checks": [
+    {
+      "name": "T06304-00 测试 API 就绪",
+      "ok": true,
+      "extra": {
+        "ok": true,
+        "service": "mtask-server",
+        "time": "2026-11-24T17:43:38.356Z"
+      }
+    },
+    {
+      "name": "T06304-00b 测试项目就绪",
+      "ok": true,
+      "extra": {
+        "projectId": "73b53682-09c9-4e95-a80f-88784fa7f659"
+      }
+    },
+    {
+      "name": "T06304-01 选择 CSV 后出现导入预览",
+      "ok": true,
+      "extra": {
+        "ok": true
+      }
+    },
+    {
+      "name": "T06304-02 自动识别 Jira 并映射外部 ID",
+      "ok": true,
+      "extra": {
+        "title": "CSV 导入预览",
+        "text": "M\nMTask\n首页\n任务\n项目\nAI 控制台\n设置\n任务\n3\n● 后端已连接\n工作台\n/\n任务\n任务\n\n统一查看待办、已完成与搁置任务；列表、看板、表格与日历共用同一套筛选和任务集。\n\nT06304 UI 导入验证 1795542218374\n0\n0\n工作空间\n0\nAI 功能暂不可用：尚未配置 AI 工具，AI 功能暂不可用\n去模型管理\n暂无保存视图\n紧凑 · 32px 行高\n舒适 · 40px 行高\n宽松 · 48px 行高\nGit\nCSV 解析完成：2 条待确认导入\n低\n中\n高\n极高\n未分类\nCSV 导入预览\n来源：Jira CSV（自动识别）\n可导入 2 条\n确认导入\n字段映射：\n标题 *\n（必选）\nSummary\nDescription\nPriority\nStatus\nIssue key\n描述\n未映射\nSummary\nDescription\nPriority\nStatus\nIssue key\n优先级\n未映射\nSummary\nDescription\nPriority\nStatus\nIssue key\n状态\n未映射\nSummary\nDescription\nPriority\nStatus\nIssue key\n分类\n未映射\nSummary\nDescription\nPriority\nStatus\nIssue key\n外部 ID\n未映射\nSummary\nDescription\nPriority\nStatus\nIssue key\n标题\t描述\t优先级\t状态\t分类\t外部 ID\nT06304 UI 导入甲\t来自 Jira 的第一条\thigh\ttodo\t—\tJIRA-UI-101\nT063",
+        "source": "来源：Jira CSV（自动识别）",
+        "mappingExternalId": "Issue key",
+        "mappingOptions": [
+          "未映射",
+          "Summary",
+          "Description",
+          "Priority",
+          "Status",
+          "Issue key"
+        ],
+        "headers": [
+          "标题",
+          "描述",
+          "优先级",
+          "状态",
+          "分类",
+          "外部 ID"
+        ],
+        "rows": [
+          [
+            "T06304 UI 导入甲",
+            "来自 Jira 的第一条",
+            "high",
+            "todo",
+            "—",
+            "JIRA-UI-101"
+          ],
+          [
+            "T06304 UI 导入乙",
+            "来自 Jira 的第二条",
+            "low",
+            "done",
+            "—",
+            "JIRA-UI-102"
+          ]
+        ],
+        "panelWidth": 1424,
+        "panelRight": 1432,
+        "scrollWidth": 1440,
+        "viewport": {
+          "w": 1440,
+          "h": 1000
+        },
+        "confirmDisabled": false
+      }
+    },
+    {
+      "name": "T06304-03 预览行携带外部 ID",
+      "ok": true,
+      "extra": [
+        [
+          "T06304 UI 导入甲",
+          "来自 Jira 的第一条",
+          "high",
+          "todo",
+          "—",
+          "JIRA-UI-101"
+        ],
+        [
+          "T06304 UI 导入乙",
+          "来自 Jira 的第二条",
+          "low",
+          "done",
+          "—",
+          "JIRA-UI-102"
+        ]
+      ]
+    },
+    {
+      "name": "T06304-04 1440 截图有效且无横向溢出",
+      "ok": true,
+      "extra": {
+        "shot": {
+          "file": "00-t06304-import-preview-1440.png",
+          "bytes": 83965
+        },
+        "scrollWidth": 1440
+      }
+    },
+    {
+      "name": "T06304-05 确认导入 2 条并回执",
+      "ok": true,
+      "extra": {
+        "clicked": true,
+        "toast": "CSV 导入完成：2 条任务已创建"
+      }
+    },
+    {
+      "name": "T06304-06 服务端落库 2 条（含 1 条完成态）",
+      "ok": true,
+      "extra": {
+        "count": 2,
+        "imported": [
+          {
+            "title": "T06304 UI 导入甲",
+            "status": "todo"
+          },
+          {
+            "title": "T06304 UI 导入乙",
+            "status": "done"
+          }
+        ]
+      }
+    },
+    {
+      "name": "T06304-07 重复文件重传显示判重",
+      "ok": true,
+      "extra": {
+        "source": "来源：Jira CSV（自动识别）",
+        "rows": [],
+        "text": "CSV 导入预览\n来源：Jira CSV（自动识别）\n可导入 0 条\n问题 2 行\n确认导入\n字段映射：\n标题 *\n（必选）\nSummary\nDescription\nPriority\nStatus\nIssue key\n描述\n未映射\nSummary\nDescription\nPriority\nStatus\nIssue key\n优先级\n未映射\nSummary\nDescription\nPriority\nStatus\nIssue key\n状态\n未映射\nSummary\nDescription\nPriority\nStatus\nIssue key\n分类\n未映射\nSummary\nDescription\nPriority\nStatus\nIssue key\n外部 ID\n未映射\nSummary\nDescription\nPriority\nStatus\nIssue key\n第 2 行：来源+外部 ID 重复：jira:JIRA-UI-101\n第 3 行：来源+外部 ID 重复：jira:JIRA-UI-102\n标题\t描述\t优先级\t状态\t分类\t外部 ID"
+      }
+    },
+    {
+      "name": "T06304-08 判重态截图有效",
+      "ok": true,
+      "extra": {
+        "file": "01-t06304-import-duplicate-1440.png",
+        "bytes": 80647
+      }
+    },
+    {
+      "name": "T06304-09 760 无横向溢出",
+      "ok": true,
+      "extra": {
+        "shot": {
+          "file": "02-t06304-import-duplicate-760.png",
+          "bytes": 73139
+        },
+        "scrollWidth": 760,
+        "panel": 456
+      }
+    },
+    {
+      "name": "T06304-10 全程无未捕获异常",
+      "ok": true,
+      "extra": {
+        "consoleErrors": []
+      }
+    }
+  ]
+}
