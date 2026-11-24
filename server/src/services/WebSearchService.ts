@@ -38,9 +38,11 @@ export interface WebSearchResult {
 }
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
+const GITHUB_TRENDING_TTL_MS = 10 * 60 * 1000;
 const MAX_ITEMS = 5;
 const MAX_RAW_ITEMS = 12;
 const cache = new Map<string, { at: number; value: WebSearchResult }>();
+const githubTrendingCache = new Map<string, { at: number; items: WebSearchItem[] }>();
 
 /** 默认权威源；可用 `queue.webSearchTrustedDomains` 或 `MTASK_WEBSEARCH_TRUSTED_DOMAINS` 覆盖 */
 const DEFAULT_TRUSTED_DOMAINS = [
@@ -88,6 +90,9 @@ const AUTHORITATIVE_FEEDS = [
   { name: 'OpenAI News', url: 'https://openai.com/news/rss.xml' },
   { name: 'GitHub Blog', url: 'https://github.blog/feed/' },
   { name: 'Google DeepMind Blog', url: 'https://deepmind.google/blog/rss.xml' },
+  { name: 'Google AI Blog', url: 'https://blog.google/technology/ai/rss/' },
+  { name: 'NVIDIA AI Blog', url: 'https://blogs.nvidia.com/blog/category/deep-learning/feed/' },
+  { name: 'Hugging Face Blog', url: 'https://huggingface.co/blog/feed.xml' },
   { name: 'arXiv cs.AI', url: 'https://rss.arxiv.org/rss/cs.AI' },
   { name: '机器之心', url: 'https://www.jiqizhixin.com/rss' },
 ];
@@ -238,7 +243,8 @@ function decodeEntities(input: string): string {
 }
 
 function stripHtml(input: string): string {
-  return decodeEntities(input.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
+  // feed 常把 HTML 实体化成 &lt;img ...&gt;；必须先解码再剥标签，否则图片地址会原样进提示词。
+  return decodeEntities(input).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 /** 外部网页文本进入提示词前去掉可能在数据段落里伪造边界的标签和控制字符 */
@@ -443,9 +449,15 @@ function parseFeedItems(xml: string, source: string): WebSearchItem[] {
     const body = block[2];
     const title = stripHtml(pickTag(body, ['title']));
     const rssLink = stripHtml(pickTag(body, ['link']));
-    const atomLink = body.match(/<link[^>]*href="([^"]+)"[^>]*\/?>/i)?.[1] ?? '';
+    const atomLinks = [...body.matchAll(/<link\s+([^>]*?)\/?>/gi)].map((m) => m[1]);
+    const preferredAtomLink = atomLinks.find((attrs) => /rel="alternate"/i.test(attrs))
+      ?? atomLinks.find((attrs) => !/rel="(enclosure|image|icon|preload)"/i.test(attrs))
+      ?? '';
+    const atomLink = preferredAtomLink.match(/href="([^"]+)"/i)?.[1] ?? '';
     const link = safeUrl(rssLink || atomLink);
     if (!title || !link) continue;
+    // 部分 Atom feed 的 enclosure 是封面图 webp/png；这不是文章地址，不能当来源。
+    if (/\.(?:webp|png|jpe?g|gif|svg)(?:$|[?#])/i.test(new URL(link).pathname)) continue;
     const snippet = stripHtml(pickTag(body, ['description', 'summary', 'content:encoded', 'content'])).slice(0, 500);
     const publishedAt = stripHtml(pickTag(body, ['pubDate', 'published', 'updated', 'dc:date']));
     items.push({
@@ -512,6 +524,9 @@ function parseGithubTrendingItem(body: string, since: string): WebSearchItem | n
  * 解析失败/限流时静默返回空，不阻断队列发送。
  */
 async function searchGithubTrending(maxItems = 3, windowDays = 0, errors?: string[]): Promise<WebSearchItem[]> {
+  const cacheKey = `${maxItems}|${windowDays}`;
+  const cached = githubTrendingCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < GITHUB_TRENDING_TTL_MS) return cached.items.slice(0, maxItems);
   // GitHub 偶发 429/连接抖动；空结果不缓存，短暂退避后重试一次，
   // 避免「新项目」段因为一次抓取失败整段变成“本期无”。
   // 3 天窗口优先 daily；daily 无结果时第二次回落到 weekly，避免直接空段。
@@ -542,12 +557,19 @@ async function searchGithubTrending(maxItems = 3, windowDays = 0, errors?: strin
           if (out.length >= maxItems) break;
         }
       }
-      if (out.length > 0) return out;
+      if (out.length > 0) {
+        githubTrendingCache.set(cacheKey, { at: Date.now(), items: out.slice() });
+        return out;
+      }
       lastError = `GitHub Trending（${since}）：未解析到条目（页面结构可能变化）`;
     } catch (e) {
       lastError = `GitHub Trending（${since}）：${e instanceof Error ? e.message : String(e)}`;
     }
     if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 600));
+  }
+  if (cached) {
+    errors?.push(`${lastError}；使用 ${Math.round((Date.now() - cached.at) / 60000)} 分钟前的 GitHub Trending 缓存`);
+    return cached.items.slice(0, maxItems);
   }
   if (lastError) errors?.push(lastError);
   return [];
@@ -748,6 +770,7 @@ export async function searchWeb(
 /** 测试/设置变更后清缓存；代理缓存也必须一起清，否则改了设置仍走旧代理 */
 export function clearWebSearchCache(): void {
   cache.clear();
+  githubTrendingCache.clear();
   cachedProxyUrl = undefined;
   proxyDispatcher = null;
 }
