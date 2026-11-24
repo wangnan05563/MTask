@@ -1,5 +1,6 @@
 import { getDb } from './connection';
 import { ensureAgentRunSchema } from './agentRunSchema';
+import { ensureAgentRunRiskSchema } from './agentRunRiskSchema'; // T06299（REQ-007 / PRD §B7）：风险策略、审批与不可篡改审计
 import { ensureInboxSchema } from './inboxSchema';
 
 /** 首次启动建表。DDL 与 docs/技术设计.md 第 3 节保持一致。 */
@@ -1220,6 +1221,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureMemoryLayeringColumns();
   // T06293（REQ-036 / PRD §B6）：统一 Agent Run / RunStep 增量表；不动旧队列、会话与用量表
   ensureAgentRunSchema();
+  // T06299（REQ-007 / PRD §B7）：风险策略、审批暂停与不可篡改审计；依赖 Run/RunStep 表
+  ensureAgentRunRiskSchema();
   // T06295（REQ-032 / PRD §A2）：可操作收件箱增量表；不动任务、执行会话与通知表
   ensureInboxSchema();
 

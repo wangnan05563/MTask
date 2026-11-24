@@ -19,6 +19,7 @@ import { readPoolStatus, setPoolLimit } from '../services/ConcurrencyPool'; // T
 import { ExecSessionService } from '../services/ExecSessionService'; // T01271：执行会话面板数据源
 import { GlobalSearchService, parseSearchTypes } from '../services/GlobalSearchService'; // T06296（REQ-003 / PRD §A3）：全局搜索
 import { RunTraceService } from '../services/RunTraceService'; // T06298（REQ-036 / PRD §B6）：单 Run 追踪详情只读契约
+import { RunRiskService, RunRiskError, type RiskDecision, type ApprovalStatus, type AuditEventType } from '../services/RunRiskService'; // T06299（REQ-007 / PRD §B7）：风险分级、审批与审计
 import { buildTodayView } from '../services/TodayService'; // T06294（REQ-001）：Today View 首页聚合
 import { inboxService, InboxError, type InboxStatus, type InboxType } from '../services/InboxService'; // T06295（REQ-032）：可操作收件箱
 import { PushService } from '../services/PushService'; // T01440：Web Push
@@ -932,6 +933,117 @@ api.get('/runs/:id', (req, res) => {
   const trace = new RunTraceService().getRun(String(req.params.id || ''));
   if (!trace) return res.status(404).json({ error: 'run_not_found' });
   return res.json(trace);
+});
+
+/** T06299：风险策略 / 审批 / 审计的统一错误映射。 */
+function sendRunRiskError(res: import('express').Response, e: unknown): void {
+  if (e instanceof RunRiskError) {
+    const status = e.code === 'schema_missing'
+      ? 503
+      : e.code === 'run_not_found' || e.code === 'step_not_found' || e.code === 'approval_not_found' || e.code === 'project_not_found'
+        ? 404
+        : e.code === 'run_not_gateable' || e.code === 'approval_not_pending'
+          ? 409
+          : 400;
+    res.status(status).json({ error: e.code, message: e.message });
+    return;
+  }
+  res.status(500).json({ error: 'run_risk_failed', message: e instanceof Error ? e.message : String(e) });
+}
+
+/**
+ * T06299（REQ-007 / PRD §B7）：项目级风险策略。
+ * 默认 R0/R1 allow、R2 ask、R3 block；显式配置覆盖默认，并写 policy_changed 审计。
+ */
+api.get('/run-risk/policy/:projectId', (req, res) => {
+  try { res.json(new RunRiskService().getPolicy(String(req.params.projectId || ''))); }
+  catch (e) { sendRunRiskError(res, e); }
+});
+
+api.put('/run-risk/policy/:projectId', (req, res) => {
+  try {
+    const body = (req.body ?? {}) as { levels?: Record<string, unknown>; actor?: unknown };
+    const levels = (body.levels ?? body) as Record<string, unknown>;
+    const input: Partial<Record<'R0' | 'R1' | 'R2' | 'R3', RiskDecision>> = {};
+    for (const level of ['R0', 'R1', 'R2', 'R3'] as const) {
+      if (levels[level] !== undefined) input[level] = levels[level] as RiskDecision;
+    }
+    res.json(new RunRiskService().setPolicy(String(req.params.projectId || ''), input, String(body.actor ?? 'api')));
+  } catch (e) { sendRunRiskError(res, e); }
+});
+
+/** T06299：待审批列表；默认 pending，供 T06300 审批 UI 消费。 */
+api.get('/run-risk/approvals', (req, res) => {
+  try {
+    const statusRaw = String(req.query.status ?? '').trim();
+    const allowed = ['pending', 'approved', 'rejected', 'expired', 'cancelled'];
+    if (statusRaw && !allowed.includes(statusRaw)) return res.status(400).json({ error: 'invalid_status' });
+    const rows = new RunRiskService().listApprovals({
+      status: (statusRaw || 'pending') as ApprovalStatus,
+      projectId: req.query.projectId ? String(req.query.projectId) : undefined,
+      runId: req.query.runId ? String(req.query.runId) : undefined,
+      limit: req.query.limit ? Number(req.query.limit) : undefined,
+    });
+    return res.json({ rows, count: rows.length });
+  } catch (e) { return sendRunRiskError(res, e); }
+});
+
+api.get('/run-risk/approvals/:id', (req, res) => {
+  try {
+    const row = new RunRiskService().getApproval(String(req.params.id || ''));
+    if (!row) return res.status(404).json({ error: 'approval_not_found' });
+    return res.json(row);
+  } catch (e) { return sendRunRiskError(res, e); }
+});
+
+/** T06299：批准后继续，拒绝则终止；审计在 service 内单源写入。 */
+api.post('/run-risk/approvals/:id/decision', (req, res) => {
+  try {
+    const body = (req.body ?? {}) as { decision?: unknown; actor?: unknown; reason?: unknown };
+    const decision = body.decision === 'approved' || body.decision === 'rejected' ? body.decision : null;
+    if (!decision) return res.status(400).json({ error: 'invalid_decision' });
+    return res.json(new RunRiskService().decideApproval(
+      String(req.params.id || ''), decision, String(body.actor ?? 'reviewer'), String(body.reason ?? ''),
+    ));
+  } catch (e) { return sendRunRiskError(res, e); }
+});
+
+/** T06299：引擎执行步骤前的风险门禁（不执行工具，只裁决/建审批）。 */
+api.post('/run-risk/gate', (req, res) => {
+  try {
+    const body = (req.body ?? {}) as {
+      runId?: unknown; stepId?: unknown; projectId?: unknown; signal?: unknown;
+      actor?: unknown; impact?: unknown; diff?: unknown; preview?: unknown;
+    };
+    if (!body.signal || typeof body.signal !== 'object') return res.status(400).json({ error: 'signal_required' });
+    return res.json(new RunRiskService().gateStep({
+      runId: String(body.runId ?? ''), stepId: String(body.stepId ?? ''), projectId: String(body.projectId ?? ''),
+      signal: body.signal as import('../services/RunRiskService').RiskSignal,
+      actor: String(body.actor ?? ''), impact: String(body.impact ?? ''),
+      diff: String(body.diff ?? ''), preview: String(body.preview ?? ''),
+    }));
+  } catch (e) { return sendRunRiskError(res, e); }
+});
+
+/** T06299：不可篡改审计读取/导出；download=1 时返回 JSON 文件流。 */
+api.get('/run-risk/audit', (req, res) => {
+  try {
+    const eventType = req.query.eventType ? String(req.query.eventType) as AuditEventType : undefined;
+    const filter = {
+      projectId: req.query.projectId ? String(req.query.projectId) : undefined,
+      runId: req.query.runId ? String(req.query.runId) : undefined,
+      eventType,
+      limit: req.query.limit ? Number(req.query.limit) : undefined,
+    };
+    const svc = new RunRiskService();
+    if (String(req.query.download ?? '') === '1') {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent('run-risk-audit.json')}`);
+      return res.send(svc.exportAudit(filter));
+    }
+    const rows = svc.listAudit(filter);
+    return res.json({ rows, count: rows.length });
+  } catch (e) { return sendRunRiskError(res, e); }
 });
 
 // T06296：全局搜索 Run 结果按 id 深链——首屏只取最近 100 条，老会话需单独取回后并入看板。
