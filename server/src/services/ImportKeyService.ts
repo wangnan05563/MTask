@@ -59,11 +59,44 @@ export function markImported(
   db: Database.Database = getDb(),
 ): boolean {
   if (!externalId) return false;
+  const claimId = claimImported(projectId, source, externalId, db);
+  if (!claimId) return false;
+  bindImportedTask(claimId, taskId, db);
+  return true;
+}
+
+/**
+ * T06308（REQ-071 / AC-36）：原子占用去重键，必须在创建任务**之前**调用。
+ *
+ * 旧流程是「查重 → 建任务 → 登记键」，同一键的两次并发确认可能都通过查重并各建一条任务，
+ * 随后只有一个键登记成功，留下重复任务。这里先 `INSERT OR IGNORE` 抢占唯一键：
+ * - 返回 claimId：本请求独占该键，可以继续建任务；
+ * - 返回 null：键已被占用，调用方应计入 skipped；
+ * - 建任务失败时由外层事务整体回滚，claim 随事务消失，不会留下“死键”。
+ */
+export function claimImported(
+  projectId: string,
+  source: ImportSource,
+  externalId: string,
+  db: Database.Database = getDb(),
+): string | null {
+  if (!externalId) return null;
+  const claimId = uuid();
   const r = db
     .prepare(
       `INSERT OR IGNORE INTO task_import_keys (id, project_id, source, external_id, task_id, created_at)
        VALUES (?, ?, ?, ?, ?, ?)`,
     )
-    .run(uuid(), projectId, source, externalId, taskId, new Date().toISOString());
-  return r.changes > 0;
+    .run(claimId, projectId, source, externalId, `pending:${claimId}`, new Date().toISOString());
+  return r.changes > 0 ? claimId : null;
+}
+
+/** 任务创建成功后，把 claim 的占位 task_id 绑定到真实任务；绑定失败即抛错回滚整批。 */
+export function bindImportedTask(
+  claimId: string,
+  taskId: string,
+  db: Database.Database = getDb(),
+): void {
+  const r = db.prepare('UPDATE task_import_keys SET task_id = ? WHERE id = ?').run(taskId, claimId);
+  if (r.changes !== 1) throw new Error(`去重键登记不存在或已绑定：${claimId}`);
 }

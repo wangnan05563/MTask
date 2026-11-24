@@ -24,7 +24,7 @@ import { buildTodayView } from '../services/TodayService'; // T06294（REQ-001�
 import { inboxService, InboxError, type InboxStatus, type InboxType } from '../services/InboxService'; // T06295（REQ-032）：可操作收件箱
 import { PushService } from '../services/PushService'; // T01440：Web Push
 import { TaskExportService, type ExportFormat } from '../services/TaskExportService'; // T01480：任务导出
-import { listImportedKeys, markImported, normalizeExternalId, normalizeImportSource, type ImportSource } from '../services/ImportKeyService'; // T06304（REQ-010 / PRD §B2）：来源+外部 ID 去重
+import { listImportedKeys, normalizeExternalId, normalizeImportSource, claimImported, bindImportedTask, type ImportSource } from '../services/ImportKeyService'; // T06304/T06308（REQ-071 / AC-36）：来源+外部 ID 原子去重
 import { listBackups, runBackup, restoreBackup, backupStatus, deleteBackup, BackupDeleteError } from '../services/BackupService'; // T01061-FR5.1 / T05791
 import { ConfigService } from '../services/ConfigService';
 import { AIProviderService } from '../services/AIProviderService'; // T05784：厂商预制目录（后端单源）
@@ -1774,16 +1774,19 @@ api.post('/tasks/import-csv/confirm', (req, res) => {
       for (const it of items as Array<{ title: string; description?: string; priority?: string; status?: string; categoryId?: string | null; externalId?: string }>) {
         if (!it.title?.trim()) { skipped += 1; continue; }
         const externalId = normalizeExternalId(it.externalId);
-        if (externalId && importedKeys.has(externalId)) { skipped += 1; continue; }
-        if (!externalId && db.prepare('SELECT id FROM tasks WHERE project_id = ? AND title = ? AND archived = 0').get(projectId, it.title)) {
+        let claimId: string | null = null;
+        if (externalId) {
+          if (importedKeys.has(externalId)) { skipped += 1; continue; }
+          // T06308：先原子占键再建任务，并发确认同一外部 ID 时只有一个能落库
+          claimId = claimImported(projectId, source, externalId, db);
+          if (!claimId) { skipped += 1; continue; }
+          importedKeys.add(externalId);
+        } else if (db.prepare('SELECT id FROM tasks WHERE project_id = ? AND title = ? AND archived = 0').get(projectId, it.title)) {
           skipped += 1;
           continue;
         }
         const created = TaskService.create({ projectId, title: it.title, description: it.description, priority: (it.priority as TaskInput['priority']) ?? 'normal', status: (it.status as TaskInput['status']) ?? undefined, categoryId: it.categoryId ?? null });
-        if (externalId) {
-          markImported(projectId, source, externalId, created.id, db);
-          importedKeys.add(externalId);
-        }
+        if (claimId) bindImportedTask(claimId, created.id, db);
         count += 1;
       }
       return { count, skipped };
@@ -1916,16 +1919,19 @@ api.post('/tasks/import-json/confirm', (req, res) => {
       for (const it of items as JsonImportItem[]) {
         if (!it.title?.trim()) { skipped += 1; continue; }
         const externalId = normalizeExternalId(it.externalId);
-        if (externalId && importedKeys.has(externalId)) { skipped += 1; continue; }
-        if (!externalId && db.prepare('SELECT id FROM tasks WHERE project_id = ? AND title = ? AND archived = 0').get(projectId, it.title)) {
+        let claimId: string | null = null;
+        if (externalId) {
+          if (importedKeys.has(externalId)) { skipped += 1; continue; }
+          // T06308：与 CSV 同一套「先占键、后建任务」机制；失败回滚时 claim 一并撤销
+          claimId = claimImported(projectId, source, externalId, db);
+          if (!claimId) { skipped += 1; continue; }
+          importedKeys.add(externalId);
+        } else if (db.prepare('SELECT id FROM tasks WHERE project_id = ? AND title = ? AND archived = 0').get(projectId, it.title)) {
           skipped += 1;
           continue;
         }
         const created = TaskService.create({ projectId, title: it.title, description: it.description, priority: (it.priority as TaskInput['priority']) ?? 'normal' });
-        if (externalId) {
-          markImported(projectId, source, externalId, created.id, db);
-          importedKeys.add(externalId);
-        }
+        if (claimId) bindImportedTask(claimId, created.id, db);
         count += 1;
       }
       return { count, skipped };
