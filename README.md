@@ -554,6 +554,8 @@ npx electron scripts/make-social-preview.js
 
 ## 相关文档
 
+- [`docs/用户手册-十期.md`](docs/用户手册-十期.md) — 十期用户手册（安装、今日/收件箱、任务闭环、Run 与审批、主题与备份）
+- [`docs/更新日志-十期.md`](docs/更新日志-十期.md) — 十期版本更新日志与验收结论（0.1.1123.284）
 - [`docs/产品介绍-MTask.md`](docs/产品介绍-MTask.md) — 产品介绍（图文完整版，本 README 的产品章节由其整理而来）
 - [`docs/产品介绍-MTask.docx`](docs/产品介绍-MTask.docx) — 同内容 Word 版，可直接分发或打印（A4 13 页）
 - [`docs/概要设计.md`](docs/概要设计.md) — 系统概要设计
