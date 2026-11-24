@@ -1,0 +1,10 @@
+[PASS] T06326-01 13 个原语文件齐全 → {"missing":[]}
+[PASS] T06326-02 统一出口导出全部 13 个原语 → {"missingExports":[]}
+[PASS] T06326-03 新代码零十六进制色值 → {"hexHits":[]}
+[PASS] T06326-04 新代码零 primitive Token 直引 → {"primitiveHits":[]}
+[PASS] T06326-05 新代码零 rgba 硬编码颜色 → {"rgbaHits":[]}
+[PASS] T06326-06 13 个原语关键可访问性/交互标记齐全 → {"ariaFailures":[]}
+[PASS] T06326-07 components.css 覆盖 13 个原语基础选择器 → {"missingCss":[]}
+[PASS] T06326-08 状态矩阵选择器齐全 → {"missingStates":[]}
+
+8/8 PASS

@@ -1,0 +1,22 @@
+{
+  "task": "T06326",
+  "title": "补齐 C6 剩余 13 个 UI primitives",
+  "date": "2026-11-25",
+  "components": ["Select", "Checkbox", "Radio", "Switch", "Dialog", "Drawer", "Popover", "Tooltip", "Tabs", "Toast", "ErrorState", "Toolbar", "Panel"],
+  "c6_total": 21,
+  "c6_delivered": 21,
+  "static_gate": { "passed": 8, "total": 8, "log": "verify-t06326-static.log" },
+  "ssr_gate": { "passed": true, "assertionGroups": 14, "log": "verify-t06326-render.log" },
+  "build": {
+    "command": "npm run build:web",
+    "tsc": "PASS",
+    "vite": "PASS",
+    "seconds": 23.8,
+    "main": "index-Dhu1cFim.js",
+    "mainBytes": 2097877,
+    "mainGzipBytes": 602545,
+    "log": "build-web.log"
+  },
+  "tokens": { "hexHits": 0, "primitiveHits": 0, "rgbaHits": 0 },
+  "boundary": ["未迁移旧业务页面", "未做视觉回归与全量 AC", "Dialog/Drawer 单层模态", "Toast 内存队列"]
+}
