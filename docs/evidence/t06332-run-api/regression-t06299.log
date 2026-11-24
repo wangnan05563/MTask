@@ -1,0 +1,3 @@
+T06299 run-risk contract PASS: 15 groups
+(node:67032) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)

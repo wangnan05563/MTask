@@ -1,0 +1,3 @@
+T06298 Run 追踪契约门禁：9 组 / 63 断言 PASS
+(node:17856) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)

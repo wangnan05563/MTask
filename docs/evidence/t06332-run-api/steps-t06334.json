@@ -1,0 +1,49 @@
+{
+  "runId": "legacy:exec_session:1e5a0516-6185-4f19-bb9a-68a1000f3547",
+  "steps": [
+    {
+      "id": "legacy:exec_session:1e5a0516-6185-4f19-bb9a-68a1000f3547:step-0",
+      "seq": 0,
+      "type": "observation",
+      "status": "succeeded",
+      "input": "{\"platform\":\"workbuddy\",\"sessionId\":\"573457a3-a706-4811-a157-ae592c4c6178\",\"taskIds\":[\"8f501450-84f4-4618-a6bb-5eebc0a611b8\"]}",
+      "output": "外部执行平台 workbuddy 已建立会话",
+      "durationMs": 0,
+      "cost": 0,
+      "riskLevel": "R0",
+      "createdAt": "2026-11-24T15:49:57.233Z",
+      "updatedAt": "2026-11-24T15:49:57.233Z",
+      "synthetic": false
+    },
+    {
+      "id": "legacy:exec_session:1e5a0516-6185-4f19-bb9a-68a1000f3547:step-1",
+      "seq": 1,
+      "type": "observation",
+      "status": "succeeded",
+      "input": "{\"phase\":\"已提交、验收并回写结果\",\"progress\":100,\"progressReported\":true,\"lastHeartbeat\":\"2026-11-24T15:49:57.233Z\"}",
+      "output": "阶段：已提交、验收并回写结果；进度：100%",
+      "durationMs": 0,
+      "cost": 0,
+      "riskLevel": "R0",
+      "createdAt": "2026-11-24T15:49:57.233Z",
+      "updatedAt": "2026-11-24T15:49:57.233Z",
+      "synthetic": false
+    },
+    {
+      "id": "legacy:exec_session:1e5a0516-6185-4f19-bb9a-68a1000f3547:step-2",
+      "seq": 2,
+      "type": "decision",
+      "status": "succeeded",
+      "input": "{\"sessionStatus\":\"done\"}",
+      "output": "会话状态：已完成",
+      "durationMs": 0,
+      "cost": 0,
+      "riskLevel": "R0",
+      "createdAt": "2026-11-24T15:49:57.233Z",
+      "updatedAt": "2026-11-24T15:49:57.233Z",
+      "synthetic": false
+    }
+  ],
+  "stepCount": 3,
+  "generatedAt": "2026-11-24T22:37:01.503Z"
+}

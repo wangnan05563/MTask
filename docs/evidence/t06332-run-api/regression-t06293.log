@@ -1,0 +1,24 @@
+(node:34192) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+{
+(Use `node --trace-warnings ...` to show where the warning was created)
+  "status": "PASS",
+  "tables": [
+    "agent_runs",
+    "agent_run_steps"
+  ],
+  "columns": {
+    "agent_runs": 19,
+    "agent_run_steps": 12
+  },
+  "indexes": 8,
+  "checks": [
+    "idempotent",
+    "fk-actions",
+    "check-constraints",
+    "unique-step-seq",
+    "immutable-step",
+    "legacy-idempotency",
+    "cascade",
+    "old-table-unchanged"
+  ]
+}

@@ -15,7 +15,7 @@ import { getDb } from './connection';
  * 首版使用 CREATE TABLE IF NOT EXISTS 幂等建表；若 CHECK 约束需要演进，
  * 必须另走整表重建迁移，不能假设 IF NOT EXISTS 会更新旧定义。
  */
-const AGENT_RUN_SCHEMA_SQL = `
+export const AGENT_RUN_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS agent_runs (
   id               TEXT PRIMARY KEY,
   task_id          TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,

@@ -1,0 +1,23 @@
+{
+  "queue_jobs": {
+    "count": 12,
+    "sql_sha256": "671e95866b55ccfbe64c7501f8a5eab1a41ede86fd09a007b07ecf21c781003b"
+  },
+  "exec_sessions": {
+    "count": 2801,
+    "sql_sha256": "f88f1678977bb3eeef492f2cb387d1abeccca7e05413565338f41be564af59e6"
+  },
+  "ai_usage": {
+    "count": 7973,
+    "sql_sha256": "c827c4410ce7a37730f6a16bae8392e3778490a593393e6e59ac54edc8687b82"
+  },
+  "tasks": {
+    "count": 3386,
+    "sql_sha256": "bc8ec4cc605aced1546f611341badcd23dbd033d53987917c3f03b94cbb8bc9b"
+  },
+  "projects": {
+    "count": 59,
+    "sql_sha256": "9292b6d081d66d882e2a446e335838df225952ecee90abe5ad214e561ae88788"
+  },
+  "agent_runs_count": 0
+}

@@ -1,0 +1,14 @@
+{
+  "scanned": 112,
+  "inserted": 0,
+  "existing": 93,
+  "skipped": 19,
+  "failed": 0,
+  "counts": {
+    "agentRuns": 93,
+    "agentRunSteps": 217
+  },
+  "skippedByReason": {
+    "no_task_attribution": 19
+  }
+}

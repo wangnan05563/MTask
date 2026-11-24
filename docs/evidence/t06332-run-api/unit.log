@@ -1,0 +1,19 @@
+{
+  "verdict": "PASS",
+  "first": {
+    "scanned": 9,
+    "inserted": 7,
+    "skipped": 2,
+    "runs": 7,
+    "steps": 17
+  },
+  "list": {
+    "total": 7,
+    "byTask": 4,
+    "byProject": 3,
+    "succeeded": 3,
+    "failed": 2,
+    "usage": 2
+  },
+  "sampleRunId": "legacy:queue_job:j-ok"
+}

@@ -6,7 +6,8 @@
  * - 生产库尚未落 `agent_runs`、或旧会话没有原生映射时，用 `exec_sessions` 合成只读兼容视图；
  * - 合成视图使用稳定的 `legacy:exec_session:<id>` ID，不改旧表，也不把空表伪装成已验收。
  *
- * 完整的 Run 列表 / 旧 queue_job / ai_usage 回填仍归 T06332，本服务不越界写库。
+ * 完整的 Run 列表 / 旧 queue_job / ai_usage 回填由 T06332 的
+ * `RunQueryService` / `RunLegacyMapper` 提供；本服务仍只负责详情读取，不越界写库。
  */
 import type Database from 'better-sqlite3';
 import { getDb } from '../db/connection';

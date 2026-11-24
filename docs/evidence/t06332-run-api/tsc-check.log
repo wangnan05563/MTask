@@ -1,0 +1,7 @@
+T06332 TypeScript 编译门禁
+时间：2026-11-25 06:42 +08:00
+命令 1：node node_modules/typescript/bin/tsc --noEmit -p server/tsconfig.json
+结果：EXIT=0（stdout/stderr 均为空）
+命令 2：node node_modules/typescript/bin/tsc --noEmit -p web/tsconfig.json
+结果：EXIT=0（stdout/stderr 均为空）
+复跑（token 兜底修正后）2026-11-25 06:45：server EXIT=0，stdout 为空

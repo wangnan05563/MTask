@@ -19,6 +19,8 @@ import { readPoolStatus, setPoolLimit } from '../services/ConcurrencyPool'; // T
 import { ExecSessionService } from '../services/ExecSessionService'; // T01271：执行会话面板数据源
 import { GlobalSearchService, parseSearchTypes } from '../services/GlobalSearchService'; // T06296（REQ-003 / PRD §A3）：全局搜索
 import { RunTraceService } from '../services/RunTraceService'; // T06298（REQ-036 / PRD §B6）：单 Run 追踪详情只读契约
+import { RunQueryService, RunQueryError } from '../services/RunQueryService'; // T06332：Run 列表查询
+import { RunLegacyMapper } from '../services/RunLegacyMapper'; // T06332：旧队列/会话/用量映射
 import { RunRiskService, RunRiskError, type RiskDecision, type ApprovalStatus, type AuditEventType } from '../services/RunRiskService'; // T06299（REQ-007 / PRD §B7）：风险分级、审批与审计
 import { buildTodayView } from '../services/TodayService'; // T06294（REQ-001）：Today View 首页聚合
 import { inboxService, InboxError, type InboxStatus, type InboxType } from '../services/InboxService'; // T06295（REQ-032）：可操作收件箱
@@ -927,11 +929,83 @@ api.get('/exec-sessions', (_req, res) => res.json(ExecSessionService.listSession
 api.get('/exec-sessions/digest', (_req, res) => res.json(ExecSessionService.digest()));
 
 /**
+ * T06332（REQ-036 / PRD §B6）：Run 只读列表。
+ *
+ * 查询已映射到 `agent_runs` 的统一 Run；支持 taskId/taskNo、projectId、status、
+ * legacySource 过滤与分页。旧记录先经 `/runs/legacy-map` 映射后进入本列表。
+ */
+api.get('/runs', (req, res) => {
+  try {
+    const result = new RunQueryService(getDb()).list({
+      taskId: scalarText(req.query.taskId ?? req.query.task ?? ''),
+      projectId: scalarText(req.query.projectId ?? ''),
+      status: scalarText(req.query.status ?? ''),
+      legacySource: scalarText(req.query.legacySource ?? req.query.source ?? ''),
+      q: scalarText(req.query.q ?? ''),
+      from: scalarText(req.query.from ?? ''),
+      to: scalarText(req.query.to ?? ''),
+      limit: req.query.limit,
+      offset: req.query.offset,
+    });
+    res.json(result);
+  } catch (e) {
+    sendRunQueryError(res, e);
+  }
+});
+
+/**
+ * T06332：把旧队列 / 执行会话 / 可归因的用量记录映射到新表。
+ * - 旧表只读，写入只落 agent_runs / agent_run_steps；
+ * - 同一 legacy_source + legacy_ref 幂等，重复调用只刷新不新增；
+ * - ai_usage 无 task 归属时跳过并报告原因，不伪造任务/项目。
+ * 请求体：{ sources?: ["queue_job","exec_session","ai_usage"], limit?: 1..1000, offset?: number }
+ */
+api.post('/runs/legacy-map', (req, res) => {
+  try {
+    const body = (req.body ?? {}) as { sources?: unknown; limit?: unknown; offset?: unknown };
+    const result = new RunLegacyMapper(getDb()).map(body);
+    res.json(result);
+  } catch (e) {
+    sendRunQueryError(res, e);
+  }
+});
+
+/** T06332：只取 Run 的步骤时间线；详情字段仍由 GET /runs/:id 提供。 */
+api.get('/runs/:id/steps', (req, res) => {
+  const trace = new RunTraceService().getRun(String(req.params.id || ''));
+  if (!trace) return res.status(404).json({ error: 'run_not_found' });
+  return res.json({
+    runId: trace.id,
+    steps: trace.steps,
+    stepCount: trace.steps.length,
+    generatedAt: trace.generatedAt,
+  });
+});
+
+function sendRunQueryError(res: import('express').Response, e: unknown): void {
+  if (e instanceof RunQueryError) {
+    const status = e.code === 'schema_missing' ? 503 : e.code.startsWith('invalid_') ? 400 : 500;
+    res.status(status).json({ error: e.code, message: e.message });
+    return;
+  }
+  const msg = e instanceof Error ? e.message : String(e);
+  if (msg === 'schema_missing') {
+    res.status(503).json({ error: 'run_schema_missing', message: msg });
+    return;
+  }
+  if (msg === 'invalid_source') {
+    res.status(400).json({ error: 'invalid_source', message: msg });
+    return;
+  }
+  res.status(500).json({ error: 'run_query_failed', message: msg });
+}
+
+/**
  * T06298（REQ-036 / PRD §B6）：单 Run 追踪详情。
  *
  * 只读一个 Run：原生 `agent_runs`/`agent_run_steps` 优先；无原生映射时回退到
  * `exec_sessions` 兼容合成视图（稳定 `legacy:exec_session:<id>`，不写库）。
- * 本端点只服务详情页，Run 列表与旧数据回填仍由 T06332 提供。
+ * T06332 补齐列表与旧记录映射后，映射 Run 也走同一详情契约。
  */
 api.get('/runs/:id', (req, res) => {
   const trace = new RunTraceService().getRun(String(req.params.id || ''));

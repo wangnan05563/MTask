@@ -1,0 +1,19 @@
+{
+  "verdict": "PASS",
+  "first": {
+    "inserted": 7,
+    "skipped": 2,
+    "runs": 7,
+    "steps": 17
+  },
+  "second": {
+    "inserted": 0,
+    "existing": 7
+  },
+  "list": {
+    "byTask": 4,
+    "byProject": 7,
+    "usage": 2
+  },
+  "sampleRunId": "legacy:queue_job:j-t06332-ok-1795560171603"
+}
