@@ -6059,6 +6059,8 @@ export function TasksPage() {
         .verify-icon { animation: verify-pop 0.35s ease; }
         @keyframes aispin { to { transform: rotate(360deg); } }
         .aispin { animation: aispin 0.8s linear infinite; display: inline-block; }
+        /* T06314：任务行沿用 T01067 的屏外跳过渲染；原 .cv-auto 样式只注入设置页，任务页此前挂类不生效。 */
+        .cv-auto { content-visibility: auto; contain-intrinsic-size: auto 40px; }
         /* T00466：与提示词页 arena-row 特效统一——边框、刷新 flush、点击微缩放 */
         .task-item { border: 1px solid var(--border); border-radius: 8px; margin: 6px 0; transition: background-color 0.15s ease, transform .12s ease; }
         .task-item:hover { background: var(--surface-2); }
