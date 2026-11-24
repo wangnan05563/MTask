@@ -17,6 +17,7 @@ import { AiPolishButton, resolveAiToolId } from '../ui/AiPolishButton'; // T0079
 import { PromptOptimizeButton } from '../ui/PromptOptimizeButton'; // T00842 二轮：正文改写为结构化提示词
 import { OPTIMIZE_SCOPE_REQ, useOptimizeStore } from '../stores/optimizeStore'; // T03684：优化运行态切页保持
 import { relTime } from '../ui/format';
+import { useActiveProject } from '../ui/activeProject'; // T06329：转计划默认项目跟随顶栏全局上下文
 import { FilterBar, PageHeader, PageShell } from '../ui/layout'; // T06327：核心页统一页面壳、页头与吸顶筛选条
 
 type ReqSortKey = 'updated_at' | 'created_at' | 'title' | 'manual';
@@ -114,7 +115,7 @@ export function ReqPage() {
   const [planProjectId, setPlanProjectId] = useState('');
   const [planBusy, setPlanBusy] = useState(false);
   const [noteProject, setNoteProject] = useState<{ projectId: string; inboxId: string } | null>(null);
-  const [currentProject] = usePersistentState('tasks.activeProject', ''); // 当前正在看的项目，作转计划的默认预选
+  const [currentProject] = useActiveProject(); // 当前全局项目，作转计划的默认预选
   const projectList = useProjectList(); // T02201：项目列表统一走容错层
   const { projects } = projectList;
   // 排序条件：sortKey 排序字段，sortDir 升降序（默认时间降序，与后端默认一致）

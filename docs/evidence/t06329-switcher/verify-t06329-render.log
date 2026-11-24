@@ -1,0 +1,12 @@
+{
+  "htmlLength": 656,
+  "defaultLabel": "全部项目",
+  "checks": [
+    "折叠态",
+    "aria-haspopup/expanded",
+    "无未展开菜单",
+    "纯函数回退"
+  ],
+  "failures": []
+}
+PASS: T06329 顶栏切换器 SSR 与全局项目纯函数门禁通过。

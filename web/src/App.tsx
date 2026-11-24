@@ -29,6 +29,7 @@ import { usePrdGen } from './stores/prdGenStore'; // T01038：原始需求生成
 import { aiImportStore } from './stores/aiImportStore'; // T01038：项目计划/PRD 导入运行态
 
 import { TABS, type Tab } from './ui/tabs'; // T03184（PM-102）：一级导航单源——命令面板页面列表同源生成
+import { ProjectSwitcher } from './ui/nav/ProjectSwitcher'; // T06329：顶栏项目/工作区切换器
 import { PrimaryNav } from './ui/nav/PrimaryNav'; // T06289：左侧 5 项一级导航
 import { NAV_GROUPS, navGroupForTab } from './ui/nav/primaryNavGroups'; // T06289：一级入口分组与顶栏子页签单源
 import { applyDeepLink, buildDeepLink, readDeepLinkFromLocation } from './ui/deepLink'; // T03187（D-13）：深链契约单源
@@ -464,6 +465,7 @@ function Shell() {
         <main style={{ flex: 1, minWidth: 0, minHeight: '100vh' }}>
           <header className="mt-top-switcher" aria-label="页面切换">
             <span className="mt-top-group">{activeGroup.label}</span>
+            <ProjectSwitcher />
             {activeGroup.tabs.length > 1 && (
               <div className="mt-top-tabs" role="tablist" aria-label={`${activeGroup.label}子页面`}>
                 {activeGroup.tabs.map((item) => (

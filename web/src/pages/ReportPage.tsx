@@ -3,6 +3,7 @@ import { FIELD_XS } from '../ui/primitives'; // PM-302 ① 单源 ui/primitives.
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { api, type Project, type AITool } from '../api/client';
 import { ProjectListHint, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
+import { useActiveProject } from '../ui/activeProject'; // T06329：报表范围跟随顶栏全局项目
 import { ProjectScopePicker, scopeSummary } from '../ui/projectScopePicker'; // T02857：范围多选器提到 ui 层（总结汇表面板复用同一份）
 import { NoticeToast, useNotice } from '../ui/notice';
 import { ResourceHint, useResource, type ResourceHintView } from '../ui/resourceState'; // T02213：开关状态取数改走可见失败态层
@@ -1157,6 +1158,15 @@ export function ReportPage() {
   // T02165：项目范围由单选升级为多选（sessionStorage 键 report.projects）；旧 report.project 单值自动迁移。
   // 空数组 = 全部项目（与原单选「全部项目」口径一致），勾选顺序即报表与 AI 里的项目分块顺序。
   const [projectIds, setProjectIds] = useSessionState<string[]>('report.projects', useMemo(legacyProjectScope, []));
+  // T06329：顶栏切换项目时把报表范围同步过去；顶栏「全部项目」清空多选，回到全量聚合。
+  const [globalProject] = useActiveProject();
+  const lastGlobalProject = useRef(globalProject);
+  useEffect(() => {
+    const mountedWithGlobalScope = globalProject !== '' && projectIds.length === 0;
+    if (lastGlobalProject.current === globalProject && !mountedWithGlobalScope) return;
+    lastGlobalProject.current = globalProject;
+    setProjectIds(globalProject ? [globalProject] : []);
+  }, [globalProject, projectIds.length, setProjectIds]);
   // 单项目产物的消费方（启动会 PPT / PRD 导入目标 / 已上传 PRD 弹层 / 就绪任务推荐）仍按项目级口径，取首个勾选项目
   const projectId = projectIds[0] ?? '';
   // T01058-FR1.3：就绪任务推荐——deps 前置均完成的执行行（跟随工作台项目选择刷新）

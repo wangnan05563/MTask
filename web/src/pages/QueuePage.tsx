@@ -21,6 +21,7 @@ import { NoticeToast, useNotice } from '../ui/notice';
 import { useProjectList } from '../ui/projectList';
 import { BTN_DANGER_OUTLINE, BTN_DISABLED, BTN_ICON, BTN_PRIMARY, BTN_SECONDARY_MD } from '../ui/primitives';
 import { PageHeader, PageShell } from '../ui/layout'; // T06327：核心页统一页面壳与页头
+import { useActiveProject } from '../ui/activeProject'; // T06329：编排区项目筛选跟随顶栏全局上下文
 import { computeQueueMetrics, type JobFilter } from './queueMetrics';
 import { DispatchRecordsPanel } from './DispatchRecordsPanel'; // T06266：内部派发队列只读视图
 import { withContextCapacity } from '../utils/modelContext';
@@ -118,7 +119,9 @@ export function QueuePage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [tasksLoading, setTasksLoading] = useState(false);
   const [tasksError, setTasksError] = useState('');
-  const [projectId, setProjectId] = useState('');
+  const [globalProject, setGlobalProject] = useActiveProject();
+  const projectId = globalProject;
+  const setProjectId = setGlobalProject;
   const [taskKeyword, setTaskKeyword] = useState('');
   const [pickedTaskIds, setPickedTaskIds] = useState<string[]>([]);
 

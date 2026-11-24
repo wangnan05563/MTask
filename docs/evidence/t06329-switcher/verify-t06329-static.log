@@ -1,0 +1,17 @@
+{
+  "files": {
+    "store": "web/src/ui/activeProject.ts",
+    "switcher": "web/src/ui/nav/ProjectSwitcher.tsx",
+    "app": "web/src/App.tsx",
+    "css": "web/src/ui/nav/primaryNav.css"
+  },
+  "consumers": [
+    "任务",
+    "项目计划",
+    "通用需求",
+    "投递队列",
+    "报表"
+  ],
+  "failures": []
+}
+PASS: T06329 顶栏项目切换器、全局项目上下文与消费页接入静态门禁通过。

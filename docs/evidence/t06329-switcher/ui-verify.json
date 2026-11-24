@@ -1,0 +1,169 @@
+{
+  "results": [
+    {
+      "step": "初始-全部项目",
+      "width": 1440,
+      "label": "全部项目",
+      "expanded": "false",
+      "haspopup": "listbox",
+      "buttonRect": {
+        "x": 312,
+        "y": 21,
+        "w": 106,
+        "h": 29
+      },
+      "menuRect": null,
+      "menuOpen": false,
+      "optionCount": 0,
+      "headerWidth": 1169,
+      "headerScrollWidth": 1169,
+      "groupDisplay": "block",
+      "innerWidth": 1440,
+      "docScrollWidth": 1425,
+      "overflowX": false,
+      "storage": null
+    },
+    {
+      "step": "展开菜单",
+      "width": 1440,
+      "label": "全部项目",
+      "expanded": "true",
+      "haspopup": "listbox",
+      "buttonRect": {
+        "x": 312,
+        "y": 20,
+        "w": 107,
+        "h": 31
+      },
+      "menuRect": {
+        "x": 312,
+        "right": 563,
+        "w": 251,
+        "h": 74
+      },
+      "menuOpen": true,
+      "optionCount": 2,
+      "headerWidth": 1169,
+      "headerScrollWidth": 1169,
+      "groupDisplay": "block",
+      "innerWidth": 1440,
+      "docScrollWidth": 1425,
+      "overflowX": false
+    },
+    {
+      "step": "键盘选中项目",
+      "width": 1440,
+      "label": "T06314 性能压测",
+      "expanded": "false",
+      "haspopup": "listbox",
+      "buttonRect": {
+        "x": 312,
+        "y": 19,
+        "w": 151,
+        "h": 33
+      },
+      "menuRect": null,
+      "menuOpen": false,
+      "optionCount": 0,
+      "headerWidth": 1169,
+      "headerScrollWidth": 1169,
+      "groupDisplay": "block",
+      "innerWidth": 1440,
+      "docScrollWidth": 1425,
+      "overflowX": false,
+      "storage": "p-t06314-perf",
+      "probe": "keep"
+    },
+    {
+      "step": "计划页",
+      "width": 1440,
+      "label": "T06314 性能压测",
+      "planPicker": "选择项目：T06314 性能压测（已完成 0 / 进行中 0 / 待开始 0）",
+      "storage": "p-t06314-perf",
+      "probe": "keep",
+      "overflowX": false
+    },
+    {
+      "step": "投递队列页",
+      "width": 1440,
+      "label": "T06314 性能压测",
+      "storage": "p-t06314-perf",
+      "probe": "keep",
+      "overflowX": false
+    },
+    {
+      "step": "报表页",
+      "width": 1440,
+      "label": "T06314 性能压测",
+      "storage": "p-t06314-perf",
+      "scopeText": "T06314 性能压测1/8",
+      "hasGlobalName": true,
+      "probe": "keep",
+      "overflowX": false
+    },
+    {
+      "step": "刷新恢复",
+      "width": 1440,
+      "label": "T06314 性能压测",
+      "storage": "p-t06314-perf"
+    },
+    {
+      "step": "1280 展开",
+      "width": 1280,
+      "label": "T06314 性能压测",
+      "expanded": "true",
+      "haspopup": "listbox",
+      "buttonRect": {
+        "x": 312,
+        "y": 19,
+        "w": 151,
+        "h": 33
+      },
+      "menuRect": {
+        "x": 312,
+        "right": 563,
+        "w": 251,
+        "h": 74
+      },
+      "menuOpen": true,
+      "optionCount": 2,
+      "headerWidth": 1009,
+      "headerScrollWidth": 1009,
+      "groupDisplay": "block",
+      "innerWidth": 1280,
+      "docScrollWidth": 1265,
+      "overflowX": false
+    },
+    {
+      "step": "1180 折叠态",
+      "width": 1180,
+      "label": "T06314 性能压测",
+      "expanded": "false",
+      "haspopup": "listbox",
+      "buttonRect": {
+        "x": 272,
+        "y": 19,
+        "w": 151,
+        "h": 33
+      },
+      "menuRect": null,
+      "menuOpen": false,
+      "optionCount": 0,
+      "headerWidth": 909,
+      "headerScrollWidth": 909,
+      "groupDisplay": "none",
+      "innerWidth": 1180,
+      "docScrollWidth": 1165,
+      "overflowX": false
+    },
+    {
+      "step": "切回全部项目",
+      "width": 1440,
+      "label": "全部项目",
+      "storage": "",
+      "menuOpen": false
+    }
+  ],
+  "errors": [],
+  "failures": []
+}

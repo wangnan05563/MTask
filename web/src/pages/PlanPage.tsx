@@ -23,6 +23,7 @@ import { FontColorButton } from '../ui/FontColorButton';
 import { saveBlob } from '../utils/download'; // T03197：分享快照下载（文件名取自服务端 Content-Disposition）
 import { api, type AITool } from '../api/client';
 import { PageHeader, PageShell } from '../ui/layout'; // T06327：核心页统一页面壳与页头
+import { useActiveProject } from '../ui/activeProject'; // T06329：计划项目跟随顶栏全局上下文
 import { askConfirm, askInput, askInputEx, showReport } from '../ui/dialogs';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { buildWorkdayCtx } from '../utils/workday'; // T01059 后续：甘特拖动
@@ -1503,7 +1504,13 @@ export function PlanPage() {
   const projectList = useProjectList();
   const { projects } = projectList;
   // T00460：切页保状态——项目选择会话级持久化，切回不重置
-  const [projectId, setProjectId] = useSessionState('plan.projectId', '');
+  const [globalProject, setGlobalProject] = useActiveProject();
+  const [sessionProjectId, setSessionProjectId] = useSessionState('plan.projectId', '');
+  const projectId = globalProject || sessionProjectId;
+  const setProjectId = useCallback((id: string) => {
+    setSessionProjectId(id);
+    if (id) setGlobalProject(id);
+  }, [setSessionProjectId, setGlobalProject]);
   const [plans, setPlans] = useState<PlanTask[]>([]);
   // T03194（PM-204）：里程碑达成预测（按 milestoneId 索引）+ 取数失败态 + 明细面板开关
   const [forecasts, setForecasts] = useState<Record<string, MilestoneForecast>>({});
@@ -1766,8 +1773,8 @@ export function PlanPage() {
   const loadProjects = useCallback(async () => {
     await refreshProjectList();
     const ps = getProjectListSnapshot();
-    if (ps.length > 0) setProjectId((cur) => cur || ps[0].id);
-  }, []);
+    if (ps.length > 0 && !projectId) setProjectId(ps[0].id);
+  }, [projectId, setProjectId]);
   useEffect(() => { void loadProjects(); }, [loadProjects]);
   // T00657：任务与计划变更会改变项目下拉计数 → 订阅变更实时刷新（服务端同步失效项目列表缓存）
   useEffect(() => api.openChangeStream((kind) => {

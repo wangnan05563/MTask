@@ -14,6 +14,7 @@ import { SavedViewMenu } from '../components/SavedViewMenu'; // T06303（REQ-009
 import { TemplateMenu } from '../components/TemplateMenu'; // T06305（REQ-010 / PRD §B2）：任务/项目模板一键实例化与撤销
 import { focusPlanNode, focusTaskByNo, type FocusTaskIntent } from '../ui/focusTask'; // T01568：外部跳转定位意图（通知/铃铛/就绪条）；T02196：徽标点击定位
 import { ProjectListHint, getProjectListSnapshot, patchProject, refreshProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
+import { ALL_PROJECTS, useActiveProject } from '../ui/activeProject'; // T06329：顶栏全局项目上下文
 import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：选中项有效性校验失败态提示；T02257：AI 工具列表同层接入
 import { PinToggle } from '../ui/PinToggle';
 import { priorityAriaLabel, priorityBadgeLabel, priorityColor, priorityTone } from '../ui/priority'; // PM-302 ③：优先级 → 颜色/文案单源（列表/看板/矩阵/移动端共用）
@@ -264,8 +265,7 @@ const CSV_MAP_FIELDS: Array<{ field: 'title' | 'description' | 'priority' | 'sta
   { field: 'externalId', label: '外部 ID' },
 ];
 
-/** T03211（PM-105）：全部项目视图的哨兵值——任务查询不带 projectId，选中集合可跨项目 */
-const ALL_PROJECTS = '__all__';
+/** 任务页沿用全局哨兵 `ALL_PROJECTS`（定义在 ui/activeProject.ts，顶栏与各页共用一个值）。 */
 
 /**
  * T03703：「验证通过」= 已完成 + 已验证（与批量验证入口「已完成的标记为已验证」同口径——
@@ -805,8 +805,12 @@ export function TasksPage() {
   const [reqCats, setReqCats] = useState<ReqCategory[]>([]);
   // 复用（创建副本）操作进行中：全局 busy store，切页不丢失，防止请求进行中重复提交
   const reuseBusy = useBusy('tasks.reuse');
-  // 项目/模型为长期偏好，用 localStorage 持久化，切页与刷新后均保留；未选状态透传空串，不强制填充
-  const [activeProject, setActiveProject] = usePersistentState('tasks.activeProject', '');
+  // 项目为顶栏全局上下文（localStorage 持久化 + 跨页订阅）；任务页复用 __all__ 哨兵表示全部项目
+  const [globalProject, setGlobalProject] = useActiveProject();
+  const activeProject = globalProject || ALL_PROJECTS;
+  const setActiveProject = useCallback((projectId: string) => {
+    setGlobalProject(projectId === ALL_PROJECTS ? '' : projectId);
+  }, [setGlobalProject]);
   // T06322：列表行密度（紧凑/舒适/宽松）——持久化偏好，默认紧凑保持既有 32px 基线
   const [densityRaw, setDensityRaw] = usePersistentState<string>('tasks.density', 'compact');
   const density = normalizeTaskDensity(densityRaw);
