@@ -120,6 +120,18 @@ export interface RouteRequest {
   at?: Date;
 }
 
+/** T06312（REQ-044）：预算不足时的降级候选，供前端只展示选项、不展开消耗明细。 */
+export interface DegradeOption {
+  toolId: string;
+  toolName: string;
+  model: string;
+  estimatedCost: number;
+  estimatedLatencyMs: number;
+  health: SupplierHealth;
+  /** 当前预算 headroom 是否覆盖该模型；headroom 未知时为 true。 */
+  fitsBudget: boolean;
+}
+
 export interface RouteDecision {
   id: string;
   committed: boolean;
@@ -138,6 +150,8 @@ export interface RouteDecision {
   banner: string;
   reason: string;
   candidates: RouteCandidate[];
+  /** T06312：除选中项外按评分排序的降级模型选项（最多 3 条）。 */
+  degradeOptions: DegradeOption[];
   createdAt: string;
 }
 
@@ -522,6 +536,26 @@ function recordDecision(d: RouteDecision): void {
     );
 }
 
+function buildDegradeOptions(
+  candidates: RouteCandidate[],
+  selectedToolId: string,
+  headroom: number | null,
+): DegradeOption[] {
+  return candidates
+    .filter((c) => !c.excludedReason && c.toolId !== selectedToolId)
+    .sort((a, b) => (a.score === b.score ? a.estimatedCost - b.estimatedCost : a.score - b.score))
+    .slice(0, 3)
+    .map((c) => ({
+      toolId: c.toolId,
+      toolName: c.toolName,
+      model: c.model,
+      estimatedCost: c.estimatedCost,
+      estimatedLatencyMs: c.expectedLatencyMs,
+      health: c.health,
+      fitsBudget: headroom === null ? true : c.estimatedCost <= headroom,
+    }));
+}
+
 function makeDecision(args: {
   request: RouteRequest;
   taskType: TaskType;
@@ -554,6 +588,7 @@ function makeDecision(args: {
     banner: args.banner,
     reason: args.reason,
     candidates: args.candidates,
+    degradeOptions: buildDegradeOptions(args.candidates, c?.toolId ?? '', args.budget.headroom),
     createdAt: nowIso(),
   };
 }
@@ -830,44 +865,51 @@ export const ModelRoutingService = {
           ORDER BY created_at DESC LIMIT ?`,
       )
       .all(pid, Math.max(1, Math.min(200, Math.round(limit))) as number) as Array<Record<string, unknown>>;
-    return rows.map((r) => ({
-      id: String(r.id ?? ''),
-      committed: Number(r.committed) === 1,
-      projectId: String(r.project_id ?? ''),
-      taskId: r.task_id ? String(r.task_id) : null,
-      runId: r.run_id ? String(r.run_id) : null,
-      taskType: String(r.task_type ?? 'general') as TaskType,
-      inputTokens: Number(r.input_tokens ?? 0),
-      outputTokens: Number(r.output_tokens ?? 0),
-      estimatedCost: Number(r.estimated_cost ?? 0),
-      estimatedLatencyMs: Number(r.estimated_latency_ms ?? 0),
-      selectedToolId: String(r.selected_tool_id ?? ''),
-      selectedModel: String(r.selected_model ?? ''),
-      downgradedFrom: String(r.downgraded_from ?? ''),
-      budget: {
-        state: String(r.budget_status ?? 'unconfigured') as BudgetState,
-        allowed: String(r.budget_status ?? '') !== 'hard_stop',
-        scope: '',
-        scopeLabel: '',
-        spent: 0,
-        limit: 0,
-        estimatedCost: Number(r.estimated_cost ?? 0),
-        percent: 0,
-        warningPct: 0,
-        headroom: null,
-        message: String(r.budget_banner ?? ''),
-      },
-      banner: String(r.budget_banner ?? ''),
-      reason: String(r.reason ?? ''),
-      candidates: (() => {
+    return rows.map((r) => {
+      const selectedToolId = String(r.selected_tool_id ?? '');
+      const candidates = (() => {
         try {
           return JSON.parse(String(r.candidates_json ?? '[]')) as RouteCandidate[];
         } catch {
           return [];
         }
-      })(),
-      createdAt: String(r.created_at ?? ''),
-    }));
+      })();
+      return {
+        id: String(r.id ?? ''),
+        committed: Number(r.committed) === 1,
+        projectId: String(r.project_id ?? ''),
+        taskId: r.task_id ? String(r.task_id) : null,
+        runId: r.run_id ? String(r.run_id) : null,
+        taskType: String(r.task_type ?? 'general') as TaskType,
+        inputTokens: Number(r.input_tokens ?? 0),
+        outputTokens: Number(r.output_tokens ?? 0),
+        estimatedCost: Number(r.estimated_cost ?? 0),
+        estimatedLatencyMs: Number(r.estimated_latency_ms ?? 0),
+        selectedToolId,
+        selectedModel: String(r.selected_model ?? ''),
+        downgradedFrom: String(r.downgraded_from ?? ''),
+        budget: {
+          state: String(r.budget_status ?? 'unconfigured') as BudgetState,
+          allowed: String(r.budget_status ?? '') !== 'hard_stop',
+          scope: '',
+          scopeLabel: '',
+          spent: 0,
+          limit: 0,
+          estimatedCost: Number(r.estimated_cost ?? 0),
+          percent: 0,
+          warningPct: 0,
+          headroom: null,
+          message: String(r.budget_banner ?? ''),
+        },
+        banner: String(r.budget_banner ?? ''),
+        reason: String(r.reason ?? ''),
+        candidates,
+        // 审计行不持久化 headroom，回读时 options 的 fitsBudget 按「未知」处理；
+        // 实时 route 响应带真实 headroom，可直接用于展示可承受的降级项。
+        degradeOptions: buildDegradeOptions(candidates, selectedToolId, null),
+        createdAt: String(r.created_at ?? ''),
+      };
+    });
   },
 
   costAttribution(projectId: string): Array<{
