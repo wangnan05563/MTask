@@ -725,6 +725,66 @@ export interface ExecSession {
   tasks: ExecSessionTaskBrief[];
 }
 
+/** T06294（REQ-001）：首页 Today 三组行动卡片的数据契约；与 /stats/today 返回同形。 */
+export type TodayWaitReason = 'ai_failed' | 'ai_unread' | 'verify_pending' | 'ruling_pending';
+
+export interface TodayTaskItem {
+  id: string;
+  task_no: string | null;
+  title: string;
+  priority: string;
+  status: string;
+  ai_state: string;
+  verified: number;
+  pinned: number;
+  updated_at: string;
+  project_id: string;
+  project_name: string | null;
+  reason?: TodayWaitReason;
+}
+
+export interface TodayRunningItem {
+  kind: 'session' | 'task';
+  id: string;
+  task_id: string | null;
+  task_no: string | null;
+  title: string;
+  project_id: string;
+  project_name: string | null;
+  platform: string | null;
+  progress: number;
+  progress_reported: boolean;
+  phase: string;
+  started_at: string;
+  other_tasks: number;
+}
+
+export interface TodayAlert {
+  id: string;
+  level: 'danger' | 'warning';
+  title: string;
+  detail: string;
+  count: number;
+}
+
+export interface TodayView {
+  generated_at: string;
+  summary: { today: number; today_candidates: number; waiting: number; running: number; alerts: number };
+  today: TodayTaskItem[];
+  waiting: {
+    items: TodayTaskItem[];
+    counts: {
+      total: number;
+      ai_failed: number;
+      ai_unread: number;
+      verify_pending: number;
+      ruling_pending: number;
+    };
+  };
+  running: { items: TodayRunningItem[]; active_sessions: number };
+  alerts: TodayAlert[];
+}
+
 export interface PromptCategory {
   id: string;
   name: string;

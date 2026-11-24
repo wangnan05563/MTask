@@ -17,6 +17,7 @@ import { RecurringService, TokenService } from '../services/RecurringService'; /
 import { readEventRetentionDays, setEventRetentionDays, pruneTaskEvents, countEvents } from '../services/EventRetention'; // T01064 后续：事件表保留期清理
 import { readPoolStatus, setPoolLimit } from '../services/ConcurrencyPool'; // T01066 后续：并行任务池单源
 import { ExecSessionService } from '../services/ExecSessionService'; // T01271：执行会话面板数据源
+import { buildTodayView } from '../services/TodayService'; // T06294（REQ-001）：Today View 首页聚合
 import { PushService } from '../services/PushService'; // T01440：Web Push
 import { TaskExportService, type ExportFormat } from '../services/TaskExportService'; // T01480：任务导出
 import { listBackups, runBackup, restoreBackup, backupStatus, deleteBackup, BackupDeleteError } from '../services/BackupService'; // T01061-FR5.1 / T05791
@@ -543,6 +544,13 @@ api.delete('/projects/:id', (req, res) => {
 
 // ---------- 任务 ----------
 // 可选参数：projectId / archived / limit / offset / keyword / categoryId / sort（全部向后兼容，缺省=全量）
+// T06294（REQ-001 / AC-01）：今日看板——只聚合当前工作集，首页首屏不拉任务全量。
+// 三个行动分组（今天做 / 等我处理 / AI 正在跑）+ 告警摘要；执行会话只读最近 50 行，不触发停滞写库。
+api.get('/stats/today', (req, res) => {
+  const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(buildTodayView(getDb(), projectId));
+});
 // T01059-FR2.2：统计仪表盘数据——吞吐（每日完成数）/AI 成功率/AI 平均耗时/验证通过率 + 任务概览
 api.get('/stats/dashboard', (req, res) => {
   const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';

@@ -1,9 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Activity, CheckCircle2, Clock3, ListTodo, ShieldCheck } from 'lucide-react';
-import { api } from '../api/client';
+import { api, type TodayView } from '../api/client';
+import { Button } from '../ui/components';
 import { FlowProgress } from '../ui/FlowProgress'; // T01068-FR4.4：流光进度条
+import { FilterBar, PageHeader, PageShell } from '../ui/layout';
 import { ProjectListHint, useProjectList } from '../ui/projectList';
 import { priorityBadgeLabel, priorityColor } from '../ui/priority'; // T05777：优先级分布沿用单源文案/颜色
+import { TODAY_REFRESH_ICON, TodayBoard } from './TodayBoard';
 
 /** T01059-FR2.2：统计仪表盘——周吞吐/AI 成功率/AI 平均耗时/验证通过率四指标 + 吞吐趋势条形图。
  *  数据源 /api/stats/dashboard；纯 CSS 条形图（无图表库依赖）；项目/时间窗筛选。 */
@@ -71,11 +74,8 @@ function InsightCard({ title, sub, children }: { readonly title: string; readonl
   );
 }
 
-export function DashboardPage() {
-  // T02201：项目筛选列表走统一容错层（收件箱不作为统计对象，沿用原过滤口径）
-  const projectList = useProjectList({ excludeInbox: true });
-  const { projects } = projectList;
-  const [projectId, setProjectId] = useState('');
+/** T06294：统计下沉为可折叠的「项目统计」区——默认不拉 /stats/dashboard，把首屏让给 Today 三组。 */
+function StatsSection({ projectId }: { readonly projectId: string }) {
   const [days, setDays] = useState(30);
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState('');
@@ -92,23 +92,15 @@ export function DashboardPage() {
   const maxCount = Math.max(1, ...(data?.throughput ?? []).map((t) => t.count));
 
   return (
-    <div style={{ padding: 16, maxWidth: 1100, margin: '0 auto' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
-        <span style={{ flex: 1 }} />
-        <select
-          value={projectId}
-          onChange={(e) => setProjectId(e.target.value)}
-          aria-label="统计项目筛选"
-          style={{ fontSize: 'var(--fs-s)', padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}
-        >
-          <option value="">全部项目</option>
-          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
-        {/* T02201：「全部项目」在列表取数失败时仍是有效范围，故不禁用下拉，只把失败与重试入口显式化 */}
-        <ProjectListHint view={projectList} />
+    <section className="mt-dashboard-stats" aria-label="项目统计">
+      <div className="mt-dashboard-stats-head">
+        <div>
+          <h2>项目统计</h2>
+          <p>吞吐、AI 成功率与任务结构；只在展开时取数，不阻塞今日首屏。</p>
+        </div>
         <div style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }}>
           {RANGES.map((r) => (
-            <button key={r.days} onClick={() => setDays(r.days)}
+            <button key={r.days} onClick={() => setDays(r.days)} type="button"
               style={{ padding: '5px 12px', fontSize: 'var(--fs-s)', border: 'none', cursor: 'pointer', background: days === r.days ? 'var(--accent)' : 'var(--card-bg)', color: days === r.days ? 'var(--accent-text)' : 'var(--text)' }}>
               {r.label}
             </button>
@@ -117,7 +109,6 @@ export function DashboardPage() {
       </div>
 
       {error && <div style={{ color: 'var(--danger)', fontSize: 'var(--fs-m)', padding: 12 }}>加载失败：{error}</div>}
-      {/* T01067-FR3.3：加载骨架屏——四指标卡 + 趋势条占位微光 */}
       {!data && !error && (
         <>
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
@@ -149,7 +140,6 @@ export function DashboardPage() {
             <StatCard icon={<Clock3 size={14} />} label="AI 平均耗时" value={data.ai.avgMs >= 1000 ? `${Math.round(data.ai.avgMs / 100) / 10}s` : `${data.ai.avgMs}ms`} sub={`验证通过率 ${data.verify.rate}%（${data.verify.verified}/${data.verify.total} done 已验证）`} />
           </div>
 
-          {/* T01068-FR4.4：总完成度——流光进度条（与骨架屏/按钮 loading 共用 flow-sweep keyframes） */}
           {(() => {
             const total = data.totals.done + data.totals.todo + data.totals.other;
             const completion = total ? Math.round((data.totals.done / total) * 100) : 0;
@@ -182,8 +172,6 @@ export function DashboardPage() {
             )}
           </div>
 
-          {/* T05777：新增多维统计视图——任务结构 / 优先级 / 分类 / 计划推进 / 项目工作量；
-              数据由 /stats/dashboard 聚合返回，前端只渲染，不在浏览器拉全量任务。 */}
           {data.breakdown ? (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12, marginTop: 16 }}>
               <InsightCard title="任务结构" sub="当前未归档任务的待办 / 完成 / 进行中或搁置构成">
@@ -251,6 +239,87 @@ export function DashboardPage() {
           )}
         </>
       )}
-    </div>
+    </section>
+  );
+}
+
+export function DashboardPage() {
+  // T02201：项目筛选列表走统一容错层（收件箱不作为统计对象，沿用原过滤口径）
+  const projectList = useProjectList({ excludeInbox: true });
+  const { projects } = projectList;
+  const [projectId, setProjectId] = useState('');
+  const [view, setView] = useState<TodayView | null>(null);
+  const [todayLoading, setTodayLoading] = useState(true);
+  const [todayError, setTodayError] = useState('');
+  const [reloadKey, setReloadKey] = useState(0);
+  const [showStats, setShowStats] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    setView(null);
+    setTodayLoading(true);
+    setTodayError('');
+    const q = projectId ? `?projectId=${encodeURIComponent(projectId)}` : '';
+    void api.get<TodayView>(`/stats/today${q}`)
+      .then((data) => { if (alive) setView(data); })
+      .catch((e) => { if (alive) setTodayError(e instanceof Error ? e.message : String(e)); })
+      .finally(() => { if (alive) setTodayLoading(false); });
+    return () => { alive = false; };
+  }, [projectId, reloadKey]);
+
+  const generatedAt = useMemo(() => {
+    if (!view?.generated_at) return '';
+    const d = new Date(view.generated_at);
+    if (Number.isNaN(d.getTime())) return '';
+    return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
+  }, [view]);
+
+  const dateLabel = useMemo(
+    () => new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }).format(new Date()),
+    [],
+  );
+
+  return (
+    <PageShell>
+      <PageHeader
+        title="今日"
+        description={`${dateLabel} · 先做最要紧的事；一屏看完待办、需要你处理的积压和 AI 进度。`}
+        secondaryActions={(
+          <>
+            <Button variant="ghost" size="sm" onClick={() => setReloadKey((n) => n + 1)} loading={todayLoading} leftIcon={TODAY_REFRESH_ICON}>
+              刷新
+            </Button>
+            <Button variant="secondary" size="sm" onClick={() => setShowStats((v) => !v)}>
+              {showStats ? '收起项目统计' : '项目统计'}
+            </Button>
+          </>
+        )}
+      />
+
+      <FilterBar ariaLabel="今日看板筛选" sticky={false}>
+        <select
+          value={projectId}
+          onChange={(e) => setProjectId(e.target.value)}
+          aria-label="今日看板项目筛选"
+          style={{ fontSize: 'var(--fs-s)', padding: '5px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}
+        >
+          <option value="">全部项目</option>
+          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        {/* T02201：「全部项目」在列表取数失败时仍是有效范围，故不禁用下拉，只把失败与重试入口显式化 */}
+        <ProjectListHint view={projectList} />
+        <span className="mt-today-filter-note">只读当前工作集，不统计历史资产</span>
+      </FilterBar>
+
+      <TodayBoard
+        data={view}
+        loading={todayLoading}
+        error={todayError}
+        onRetry={() => setReloadKey((n) => n + 1)}
+        generatedAt={generatedAt}
+      />
+
+      {showStats && <StatsSection projectId={projectId} />}
+    </PageShell>
   );
 }

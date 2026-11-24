@@ -1,0 +1,172 @@
+{
+  "pass": 9,
+  "fail": 0,
+  "checks": [
+    {
+      "name": "TODAY-00 静态服务器 + API 代理就绪",
+      "ok": true,
+      "extra": {
+        "port": 39915,
+        "apiPort": 5193,
+        "token": true
+      }
+    },
+    {
+      "name": "TODAY-01 今日看板首屏渲染（真实构建 + 真实 API）",
+      "ok": true,
+      "extra": {
+        "ready": true,
+        "hasBoard": true,
+        "hasToolbar": true,
+        "groups": 3,
+        "tasks": 12,
+        "runs": 1,
+        "alerts": 2,
+        "summaryItems": [
+          {
+            "label": "今天做",
+            "value": "7"
+          },
+          {
+            "label": "等我处理",
+            "value": "352"
+          },
+          {
+            "label": "AI 正在跑",
+            "value": "1"
+          },
+          {
+            "label": "告警",
+            "value": "2"
+          }
+        ],
+        "summaryText": "今天做\n7\n等我处理\n352\nAI 正在跑\n1\n告警\n2",
+        "statsMounted": false,
+        "viewport": {
+          "w": 1418,
+          "h": 902
+        },
+        "scrollWidth": 1418,
+        "skeleton": 0,
+        "textLen": 1225,
+        "firstTitle": "【验收未通过】[PRD] 验证平台兼容性",
+        "elapsedMs": 790
+      }
+    },
+    {
+      "name": "TODAY-02 首屏数据就绪 ≤ 3s（浏览器口径）",
+      "ok": true,
+      "extra": {
+        "elapsedMs": 790
+      }
+    },
+    {
+      "name": "TODAY-03 首页不再默认挂载统计仪表盘",
+      "ok": true,
+      "extra": {
+        "statsMounted": false
+      }
+    },
+    {
+      "name": "TODAY-04 三组行动数据非空",
+      "ok": true,
+      "extra": {
+        "tasks": 12,
+        "runs": 1,
+        "alerts": 2,
+        "firstTitle": "【验收未通过】[PRD] 验证平台兼容性"
+      }
+    },
+    {
+      "name": "TODAY-view-1440 无横向溢出且截图有效",
+      "ok": true,
+      "extra": {
+        "file": "01-today-1440.png",
+        "bytes": 143731,
+        "overflow": 0,
+        "groups": 3,
+        "summary": [
+          {
+            "label": "今天做",
+            "value": "7"
+          },
+          {
+            "label": "等我处理",
+            "value": "352"
+          },
+          {
+            "label": "AI 正在跑",
+            "value": "1"
+          },
+          {
+            "label": "告警",
+            "value": "2"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TODAY-view-1280 无横向溢出且截图有效",
+      "ok": true,
+      "extra": {
+        "file": "02-today-1280.png",
+        "bytes": 138556,
+        "overflow": 0,
+        "groups": 3,
+        "summary": [
+          {
+            "label": "今天做",
+            "value": "7"
+          },
+          {
+            "label": "等我处理",
+            "value": "352"
+          },
+          {
+            "label": "AI 正在跑",
+            "value": "1"
+          },
+          {
+            "label": "告警",
+            "value": "2"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TODAY-view-760 无横向溢出且截图有效",
+      "ok": true,
+      "extra": {
+        "file": "03-today-760.png",
+        "bytes": 85633,
+        "overflow": 0,
+        "groups": 3,
+        "summary": [
+          {
+            "label": "今天做",
+            "value": "7"
+          },
+          {
+            "label": "等我处理",
+            "value": "352"
+          },
+          {
+            "label": "AI 正在跑",
+            "value": "1"
+          },
+          {
+            "label": "告警",
+            "value": "2"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TODAY-05 无未捕获前端异常",
+      "ok": true,
+      "extra": {
+        "consoleErrors": []
+      }
+    }
+  ]
+}
