@@ -1297,7 +1297,7 @@ async function tryStartOnPort(port) {
   await new Promise((r) => setTimeout(r, 300));
   if (exited) { await stopStaleServerProc(); return false; } // 我们拉起的进程已退出 -> 端口被占
   try {
-    await waitForServer(30);
+    await waitForServer(120);
     // 二次确认：探到健康的是“我们自起的进程”而非他人占用的端口，
     // 消除 300ms 窗口内子进程迟到退出造成的误判
     if (serverProc && serverProc.exitCode === null && !serverProc.killed) return true;
