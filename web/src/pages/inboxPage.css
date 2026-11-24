@@ -185,7 +185,7 @@
 }
 
 .mt-inbox-row-icon[data-tone='danger'] { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, var(--border)); }
-.mt-inbox-row-icon[data-tone='warning'] { color: var(--warning, #b45309); border-color: color-mix(in srgb, var(--warning, #b45309) 35%, var(--border)); }
+.mt-inbox-row-icon[data-tone='warning'] { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 35%, var(--border)); }
 .mt-inbox-row-icon[data-tone='accent'] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
 .mt-inbox-row-icon[data-tone='neutral'] { color: var(--text-secondary); }
 

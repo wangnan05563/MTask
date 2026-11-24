@@ -1,0 +1,12 @@
+[PASS] T06316-01 高风险动作进入待审批（单节点）
+[PASS] T06316-02 发起审批写 approval_requested 审计
+[PASS] T06316-03 到期审批被收口为 expired（默认拒绝）
+[PASS] T06316-04 超时不产生 approved 决策
+[PASS] T06316-05 Run 终止为 failed/approval_timeout
+[PASS] T06316-06 原步骤与审批步骤均 failed
+[PASS] T06316-07 超时审计正确（system/审批超时/过期时间）
+[PASS] T06316-08 过期后不可再批准（重复决策被拒）
+[PASS] T06316-09 重复扫描幂等（不重复写 expired 审计）
+[PASS] T06316-10 未到期审批保持 pending（不误杀）
+[PASS] T06316-11 审计只追加（event 序列完整）
+PASS=11 FAIL=0

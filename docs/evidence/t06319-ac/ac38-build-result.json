@@ -1,0 +1,221 @@
+{
+  "assets": [
+    {
+      "file": "index-DGRPVvyP.js",
+      "bytes": 2084277,
+      "gzip": 598003
+    },
+    {
+      "file": "vendor-graph-IYoQXOFx.js",
+      "bytes": 459458,
+      "gzip": 116378
+    },
+    {
+      "file": "vendor-icons-DEIulUYo.js",
+      "bytes": 77822,
+      "gzip": 13878
+    },
+    {
+      "file": "vendor-markdown-Bp8bzt_5.js",
+      "bytes": 101041,
+      "gzip": 41893
+    },
+    {
+      "file": "vendor-react-MXsyaK6r.js",
+      "bytes": 142968,
+      "gzip": 45728
+    }
+  ],
+  "total": 2865566,
+  "main": {
+    "file": "index-DGRPVvyP.js",
+    "bytes": 2084277,
+    "gzip": 598003
+  },
+  "navPerf": {
+    "domContentLoaded": 276,
+    "load": 276,
+    "fcp": 0,
+    "jsCount": 5,
+    "transfer": 0
+  },
+  "rounds": [
+    {
+      "label": "海洋",
+      "ms": 11.1,
+      "hit": true,
+      "theme": "dark",
+      "accent": "#0891b2",
+      "bg": "#18181b"
+    },
+    {
+      "label": "默认浅色",
+      "ms": 31.2,
+      "hit": true,
+      "theme": "light",
+      "accent": "#2563eb",
+      "bg": "#ffffff"
+    },
+    {
+      "label": "日暮",
+      "ms": 30.7,
+      "hit": true,
+      "theme": "light",
+      "accent": "#ea580c",
+      "bg": "#ffffff"
+    },
+    {
+      "label": "海洋",
+      "ms": 31.5,
+      "hit": true,
+      "theme": "dark",
+      "accent": "#0891b2",
+      "bg": "#18181b"
+    }
+  ],
+  "checks": [
+    {
+      "name": "T06317-01 产物已拆 vendor-react/graph/markdown/icons",
+      "ok": true,
+      "extra": [
+        {
+          "file": "index-DGRPVvyP.js",
+          "bytes": 2084277,
+          "gzip": 598003
+        },
+        {
+          "file": "vendor-graph-IYoQXOFx.js",
+          "bytes": 459458,
+          "gzip": 116378
+        },
+        {
+          "file": "vendor-icons-DEIulUYo.js",
+          "bytes": 77822,
+          "gzip": 13878
+        },
+        {
+          "file": "vendor-markdown-Bp8bzt_5.js",
+          "bytes": 101041,
+          "gzip": 41893
+        },
+        {
+          "file": "vendor-react-MXsyaK6r.js",
+          "bytes": 142968,
+          "gzip": 45728
+        }
+      ]
+    },
+    {
+      "name": "T06317-02 主入口包 ≤ 2.2MB / gzip ≤ 620KB",
+      "ok": true,
+      "extra": {
+        "file": "index-DGRPVvyP.js",
+        "bytes": 2084277,
+        "gzip": 598003
+      }
+    },
+    {
+      "name": "T06317-03 index.html 以 modulepreload 拉取 vendor（非单包内联）",
+      "ok": true,
+      "extra": {
+        "preload": 4
+      }
+    },
+    {
+      "name": "T06317-04 隔离服务就绪",
+      "ok": true,
+      "extra": {
+        "ok": true,
+        "service": "mtask-server",
+        "time": "2026-11-24T20:52:13.295Z"
+      }
+    },
+    {
+      "name": "T06317-05 首页加载完成",
+      "ok": true,
+      "extra": {
+        "ready": true
+      }
+    },
+    {
+      "name": "T06317-06 首屏指标可读（DOMContentLoaded/load）",
+      "ok": true,
+      "extra": {
+        "domContentLoaded": 276,
+        "load": 276,
+        "fcp": 0,
+        "jsCount": 5,
+        "transfer": 0
+      }
+    },
+    {
+      "name": "T06317-07 设置页主题列表可达",
+      "ok": true,
+      "extra": {
+        "settingsReady": true
+      }
+    },
+    {
+      "name": "T06317-07b 使用向导已关闭（主题按钮可被真实点击）",
+      "ok": true,
+      "extra": {
+        "guideClosed": true
+      }
+    },
+    {
+      "name": "T06317-08 AC-08 主题列表切换 ≤200ms（4 次真实可点击）",
+      "ok": true,
+      "extra": [
+        {
+          "label": "海洋",
+          "ms": 11.1,
+          "hit": true,
+          "theme": "dark",
+          "accent": "#0891b2",
+          "bg": "#18181b"
+        },
+        {
+          "label": "默认浅色",
+          "ms": 31.2,
+          "hit": true,
+          "theme": "light",
+          "accent": "#2563eb",
+          "bg": "#ffffff"
+        },
+        {
+          "label": "日暮",
+          "ms": 30.7,
+          "hit": true,
+          "theme": "light",
+          "accent": "#ea580c",
+          "bg": "#ffffff"
+        },
+        {
+          "label": "海洋",
+          "ms": 31.5,
+          "hit": true,
+          "theme": "dark",
+          "accent": "#0891b2",
+          "bg": "#18181b"
+        }
+      ]
+    },
+    {
+      "name": "T06317-09 切换后主题变量与强调色实际生效",
+      "ok": true,
+      "extra": [
+        "dark|#0891b2",
+        "light|#2563eb",
+        "light|#ea580c",
+        "dark|#0891b2"
+      ]
+    },
+    {
+      "name": "T06317-10 1440 主题切换证据截图",
+      "ok": true,
+      "extra": {
+        "file": "D:\\code\\otherProjects\\MTask\\docs\\evidence\\p10-ui\\55-t06317-theme-switch-1440.png"
+      }
+    }
+  ]
+}

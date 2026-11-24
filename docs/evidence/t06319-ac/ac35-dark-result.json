@@ -1,0 +1,210 @@
+{
+  "pass": 16,
+  "fail": 0,
+  "checks": [
+    {
+      "name": "A11Y-00 静态服务器与 API 代理就绪",
+      "ok": true,
+      "extra": {
+        "port": 39910,
+        "apiPort": 39877,
+        "token": true
+      }
+    },
+    {
+      "name": "A11Y-01 应用生产构建加载成功",
+      "ok": true
+    },
+    {
+      "name": "A11Y-01b dark 主题已应用",
+      "ok": true,
+      "extra": {
+        "theme": "dark"
+      }
+    },
+    {
+      "name": "A11Y-dashboard axe WCAG2A/AA 无 serious/critical",
+      "ok": true,
+      "extra": {
+        "serious": [],
+        "moderateMinor": [],
+        "page": {
+          "hash": "",
+          "title": "MTask · AI 任务开发管理工具",
+          "activeNav": "首页",
+          "textLen": 340,
+          "bodyText": "M\nMTask\n首页\n概览\n收件箱\n任务\n项目\nAI 控制台\n设置\n首页\n概览\n收件箱\n30\n● 后端已连接\n今日\n\n11月25日星期三 · 先做最要紧的事；一屏看完待办、需要你处理的积压和 AI 进度。\n\n刷新\n项目统计\n全部项目\nStudyWork\nVgril\nAIComic\nBEMP\nEmoReply三期\nBem"
+        }
+      }
+    },
+    {
+      "name": "A11Y-tasks axe WCAG2A/AA 无 serious/critical",
+      "ok": true,
+      "extra": {
+        "serious": [],
+        "moderateMinor": [],
+        "page": {
+          "hash": "",
+          "title": "MTask · AI 任务开发管理工具",
+          "activeNav": "任务",
+          "textLen": 400,
+          "bodyText": "M\nMTask\n首页\n任务\n项目\nAI 控制台\n设置\n任务\n30\n● 后端已连接\n工作台\n/\n任务\n任务\n\n统一查看待办、已完成与搁置任务；列表、看板、表格与日历共用同一套筛选和任务集。\n\nStudyWork\n0\n0\nStudyWork\n0\n6\n暂无保存视图\n模板\n紧凑 · 32px 行高\n舒适 · 40px 行高\n宽"
+        }
+      }
+    },
+    {
+      "name": "A11Y-plan axe WCAG2A/AA 无 serious/critical",
+      "ok": true,
+      "extra": {
+        "serious": [],
+        "moderateMinor": [],
+        "page": {
+          "hash": "",
+          "title": "MTask · AI 任务开发管理工具",
+          "activeNav": "项目",
+          "textLen": 1233,
+          "bodyText": "M\nMTask\n首页\n任务\n项目\n计划\n需求\n报表\nAI 控制台\n设置\n项目\n计划\n需求\n报表\n30\n● 后端已连接\nStudyWork\n20\n0\n0\n20\n列表\n甘特\n时间线\n35\n项目周期：2026-10-08 ~ 2026-10-30\n工作量：86 人天\n任务：20 条\n完成 20/20\n里程碑：6\n预测基准日："
+        }
+      }
+    },
+    {
+      "name": "A11Y-req axe WCAG2A/AA 无 serious/critical",
+      "ok": true,
+      "extra": {
+        "serious": [],
+        "moderateMinor": [],
+        "page": {
+          "hash": "",
+          "title": "MTask · AI 任务开发管理工具",
+          "activeNav": "需求",
+          "textLen": 736,
+          "bodyText": "M\nMTask\n首页\n任务\n项目\n计划\n需求\n报表\nAI 控制台\n设置\n项目\n计划\n需求\n报表\n30\n● 后端已连接\n★ 全部收藏\n安卓构建与部署（2）\n文档与品牌（11）\n发布与打包（10）\n自动更新（3）\nUI 与交互体验（17）\n性能优化（4）\n配置中心与迁移（3）\n调研与优化建议（11）\n启动与退出体验（3）\n"
+        }
+      }
+    },
+    {
+      "name": "A11Y-report axe WCAG2A/AA 无 serious/critical",
+      "ok": true,
+      "extra": {
+        "serious": [],
+        "moderateMinor": [],
+        "page": {
+          "hash": "",
+          "title": "MTask · AI 任务开发管理工具",
+          "activeNav": "报表",
+          "textLen": 610,
+          "bodyText": "M\nMTask\n首页\n任务\n项目\n计划\n需求\n报表\nAI 控制台\n设置\n项目\n计划\n需求\n报表\n30\n● 后端已连接\n功能卡片\n11 项能力\nAI 项目计划导入\n离线周报生成\nAI 周报生成\n原始需求生成 PRD\n从 PRD 导入项目计划\n从 PRD 生成测试用例\n启动会 PPT 生成\n阶段总结 PPT 生成\n代码评审"
+        }
+      }
+    },
+    {
+      "name": "A11Y-queue axe WCAG2A/AA 无 serious/critical",
+      "ok": true,
+      "extra": {
+        "serious": [],
+        "moderateMinor": [],
+        "page": {
+          "hash": "",
+          "title": "MTask · AI 任务开发管理工具",
+          "activeNav": "AI 控制台",
+          "textLen": 5328,
+          "bodyText": "M\nMTask\n首页\n任务\n项目\nAI 控制台\n队列\n执行会话\n提示词\n模型\n设置\nAI 控制台\n队列\n执行会话\n提示词\n模型\n30\n● 后端已连接\n队列\n把「任务 + AI 工具」排成序列逐条交付，回执留档可采纳\n已完成\n·\n成功 11\n失败 0\n在途 0\n排队 1\n100%\n选择队列…\n2026-11-18 开发队"
+        }
+      }
+    },
+    {
+      "name": "A11Y-exec-sessions axe WCAG2A/AA 无 serious/critical",
+      "ok": true,
+      "extra": {
+        "serious": [],
+        "moderateMinor": [],
+        "page": {
+          "hash": "",
+          "title": "MTask · AI 任务开发管理工具",
+          "activeNav": "执行会话",
+          "textLen": 13778,
+          "bodyText": "M\nMTask\n首页\n任务\n项目\nAI 控制台\n队列\n执行会话\n提示词\n模型\n设置\nAI 控制台\n队列\n执行会话\n提示词\n模型\n30\n● 后端已连接\nCodeBuddy 网关派发不在这里显示：请在任务详情「最近派发」或队列页「派发记录」查看；本页「重派」仍只针对外部执行会话。\n进行中\n0\n暂无进行中会话\n已停滞\n9\nM"
+        }
+      }
+    },
+    {
+      "name": "A11Y-prompts axe WCAG2A/AA 无 serious/critical",
+      "ok": true,
+      "extra": {
+        "serious": [],
+        "moderateMinor": [],
+        "page": {
+          "hash": "",
+          "title": "MTask · AI 任务开发管理工具",
+          "activeNav": "提示词",
+          "textLen": 761,
+          "bodyText": "M\nMTask\n首页\n任务\n项目\nAI 控制台\n队列\n执行会话\n提示词\n模型\n设置\nAI 控制台\n队列\n执行会话\n提示词\n模型\n30\n● 后端已连接\nAI 控制台\n/\n提示词\n提示词\n\n按分类管理、发起与优化提示词模板；分类筛选与视图切换在滚动时保持可见。\n\n★ 全部收藏\n通用提示词（5）\n技能优化（14）\n技能使用（"
+        }
+      }
+    },
+    {
+      "name": "A11Y-aitools axe WCAG2A/AA 无 serious/critical",
+      "ok": true,
+      "extra": {
+        "serious": [],
+        "moderateMinor": [],
+        "page": {
+          "hash": "",
+          "title": "MTask · AI 任务开发管理工具",
+          "activeNav": "模型",
+          "textLen": 2617,
+          "bodyText": "M\nMTask\n首页\n任务\n项目\nAI 控制台\n队列\n执行会话\n提示词\n模型\n设置\nAI 控制台\n队列\n执行会话\n提示词\n模型\n30\n● 后端已连接\n配置记录（7/7）\n新增配置\n全部接入协议\nopenai-compatible\nclaude\nollama\nworkbuddy\ncodebuddy-gateway\ncli"
+        }
+      }
+    },
+    {
+      "name": "A11Y-settings axe WCAG2A/AA 无 serious/critical",
+      "ok": true,
+      "extra": {
+        "serious": [],
+        "moderateMinor": [],
+        "page": {
+          "hash": "",
+          "title": "MTask · AI 任务开发管理工具",
+          "activeNav": "设置",
+          "textLen": 488,
+          "bodyText": "M\nMTask\n首页\n任务\n项目\nAI 控制台\n设置\n设置\n30\n● 后端已连接\n18 项\n主题\n选择界面配色风格\n浅色\n深色\n跟随系统\n主题预设\n一键应用成套的主题与强调色组合；应用后仍可在上方微调\n默认浅色\n默认深色\n海洋\n北欧\n日暮\n玫瑰\n界面语言 / Language\n切换界面语言；语言包为渐进式接入，未覆盖的"
+        }
+      }
+    },
+    {
+      "name": "A11Y-focus-01 键盘 Tab 能进入主导航",
+      "ok": true,
+      "extra": {
+        "tag": "BUTTON",
+        "text": "M",
+        "cls": "mt-nav-mark",
+        "isNav": true,
+        "outlineStyle": "solid",
+        "outlineWidth": 2,
+        "outlineColor": "rgb(11, 18, 32)",
+        "outlineOffset": "2px",
+        "bg": "rgb(91, 155, 248)",
+        "boxShadow": "rgb(91, 155, 248) 0px 0px 0px 4px",
+        "active": true
+      }
+    },
+    {
+      "name": "A11Y-focus-02 主导航焦点环 >=2px 且对比度 >=3:1",
+      "ok": true,
+      "extra": {
+        "ratio": 6.699837463607909,
+        "outline": "2px solid rgb(11, 18, 32)"
+      }
+    },
+    {
+      "name": "A11Y-summary 全站 10 个关键路径 serious/critical 合计",
+      "ok": true,
+      "extra": {
+        "pages": 10,
+        "serious": 0,
+        "errors": 0
+      }
+    }
+  ]
+}

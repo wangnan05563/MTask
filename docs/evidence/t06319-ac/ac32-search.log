@@ -1,0 +1,4 @@
+T06296 search gate PASS · 1k docs · P50=14.3ms P95=18.3ms (100 queries)
+groups=task:1 run:3 elapsed=35.7ms
+(node:70100) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)

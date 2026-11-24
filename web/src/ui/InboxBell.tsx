@@ -86,7 +86,7 @@ export function InboxBell() {
           title={`${unread} 条未读`}
           style={{
             position: 'absolute', bottom: -2, right: -2, width: 7, height: 7, borderRadius: '50%',
-            background: 'var(--warning, #b45309)', border: '1px solid var(--card-bg)',
+            background: 'var(--warning)', border: '1px solid var(--card-bg)',
           }}
         />
       )}

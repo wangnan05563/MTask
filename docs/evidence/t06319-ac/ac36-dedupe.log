@@ -1,0 +1,16 @@
+[PASS] 测试服务就绪 → {"ok":true,"service":"mtask-server","time":"2026-11-24T20:45:07.588Z"}
+[PASS] 测试项目创建 → {"projectId":"fc7aeffd-1167-45df-a0b9-13684678953c"}
+[PASS] 同批次重复键只导入 1 条 → {"ok":true,"count":1,"skipped":1}
+[PASS] 同批次重复键未产生第二条任务
+[PASS] 同键改名仍被跳过 → {"ok":true,"count":0,"skipped":1}
+[PASS] 不同来源同外部 ID 各自独立 → {"ok":true,"count":1,"skipped":0}
+[PASS] 外部 ID 空白首次导入 → {"ok":true,"count":1,"skipped":0}
+[PASS] 外部 ID 空白归一后判重 → {"ok":true,"count":0,"skipped":1}
+[PASS] 无外部 ID 回退标题去重 → {"noKey1":{"ok":true,"count":1,"skipped":0},"noKey2":{"ok":true,"count":0,"skipped":1}}
+[PASS] 并发同键合计只导入 1 条 → {"raceA":{"ok":true,"count":1,"skipped":0},"raceB":{"ok":true,"count":0,"skipped":1}}
+[PASS] 并发同键只产生 1 条任务
+[PASS] 失败批次返回 400 → "/api/tasks/import-csv/confirm HTTP 400: {\"error\":\"it.title?.trim is not a function\"}"
+[PASS] 失败批次未落半条任务 → {"before":5,"after":5}
+[PASS] 回滚后同键可重新导入（无死键） → {"ok":true,"count":1,"skipped":0}
+[PASS] JSON 同批次重复键只导入 1 条 → {"ok":true,"count":1,"skipped":1}
+{"pass":true,"checks":15,"projectId":"fc7aeffd-1167-45df-a0b9-13684678953c","projectName":"T06308 去重契约 T06308-1795553107533","run":"T06308-1795553107533"}
