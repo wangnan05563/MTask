@@ -18,6 +18,21 @@ export default defineConfig({
     // 默认清空输出目录；沙箱 safe-delete 回收站不可用时清空会超时，
     // 设 MTASK_NO_EMPTY=1 跳过清空（仅写新文件），便于受限环境出包
     emptyOutDir: process.env.MTASK_NO_EMPTY ? false : true,
+    // T06317：把首屏必用的 React 与按需才用到的大依赖拆成独立 chunk。
+    // 主包不再把 graph/markdown/icons 全塞进同一个 2.8MB 文件；浏览器可并行下载，
+    // 二次启动直接命中缓存，React 基座变更频率也低于业务包。
+    rollupOptions: {
+      output: {
+        manualChunks(id: string) {
+          if (!id.includes('node_modules')) return undefined;
+          if (id.includes('/react/') || id.includes('/react-dom/') || id.includes('/scheduler/')) return 'vendor-react';
+          if (id.includes('/graphology') || id.includes('/sigma/')) return 'vendor-graph';
+          if (id.includes('/markdown-it/') || id.includes('/linkify-it/') || id.includes('/mdurl/') || id.includes('/uc.micro/')) return 'vendor-markdown';
+          if (id.includes('/lucide-react/')) return 'vendor-icons';
+          return undefined;
+        },
+      },
+    },
   },
   server: {
     host: '127.0.0.1',
