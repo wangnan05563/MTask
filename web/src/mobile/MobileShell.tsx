@@ -5,7 +5,7 @@
  * - 顶部常驻连接状态与「待同步」草稿角标；恢复联网自动补提离线草稿（§3.4）。
  */
 import { useCallback,  useEffect, useRef, useState } from 'react';
-import { api, setAccessToken, type Task } from '../api/client';
+import { api, setAccessToken } from '../api/client';
 import { ListTodo, Plus, ListOrdered, ScrollText, MoreHorizontal, KeyRound, Wifi, WifiOff, Smartphone } from 'lucide-react'; // T03655：PWA 引导标题改 lucide，不再用 emoji
 import { MobileHome } from './MobileHome';
 import { QuickNote } from './QuickNote';
@@ -162,7 +162,7 @@ export function MobileShell() {
         {tab === 'home' && <MobileHome onQuickNote={() => setTab('note')} notify={notify} focus={focus} />}
         {tab === 'note' && (
           <QuickNote
-            onDone={(t: Task | null) => { setTab('home'); if (t) setDraftCount(loadDrafts().length); }}
+            onDone={() => { setTab('home'); setDraftCount(loadDrafts().length); }}
             onCancel={() => setTab('home')}
             notify={notify}
           />
