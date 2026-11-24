@@ -52,6 +52,7 @@ import { logService } from '../services/LogService';
 import { dbAdminApi } from './dbadmin';
 import { memoriesApi } from './memories'; // T04151（PRD MEM-402）：长期记忆 REST 出口
 import { planApi } from './plans';
+import { savedViewsApi } from './savedViews'; // T06303（REQ-009 / PRD §B1）：保存视图 REST
 import { iterationApi } from './iterations'; // T03186（PM-201）：迭代与燃尽，路径自带 /projects|/iterations 前缀故整体挂载
 import { materialTimingApi } from './materialTiming'; // T03189（G-1）：汇报材料耗时采样，路径自带 /report 前缀
 import { metricsApi } from './metrics'; // T03190（G-4）：指标基线出数，路径自带 /overdue-rate
@@ -3858,6 +3859,7 @@ api.use('/dbadmin', dbAdminApi);
 
 // ---------- 项目计划（T00431，菜单位于周报前） ----------
 api.use('/plans', planApi);
+api.use('/saved-views', savedViewsApi); // T06303（REQ-009 / PRD §B1）：保存视图 CRUD/复制
 api.use(iterationApi); // T03186（PM-201 迭代与燃尽）：完整路径声明，不挂前缀（详见 routes/iterations.ts 头注）
 api.use(materialTimingApi); // T03189（G-1 汇报材料耗时）：同上，/report/material-timing/* 完整路径
 api.use('/metrics', metricsApi); // T03190（G-4 逾期率基线）：/metrics/overdue-rate

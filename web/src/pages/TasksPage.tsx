@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type CSSProperties } from 'react';
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { createPortal } from 'react-dom';
-import { api, imageUrl, fetchImage, imageDataURL, type AITool, type CustomField, type CustomFieldType, type Project, type PromptCategory, type ReqCategory, type Task, type TaskCategory, type TaskImage } from '../api/client';
+import { api, imageUrl, fetchImage, imageDataURL, type AITool, type CustomField, type CustomFieldType, type Project, type PromptCategory, type ReqCategory, type SavedView, type Task, type TaskCategory, type TaskImage } from '../api/client';
 import { ResultDiffPanel } from '../ui/ResultDiff'; // T01072-FR1.9：结果历史 diff 与回滚
 import { beautifyStore } from '../stores/beautifyStore';
 import { OPTIMIZE_SCOPE_TASKS, busyScope, optimizeStore, runOptimize, useOptimizeStore } from '../stores/optimizeStore'; // T03684：提示词优化运行态切页保持
@@ -10,6 +10,7 @@ import { MarkdownContent } from '../ui/Markdown';
 import { TaskEventTimeline } from '../components/TaskEventTimeline';
 import { TaskDetailDrawer, type TaskDetailTab, type TaskPatch } from '../components/TaskDetailDrawer'; // T01562：真抽屉详情
 import { TaskCalendar } from '../components/TaskCalendar'; // T06302（REQ-009）：日历视图（月/周 + 拖拽改期 + 未排期分组）
+import { SavedViewMenu } from '../components/SavedViewMenu'; // T06303（REQ-009 / PRD §B1）：保存视图入口
 import { focusPlanNode, focusTaskByNo, type FocusTaskIntent } from '../ui/focusTask'; // T01568：外部跳转定位意图（通知/铃铛/就绪条）；T02196：徽标点击定位
 import { ProjectListHint, getProjectListSnapshot, patchProject, refreshProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
 import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：选中项有效性校验失败态提示；T02257：AI 工具列表同层接入
@@ -25,6 +26,7 @@ import { fieldBadgesNode } from '../ui/fieldBadges'; // T03231（PM-203②）：
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { NoticeToast, useNotice } from '../ui/notice'; // T03214（UX-02 ③）：提示分级——成功短驻、错误长驻且可关闭/复制
 import { paginationStatus, type PaginationView } from '../utils/taskPagination'; // T03214（UX-02 ①）：剩余条数与「已加载全部」判据
+import { parseTaskViewUrl, taskViewConfig, writeTaskViewUrl } from '../utils/savedViewUrl'; // T06303：视图状态 URL 同步
 import { suggestEntryState } from '../utils/suggestVisibility'; // T03257（AI-203④）：建议入口显隐口径（未启用隐藏 / 失效禁用）
 import { isValidIanaTz, tzOptions } from '../utils/timezone'; // T03268（PRD 4.2）：项目时区候选与本地校验
 import { buildImportFailureReceipt, buildImportReceipt } from '../utils/importReceipt'; // T03214（UX-02 ④）：导入结果分列成功/跳过/失败
@@ -1030,6 +1032,55 @@ export function TasksPage() {
   const [viewMode, setViewMode] = useSessionState<'list' | 'board' | 'table' | 'calendar'>('tasks.viewMode', 'list');
   // T03209（PM-101）：看板隐藏空列——会话级保持，切换页签/窗口期间保持
   const [boardHideEmpty, setBoardHideEmpty] = useSessionState<boolean>('tasks.board.hideEmpty', false);
+  // T06303（REQ-009 / PRD §B1）：保存视图——按项目加载，私有/共享由服务端校验；视图只存配置，不复制任务
+  const [savedViews, setSavedViews] = useState<SavedView[]>([]);
+  const [savedViewId, setSavedViewId] = useState('');
+  const [savedViewBusy, setSavedViewBusy] = useState(false);
+  const [viewUrlReady, setViewUrlReady] = useState(false);
+
+  // T06303：首次进入按 URL 恢复筛选/视图（刷新可恢复）；无相关参数时保留会话默认。
+  useEffect(() => {
+    const parsed = parseTaskViewUrl(window.location.search);
+    if (parsed.viewMode) setViewMode(parsed.viewMode);
+    if (parsed.search !== undefined) setSearch(parsed.search);
+    if (parsed.catFilter !== undefined) setCatFilter(parsed.catFilter);
+    if (parsed.priorityFilter !== undefined) setPriorityFilter(parsed.priorityFilter);
+    if (parsed.fieldFilterField !== undefined) setFieldFilterField(parsed.fieldFilterField);
+    if (parsed.fieldFilterOp !== undefined) setFieldFilterOp(parsed.fieldFilterOp);
+    if (parsed.fieldFilterValue !== undefined) setFieldFilterValue(parsed.fieldFilterValue);
+    if (parsed.fieldSort !== undefined) setFieldSort(parsed.fieldSort);
+    if (parsed.density !== undefined) setDensityRaw(parsed.density);
+    if (parsed.boardHideEmpty !== undefined) setBoardHideEmpty(parsed.boardHideEmpty);
+    setViewUrlReady(true);
+  }, []);
+
+  // T06303：视图状态变化写回 URL（保留无关参数），刷新/复制链接即可恢复。
+  useEffect(() => {
+    if (!viewUrlReady) return;
+    const next = writeTaskViewUrl(window.location.search, {
+      viewMode, search, catFilter, priorityFilter, fieldFilterField, fieldFilterOp,
+      fieldFilterValue, fieldSort, density, boardHideEmpty,
+    });
+    if (next === window.location.search.replace(/^\?/, '')) return;
+    const url = `${window.location.pathname}${next ? `?${next}` : ''}${window.location.hash}`;
+    window.history.replaceState(null, '', url);
+  }, [viewUrlReady, viewMode, search, catFilter, priorityFilter, fieldFilterField, fieldFilterOp, fieldFilterValue, fieldSort, density, boardHideEmpty]);
+
+  // T06303：保存视图按项目加载；全部项目视图没有单一项目作用域，故清空。
+  useEffect(() => {
+    let alive = true;
+    if (!activeProject || activeProject === ALL_PROJECTS) {
+      setSavedViews([]);
+      setSavedViewId('');
+      return () => { alive = false; };
+    }
+    setSavedViewBusy(true);
+    void api.get<{ rows: SavedView[] }>(`/saved-views?projectId=${encodeURIComponent(activeProject)}`)
+      .then((data) => { if (alive) setSavedViews(data.rows ?? []); })
+      .catch((e) => { if (alive) flash(`加载保存视图失败：${e instanceof Error ? e.message : String(e)}`, 'error'); })
+      .finally(() => { if (alive) setSavedViewBusy(false); });
+    return () => { alive = false; };
+  }, [activeProject]);
   // T03209（PM-101）：WIP 上限输入草稿（按项目存放，提交成功后清理）
   const [wipDrafts, setWipDrafts] = useState<Record<string, string>>({});
   const [wipBusy, setWipBusy] = useState(false);
@@ -1094,6 +1145,99 @@ export function TasksPage() {
     projCountsAtRef.current = now;
     void loadProjects();
   }, [loadProjects]);
+
+  /** T06303：当前视图状态 → 保存配置（只收白名单字段，不把临时 UI 状态写进库）。 */
+  function currentViewConfig() {
+    return taskViewConfig({
+      viewMode, search, catFilter, priorityFilter, fieldFilterField, fieldFilterOp,
+      fieldFilterValue, fieldSort, density, boardHideEmpty,
+    }, viewMode);
+  }
+
+  /** T06303：按项目重取保存视图并回填列表；返回最新行供创建/复制后直接选中。 */
+  async function refreshSavedViews(projectId: string): Promise<SavedView[]> {
+    const data = await api.get<{ rows: SavedView[] }>(`/saved-views?projectId=${encodeURIComponent(projectId)}`);
+    const rows = data.rows ?? [];
+    setSavedViews(rows);
+    return rows;
+  }
+
+  /** T06303：应用已保存视图；缺省字段回落到默认，避免把上一个视图的筛选带进来。 */
+  function applySavedView(id: string) {
+    const view = savedViews.find((v) => v.id === id);
+    if (!view) { setSavedViewId(''); return; }
+    const c = view.config ?? {};
+    setViewMode(c.viewMode ?? view.type);
+    setSearch(typeof c.search === 'string' ? c.search : '');
+    setCatFilter(typeof c.catFilter === 'string' ? c.catFilter : '');
+    setPriorityFilter(typeof c.priorityFilter === 'string' ? c.priorityFilter : '');
+    setFieldFilterField(typeof c.fieldFilterField === 'string' ? c.fieldFilterField : '');
+    setFieldFilterOp(typeof c.fieldFilterOp === 'string' ? c.fieldFilterOp : '');
+    setFieldFilterValue(typeof c.fieldFilterValue === 'string' ? c.fieldFilterValue : '');
+    setFieldSort(typeof c.fieldSort === 'string' ? c.fieldSort : '');
+    setDensityRaw(['compact', 'comfortable', 'loose'].includes(String(c.density)) ? String(c.density) : 'compact');
+    setBoardHideEmpty(Boolean(c.boardHideEmpty));
+    setSavedViewId(id);
+    flash(`已应用视图「${view.name}」`);
+  }
+
+  async function saveCurrentView() {
+    if (!activeProject || activeProject === ALL_PROJECTS) return flash('全部项目视图下请先选择具体项目再保存视图');
+    const name = await askInput({
+      title: '保存当前视图',
+      placeholder: '如：我的未验证待办',
+      okText: '下一步',
+    });
+    if (name === null) return;
+    if (!name.trim()) return flash('视图名不能为空');
+    const shared = await askConfirm(`是否将「${name.trim()}」设为项目共享视图？\n选择「取消」则仅本机私有可见。`);
+    setSavedViewBusy(true);
+    try {
+      const created = await api.post<SavedView>('/saved-views', {
+        projectId: activeProject,
+        name: name.trim(),
+        type: viewMode,
+        config: currentViewConfig(),
+        visibility: shared ? 'project' : 'private',
+      });
+      await refreshSavedViews(activeProject);
+      setSavedViewId(created.id);
+      flash(`视图已保存：${created.name}（${created.visibility === 'project' ? '项目共享' : '私有'}）`);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    } finally { setSavedViewBusy(false); }
+  }
+
+  async function copySavedView() {
+    if (!activeProject || activeProject === ALL_PROJECTS) return;
+    const view = savedViews.find((v) => v.id === savedViewId);
+    if (!view) return flash('请先选择一个保存视图');
+    setSavedViewBusy(true);
+    try {
+      const copied = await api.post<SavedView>(`/saved-views/${view.id}/copy`, {});
+      await refreshSavedViews(activeProject);
+      setSavedViewId(copied.id);
+      flash(`已复制视图：${copied.name}`);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    } finally { setSavedViewBusy(false); }
+  }
+
+  async function deleteSavedView() {
+    if (!activeProject || activeProject === ALL_PROJECTS) return;
+    const view = savedViews.find((v) => v.id === savedViewId);
+    if (!view) return flash('请先选择一个保存视图');
+    if (!(await askConfirm(`删除视图「${view.name}」？\n只删除保存的筛选配置，不影响任务数据。`))) return;
+    setSavedViewBusy(true);
+    try {
+      await api.del(`/saved-views/${view.id}`);
+      setSavedViewId('');
+      await refreshSavedViews(activeProject);
+      flash(`已删除视图「${view.name}」`);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    } finally { setSavedViewBusy(false); }
+  }
 
   /**
    * 分页拉取任务。搜索/分类经后端过滤后再分页，保证分页下检索结果完整（而非只搜已加载页）；
@@ -4938,6 +5082,17 @@ export function TasksPage() {
         {/* T03176（D-14）：AI 不可用时工具条给一次原因 + 「去模型管理」，AI 按钮保留可见但禁用 */}
         {aiDown && readiness && <AiUnavailableHint r={readiness} compact />}
         {renderViewToggle()}
+        {/* T06303（REQ-009 / PRD §B1）：保存视图选择/保存/复制/删除；全部项目视图下禁用 */}
+        <SavedViewMenu
+          views={savedViews}
+          activeId={savedViewId}
+          busy={savedViewBusy}
+          disabled={!activeProject || activeProject === ALL_PROJECTS}
+          onSelect={applySavedView}
+          onSave={() => void saveCurrentView()}
+          onCopy={() => void copySavedView()}
+          onDelete={() => void deleteSavedView()}
+        />
         {/* T06322（REQ-042 / §C3）：列表行密度切换——三档 32/40/48px，只作用于列表视图；改造仅行高与标题字号，不改变列结构 */}
         <select
           data-t06322="density"

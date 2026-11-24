@@ -1,0 +1,326 @@
+{
+  "pass": 11,
+  "fail": 0,
+  "checks": [
+    {
+      "name": "T06303-00 测试 API 就绪",
+      "ok": true,
+      "extra": {
+        "ok": true,
+        "service": "mtask-server",
+        "time": "2026-11-24T16:20:25.937Z"
+      }
+    },
+    {
+      "name": "T06303-00b 测试夹具就绪",
+      "ok": true,
+      "extra": {
+        "projectId": "177bd095-6727-41d4-a60e-c0531d5a72cd",
+        "tasks": 3
+      }
+    },
+    {
+      "name": "T06303-01 保存视图入口与 URL 恢复",
+      "ok": true,
+      "extra": {
+        "menu": true,
+        "options": [
+          {
+            "value": "",
+            "text": "暂无保存视图"
+          }
+        ],
+        "selected": "",
+        "disabled": true,
+        "saveDisabled": false,
+        "copyDisabled": true,
+        "deleteDisabled": true,
+        "width": 206,
+        "right": 625,
+        "viewport": {
+          "w": 1440,
+          "h": 1000
+        },
+        "scrollWidth": 1440,
+        "url": "?view=board&q=T06303&priority=high&density=comfortable&boardHide=0",
+        "boardPressed": true,
+        "listPressed": false
+      }
+    },
+    {
+      "name": "T06303-02 1440 工具栏无横向溢出",
+      "ok": true,
+      "extra": {
+        "shot": {
+          "file": "00-t06303-saved-view-1440.png",
+          "bytes": 61540
+        },
+        "scrollWidth": 1440,
+        "right": 625
+      }
+    },
+    {
+      "name": "T06303-03 UI 保存视图并写对 config",
+      "ok": true,
+      "extra": {
+        "saved": {
+          "id": "3dbd8551-71b5-4428-8f3d-97d4ee0bc691",
+          "projectId": "177bd095-6727-41d4-a60e-c0531d5a72cd",
+          "name": "T06303 视图",
+          "type": "board",
+          "config": {
+            "viewMode": "board",
+            "search": "T06303",
+            "catFilter": "",
+            "priorityFilter": "high",
+            "fieldFilterField": "",
+            "fieldFilterOp": "",
+            "fieldFilterValue": "",
+            "fieldSort": "",
+            "density": "comfortable",
+            "boardHideEmpty": false
+          },
+          "visibility": "project",
+          "createdBy": "local",
+          "createdAt": "2026-11-24T16:20:45.710Z",
+          "updatedAt": "2026-11-24T16:20:45.710Z"
+        },
+        "confirmText": "是否将「T06303 视图」设为项目共享视图？\n选择「取消」则仅本机私有可见。\n取消\n确定",
+        "options": [
+          {
+            "value": "",
+            "text": "选择视图…"
+          },
+          {
+            "value": "3dbd8551-71b5-4428-8f3d-97d4ee0bc691",
+            "text": "T06303 视图 · 共享"
+          }
+        ],
+        "savedId": "3dbd8551-71b5-4428-8f3d-97d4ee0bc691"
+      }
+    },
+    {
+      "name": "T06303-04 应用视图恢复看板与筛选 URL",
+      "ok": true,
+      "extra": {
+        "before": {
+          "menu": true,
+          "options": [
+            {
+              "value": "",
+              "text": "选择视图…"
+            },
+            {
+              "value": "3dbd8551-71b5-4428-8f3d-97d4ee0bc691",
+              "text": "T06303 视图 · 共享"
+            }
+          ],
+          "selected": "3dbd8551-71b5-4428-8f3d-97d4ee0bc691",
+          "disabled": false,
+          "saveDisabled": false,
+          "copyDisabled": false,
+          "deleteDisabled": false,
+          "width": 233,
+          "right": 652,
+          "viewport": {
+            "w": 1440,
+            "h": 1000
+          },
+          "scrollWidth": 1440,
+          "url": "?view=list&q=T06303&priority=high&density=comfortable&boardHide=0",
+          "boardPressed": false,
+          "listPressed": true
+        },
+        "after": {
+          "menu": true,
+          "options": [
+            {
+              "value": "",
+              "text": "选择视图…"
+            },
+            {
+              "value": "3dbd8551-71b5-4428-8f3d-97d4ee0bc691",
+              "text": "T06303 视图 · 共享"
+            }
+          ],
+          "selected": "3dbd8551-71b5-4428-8f3d-97d4ee0bc691",
+          "disabled": false,
+          "saveDisabled": false,
+          "copyDisabled": false,
+          "deleteDisabled": false,
+          "width": 233,
+          "right": 652,
+          "viewport": {
+            "w": 1440,
+            "h": 1000
+          },
+          "scrollWidth": 1440,
+          "url": "?view=board&q=T06303&priority=high&density=comfortable&boardHide=0",
+          "boardPressed": true,
+          "listPressed": false
+        }
+      }
+    },
+    {
+      "name": "T06303-05 复制视图并自动避让重名",
+      "ok": true,
+      "extra": {
+        "copy": {
+          "id": "60f40973-36be-4abf-a37f-8a3937e12135",
+          "projectId": "177bd095-6727-41d4-a60e-c0531d5a72cd",
+          "name": "T06303 视图（副本）",
+          "type": "board",
+          "config": {
+            "viewMode": "board",
+            "search": "T06303",
+            "catFilter": "",
+            "priorityFilter": "high",
+            "fieldFilterField": "",
+            "fieldFilterOp": "",
+            "fieldFilterValue": "",
+            "fieldSort": "",
+            "density": "comfortable",
+            "boardHideEmpty": false
+          },
+          "visibility": "project",
+          "createdBy": "local",
+          "createdAt": "2026-11-24T16:20:47.748Z",
+          "updatedAt": "2026-11-24T16:20:47.748Z"
+        },
+        "options": [
+          {
+            "value": "",
+            "text": "选择视图…"
+          },
+          {
+            "value": "60f40973-36be-4abf-a37f-8a3937e12135",
+            "text": "T06303 视图（副本） · 共享"
+          },
+          {
+            "value": "3dbd8551-71b5-4428-8f3d-97d4ee0bc691",
+            "text": "T06303 视图 · 共享"
+          }
+        ],
+        "selected": "60f40973-36be-4abf-a37f-8a3937e12135"
+      }
+    },
+    {
+      "name": "T06303-06 删除视图仅删配置行",
+      "ok": true,
+      "extra": {
+        "remaining": [
+          "T06303 视图"
+        ],
+        "after": {
+          "menu": true,
+          "options": [
+            {
+              "value": "",
+              "text": "选择视图…"
+            },
+            {
+              "value": "3dbd8551-71b5-4428-8f3d-97d4ee0bc691",
+              "text": "T06303 视图 · 共享"
+            }
+          ],
+          "selected": "",
+          "disabled": false,
+          "saveDisabled": false,
+          "copyDisabled": true,
+          "deleteDisabled": true,
+          "width": 233,
+          "right": 652,
+          "viewport": {
+            "w": 1440,
+            "h": 1000
+          },
+          "scrollWidth": 1440,
+          "url": "?view=board&q=T06303&priority=high&density=comfortable&boardHide=0",
+          "boardPressed": true,
+          "listPressed": false
+        }
+      }
+    },
+    {
+      "name": "T06303-07 760 无横向溢出",
+      "ok": true,
+      "extra": {
+        "shot": {
+          "file": "01-t06303-saved-view-760.png",
+          "bytes": 52827
+        },
+        "menu": {
+          "menu": true,
+          "options": [
+            {
+              "value": "",
+              "text": "选择视图…"
+            },
+            {
+              "value": "3dbd8551-71b5-4428-8f3d-97d4ee0bc691",
+              "text": "T06303 视图 · 共享"
+            }
+          ],
+          "selected": "",
+          "disabled": false,
+          "saveDisabled": false,
+          "copyDisabled": true,
+          "deleteDisabled": true,
+          "width": 233,
+          "right": 652,
+          "viewport": {
+            "w": 760,
+            "h": 900
+          },
+          "scrollWidth": 760,
+          "url": "?view=list&q=T06303&priority=high&density=comfortable&boardHide=0",
+          "boardPressed": false,
+          "listPressed": true
+        }
+      }
+    },
+    {
+      "name": "T06303-08 刷新后按 URL 恢复视图/筛选",
+      "ok": true,
+      "extra": {
+        "menu": true,
+        "options": [
+          {
+            "value": "",
+            "text": "选择视图…"
+          },
+          {
+            "value": "3dbd8551-71b5-4428-8f3d-97d4ee0bc691",
+            "text": "T06303 视图 · 共享"
+          }
+        ],
+        "selected": "",
+        "disabled": false,
+        "saveDisabled": false,
+        "copyDisabled": true,
+        "deleteDisabled": true,
+        "width": 233,
+        "right": 652,
+        "viewport": {
+          "w": 1440,
+          "h": 1000
+        },
+        "scrollWidth": 1440,
+        "url": "?view=board&q=T06303&priority=high&density=comfortable&boardHide=0",
+        "boardPressed": true,
+        "listPressed": false
+      }
+    },
+    {
+      "name": "T06303-09 刷新后截图有效且无异常",
+      "ok": true,
+      "extra": {
+        "shot": {
+          "file": "02-t06303-saved-view-reload-1440.png",
+          "bytes": 61159
+        },
+        "consoleErrors": []
+      }
+    }
+  ]
+}

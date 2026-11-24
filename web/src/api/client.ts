@@ -1070,3 +1070,37 @@ export interface ReqEntry {
   created_at: string;
   updated_at: string;
 }
+
+// T06303（REQ-009 / PRD §B1）：保存视图——只保存视图配置，不复制任务数据
+export type SavedViewType = 'list' | 'board' | 'table' | 'calendar';
+export type SavedViewVisibility = 'private' | 'project';
+
+export interface SavedViewConfig {
+  /** 视图模式；缺省按视图行的 type 回退。 */
+  viewMode?: SavedViewType;
+  search?: string;
+  catFilter?: string;
+  priorityFilter?: string;
+  fieldFilterField?: string;
+  fieldFilterOp?: string;
+  fieldFilterValue?: string;
+  fieldSort?: string;
+  density?: string;
+  boardHideEmpty?: boolean;
+  doneFilter?: string;
+  todoSort?: string;
+  doneSort?: string;
+  [key: string]: unknown;
+}
+
+export interface SavedView {
+  id: string;
+  projectId: string;
+  name: string;
+  type: SavedViewType;
+  config: SavedViewConfig;
+  visibility: SavedViewVisibility;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
