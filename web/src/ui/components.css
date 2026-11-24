@@ -995,6 +995,8 @@
 .mt-tooltip__bubble {
   position: absolute;
   z-index: 1300;
+  width: max-content;
+  max-width: min(280px, calc(100vw - 24px));
   padding: 5px 8px;
   border-radius: 6px;
   background: var(--mt-component-toast-bg);

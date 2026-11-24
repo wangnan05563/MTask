@@ -171,7 +171,7 @@ try {
     }
     return null;
   };
-  const shot = async (name, selector) => {
+  const shot = async (name, selector, pad = 0) => {
     let clip;
     if (selector) {
       const rect = await evl(`(() => {
@@ -181,7 +181,13 @@ try {
         return { x: r.left + window.scrollX, y: r.top + window.scrollY, width: r.width, height: r.height };
       })()`);
       if (!rect.value) return null;
-      clip = { ...rect.value, scale: 1 };
+      clip = {
+        x: Math.max(0, rect.value.x - pad),
+        y: Math.max(0, rect.value.y - pad),
+        width: rect.value.width + pad * 2,
+        height: rect.value.height + pad * 2,
+        scale: 2,
+      };
     }
     const r = await send('Page.captureScreenshot', { format: 'png', ...(clip ? { clip, captureBeyondViewport: true } : {}) });
     if (!r?.data) return null;
@@ -247,6 +253,7 @@ try {
       width: Math.round(sr.width), height: Math.round(sr.height),
       ariaLabel: sum.getAttribute('aria-label'), title: sum.getAttribute('title'),
       expanded: sum.getAttribute('aria-expanded'), panel: Boolean(row.querySelector('[data-t06334="summary-panel"]')),
+      tooltipWrapper: Boolean(sum.closest('.mt-tooltip')),
       order, sameRow: dr ? Math.abs(sr.top - dr.top) <= 2 : false, gap: dr ? Math.round(dr.left - sr.right) : -1,
       descSection: Boolean(row.closest('li')?.querySelector('#task-desc-${TASK_ID}')),
       controlHasSummary: Boolean(control?.querySelector('[data-t06334="summary-toggle"]')),
@@ -258,7 +265,41 @@ try {
   say('T06334-05 摘要按钮为纯图标且不再包含文字标签', v.sum && v.text === '' && /mt-icon-btn/.test(v.className || ''), { text: v.text, className: v.className, size: `${v.width}x${v.height}` });
   say('T06334-06 摘要按钮复用 Design System 的 ghost/sm IconButton', v.variant === 'ghost' && v.size === 'sm' && v.width === 24 && v.height === 24, { variant: v.variant, size: v.size, box: `${v.width}x${v.height}` });
   say('T06334-07 摘要按钮位于描述「展开」之前且保持在标题行', v.order === true && v.sameRow === true && v.gap >= 0 && v.gap <= 16, { order: v.order, sameRow: v.sameRow, gap: v.gap });
-  say('T06334-08 悬浮提示同时包含功能名称与简短说明', /^AI梳理摘要：/.test(v.ariaLabel || '') && v.ariaLabel === v.title && (v.title || '').length <= 30, { ariaLabel: v.ariaLabel, title: v.title, length: (v.title || '').length });
+  say('T06334-08 悬浮提示同时包含功能名称与简短说明', /^AI梳理摘要：/.test(v.ariaLabel || '') && v.title === '' && v.tooltipWrapper === true, { ariaLabel: v.ariaLabel, title: v.title, tooltipWrapper: v.tooltipWrapper });
+
+  const tipPoint = await evl(`(() => {
+    const sum = document.querySelector('[data-ttask-id="${TASK_ID}"] [data-t06334="summary-toggle"]');
+    if (!sum) return null;
+    const r = sum.getBoundingClientRect();
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+  })()`);
+  if (tipPoint.value) {
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: tipPoint.value.x, y: tipPoint.value.y });
+    await sleep(450);
+  }
+  const tipInfo = await evl(`(() => {
+    const sum = document.querySelector('[data-ttask-id="${TASK_ID}"] [data-t06334="summary-toggle"]');
+    const bubble = sum?.closest('.mt-tooltip')?.querySelector('.mt-tooltip__bubble');
+    if (!bubble) return null;
+    const r = bubble.getBoundingClientRect();
+    return {
+      text: bubble.innerText || '',
+      width: Math.round(r.width), height: Math.round(r.height),
+      left: Math.round(r.left), right: Math.round(r.right),
+      top: Math.round(r.top), bottom: Math.round(r.bottom),
+      vw: window.innerWidth, vh: window.innerHeight,
+      viewport: window.innerWidth + 'x' + window.innerHeight,
+    };
+  })()`);
+  const tip = tipInfo.value || {};
+  say('T06334-08b Tooltip 悬浮展示功能名+操作说明', (tip.text || '').includes('AI梳理摘要') && (tip.text || '').includes('展开或收起任务摘要'), tip);
+  say('T06334-08b2 Tooltip 气泡有可读尺寸且未越出视口',
+    tip.width >= 80 && tip.height >= 20 && tip.left >= 0 && tip.right <= tip.vw && tip.top >= 0 && tip.bottom <= tip.vh,
+    tip);
+  const tipShot = await shot('summary-tooltip-light.png', `li:has([data-ttask-id="${TASK_ID}"])`, 44);
+  say('T06334-08c Tooltip 展开态截图有效', Boolean(tipShot && tipShot.bytes > 10_000 && tipShot.size?.width >= 500), tipShot);
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 });
+  await sleep(120);
   say('T06334-09 初始为收起态且不渲染摘要正文', v.expanded === 'false' && v.panel === false && v.descSection === false, { expanded: v.expanded, panel: v.panel, descSection: v.descSection });
   say('T06334-10 无摘要任务不出现该按钮', v.controlHasSummary === false, { controlHasSummary: v.controlHasSummary });
   say('T06334-11 图标按钮具备点击过渡与可聚焦语义', /transform/.test(v.transition || '') && v.focusable === true, { transition: v.transition, focusable: v.focusable });
@@ -284,6 +325,16 @@ try {
   })()`);
   say('T06334-13 展开后提示与 aria-expanded 同步为收起态', /^AI梳理摘要：收起任务摘要$/.test(labelOpen.value?.label || '') && labelOpen.value?.expanded === 'true', labelOpen.value);
 
+  const rowHoverPoint = await evl(`(() => {
+    const row = document.querySelector('[data-ttask-id="${TASK_ID}"]');
+    if (!row) return null;
+    const r = row.getBoundingClientRect();
+    return { x: Math.round(r.left + Math.min(120, r.width / 3)), y: Math.round(r.top + Math.min(18, r.height / 2)) };
+  })()`);
+  if (rowHoverPoint.value) {
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...rowHoverPoint.value });
+    await sleep(250);
+  }
   const lightShot = await shot('summary-expanded-light.png', `li:has([data-ttask-id="${TASK_ID}"])`);
   say('T06334-14 light 展开态行截图有效', Boolean(lightShot && lightShot.bytes > 10_000 && lightShot.size?.width >= 500 && lightShot.size?.height >= 80), lightShot);
 

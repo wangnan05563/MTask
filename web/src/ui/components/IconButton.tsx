@@ -10,13 +10,13 @@ export interface IconButtonProps extends Omit<ButtonProps, 'children' | 'leftIco
   readonly label: string;
 }
 
-export function IconButton({ icon, label, className, loadingText, ...rest }: IconButtonProps) {
+export function IconButton({ icon, label, className, loadingText, title, ...rest }: IconButtonProps) {
   return (
     <Button
       {...rest}
       className={['mt-icon-btn', className].filter(Boolean).join(' ')}
       aria-label={label}
-      title={label}
+      title={title ?? label}
       loadingText={loadingText ?? label}
       leftIcon={icon}
     />

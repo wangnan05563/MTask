@@ -1,0 +1,20 @@
+[PASS] T06334-00 隔离后端就绪（生产 :39877 未被触碰） → {"port":39933,"dist":"D:\\code\\otherProjects\\MTask\\web\\dist","log":"D:\\tmp\\t06334-summary\\server.log"}
+[PASS] T06334-01 隔离夹具创建（摘要任务 + 无摘要对照） → {"projectId":"dcb20112-0705-41c8-bd33-32b7dac517b2","taskId":"51bb2153-6680-48a8-94b7-881bc87925bc","summaryLength":65}
+[PASS] T06334-02 生产构建加载成功
+[PASS] T06334-03 任务行加载 → {"href":"http://127.0.0.1:39933/?view=list&density=compact&boardHide=0","body":"M MTask 首页 任务 项目 AI 控制台 设置 任务 全部项目 ● 后端已连接 工作台 / 任务 任务 统一查看待办、已完成与搁置任务；列表、看板、表格与日历共用同一套筛选和任务集。 全部项目 2 0 工作空间 2 2 AI 功能暂不可用：尚未配置 AI 工具，AI 功能暂不可用 去模型管理 暂无保存视图 模板 紧凑 · 32px 行高 舒适 · 40px 行高 宽松 · 48px 行高 Git 低 中 高 极高 未分类 待办（2/2） 已完成（0/0，未验证 0） 搁置（0） 默认 修改时间（新→旧） 修改时间（旧→新） 优先级（高→低） 优先级（低→高） 手动排序 T00002 T06334 摘要按钮验收 mwvav2jn T06334 无摘要对照任务 T00001 T06334 摘要按钮验收 mwvav2jn T06334 摘要按钮布局验收任务 共 2 条 已加载全部","taskRows":2,"allTaskItems":2,"viewToggle":true,"activeProject":"\"dcb20112-0705-41c8-bd33-32b7dac517b2\"","viewMode":"\"list\""}
+[PASS] T06334-04 首次使用向导不遮挡验收 → {"guide":"none"}
+[PASS] T06334-05 摘要按钮为纯图标且不再包含文字标签 → {"text":"","className":"mt-btn mt-icon-btn task-op","size":"24x24"}
+[PASS] T06334-06 摘要按钮复用 Design System 的 ghost/sm IconButton → {"variant":"ghost","size":"sm","box":"24x24"}
+[PASS] T06334-07 摘要按钮位于描述「展开」之前且保持在标题行 → {"order":true,"sameRow":true,"gap":8}
+[PASS] T06334-08 悬浮提示同时包含功能名称与简短说明 → {"ariaLabel":"AI梳理摘要：展开查看任务摘要","title":"","tooltipWrapper":true}
+[PASS] T06334-08b Tooltip 悬浮展示功能名+操作说明 → {"text":"AI梳理摘要\n展开或收起任务摘要","width":124,"height":47,"left":1122,"right":1246,"top":485,"bottom":532,"vw":1258,"vh":902,"viewport":"1258x902"}
+[PASS] T06334-08b2 Tooltip 气泡有可读尺寸且未越出视口 → {"text":"AI梳理摘要\n展开或收起任务摘要","width":124,"height":47,"left":1122,"right":1246,"top":485,"bottom":532,"vw":1258,"vh":902,"viewport":"1258x902"}
+[PASS] T06334-08c Tooltip 展开态截图有效 → {"bytes":67599,"sha":"f70a0e2be28b1d6b","size":{"width":2084,"height":296},"clip":{"x":228,"y":405,"width":1042,"height":148,"scale":2}}
+[PASS] T06334-09 初始为收起态且不渲染摘要正文 → {"expanded":"false","panel":false,"descSection":false}
+[PASS] T06334-10 无摘要任务不出现该按钮 → {"controlHasSummary":false}
+[PASS] T06334-11 图标按钮具备点击过渡与可聚焦语义 → {"transition":"0.18s transform","focusable":true}
+[PASS] T06334-12 点击图标展开摘要正文且不联动描述展开 → {"opened":{"text":"AI 梳理摘要\n这是用于验收 AI 梳理摘要按钮的任务摘要：梳理目标、边界与可复核证据，确认图标按钮位于描述展开之前，并且仅通过悬浮提示表达功能。","descSection":false}}
+[PASS] T06334-13 展开后提示与 aria-expanded 同步为收起态 → {"label":"AI梳理摘要：收起任务摘要","expanded":"true"}
+[PASS] T06334-14 light 展开态行截图有效 → {"bytes":63096,"sha":"58f3c7806c5169c1","size":{"width":1908,"height":248},"clip":{"x":272,"y":449,"width":954,"height":124,"scale":2}}
+[PASS] T06334-15 1440/1024 宽度下摘要图标仍位于展开前且不重叠 → [{"sum":true,"desc":true,"order":true,"sameRow":true,"gap":8,"inside":true,"width":1440},{"sum":true,"desc":true,"order":true,"sameRow":true,"gap":8,"inside":true,"width":1024}]
+[FAIL] T06334-FATAL 测试异常 → "Error: ENOSPC: no space left on device, write\n    at Object.writeSync (node:fs:916:3)\n    at writeFileSync (node:fs:2450:26)\n    at shot (file:///D:/code/otherProjects/MTask/scripts/tests/verify-t06334-summary-button.mjs:195:5)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async file:///D:/code/otherProjects/MTask/scripts/tests/verify-t06334-summary-button.mjs:369:20"

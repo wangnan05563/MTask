@@ -46,7 +46,7 @@ import { WorkspaceAskPanel } from '../ui/WorkspaceAskPanel'; // T03250：工作�
 import { AiPolishButton } from '../ui/AiPolishButton'; // T00796 二轮：正文 AI 美化（反馈/处理结果共用）
 import { AiUnavailableHint, aiBlocked, aiBlockedTitle, useAiReadiness, type AiReadiness } from '../ui/aiReadiness'; // T03176（D-14）：AI 不可用入口可见但禁用 + 原因/修复动作
 import { classifyResultMessage, createClassifyStore, runClassifyBatch, type ClassifyResponse, type ClassifyStoreState } from './tasksClassifyBatch'; // T02307：批量分类三态分流 + 账户级门禁/连续失败熔断
-import { Badge, IconButton, Table, type BadgeTone, type TableColumn } from '../ui/components'; // T06301：表格视图复用 Design System 原语；T06334：摘要入口复用 IconButton
+import { Badge, IconButton, Table, Tooltip, type BadgeTone, type TableColumn } from '../ui/components'; // T06301：表格视图复用 Design System 原语；T06334：摘要入口复用 IconButton + Tooltip
 
 /** 顶部 tab 三态：待办 / 已完成 / 搁置（S4323：具名类型别名替代内联联合类型） */
 type ActiveTab = 'todo' | 'done' | 'shelved';
@@ -4244,16 +4244,27 @@ export function TasksPage() {
   function renderTaskSummaryToggle(t: Task) {
     const expanded = Boolean(summaryExpanded[t.id]);
     return (
-      <IconButton
-        icon={<Sparkles size={13} />}
-        label={expanded ? 'AI梳理摘要：收起任务摘要' : 'AI梳理摘要：展开查看任务摘要'}
-        variant="ghost"
-        size="sm"
-        className="task-op"
-        data-t06334="summary-toggle"
-        aria-expanded={expanded}
-        onClick={() => setSummaryExpanded((p) => ({ ...p, [t.id]: !p[t.id] }))}
-      />
+      <Tooltip
+        placement="bottom"
+        content={(
+          <>
+            <span style={{ display: 'block', fontWeight: 600 }}>AI梳理摘要</span>
+            <span style={{ display: 'block', marginTop: 2, color: 'var(--text-secondary)' }}>展开或收起任务摘要</span>
+          </>
+        )}
+      >
+        <IconButton
+          icon={<Sparkles size={13} />}
+          label={expanded ? 'AI梳理摘要：收起任务摘要' : 'AI梳理摘要：展开查看任务摘要'}
+          title=""
+          variant="ghost"
+          size="sm"
+          className="task-op"
+          data-t06334="summary-toggle"
+          aria-expanded={expanded}
+          onClick={() => setSummaryExpanded((p) => ({ ...p, [t.id]: !p[t.id] }))}
+        />
+      </Tooltip>
     );
   }
 
@@ -6068,6 +6079,9 @@ export function TasksPage() {
         /* T00466：与提示词页 arena-row 特效统一——边框、刷新 flush、点击微缩放 */
         .task-item { border: 1px solid var(--border); border-radius: 8px; margin: 6px 0; transition: background-color 0.15s ease, transform .12s ease; }
         .task-item:hover { background: var(--surface-2); }
+        /* T06334：content-visibility:auto 会建立 paint containment，行内 Tooltip 气泡会被行框裁掉；
+           仅对当前悬浮/聚焦行恢复 visible，离屏行仍保留自动跳绘。 */
+        .task-item:hover, .task-item:focus-within { content-visibility: visible; }
         .task-item.item-pressing { transform: scale(.985); } /* T00489：仅按住行（非交互区 200ms）时缩放 */
         /* T00521 调整：验证结果选择面板弹出动画（缩放+下移淡入，与 toast-in 同族节奏） */
         @keyframes verify-pop { from { opacity: 0; transform: translateY(-6px) scale(.92); } to { opacity: 1; transform: none; } }
