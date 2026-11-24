@@ -128,6 +128,54 @@ function useIsDarkTheme(): boolean {
   return dark;
 }
 
+/** Sigma v4 的 WebGL 渲染器只接受 WebGL 2；部分远程桌面/软件渲染环境只有 WebGL 1，必须在挂载前检查。 */
+export function supportsWebGL2(): boolean {
+  if (typeof document === 'undefined') return false;
+  try {
+    const canvas = document.createElement('canvas');
+    const gl = canvas.getContext('webgl2', { failIfMajorPerformanceCaveat: false });
+    if (!gl) return false;
+    gl.getExtension('WEBGL_lose_context')?.loseContext();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 图谱不可用时保留页面上下文，给出可执行的替代路径，避免 Sigma 构造失败把整个应用打成白板。 */
+export function MemoryGraphFallback({ onSwitchToList, detail }: {
+  onSwitchToList?: () => void;
+  detail?: string;
+}) {
+  return (
+    <div
+      data-lck="memory-graph-fallback"
+      style={{
+        border: '1px solid var(--border)', borderRadius: 8, padding: 16,
+        background: 'var(--card-bg)', color: 'var(--text-secondary)',
+        fontSize: 'var(--fs-s)', lineHeight: 1.8,
+      }}
+    >
+      <div style={{ color: 'var(--text)', fontWeight: 600, marginBottom: 4 }}>记忆图谱当前无法渲染</div>
+      <div>{detail || '当前浏览器/显卡未启用 WebGL 2，Sigma 图谱依赖 WebGL 2。'}</div>
+      <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)' }}>
+        记忆数据本身正常；请切换到「列表」查看和编辑，或改用支持 WebGL 2 的 Chrome/Edge 并开启硬件加速。
+      </div>
+      {onSwitchToList && (
+        <button
+          type="button"
+          onClick={onSwitchToList}
+          style={{
+            marginTop: 8, padding: '4px 12px', border: '1px solid var(--border-strong)',
+            borderRadius: 6, background: 'var(--surface-2)', color: 'var(--text)',
+            fontSize: 'var(--fs-s)', cursor: 'pointer',
+          }}
+        >切回列表</button>
+      )}
+    </div>
+  );
+}
+
 /** hex(#rrggbb) → 发光 rgba 色：backdrop shadow 用，节点色即光晕色（暗底上呈现「发光节点」效果） */
 function glowOf(color: string, alpha: number): string {
   const m = /^#([0-9a-f]{6})$/i.exec(color);
@@ -263,12 +311,14 @@ function nodeColor(n: GraphNode, theme: GraphTheme): string {
   return theme.typeColors[n.type ?? 'reference'] ?? theme.deadColor;
 }
 
-export function MemoryGraph({ productKey }: { productKey: string }) {
+export function MemoryGraph({ productKey, onFallbackToList }: { productKey: string; onFallbackToList?: () => void }) {
   const isDark = useIsDarkTheme();
   const theme = isDark ? DARK_THEME : LIGHT_THEME;
   const [data, setData] = useState<GraphData | null>(null);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<GraphNode | null>(null);
+  const [renderError, setRenderError] = useState<string | null>(null);
+  const [webgl2Available] = useState(() => supportsWebGL2());
   // T05738 P2 时间轴回放：cursor 之前的节点隐藏（逐桶生长）；ref 供 reducer 读避免 React 重渲染
   const [replayTick, setReplayTick] = useState(0); // 仅驱动控制条 UI（已显现计数）
   const [replayActive, setReplayActive] = useState(false);
@@ -366,12 +416,19 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
   useEffect(() => {
     const container = containerRef.current;
     if (!container || !data) return;
+    setRenderError(null);
+    if (!webgl2Available) {
+      setRenderError('当前浏览器/显卡未启用 WebGL 2，Sigma 图谱依赖 WebGL 2。');
+      return;
+    }
     // 「重排布局」标记必须在本轮数据消费时清掉：空图/请求失败也清，避免残留到下一次成功加载
     const skipRestore = skipRestoreRef.current;
     skipRestoreRef.current = false;
     if (data.nodes.length === 0) return;
 
-    const graph = new Graph({ multi: false, type: 'undirected' });
+    // 多边图：同一条记忆对可能同时有 tag / supersede 两条语义边；单边图会抛
+    // "an edge linking ... already exists" 并中断整个 React 树（生产 0.1.1123.284 白屏根因）。
+    const graph = new Graph({ multi: true, type: 'undirected' });
     const startPositions = new Map<string, { x: number; y: number }>();
     // T05790-③ 视图状态恢复：仅当上次保存的节点集覆盖当前 ≥80% 时视为可复用，避免数据增删后错位。
     const saved = skipRestore ? null : readViewState(productKey);
@@ -414,7 +471,9 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
     }
 
     // sigma v4：settings 与 styles 分层——门控/相机在 settings，标签颜色/字号在 styles.nodes
-    const sigma = new Sigma(graph, container, {
+    let sigma: Sigma;
+    try {
+      sigma = new Sigma(graph, container, {
       settings: {
         // 自动把图包围盒铺满画布；stagePadding 保证节点/标签不被边框裁掉
         // T05790 复查修正：恢复视图时也必须开启 autoRescale——它会把布局坐标归一化到画布范围；
@@ -528,7 +587,13 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
         }
         return res;
       },
-    });
+      });
+    } catch (e) {
+      console.error('[MemoryGraph] Sigma init failed', e);
+      setRenderError(e instanceof Error ? e.message : String(e));
+      graphRef.current = null;
+      return;
+    }
     sigmaRef.current = sigma;
 
     // T05790-③ 视图状态保存：相机 + 节点坐标 + 选中项，节流写入 sessionStorage。
@@ -734,6 +799,7 @@ export function MemoryGraph({ productKey }: { productKey: string }) {
 
   if (!productKey) return null;
   if (loading) return <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: 12 }}>图谱加载中…</div>;
+  if (renderError) return <MemoryGraphFallback onSwitchToList={onFallbackToList} detail={renderError} />;
   if (!data || data.nodes.length === 0) {
     return (
       <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)', padding: 12 }}>

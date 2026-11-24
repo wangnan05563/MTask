@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from 'react';
+import { Component, useCallback, useEffect, useState, type CSSProperties, type ErrorInfo, type ReactNode } from 'react';
 import { Check, Link2, List as ListIcon, Brain, Network, Pencil, Plus, Save, Tag, Trash2, Undo2, X } from 'lucide-react';
 import { api } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { HoverCard } from '../ui/HoverCard';
 import { SettingsHelpIcon } from '../ui/settingsHelp'; // T06019：子页说明文字改为语义图标
 import { useSessionState } from '../ui/session'; // T05790：图谱/列表视图与产品选择跨页面保持
-import { MemoryGraph } from './MemoryGraph';
+import { MemoryGraph, MemoryGraphFallback } from './MemoryGraph';
 
 /**
  * T04152（PRD MEM-501/502）：设置 → 数据 →「记忆管理」页签。
@@ -189,6 +189,26 @@ function Metric({ label, value, hint, tone = 'default' }: {
       <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>{hint}</div>
     </div>
   );
+}
+
+/** 图谱渲染边界：即使 Sigma/布局抛出未预期异常，也只降级图谱区域，不卸载整个设置页/应用。 */
+class MemoryGraphBoundary extends Component<{ onFallbackToList: () => void; children: ReactNode }, { error: string | null }> {
+  state: { error: string | null } = { error: null };
+
+  static getDerivedStateFromError(error: unknown) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+
+  componentDidCatch(error: unknown, info: ErrorInfo) {
+    console.error('[MemoryGraph] render failed', error, info);
+  }
+
+  render() {
+    if (this.state.error) {
+      return <MemoryGraphFallback onSwitchToList={this.props.onFallbackToList} detail={`图谱渲染异常：${this.state.error}`} />;
+    }
+    return this.props.children;
+  }
 }
 
 export function MemoryTab() {
@@ -569,7 +589,11 @@ export function MemoryTab() {
       {notice && <div style={{ marginBottom: 10, fontSize: 'var(--fs-s)', color: 'var(--accent)' }}>{notice}</div>}
 
       {/* T05738：图谱视图——力导向关系图（tag 共享/替代链/项目聚簇），编辑仍回列表视图 */}
-      {viewMode === 'graph' && <MemoryGraph productKey={productKey} />}
+      {viewMode === 'graph' && (
+        <MemoryGraphBoundary key={productKey} onFallbackToList={() => setViewMode('list')}>
+          <MemoryGraph productKey={productKey} onFallbackToList={() => setViewMode('list')} />
+        </MemoryGraphBoundary>
+      )}
       {viewMode === 'graph' && (
         <div style={{ marginTop: 16, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
           图谱为只读视图；新增/编辑/删除请切回「列表」视图。
