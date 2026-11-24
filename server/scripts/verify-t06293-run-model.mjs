@@ -36,7 +36,7 @@ const expectThrow = (fn, label) => {
   } catch (e) {
     message = String(e.message);
   }
-  assert(/constraint|foreign key/i.test(message), `${label} 应当被约束拦截，实际：${message || '未抛错'}`);
+  assert(/constraint|foreign key|immutable/i.test(message), `${label} 应当被约束拦截，实际：${message || '未抛错'}`);
 };
 const columns = (table) => db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
 const indexes = () =>
@@ -52,6 +52,8 @@ try {
   const indexNames = indexes();
   assert(indexNames.length === 8, `应有 8 个 Run 索引，实际 ${indexNames.length}: ${indexNames.join(',')}`);
   assert(indexNames.includes('idx_agent_runs_legacy'), '缺少旧数据映射唯一索引');
+  const triggerNames = db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name='trg_agent_run_steps_immutable'").all();
+  assert(triggerNames.length === 1, '缺少步骤不可变追加触发器');
   assert(JSON.stringify(columns('tasks')) === oldTasksBefore, '增量建表不应修改旧 tasks 表');
 
   const fks = db.prepare('PRAGMA foreign_key_list(agent_runs)').all();
@@ -82,6 +84,9 @@ try {
   expectThrow(() => db.exec("INSERT INTO agent_runs(id, task_id, project_id, tokens, cost, created_at, updated_at) VALUES ('negCost','t1','p1',-1,-0.1,'x','x')"), '负 token / 成本');
   expectThrow(() => db.exec("INSERT INTO agent_run_steps(id, run_id, seq, type, status, risk_level, created_at, updated_at) VALUES ('dupSeq','r1',0,'prompt','pending','R0','x','x')"), '同 Run 步骤序号唯一');
   expectThrow(() => db.exec("INSERT INTO agent_run_steps(id, run_id, seq, type, status, risk_level, duration_ms, created_at, updated_at) VALUES ('badRisk','r1',1,'prompt','pending','R9',-1,'x','x')"), '非法风险等级 / 负时长');
+  expectThrow(() => db.exec("UPDATE agent_run_steps SET output='tampered' WHERE id='s1'"), '步骤输出不可变');
+  db.exec("UPDATE agent_run_steps SET status='failed', duration_ms=121, updated_at='2026-11-24T03:10:02Z' WHERE id='s1'");
+  assert(db.prepare("SELECT status FROM agent_run_steps WHERE id='s1'").get().status === 'failed', '步骤状态应允许推进');
 
   db.exec("INSERT INTO agent_runs(id, task_id, project_id, legacy_source, legacy_ref, created_at, updated_at) VALUES ('legacy1','t1','p1','queue_job','job-1','x','x')");
   expectThrow(() => db.exec("INSERT INTO agent_runs(id, task_id, project_id, legacy_source, legacy_ref, created_at, updated_at) VALUES ('legacy2','t1','p1','queue_job','job-1','x','x')"), '旧记录合成映射幂等');
@@ -109,7 +114,7 @@ try {
     tables: ['agent_runs', 'agent_run_steps'],
     columns: { agent_runs: 19, agent_run_steps: 12 },
     indexes: indexNames.length,
-    checks: ['idempotent', 'fk-actions', 'check-constraints', 'unique-step-seq', 'legacy-idempotency', 'cascade', 'old-table-unchanged'],
+    checks: ['idempotent', 'fk-actions', 'check-constraints', 'unique-step-seq', 'immutable-step', 'legacy-idempotency', 'cascade', 'old-table-unchanged'],
   }, null, 2));
 } finally {
   db.close();

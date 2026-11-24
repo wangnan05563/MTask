@@ -84,6 +84,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_run_steps_seq
   ON agent_run_steps(run_id, seq);
 CREATE INDEX IF NOT EXISTS idx_agent_run_steps_status
   ON agent_run_steps(run_id, status);
+
+-- PRD 要求步骤是「不可变追加」：身份、序号、类型、输入、输出、风险一旦写入不可改；
+-- status / duration_ms / cost / updated_at 允许推进，供执行中更新。
+CREATE TRIGGER IF NOT EXISTS trg_agent_run_steps_immutable
+BEFORE UPDATE OF id, run_id, seq, type, input, output, risk_level, created_at
+ON agent_run_steps
+BEGIN
+  SELECT RAISE(ABORT, 'agent_run_steps immutable fields cannot be updated');
+END;
 `;
 
 /** PRD §B6 的 Run 状态枚举；与 DDL 的 CHECK 保持一致。 */
