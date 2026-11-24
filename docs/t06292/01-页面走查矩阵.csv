@@ -1,0 +1,11 @@
+序号,页面,页签,PageShell,PageHeader,primaryAction,首屏主操作观察,主操作判定,行级徽标观察,徽标判定,图标size字面量,16或20,非16或20,h4+,截图,备注
+1,概览,dashboard,是,是,否,只读看板；页头仅“刷新”“项目统计”两个次操作，无提交型主操作,N/A-只读页,指标卡无数值型状态徽标,通过,6,0,6,0,evidence/screens/audit-light-dashboard.png,当前打包后端 /today 404；截图取 T06291 同 HEAD
+2,任务,tasks,是,是,否,页头无操作；“新建任务”由标题输入框 + 13px 纯图标承担，无文字 CTA、无主色,不通过-主操作不可发现,首行任务号与派生来源 1-2 个 chip,通过,110,0,110,1,evidence/screens/audit-light-tasks.png,缺失文字型主按钮
+3,计划,plan,否,否,否,空态有“新建计划任务”；有数据时仅工具栏悬浮 CalendarPlus，两行工具栏 15+ 控件,不通过-主操作随数据消失,每行 1 个“已完成”状态徽标；部分父行最多 2 个,通过,48,0,48,0,evidence/screens/audit-light-plan.png,状态与 100% 进度双编码冗余
+4,需求,req,否,否,否,空态提示“暂无分类，请先新建分类”，但新建分类入口在 op-hidden 悬浮组,不通过-提示与入口不一致,无状态徽标堆叠,通过,29,0,29,0,evidence/screens/audit-light-req.png,空态无可见主按钮
+5,报表,report,否,否,否,11 张等权功能卡平铺；右侧 AI 控制台另有 3 个主色控件,不通过-无唯一入口层级,无状态徽标堆叠,通过,29,1,28,0,evidence/screens/audit-light-report.png,主权重来自卡片选择而非单一 CTA
+6,队列,queue,否,否,否,新建队列蓝色实底与发送队列成功色按钮同排；删除红框动作同排,不通过-2 个主操作竞争,步骤条“1 选任务/2 选工具/3 加入队列”3 个徽标同排；页面 6 个胶囊状元素,不通过-行内 3 个徽标,12,1,11,0,evidence/screens/audit-light-queue.png,另有 80px 高“三步上手”说明卡
+7,执行会话,exec-sessions,否,否,否,只读四列看板，无提交型主操作,N/A-只读页,100 张卡每卡至少 3 个标签（项目/待上报/任务号）；右侧 50 条未读通知,不通过-每卡 3 个,8,0,8,0,evidence/screens/audit-light-exec-sessions.png,列计数 4/11/1/84
+8,提示词,prompts,是,是,否,页头无操作；“新建提示词”为 op-hidden 的 13px 纯图标按钮，首屏不可发现,不通过-主操作悬浮隐藏,6/6 行重复“使用 0 次”；5/6 行重复“来源：技能使用”,不通过-重复状态未合并,32,0,32,0,evidence/screens/audit-light-prompts.png,零值徽标无信息增益
+9,模型,aitools,否,否,否,正文 h3“配置记录（7/7）”旁“+ 新增配置”主色按钮常驻且唯一,通过-唯一明确主操作但未走统一页头,每行 1 个接入类型徽标（国际直连/国内直连/国内聚合/聚合路由）,通过,30,0,30,1,evidence/screens/audit-light-aitools.png,表格 9 列且 Endpoint/模型说明换行多
+10,设置,settings,否,否,否,18 个图标快捷入口 + 7 个主色实底状态控件；无提交型主操作,N/A-配置页但视觉重心分散,无状态徽标堆叠,通过,30,6,24,0,evidence/screens/audit-light-settings.png,主色控件均为状态/选项，不是提交动作

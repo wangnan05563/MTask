@@ -1,0 +1,12 @@
+序号,页面,tab,文件,来源,宽度,高度,首屏状态,备注
+1,概览,dashboard,evidence/screens/audit-light-dashboard.png,T06291 同 HEAD 截图,1258,802,已加载,T06292 本轮 /today 404，故用同 HEAD 基线；404 原图另见第 11 行
+2,任务,tasks,evidence/screens/audit-light-tasks.png,T06292 本轮实拍,1258,802,已加载,显示 3 条待办 + 标题输入 + 13px 图标
+3,计划,plan,evidence/screens/audit-light-plan.png,T06292 本轮实拍,1258,802,已加载,29 行计划表格
+4,需求,req,evidence/screens/audit-light-req.png,T06292 本轮实拍,1258,802,空态,空态提示新建分类但无可见按钮
+5,报表,report,evidence/screens/audit-light-report.png,T06292 本轮实拍,1258,802,已加载,11 张功能卡 + AI 控制台
+6,队列,queue,evidence/screens/audit-light-queue.png,T06292 本轮实拍,1258,802,已加载,新建/发送/删除同排 + 三步上手
+7,执行会话,exec-sessions,evidence/screens/audit-light-exec-sessions.png,T06292 本轮实拍,1258,802,已加载,100 张卡（4/11/1/84）+ 50 条未读
+8,提示词,prompts,evidence/screens/audit-light-prompts.png,T06292 本轮实拍,1258,802,已加载,6 行均带“使用 0 次”
+9,模型,aitools,evidence/screens/audit-light-aitools.png,T06292 本轮实拍,1258,802,已加载,7 条配置 + 新增配置
+10,设置,settings,evidence/screens/audit-light-settings.png,T06292 本轮实拍,1258,802,已加载,18 图标快捷入口 + 多组主色状态控件
+11,概览（404留证）,dashboard,evidence/screens/audit-light-dashboard-http404.png,T06292 本轮实拍,1258,802,HTTP 404,仅用于说明未采用本轮概览截图；不计入 C8 缺陷

@@ -1,0 +1,11 @@
+tab,页面,PageShell,PageHeader,声明primaryAction,主色实底控件数(观察),主色实底控件说明,徽标密度结论,图标size字面量,16或20,非16或20,h4+,截图
+dashboard,概览,是,是,否,0,正常首屏无强色提交动作（404错误卡“重试”不计）,通过,6,0,6,0,evidence/screens/audit-light-dashboard.png
+tasks,任务,是,是,否,1,“列表视图”当前段（视图切换）,通过（行内1-2个chip）,110,0,110,1,evidence/screens/audit-light-tasks.png
+plan,计划,否,否,否,1,“列表”当前段（视图切换）,通过（每行1个状态徽标）,48,0,48,0,evidence/screens/audit-light-plan.png
+req,需求,否,否,否,0,无,通过（无徽标堆叠）,29,0,29,0,evidence/screens/audit-light-req.png
+report,报表,否,否,否,3,周报|开始分析|AI周报,通过（无状态徽标）,29,1,28,0,evidence/screens/audit-light-report.png
+queue,队列,否,否,否,1,新建队列（发送队列当前禁用，成功色按钮仍占位）,不通过（步骤条同行3个）,12,1,11,0,evidence/screens/audit-light-queue.png
+exec-sessions,执行会话,否,否,否,0,无,不通过（100张卡每卡≥3）,8,0,8,0,evidence/screens/audit-light-exec-sessions.png
+prompts,提示词,是,是,否,0,无,不通过（6/6行重复“使用0次”）,32,0,32,0,evidence/screens/audit-light-prompts.png
+aitools,模型,否,否,否,1,新增配置,通过（每行1个接入类型徽标）,30,0,30,1,evidence/screens/audit-light-aitools.png
+settings,设置,否,否,否,7,通用|浅色|默认浅色|强调色#2563eb|恢复默认|已开启|中,通过（无徽标堆叠）,30,6,24,0,evidence/screens/audit-light-settings.png

@@ -1,0 +1,222 @@
+{
+  "generatedAt": "2026-11-24T03:09:31.380Z",
+  "project": "586ae8c6-2e08-4180-86ba-732f1fab5006",
+  "static": [
+    {
+      "tab": "dashboard",
+      "label": "概览",
+      "file": "web/src/pages/DashboardPage.tsx",
+      "iconLiterals": 6,
+      "iconSizes": {
+        "14": 6
+      },
+      "iconAllowed": 0,
+      "iconDisallowed": 6,
+      "headings": {
+        "h2": 1
+      },
+      "h4plus": 0,
+      "usesPageShell": true,
+      "usesPageHeader": true,
+      "declaresPrimaryAction": false,
+      "accentOrSuccessFills": 2
+    },
+    {
+      "tab": "tasks",
+      "label": "任务",
+      "file": "web/src/pages/TasksPage.tsx",
+      "iconLiterals": 110,
+      "iconSizes": {
+        "10": 3,
+        "11": 3,
+        "12": 13,
+        "13": 67,
+        "14": 24
+      },
+      "iconAllowed": 0,
+      "iconDisallowed": 110,
+      "headings": {
+        "h4": 1,
+        "h1": 1
+      },
+      "h4plus": 1,
+      "usesPageShell": true,
+      "usesPageHeader": true,
+      "declaresPrimaryAction": false,
+      "accentOrSuccessFills": 6
+    },
+    {
+      "tab": "plan",
+      "label": "计划",
+      "file": "web/src/pages/PlanPage.tsx",
+      "iconLiterals": 48,
+      "iconSizes": {
+        "11": 2,
+        "12": 4,
+        "13": 30,
+        "14": 10,
+        "15": 1,
+        "18": 1
+      },
+      "iconAllowed": 0,
+      "iconDisallowed": 48,
+      "headings": {},
+      "h4plus": 0,
+      "usesPageShell": false,
+      "usesPageHeader": false,
+      "declaresPrimaryAction": false,
+      "accentOrSuccessFills": 4
+    },
+    {
+      "tab": "req",
+      "label": "需求",
+      "file": "web/src/pages/ReqPage.tsx",
+      "iconLiterals": 29,
+      "iconSizes": {
+        "12": 2,
+        "13": 25,
+        "14": 2
+      },
+      "iconAllowed": 0,
+      "iconDisallowed": 29,
+      "headings": {},
+      "h4plus": 0,
+      "usesPageShell": false,
+      "usesPageHeader": false,
+      "declaresPrimaryAction": false,
+      "accentOrSuccessFills": 5
+    },
+    {
+      "tab": "report",
+      "label": "报表",
+      "file": "web/src/pages/ReportPage.tsx",
+      "iconLiterals": 29,
+      "iconSizes": {
+        "11": 2,
+        "12": 9,
+        "13": 5,
+        "14": 8,
+        "15": 4,
+        "20": 1
+      },
+      "iconAllowed": 1,
+      "iconDisallowed": 28,
+      "headings": {},
+      "h4plus": 0,
+      "usesPageShell": false,
+      "usesPageHeader": false,
+      "declaresPrimaryAction": false,
+      "accentOrSuccessFills": 1
+    },
+    {
+      "tab": "queue",
+      "label": "队列",
+      "file": "web/src/pages/QueuePage.tsx",
+      "iconLiterals": 12,
+      "iconSizes": {
+        "12": 2,
+        "13": 2,
+        "14": 1,
+        "15": 5,
+        "16": 1,
+        "17": 1
+      },
+      "iconAllowed": 1,
+      "iconDisallowed": 11,
+      "headings": {
+        "h2": 1
+      },
+      "h4plus": 0,
+      "usesPageShell": false,
+      "usesPageHeader": false,
+      "declaresPrimaryAction": false,
+      "accentOrSuccessFills": 4
+    },
+    {
+      "tab": "exec-sessions",
+      "label": "执行会话",
+      "file": "web/src/pages/ExecSessionsPage.tsx",
+      "iconLiterals": 8,
+      "iconSizes": {
+        "11": 1,
+        "12": 1,
+        "13": 1,
+        "14": 1,
+        "15": 2,
+        "22": 1,
+        "28": 1
+      },
+      "iconAllowed": 0,
+      "iconDisallowed": 8,
+      "headings": {},
+      "h4plus": 0,
+      "usesPageShell": false,
+      "usesPageHeader": false,
+      "declaresPrimaryAction": false,
+      "accentOrSuccessFills": 0
+    },
+    {
+      "tab": "prompts",
+      "label": "提示词",
+      "file": "web/src/pages/PromptsPage.tsx",
+      "iconLiterals": 32,
+      "iconSizes": {
+        "11": 1,
+        "12": 1,
+        "13": 27,
+        "14": 3
+      },
+      "iconAllowed": 0,
+      "iconDisallowed": 32,
+      "headings": {},
+      "h4plus": 0,
+      "usesPageShell": true,
+      "usesPageHeader": true,
+      "declaresPrimaryAction": false,
+      "accentOrSuccessFills": 5
+    },
+    {
+      "tab": "aitools",
+      "label": "模型",
+      "file": "web/src/pages/AIToolsPage.tsx",
+      "iconLiterals": 30,
+      "iconSizes": {
+        "11": 3,
+        "12": 1,
+        "13": 25,
+        "28": 1
+      },
+      "iconAllowed": 0,
+      "iconDisallowed": 30,
+      "headings": {
+        "h3": 1,
+        "h4": 1
+      },
+      "h4plus": 1,
+      "usesPageShell": false,
+      "usesPageHeader": false,
+      "declaresPrimaryAction": false,
+      "accentOrSuccessFills": 2
+    },
+    {
+      "tab": "settings",
+      "label": "设置",
+      "file": "web/src/pages/SettingsPage.tsx",
+      "iconLiterals": 30,
+      "iconSizes": {
+        "13": 17,
+        "14": 5,
+        "15": 2,
+        "16": 6
+      },
+      "iconAllowed": 6,
+      "iconDisallowed": 24,
+      "headings": {},
+      "h4plus": 0,
+      "usesPageShell": false,
+      "usesPageHeader": false,
+      "declaresPrimaryAction": false,
+      "accentOrSuccessFills": 4
+    }
+  ]
+}
