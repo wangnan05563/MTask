@@ -608,8 +608,9 @@ export function rankWebSearchItems(
     let stale = false;
     if (maxAgeDays > 0 && published && Number.isFinite(referenceMs)) {
       const ageDays = (referenceMs - Date.parse(`${published}T00:00:00Z`)) / 86400000;
-      // 晚于参照日 1 天以上也视为时间异常（避免未来日期）
-      if (ageDays > maxAgeDays || ageDays < -1) stale = true;
+      // 晚于参照日即视为时间异常：历史补跑任务（如 11-18 跑 T06058）不能引用 11-19 的“未来”内容。
+      // 之前允许 -1 天是为了兼容时区，但会把任务日期次日的文章放进来，严格“当天”口径必须收紧。
+      if (ageDays > maxAgeDays || ageDays < 0) stale = true;
     }
     let score = 0;
     let hits = 0;
@@ -742,8 +743,9 @@ export async function buildQueueWebContext(title: string, description: string): 
   const dateToken = extractDateToken(taskText);
   const isNews = /新闻|资讯|动态|日报|周报|早报|晚报|简报/.test(taskText);
   const recentDays = parseRecentDays(taskText);
-  // “当天/今日”必须按当天；每日推送可放宽到 2 天；明确写了“最近 N 天”则按 N 天。
-  const exactToday = /当天|当日|今日|今天/.test(taskText) && !/每日/.test(taskText);
+  // “当天/今日”必须按当天，且任务描述优先于标题：标题写“每日”不代表可以把前一日内容算作当天。
+  // 只有描述本身没有“当天/今日”时，才把“每日推送”放宽到 2 天。
+  const exactToday = /当天|当日|今日|今天/.test(description);
   const maxAgeDays = recentDays ?? (isNews ? (exactToday ? 0.5 : 2) : 0);
   const primary = buildSearchQuery(title, description);
   const english = buildEnglishQuery(title, description);

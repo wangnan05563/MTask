@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { QueueService, receiptWarnings } from '../src/services/QueueService';
+import { rankWebSearchItems } from '../src/services/WebSearchService';
 import { systemPromptFor } from '../src/adapters/types';
 
 const desc60 = '扫描最近三天的技术热点：GitHub 上近期冒头的项目（看增速而非总 star 数）、常用技术栈的重要版本发布或重大特性、值得关注的行业动态或开源事件。全文 10 行以内；每个项目一句话说清它做什么、为什么突然火、和我的关系；没有值得看的内容直接说没有，不要凑数。按「新项目」「版本更新」「其他动态」分段，无内容写「本期无」。';
@@ -87,4 +88,17 @@ const releaseByTitle = receiptWarnings({
 });
 assert(releaseByTitle.some((w) => w.label === '版本更新段误报本期无'), '标题含发布类词时应命中版本更新检查');
 
-console.log('queue-quality-check: 8 fixtures passed');
+// H4：严格“当天”窗口，不能放入任务日期之前的旧文或之后（历史补跑时的“未来”）文章。
+const dayItems = [
+  { title: 'Today AI release', url: 'https://example.com/news/today', snippet: 'A sufficiently long summary for the same-day item.', publishedAt: '2026-11-18' },
+  { title: 'Yesterday AI release', url: 'https://example.com/news/yesterday', snippet: 'A sufficiently long summary for the previous-day item.', publishedAt: '2026-11-17' },
+  { title: 'Tomorrow AI release', url: 'https://example.com/news/tomorrow', snippet: 'A sufficiently long summary for the next-day item.', publishedAt: '2026-11-19' },
+];
+const sameDay = rankWebSearchItems(dayItems, [], '2026-11-18', {
+  maxAgeDays: 0.5,
+  referenceDate: '2026-11-18',
+  trustedDomains: ['example.com'],
+});
+assert.deepEqual(sameDay.items.map((item) => item.url), ['https://example.com/news/today'], '严格当天窗口只能保留当天文章');
+
+console.log('queue-quality-check: 9 fixtures passed');
