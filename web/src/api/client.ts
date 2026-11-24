@@ -776,6 +776,73 @@ export interface ExecSession {
   tasks: ExecSessionTaskBrief[];
 }
 
+/** T06298（REQ-036 / PRD §B6）：单 Run 追踪详情的只读契约，对应 GET /runs/:id。 */
+export type RunTraceStatus = 'queued' | 'running' | 'paused' | 'awaiting_approval' | 'succeeded' | 'failed' | 'cancelled';
+export type RunTraceStepType = 'prompt' | 'tool' | 'observation' | 'decision' | 'artifact' | 'approval';
+export type RunTraceStepStatus = 'pending' | 'running' | 'awaiting_approval' | 'succeeded' | 'failed' | 'skipped';
+export type RunTraceRisk = 'R0' | 'R1' | 'R2' | 'R3';
+
+export interface RunTraceStep {
+  id: string;
+  seq: number;
+  type: RunTraceStepType;
+  status: RunTraceStepStatus;
+  input: string;
+  output: string;
+  durationMs: number;
+  cost: number;
+  riskLevel: RunTraceRisk;
+  createdAt: string;
+  updatedAt: string;
+  /** 旧执行会话合成步骤：UI 明确提示，不能当作原始 RunStep */
+  synthetic: boolean;
+}
+
+export interface RunCostSlice {
+  key: string;
+  label: string;
+  cost: number;
+  pct: number;
+}
+
+export interface RunApprovalInfo {
+  status: 'none' | 'pending' | 'approved' | 'rejected' | 'skipped';
+  label: string;
+  stepId: string | null;
+  updatedAt: string | null;
+}
+
+export interface RunTrace {
+  id: string;
+  taskId: string;
+  taskNo: string | null;
+  taskTitle: string | null;
+  projectId: string;
+  projectName: string | null;
+  status: RunTraceStatus;
+  triggerType: 'manual' | 'queue' | 'api' | 'schedule' | 'retry' | 'legacy';
+  model: string;
+  promptVersion: string;
+  tokens: number;
+  cost: number;
+  executor: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  durationMs: number | null;
+  errorCode: string;
+  legacySource: '' | 'queue_job' | 'exec_session' | 'ai_usage';
+  legacyRef: string;
+  source: 'native' | 'legacy_exec_session';
+  legacy: boolean;
+  steps: RunTraceStep[];
+  stepCostTotal: number;
+  unattributedCost: number;
+  costBreakdown: RunCostSlice[];
+  approval: RunApprovalInfo;
+  warnings: string[];
+  generatedAt: string;
+}
+
 /** T06294（REQ-001）：首页 Today 三组行动卡片的数据契约；与 /stats/today 返回同形。 */
 export type TodayWaitReason = 'ai_failed' | 'ai_unread' | 'verify_pending' | 'ruling_pending';
 

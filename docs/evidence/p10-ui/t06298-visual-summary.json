@@ -1,0 +1,597 @@
+{
+  "native": {
+    "page": true,
+    "runId": "t06298-run-ui",
+    "status": "成功",
+    "source": "映射 Run",
+    "title": "T06298\n[PRD] Run 追踪UI",
+    "metrics": {
+      "模型": "doubao-pro",
+      "Prompt 版本": "p10-run-trace-v1",
+      "耗时": "8.0s",
+      "成本": "$0.42",
+      "审批": "已批准"
+    },
+    "stepCount": 5,
+    "stepTypes": [
+      "Prompt",
+      "工具调用",
+      "观察",
+      "产物",
+      "审批"
+    ],
+    "stepStatuses": [
+      "成功",
+      "成功",
+      "成功",
+      "成功",
+      "成功"
+    ],
+    "syntheticCount": 0,
+    "costBars": 4,
+    "costLabels": [
+      "Prompt",
+      "工具调用",
+      "观察",
+      "产物"
+    ],
+    "costPercents": [
+      "$0.03 · 7.1%",
+      "$0.05 · 11.9%",
+      "$0.08 · 19.0%",
+      "$0.26 · 61.9%"
+    ],
+    "costTotal": "$0.42",
+    "warnings": "该 Run 已通过旧记录映射统一 ID（exec_session:t06298-demo-session），步骤来自原生 RunStep",
+    "approval": "审批\n已批准\n更新：2026-11-24 14:10",
+    "retryDisabled": true,
+    "hasExport": true,
+    "footer": "从失败步骤重跑\n导出产物\n查看审计\n只读追踪；重跑与审计为后续能力。",
+    "detailExpanded": false,
+    "detailInput": "",
+    "scrollWidth": 1440,
+    "viewport": {
+      "w": 1440,
+      "h": 1000
+    },
+    "pageWidth": 1136
+  },
+  "expanded": {
+    "page": true,
+    "runId": "t06298-run-ui",
+    "status": "成功",
+    "source": "映射 Run",
+    "title": "T06298\n[PRD] Run 追踪UI",
+    "metrics": {
+      "模型": "doubao-pro",
+      "Prompt 版本": "p10-run-trace-v1",
+      "耗时": "8.0s",
+      "成本": "$0.42",
+      "审批": "已批准"
+    },
+    "stepCount": 5,
+    "stepTypes": [
+      "Prompt",
+      "工具调用",
+      "观察",
+      "产物",
+      "审批"
+    ],
+    "stepStatuses": [
+      "成功",
+      "成功",
+      "成功",
+      "成功",
+      "成功"
+    ],
+    "syntheticCount": 0,
+    "costBars": 4,
+    "costLabels": [
+      "Prompt",
+      "工具调用",
+      "观察",
+      "产物"
+    ],
+    "costPercents": [
+      "$0.03 · 7.1%",
+      "$0.05 · 11.9%",
+      "$0.08 · 19.0%",
+      "$0.26 · 61.9%"
+    ],
+    "costTotal": "$0.42",
+    "warnings": "该 Run 已通过旧记录映射统一 ID（exec_session:t06298-demo-session），步骤来自原生 RunStep",
+    "approval": "审批\n已批准\n更新：2026-11-24 14:10",
+    "retryDisabled": true,
+    "hasExport": true,
+    "footer": "从失败步骤重跑\n导出产物\n查看审计\n只读追踪；重跑与审计为后续能力。",
+    "detailExpanded": true,
+    "detailInput": "{\n  \"task\": \"T06298\",\n  \"requirement\": \"REQ-036\",\n  \"context\": \"PRD §B6 Run 追踪UI\"\n}",
+    "scrollWidth": 1440,
+    "viewport": {
+      "w": 1440,
+      "h": 1000
+    },
+    "pageWidth": 1136
+  },
+  "native1280": {
+    "page": true,
+    "runId": "t06298-run-ui",
+    "status": "成功",
+    "source": "映射 Run",
+    "title": "T06298\n[PRD] Run 追踪UI",
+    "metrics": {
+      "模型": "doubao-pro",
+      "Prompt 版本": "p10-run-trace-v1",
+      "耗时": "8.0s",
+      "成本": "$0.42",
+      "审批": "已批准"
+    },
+    "stepCount": 5,
+    "stepTypes": [
+      "Prompt",
+      "工具调用",
+      "观察",
+      "产物",
+      "审批"
+    ],
+    "stepStatuses": [
+      "成功",
+      "成功",
+      "成功",
+      "成功",
+      "成功"
+    ],
+    "syntheticCount": 0,
+    "costBars": 4,
+    "costLabels": [
+      "Prompt",
+      "工具调用",
+      "观察",
+      "产物"
+    ],
+    "costPercents": [
+      "$0.03 · 7.1%",
+      "$0.05 · 11.9%",
+      "$0.08 · 19.0%",
+      "$0.26 · 61.9%"
+    ],
+    "costTotal": "$0.42",
+    "warnings": "该 Run 已通过旧记录映射统一 ID（exec_session:t06298-demo-session），步骤来自原生 RunStep",
+    "approval": "审批\n已批准\n更新：2026-11-24 14:10",
+    "retryDisabled": true,
+    "hasExport": true,
+    "footer": "从失败步骤重跑\n导出产物\n查看审计\n只读追踪；重跑与审计为后续能力。",
+    "detailExpanded": true,
+    "detailInput": "{\n  \"task\": \"T06298\",\n  \"requirement\": \"REQ-036\",\n  \"context\": \"PRD §B6 Run 追踪UI\"\n}",
+    "scrollWidth": 1280,
+    "viewport": {
+      "w": 1280,
+      "h": 900
+    },
+    "pageWidth": 976
+  },
+  "legacy": {
+    "page": true,
+    "runId": "legacy:exec_session:t06298-legacy-session",
+    "status": "已暂停",
+    "source": "旧记录兼容",
+    "title": "T06298\n[PRD] Run 追踪UI",
+    "metrics": {
+      "模型": "未记录",
+      "Prompt 版本": "未记录",
+      "耗时": "—",
+      "成本": "$0.00",
+      "审批": "无审批"
+    },
+    "stepCount": 3,
+    "stepTypes": [
+      "观察",
+      "观察",
+      "决策"
+    ],
+    "stepStatuses": [
+      "成功",
+      "待执行",
+      "待执行"
+    ],
+    "syntheticCount": 3,
+    "costBars": 0,
+    "costLabels": [],
+    "costPercents": [],
+    "costTotal": "$0.00",
+    "warnings": "旧执行会话兼容视图：步骤由会话状态合成，不是原始 RunStep。\n旧会话未记录模型成本与 Token；Run 数据映射/回填完成后可回放成本。",
+    "approval": "审批\n无审批\n本 Run 未经过审批步骤。",
+    "retryDisabled": true,
+    "hasExport": true,
+    "footer": "从失败步骤重跑\n导出产物\n查看审计\n只读追踪；重跑与审计为后续能力。",
+    "detailExpanded": false,
+    "detailInput": "",
+    "scrollWidth": 1280,
+    "viewport": {
+      "w": 1280,
+      "h": 900
+    },
+    "pageWidth": 976
+  },
+  "narrow": {
+    "page": true,
+    "runId": "t06298-run-ui",
+    "status": "成功",
+    "source": "映射 Run",
+    "title": "T06298\n[PRD] Run 追踪UI",
+    "metrics": {
+      "模型": "doubao-pro",
+      "Prompt 版本": "p10-run-trace-v1",
+      "耗时": "8.0s",
+      "成本": "$0.42",
+      "审批": "已批准"
+    },
+    "stepCount": 5,
+    "stepTypes": [
+      "Prompt",
+      "工具调用",
+      "观察",
+      "产物",
+      "审批"
+    ],
+    "stepStatuses": [
+      "成功",
+      "成功",
+      "成功",
+      "成功",
+      "成功"
+    ],
+    "syntheticCount": 0,
+    "costBars": 4,
+    "costLabels": [
+      "Prompt",
+      "工具调用",
+      "观察",
+      "产物"
+    ],
+    "costPercents": [
+      "$0.03 · 7.1%",
+      "$0.05 · 11.9%",
+      "$0.08 · 19.0%",
+      "$0.26 · 61.9%"
+    ],
+    "costTotal": "$0.42",
+    "warnings": "该 Run 已通过旧记录映射统一 ID（exec_session:t06298-demo-session），步骤来自原生 RunStep",
+    "approval": "审批\n已批准\n更新：2026-11-24 14:10",
+    "retryDisabled": true,
+    "hasExport": true,
+    "footer": "从失败步骤重跑\n导出产物\n查看审计\n只读追踪；重跑与审计为后续能力。",
+    "detailExpanded": false,
+    "detailInput": "",
+    "scrollWidth": 760,
+    "viewport": {
+      "w": 760,
+      "h": 1000
+    },
+    "pageWidth": 456
+  },
+  "checks": [
+    {
+      "name": "TRACE-00 测试 API 就绪",
+      "ok": true,
+      "extra": {
+        "ok": true,
+        "service": "mtask-server",
+        "time": "2026-11-24T06:45:18.742Z"
+      }
+    },
+    {
+      "name": "TRACE-00b 测试库夹具写入（原生 Run + 旧会话）",
+      "ok": true,
+      "extra": {
+        "nativeSession": "t06298-demo-session",
+        "legacySession": "t06298-legacy-session"
+      }
+    },
+    {
+      "name": "TRACE-01 执行会话卡片出现追踪入口",
+      "ok": true,
+      "extra": {
+        "session": "t06298-demo-session"
+      }
+    },
+    {
+      "name": "TRACE-02 原生 Run 详情页头部字段正确",
+      "ok": true,
+      "extra": {
+        "page": true,
+        "runId": "t06298-run-ui",
+        "status": "成功",
+        "source": "映射 Run",
+        "title": "T06298\n[PRD] Run 追踪UI",
+        "metrics": {
+          "模型": "doubao-pro",
+          "Prompt 版本": "p10-run-trace-v1",
+          "耗时": "8.0s",
+          "成本": "$0.42",
+          "审批": "已批准"
+        },
+        "stepCount": 5,
+        "stepTypes": [
+          "Prompt",
+          "工具调用",
+          "观察",
+          "产物",
+          "审批"
+        ],
+        "stepStatuses": [
+          "成功",
+          "成功",
+          "成功",
+          "成功",
+          "成功"
+        ],
+        "syntheticCount": 0,
+        "costBars": 4,
+        "costLabels": [
+          "Prompt",
+          "工具调用",
+          "观察",
+          "产物"
+        ],
+        "costPercents": [
+          "$0.03 · 7.1%",
+          "$0.05 · 11.9%",
+          "$0.08 · 19.0%",
+          "$0.26 · 61.9%"
+        ],
+        "costTotal": "$0.42",
+        "warnings": "该 Run 已通过旧记录映射统一 ID（exec_session:t06298-demo-session），步骤来自原生 RunStep",
+        "approval": "审批\n已批准\n更新：2026-11-24 14:10",
+        "retryDisabled": true,
+        "hasExport": true,
+        "footer": "从失败步骤重跑\n导出产物\n查看审计\n只读追踪；重跑与审计为后续能力。",
+        "detailExpanded": false,
+        "detailInput": "",
+        "scrollWidth": 1440,
+        "viewport": {
+          "w": 1440,
+          "h": 1000
+        },
+        "pageWidth": 1136
+      }
+    },
+    {
+      "name": "TRACE-03 步骤时间线/成本归因/审批与禁用重跑",
+      "ok": true,
+      "extra": {
+        "stepTypes": [
+          "Prompt",
+          "工具调用",
+          "观察",
+          "产物",
+          "审批"
+        ],
+        "costLabels": [
+          "Prompt",
+          "工具调用",
+          "观察",
+          "产物"
+        ],
+        "costPercents": [
+          "$0.03 · 7.1%",
+          "$0.05 · 11.9%",
+          "$0.08 · 19.0%",
+          "$0.26 · 61.9%"
+        ],
+        "costTotal": "$0.42",
+        "retryDisabled": true
+      }
+    },
+    {
+      "name": "TRACE-04 步骤可展开并显示输入/输出",
+      "ok": true,
+      "extra": {
+        "detailInput": "{\n  \"task\": \"T06298\",\n  \"requirement\": \"REQ-036\",\n  \"context\": \"PRD §B6 Run 追踪UI\"\n}"
+      }
+    },
+    {
+      "name": "TRACE-05 1280 无横向溢出",
+      "ok": true,
+      "extra": {
+        "page": true,
+        "runId": "t06298-run-ui",
+        "status": "成功",
+        "source": "映射 Run",
+        "title": "T06298\n[PRD] Run 追踪UI",
+        "metrics": {
+          "模型": "doubao-pro",
+          "Prompt 版本": "p10-run-trace-v1",
+          "耗时": "8.0s",
+          "成本": "$0.42",
+          "审批": "已批准"
+        },
+        "stepCount": 5,
+        "stepTypes": [
+          "Prompt",
+          "工具调用",
+          "观察",
+          "产物",
+          "审批"
+        ],
+        "stepStatuses": [
+          "成功",
+          "成功",
+          "成功",
+          "成功",
+          "成功"
+        ],
+        "syntheticCount": 0,
+        "costBars": 4,
+        "costLabels": [
+          "Prompt",
+          "工具调用",
+          "观察",
+          "产物"
+        ],
+        "costPercents": [
+          "$0.03 · 7.1%",
+          "$0.05 · 11.9%",
+          "$0.08 · 19.0%",
+          "$0.26 · 61.9%"
+        ],
+        "costTotal": "$0.42",
+        "warnings": "该 Run 已通过旧记录映射统一 ID（exec_session:t06298-demo-session），步骤来自原生 RunStep",
+        "approval": "审批\n已批准\n更新：2026-11-24 14:10",
+        "retryDisabled": true,
+        "hasExport": true,
+        "footer": "从失败步骤重跑\n导出产物\n查看审计\n只读追踪；重跑与审计为后续能力。",
+        "detailExpanded": true,
+        "detailInput": "{\n  \"task\": \"T06298\",\n  \"requirement\": \"REQ-036\",\n  \"context\": \"PRD §B6 Run 追踪UI\"\n}",
+        "scrollWidth": 1280,
+        "viewport": {
+          "w": 1280,
+          "h": 900
+        },
+        "pageWidth": 976
+      }
+    },
+    {
+      "name": "TRACE-06 返回执行会话看板",
+      "ok": true,
+      "extra": {
+        "backBoard": true
+      }
+    },
+    {
+      "name": "TRACE-07 旧会话兼容视图：稳定 ID、3 合成步骤、成本缺失",
+      "ok": true,
+      "extra": {
+        "page": true,
+        "runId": "legacy:exec_session:t06298-legacy-session",
+        "status": "已暂停",
+        "source": "旧记录兼容",
+        "title": "T06298\n[PRD] Run 追踪UI",
+        "metrics": {
+          "模型": "未记录",
+          "Prompt 版本": "未记录",
+          "耗时": "—",
+          "成本": "$0.00",
+          "审批": "无审批"
+        },
+        "stepCount": 3,
+        "stepTypes": [
+          "观察",
+          "观察",
+          "决策"
+        ],
+        "stepStatuses": [
+          "成功",
+          "待执行",
+          "待执行"
+        ],
+        "syntheticCount": 3,
+        "costBars": 0,
+        "costLabels": [],
+        "costPercents": [],
+        "costTotal": "$0.00",
+        "warnings": "旧执行会话兼容视图：步骤由会话状态合成，不是原始 RunStep。\n旧会话未记录模型成本与 Token；Run 数据映射/回填完成后可回放成本。",
+        "approval": "审批\n无审批\n本 Run 未经过审批步骤。",
+        "retryDisabled": true,
+        "hasExport": true,
+        "footer": "从失败步骤重跑\n导出产物\n查看审计\n只读追踪；重跑与审计为后续能力。",
+        "detailExpanded": false,
+        "detailInput": "",
+        "scrollWidth": 1280,
+        "viewport": {
+          "w": 1280,
+          "h": 900
+        },
+        "pageWidth": 976
+      }
+    },
+    {
+      "name": "TRACE-08 1440/1280/760 截图有效且无横向溢出",
+      "ok": true,
+      "extra": {
+        "files": [
+          {
+            "file": "01-run-native-1440.png",
+            "bytes": 135357
+          },
+          {
+            "file": "02-run-native-1280.png",
+            "bytes": 122972
+          },
+          {
+            "file": "03-run-legacy-1280.png",
+            "bytes": 128495
+          },
+          {
+            "file": "04-run-native-760.png",
+            "bytes": 100190
+          }
+        ],
+        "narrow": {
+          "page": true,
+          "runId": "t06298-run-ui",
+          "status": "成功",
+          "source": "映射 Run",
+          "title": "T06298\n[PRD] Run 追踪UI",
+          "metrics": {
+            "模型": "doubao-pro",
+            "Prompt 版本": "p10-run-trace-v1",
+            "耗时": "8.0s",
+            "成本": "$0.42",
+            "审批": "已批准"
+          },
+          "stepCount": 5,
+          "stepTypes": [
+            "Prompt",
+            "工具调用",
+            "观察",
+            "产物",
+            "审批"
+          ],
+          "stepStatuses": [
+            "成功",
+            "成功",
+            "成功",
+            "成功",
+            "成功"
+          ],
+          "syntheticCount": 0,
+          "costBars": 4,
+          "costLabels": [
+            "Prompt",
+            "工具调用",
+            "观察",
+            "产物"
+          ],
+          "costPercents": [
+            "$0.03 · 7.1%",
+            "$0.05 · 11.9%",
+            "$0.08 · 19.0%",
+            "$0.26 · 61.9%"
+          ],
+          "costTotal": "$0.42",
+          "warnings": "该 Run 已通过旧记录映射统一 ID（exec_session:t06298-demo-session），步骤来自原生 RunStep",
+          "approval": "审批\n已批准\n更新：2026-11-24 14:10",
+          "retryDisabled": true,
+          "hasExport": true,
+          "footer": "从失败步骤重跑\n导出产物\n查看审计\n只读追踪；重跑与审计为后续能力。",
+          "detailExpanded": false,
+          "detailInput": "",
+          "scrollWidth": 760,
+          "viewport": {
+            "w": 760,
+            "h": 1000
+          },
+          "pageWidth": 456
+        }
+      }
+    },
+    {
+      "name": "TRACE-09 无未捕获前端异常",
+      "ok": true,
+      "extra": {
+        "consoleErrors": []
+      }
+    }
+  ]
+}

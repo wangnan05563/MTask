@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { Activity, Info, Loader2, Pin, RefreshCw, RotateCcw } from 'lucide-react';
+import { Activity, Info, Loader2, Pin, RefreshCw, RotateCcw, Route } from 'lucide-react';
 import { api, type ExecSession } from '../api/client';
 import { EmptyState } from '../ui/EmptyState';
 import { focusTaskByNo } from '../ui/focusTask';
@@ -9,6 +9,7 @@ import { NotificationFeed } from '../ui/NotificationFeed';
 import { PlatformLogo } from '../ui/PlatformLogo';
 import { ScrollArrows } from '../ui/ScrollArrows';
 import { desktopApi } from '../ui/desktop';
+import { RunDetailPage } from './RunDetailPage'; // T06298（REQ-036 / PRD §B6）：Run 追踪详情页
 
 /**
  * T01271-FR1.4：「执行会话」面板——展示外部平台会话的存活 / 进度 / 阶段 / 停滞标记。
@@ -135,6 +136,8 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
   /** T05767：左右分栏宽度（左栏百分比）与拖动状态；默认 4:1（左 80% / 右 20%）。 */
   const [leftPct, setLeftPct] = useState(readSplitPct);
   const [dragging, setDragging] = useState(false);
+  /** T06298：当前追踪的执行会话；为空时显示看板，非空时整页切到 Run 详情。 */
+  const [traceRunRef, setTraceRunRef] = useState<string | null>(null);
   const splitRef = useRef<HTMLDivElement | null>(null);
   /** T05766：FLIP 冒泡动画的锚点：上一次渲染后的卡片矩形 + 每个会话的状态。 */
   const cardRefs = useRef(new Map<string, HTMLDivElement>());
@@ -383,10 +386,16 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
               if (el) cardRefs.current.set(id, el);
               else cardRefs.current.delete(id);
             }}
+            onTrace={(id) => setTraceRunRef(`legacy:exec_session:${id}`)}
           />
         ))}
       </div>
     );
+  }
+
+  // T06298：进入 Run 追踪后整页切换到详情；返回恢复原看板，不新开顶级页签。
+  if (traceRunRef) {
+    return <RunDetailPage runRef={traceRunRef} onBack={() => setTraceRunRef(null)} />;
   }
 
   return (
@@ -559,12 +568,14 @@ function KanbanColumn({
   tone,
   rows,
   onCardRef,
+  onTrace,
 }: {
   readonly title: string;
   readonly color: string;
   readonly tone: string;
   readonly rows: ExecSession[];
   readonly onCardRef: (id: string, el: HTMLDivElement | null) => void;
+  readonly onTrace: (id: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   return (
@@ -602,6 +613,7 @@ function KanbanColumn({
             s={s}
             cardRef={(el) => onCardRef(s.id, el)}
             enterAnimation
+            onTrace={() => onTrace(s.id)}
           />
         ))}
       </div>
@@ -610,7 +622,7 @@ function KanbanColumn({
   );
 }
 
-function SessionCard({ s, cardRef, enterAnimation = false }: { readonly s: ExecSession; readonly cardRef?: (el: HTMLDivElement | null) => void; readonly enterAnimation?: boolean }) {
+function SessionCard({ s, cardRef, enterAnimation = false, onTrace }: { readonly s: ExecSession; readonly cardRef?: (el: HTMLDivElement | null) => void; readonly enterAnimation?: boolean; readonly onTrace: () => void }) {
   const meta = STATUS_META[s.status] ?? { label: s.status || '未知', color: 'var(--text-muted)' };
   const pct = Math.max(0, Math.min(100, Math.round(s.progress ?? 0)));
   /** T06056：进度只在平台显式上报过、或已到终态时展示百分比；否则显示「待上报」，
@@ -719,6 +731,22 @@ function SessionCard({ s, cardRef, enterAnimation = false }: { readonly s: ExecS
             无待办任务
           </span>
         )}
+        {/* T06298：Run 追踪入口——外部会话是旧执行记录，详情页会标注兼容来源与成本缺失。 */}
+        <button
+          data-lck="trace-run-btn"
+          className="tbtn-anim"
+          onClick={onTrace}
+          aria-label={`追踪会话 ${s.session_id ?? s.id} 的 Run`}
+          title="打开 Run 追踪：查看头部状态与步骤时间线"
+          style={{
+            marginLeft: redispatchable || noEligibleTask ? 0 : 'auto',
+            display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', padding: '2px 8px',
+            color: 'var(--accent)', background: 'var(--accent-soft)', border: '1px solid color-mix(in srgb, var(--accent) 30%, var(--border))',
+            borderRadius: 7, cursor: 'pointer', flexShrink: 0, font: 'inherit',
+          }}
+        >
+          <Route size={11} /> 追踪
+        </button>
       </div>
 
       {notice && (

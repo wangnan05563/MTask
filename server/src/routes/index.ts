@@ -18,6 +18,7 @@ import { readEventRetentionDays, setEventRetentionDays, pruneTaskEvents, countEv
 import { readPoolStatus, setPoolLimit } from '../services/ConcurrencyPool'; // T01066 后续：并行任务池单源
 import { ExecSessionService } from '../services/ExecSessionService'; // T01271：执行会话面板数据源
 import { GlobalSearchService, parseSearchTypes } from '../services/GlobalSearchService'; // T06296（REQ-003 / PRD §A3）：全局搜索
+import { RunTraceService } from '../services/RunTraceService'; // T06298（REQ-036 / PRD §B6）：单 Run 追踪详情只读契约
 import { buildTodayView } from '../services/TodayService'; // T06294（REQ-001）：Today View 首页聚合
 import { inboxService, InboxError, type InboxStatus, type InboxType } from '../services/InboxService'; // T06295（REQ-032）：可操作收件箱
 import { PushService } from '../services/PushService'; // T01440：Web Push
@@ -919,6 +920,20 @@ api.get('/exec-sessions', (_req, res) => res.json(ExecSessionService.listSession
  * 前端比对 sig：变了才整行重取，实时性与原 2s 全量轮询等价。
  */
 api.get('/exec-sessions/digest', (_req, res) => res.json(ExecSessionService.digest()));
+
+/**
+ * T06298（REQ-036 / PRD §B6）：单 Run 追踪详情。
+ *
+ * 只读一个 Run：原生 `agent_runs`/`agent_run_steps` 优先；无原生映射时回退到
+ * `exec_sessions` 兼容合成视图（稳定 `legacy:exec_session:<id>`，不写库）。
+ * 本端点只服务详情页，Run 列表与旧数据回填仍由 T06332 提供。
+ */
+api.get('/runs/:id', (req, res) => {
+  const trace = new RunTraceService().getRun(String(req.params.id || ''));
+  if (!trace) return res.status(404).json({ error: 'run_not_found' });
+  return res.json(trace);
+});
+
 // T06296：全局搜索 Run 结果按 id 深链——首屏只取最近 100 条，老会话需单独取回后并入看板。
 api.get('/exec-sessions/:id', (req, res) => {
   const row = ExecSessionService.getSession(String(req.params.id || ''));
