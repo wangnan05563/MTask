@@ -4,7 +4,8 @@ import {
   Eye, FileWarning, GitBranch, Loader2, MessageSquareText, Package, RefreshCw, ShieldCheck,
   TriangleAlert, Wrench, XCircle,
 } from 'lucide-react';
-import { api, type RunTrace, type RunTraceRisk, type RunTraceStep, type RunTraceStepStatus, type RunTraceStepType } from '../api/client';
+import { api, type RunRiskApproval, type RunTrace, type RunTraceRisk, type RunTraceStep, type RunTraceStepStatus, type RunTraceStepType } from '../api/client';
+import { ApprovalModal } from '../components/ApprovalModal';
 import { fullTime, relTime } from '../ui/format';
 import { focusTaskByNo } from '../ui/focusTask';
 import './runTrace.css';
@@ -111,6 +112,10 @@ export function RunDetailPage({ runRef, onBack }: { readonly runRef: string; rea
   const [error, setError] = useState('');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [notice, setNotice] = useState('');
+  const [approval, setApproval] = useState<RunRiskApproval | null>(null);
+  const [approvalLoading, setApprovalLoading] = useState(false);
+  const [approvalBusy, setApprovalBusy] = useState(false);
+  const [approvalError, setApprovalError] = useState('');
   const expandedRef = useRef<Record<string, boolean>>({});
   expandedRef.current = expanded;
 
@@ -137,6 +142,52 @@ export function RunDetailPage({ runRef, onBack }: { readonly runRef: string; rea
     void load();
   }, [load]);
 
+  /**
+   * T06300：从服务端审批实体取待审批单。trace.approval 只给步骤态（stepId 是审批步骤 id），
+   * 不能当审批实体 id 用；按 runId + status=pending 查询才能拿到决策需要的 approvals.id。
+   */
+  const openApproval = useCallback(async () => {
+    const runId = trace?.id || runRef;
+    setApprovalLoading(true);
+    setApprovalError('');
+    try {
+      const res = await api.get<{ rows: RunRiskApproval[] }>(
+        `/run-risk/approvals?runId=${encodeURIComponent(runId)}&status=pending`,
+      );
+      const row = res.rows?.[0];
+      if (!row) {
+        setNotice('当前 Run 没有待审批记录，可能已由其他人处理或已超时。');
+        void load(true);
+        return;
+      }
+      setApproval(row);
+    } catch (e) {
+      setNotice(`读取审批失败：${(e as Error).message || 'unknown_error'}`);
+    } finally {
+      setApprovalLoading(false);
+    }
+  }, [load, runRef, trace?.id]);
+
+  const decideApproval = useCallback(async (decision: 'approved' | 'rejected', reason: string) => {
+    if (!approval) return;
+    setApprovalBusy(true);
+    setApprovalError('');
+    try {
+      await api.post(`/run-risk/approvals/${encodeURIComponent(approval.id)}/decision`, {
+        decision,
+        actor: 'web-ui',
+        reason: reason.trim(),
+      });
+      setApproval(null);
+      setNotice(decision === 'approved' ? '已批准：审批已记录，Run 可继续执行。' : '已拒绝：动作在继续前被终止。');
+      await load(true);
+    } catch (e) {
+      setApprovalError((e as Error).message || '审批提交失败');
+    } finally {
+      setApprovalBusy(false);
+    }
+  }, [approval, load]);
+
   // 运行中的 Run 每 3 秒静默刷新，满足「步骤实时出现」；展开状态不丢。
   useEffect(() => {
     if (!trace || !['queued', 'running', 'awaiting_approval'].includes(trace.status)) return;
@@ -149,13 +200,14 @@ export function RunDetailPage({ runRef, onBack }: { readonly runRef: string; rea
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (approval) return; // 审批弹窗自己处理 Esc，避免同时退出详情页
         e.preventDefault();
         onBack();
       }
     };
     globalThis.addEventListener('keydown', onKey);
     return () => globalThis.removeEventListener('keydown', onKey);
-  }, [onBack]);
+  }, [approval, onBack]);
 
   const toggleStep = (id: string) => {
     setExpanded((cur) => ({ ...cur, [id]: !cur[id] }));
@@ -397,6 +449,17 @@ export function RunDetailPage({ runRef, onBack }: { readonly runRef: string; rea
                 : trace.approval.status === 'none' ? '本 Run 未经过审批步骤。'
                   : trace.approval.updatedAt ? `更新：${fullTime(trace.approval.updatedAt)}` : '审批状态已记录。'}
             </div>
+            {trace.approval.status === 'pending' && (
+              <button
+                className="run-approval-open"
+                data-lck="run-approval-open"
+                onClick={() => void openApproval()}
+                disabled={approvalLoading}
+              >
+                {approvalLoading ? <Loader2 size={14} className="run-spin" /> : <ShieldCheck size={14} />}
+                {approvalLoading ? '读取审批…' : '处理审批'}
+              </button>
+            )}
           </section>
         </aside>
       </div>
@@ -409,12 +472,23 @@ export function RunDetailPage({ runRef, onBack }: { readonly runRef: string; rea
           <button className="run-btn" onClick={exportArtifacts} data-lck="run-export">
             <Download size={14} />导出产物
           </button>
-          <button className="run-btn" disabled title="审计日志尚未接入（等待审计存储与查询契约）">
+          <button className="run-btn" disabled title="审计日志查看入口随审批流后续接入">
             <ShieldCheck size={14} />查看审计
           </button>
         </div>
-        <div className="run-footer-note" role="status">{notice || '只读追踪；重跑与审计为后续能力。'}</div>
+        <div className="run-footer-note" role="status">{notice || '只读追踪；重跑与审计查看为后续能力。'}</div>
       </footer>
+
+      {approval && (
+        <ApprovalModal
+          approval={approval}
+          submitting={approvalBusy}
+          error={approvalError}
+          onApprove={(reason) => void decideApproval('approved', reason)}
+          onReject={(reason) => void decideApproval('rejected', reason)}
+          onClose={() => { if (!approvalBusy) { setApproval(null); setApprovalError(''); } }}
+        />
+      )}
     </div>
   );
 }

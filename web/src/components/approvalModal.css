@@ -1,0 +1,329 @@
+/* T06300（REQ-007 / PRD §B7）：审批弹窗样式。语义 token 优先，避免硬编码色值。 */
+
+.approval-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--text) 48%, transparent);
+  backdrop-filter: blur(3px);
+}
+
+.approval-dialog {
+  width: min(760px, 100%);
+  max-height: min(86vh, 880px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 24px 70px color-mix(in srgb, var(--text) 24%, transparent);
+}
+
+.approval-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 22px 16px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--surface-2), var(--surface));
+}
+
+.approval-head-title {
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+}
+
+.approval-head-title > div {
+  min-width: 0;
+}
+
+.approval-head h2 {
+  margin: 2px 0 4px;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.approval-head p {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.approval-risk {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.approval-risk-R2 {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 36%, var(--border));
+  background: color-mix(in srgb, var(--warn) 10%, var(--surface));
+}
+
+.approval-risk-R3 {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
+  background: color-mix(in srgb, var(--danger) 10%, var(--surface));
+}
+
+.approval-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border: 0;
+  border-radius: 8px;
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.approval-close:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.approval-close:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.approval-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  padding: 12px 22px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.approval-meta span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.approval-meta strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.approval-meta code {
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.approval-expiry {
+  color: var(--warn) !important;
+}
+
+.approval-section {
+  padding: 12px 22px 0;
+}
+
+.approval-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+  letter-spacing: .02em;
+}
+
+.approval-impact {
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.approval-diff,
+.approval-preview {
+  margin: 0;
+  max-height: 190px;
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre;
+  tab-size: 2;
+}
+
+.approval-diff-add { color: var(--success); }
+.approval-diff-del { color: var(--danger); }
+.approval-diff-hunk { color: var(--accent); }
+.approval-diff-meta { color: var(--text-muted); }
+
+.approval-empty {
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px dashed var(--border);
+  color: var(--text-muted);
+  font-size: 12px;
+  background: var(--surface-2);
+}
+
+.approval-decision {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 14px;
+  padding: 14px 22px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.approval-decision label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.approval-decision textarea {
+  width: 100%;
+  min-height: 64px;
+  resize: vertical;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.5;
+  box-sizing: border-box;
+}
+
+.approval-decision textarea:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+.approval-decision textarea:disabled {
+  opacity: .6;
+}
+
+.approval-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.approval-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 3px;
+}
+
+.approval-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 116px;
+  height: 34px;
+  padding: 0 13px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.approval-btn:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.approval-btn:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+}
+
+.approval-btn-reject {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 32%, var(--border));
+  background: color-mix(in srgb, var(--danger) 6%, var(--surface));
+}
+
+.approval-btn-approve {
+  color: var(--surface);
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.approval-btn-approve:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 86%, var(--text));
+}
+
+.approval-foot {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.approval-spinner {
+  width: 13px;
+  height: 13px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: approval-spin .7s linear infinite;
+}
+
+@keyframes approval-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 720px) {
+  .approval-overlay { padding: 12px; }
+  .approval-dialog { max-height: 92vh; border-radius: 14px; }
+  .approval-head { padding: 16px 16px 12px; }
+  .approval-meta, .approval-section { padding-left: 16px; padding-right: 16px; }
+  .approval-decision { padding: 12px 16px 14px; }
+  .approval-actions { flex-direction: column-reverse; }
+  .approval-btn { width: 100%; }
+}

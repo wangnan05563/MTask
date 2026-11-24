@@ -814,6 +814,56 @@ export interface RunApprovalInfo {
   updatedAt: string | null;
 }
 
+export type RunRiskLevel = 'R0' | 'R1' | 'R2' | 'R3';
+export type RunRiskDecision = 'allow' | 'ask' | 'block';
+export type RunApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired' | 'cancelled';
+
+/** T06300（REQ-007）：审批弹窗消费的审批实体；字段与 /api/run-risk/approvals 同形。 */
+export interface RunRiskApproval {
+  id: string;
+  runId: string;
+  stepId: string | null;
+  approvalStepId: string | null;
+  projectId: string;
+  riskLevel: RunRiskLevel;
+  action: string;
+  impact: string;
+  diff: string;
+  preview: string;
+  requester: string;
+  status: RunApprovalStatus;
+  reason: string;
+  decidedBy: string;
+  decidedAt: string | null;
+  expiresAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RunRiskPolicy {
+  projectId: string;
+  levels: Record<RunRiskLevel, RunRiskDecision>;
+  source: 'default' | 'project';
+  updatedBy: string;
+  updatedAt: string | null;
+}
+
+export interface RunRiskAuditEvent {
+  id: string;
+  runId: string;
+  stepId: string;
+  approvalId: string;
+  projectId: string;
+  eventType: 'allowed' | 'approval_requested' | 'approved' | 'rejected' | 'expired' | 'blocked' | 'policy_changed' | 'override';
+  riskLevel: RunRiskLevel | '';
+  action: string;
+  actor: string;
+  reason: string;
+  detail: string;
+  createdAt: string;
+}
+
+
 export interface RunTrace {
   id: string;
   taskId: string;
