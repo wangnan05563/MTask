@@ -164,6 +164,46 @@ const themeCss = `
   color-scheme: dark;
 }
 
+/* T06291：high-contrast 在 T06286 tokens.css 已有 --mt-* 语义色，但旧页面仍消费上面这套旧变量。
+   这里只补旧变量到高对比语义的映射，避免设置页尚未暴露该主题时，强制 data-theme 出现「浅底黑卡」混搭；
+   不改任何组件结构，组件视觉回归仍按真实渲染截图。 */
+[data-theme='high-contrast'] {
+  --app-bg: #000000;
+  --card-bg: #000000;
+  --surface: #000000;
+  --surface-2: #1a1a1a;
+  --text: #ffffff;
+  --text-secondary: #ffffff;
+  --text-muted: #e6e6e6;
+  --border: #ffffff;
+  --border-strong: #ffffff;
+  --accent: #ffff00;
+  --accent-ink: #ffff00;
+  --accent-text: #000000;
+  --on-solid: #000000;
+  --on-dark: #ffffff;
+  --accent-soft: #1a1a00;
+  --success: #00ff66;
+  --success-strong: #00ff66;
+  --session-live-accent: #00ffff;
+  --danger: #ff4d4d;
+  --warn: #ffff00;
+  --warning: var(--warn);
+  --overlay: rgba(0, 0, 0, 0.85);
+  --bar-sheen: rgba(255, 255, 255, 0.32);
+  --bar-grip: rgba(255, 255, 255, 0.42);
+  --code-bg: #000000;
+  --code-border: #ffffff;
+  --markdown-quote: #e6e6e6;
+  --diff-add-bg: #000000;
+  --diff-add-text: #00ff66;
+  --diff-del-bg: #000000;
+  --diff-del-text: #ff4d4d;
+  --diff-ctx-bg: #1a1a1a;
+  --diff-ctx-text: #ffffff;
+  color-scheme: dark;
+}
+
 /* T03180（PM-301④）：:root 自带三档默认值（默认档 m）。JS 未执行 / 被禁用时 var(--fs-*) 仍有解析值，
    不会出现未定义变量导致字号回落；设置页切换档位时以 documentElement 内联变量覆盖这里。
    门禁 scripts/tests/verify-t03180-font-tokens.mts 校验此处与 FONT_SIZE_MAP.m 逐项一致。 */

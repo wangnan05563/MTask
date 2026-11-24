@@ -1,0 +1,953 @@
+{
+  "pass": 73,
+  "fail": 0,
+  "checks": [
+    {
+      "name": "VIS-00 静态服务器 / API 代理 / 画廊页面就绪",
+      "ok": true,
+      "extra": {
+        "port": 39912,
+        "apiPort": 39877,
+        "token": true
+      }
+    },
+    {
+      "name": "VIS-01 生产构建加载成功",
+      "ok": true
+    },
+    {
+      "name": "VIS-theme-light 主题应用",
+      "ok": true,
+      "extra": {
+        "applied": "light",
+        "bodyBg": "rgb(255, 255, 255)",
+        "expectedBg": "rgb(255, 255, 255)"
+      }
+    },
+    {
+      "name": "VIS-matrix-light-dashboard 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-light-dashboard.png",
+        "bytes": 69945,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "7fb1f051e5b95702",
+        "activeNav": "首页",
+        "textLen": 1215,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "light"
+      }
+    },
+    {
+      "name": "VIS-contrast-light-dashboard 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-light-tasks 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-light-tasks.png",
+        "bytes": 47660,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "b5d08b930bad3d75",
+        "activeNav": "任务",
+        "textLen": 318,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "light"
+      }
+    },
+    {
+      "name": "VIS-contrast-light-tasks 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-light-plan 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-light-plan.png",
+        "bytes": 45872,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "92c048d370160e8c",
+        "activeNav": "项目",
+        "textLen": 202,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "light"
+      }
+    },
+    {
+      "name": "VIS-contrast-light-plan 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-light-req 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-light-req.png",
+        "bytes": 26762,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "f93a55dca88313ad",
+        "activeNav": "需求",
+        "textLen": 111,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "light"
+      }
+    },
+    {
+      "name": "VIS-contrast-light-req 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-light-report 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-light-report.png",
+        "bytes": 79358,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "3dfa6a3d874197f1",
+        "activeNav": "报表",
+        "textLen": 595,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "light"
+      }
+    },
+    {
+      "name": "VIS-contrast-light-report 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-light-queue 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-light-queue.png",
+        "bytes": 63544,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "237015519838b3bc",
+        "activeNav": "AI 控制台",
+        "textLen": 402,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "light"
+      }
+    },
+    {
+      "name": "VIS-contrast-light-queue 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-light-exec-sessions 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-light-exec-sessions.png",
+        "bytes": 183795,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "1643fe9775cf30b6",
+        "activeNav": "执行会话",
+        "textLen": 13281,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "light"
+      }
+    },
+    {
+      "name": "VIS-contrast-light-exec-sessions 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-light-prompts 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-light-prompts.png",
+        "bytes": 63730,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "05240628bfbe0348",
+        "activeNav": "提示词",
+        "textLen": 739,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "light"
+      }
+    },
+    {
+      "name": "VIS-contrast-light-prompts 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-light-aitools 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-light-aitools.png",
+        "bytes": 111913,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "16ddb9903f43b085",
+        "activeNav": "模型",
+        "textLen": 1570,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "light"
+      }
+    },
+    {
+      "name": "VIS-contrast-light-aitools 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-light-settings 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-light-settings.png",
+        "bytes": 83421,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "474fc972fdd79a0b",
+        "activeNav": "设置",
+        "textLen": 408,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "light"
+      }
+    },
+    {
+      "name": "VIS-contrast-light-settings 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-theme-dark 主题应用",
+      "ok": true,
+      "extra": {
+        "applied": "dark",
+        "bodyBg": "rgb(24, 24, 27)",
+        "expectedBg": "rgb(24, 24, 27)"
+      }
+    },
+    {
+      "name": "VIS-matrix-dark-dashboard 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-dark-dashboard.png",
+        "bytes": 70467,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "617fadb7d9633fd3",
+        "activeNav": "首页",
+        "textLen": 1215,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "dark"
+      }
+    },
+    {
+      "name": "VIS-contrast-dark-dashboard 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-dark-tasks 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-dark-tasks.png",
+        "bytes": 48561,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "5aa8a9da99ba70bf",
+        "activeNav": "任务",
+        "textLen": 318,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "dark"
+      }
+    },
+    {
+      "name": "VIS-contrast-dark-tasks 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-dark-plan 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-dark-plan.png",
+        "bytes": 46438,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "b74a0f8937f88427",
+        "activeNav": "项目",
+        "textLen": 202,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "dark"
+      }
+    },
+    {
+      "name": "VIS-contrast-dark-plan 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-dark-req 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-dark-req.png",
+        "bytes": 27191,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "d9489eefc98b2712",
+        "activeNav": "需求",
+        "textLen": 111,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "dark"
+      }
+    },
+    {
+      "name": "VIS-contrast-dark-req 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-dark-report 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-dark-report.png",
+        "bytes": 77701,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "ea6000e44ab9cca4",
+        "activeNav": "报表",
+        "textLen": 595,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "dark"
+      }
+    },
+    {
+      "name": "VIS-contrast-dark-report 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-dark-queue 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-dark-queue.png",
+        "bytes": 110163,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "fdaf170c0cfdccca",
+        "activeNav": "AI 控制台",
+        "textLen": 5867,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "dark"
+      }
+    },
+    {
+      "name": "VIS-contrast-dark-queue 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-dark-exec-sessions 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-dark-exec-sessions.png",
+        "bytes": 184432,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "c934090166688b34",
+        "activeNav": "执行会话",
+        "textLen": 13281,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "dark"
+      }
+    },
+    {
+      "name": "VIS-contrast-dark-exec-sessions 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-dark-prompts 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-dark-prompts.png",
+        "bytes": 67167,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "8710c435116741a1",
+        "activeNav": "提示词",
+        "textLen": 739,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "dark"
+      }
+    },
+    {
+      "name": "VIS-contrast-dark-prompts 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-dark-aitools 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-dark-aitools.png",
+        "bytes": 142998,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "655d00c1b69b285e",
+        "activeNav": "模型",
+        "textLen": 2647,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "dark"
+      }
+    },
+    {
+      "name": "VIS-contrast-dark-aitools 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-dark-settings 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-dark-settings.png",
+        "bytes": 97694,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "6150986a981fc0df",
+        "activeNav": "设置",
+        "textLen": 488,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "dark"
+      }
+    },
+    {
+      "name": "VIS-contrast-dark-settings 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-theme-high-contrast 主题应用",
+      "ok": true,
+      "extra": {
+        "applied": "high-contrast",
+        "bodyBg": "rgb(0, 0, 0)",
+        "expectedBg": "rgb(0, 0, 0)"
+      }
+    },
+    {
+      "name": "VIS-matrix-high-contrast-dashboard 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-high-contrast-dashboard.png",
+        "bytes": 55977,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "09d1e7429f814632",
+        "activeNav": "首页",
+        "textLen": 1215,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "high-contrast"
+      }
+    },
+    {
+      "name": "VIS-contrast-high-contrast-dashboard 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-high-contrast-tasks 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-high-contrast-tasks.png",
+        "bytes": 43982,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "4ffb2ff43e6fcae4",
+        "activeNav": "任务",
+        "textLen": 352,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "high-contrast"
+      }
+    },
+    {
+      "name": "VIS-contrast-high-contrast-tasks 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-high-contrast-plan 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-high-contrast-plan.png",
+        "bytes": 121634,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "bc4691a8f2a5a3ae",
+        "activeNav": "项目",
+        "textLen": 1488,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "high-contrast"
+      }
+    },
+    {
+      "name": "VIS-contrast-high-contrast-plan 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-high-contrast-req 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-high-contrast-req.png",
+        "bytes": 44104,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "953e46b53f0569fc",
+        "activeNav": "需求",
+        "textLen": 647,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "high-contrast"
+      }
+    },
+    {
+      "name": "VIS-contrast-high-contrast-req 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-high-contrast-report 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-high-contrast-report.png",
+        "bytes": 72733,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "f2b778b1cb41a733",
+        "activeNav": "报表",
+        "textLen": 610,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "high-contrast"
+      }
+    },
+    {
+      "name": "VIS-contrast-high-contrast-report 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-high-contrast-queue 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-high-contrast-queue.png",
+        "bytes": 103394,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "f0096f4874b1a9ae",
+        "activeNav": "AI 控制台",
+        "textLen": 5867,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "high-contrast"
+      }
+    },
+    {
+      "name": "VIS-contrast-high-contrast-queue 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-high-contrast-exec-sessions 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-high-contrast-exec-sessions.png",
+        "bytes": 174199,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "0b1d5433f4f496ad",
+        "activeNav": "执行会话",
+        "textLen": 13281,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "high-contrast"
+      }
+    },
+    {
+      "name": "VIS-contrast-high-contrast-exec-sessions 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-high-contrast-prompts 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-high-contrast-prompts.png",
+        "bytes": 55060,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "d81425960232f6d4",
+        "activeNav": "提示词",
+        "textLen": 739,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "high-contrast"
+      }
+    },
+    {
+      "name": "VIS-contrast-high-contrast-prompts 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-high-contrast-aitools 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-high-contrast-aitools.png",
+        "bytes": 94060,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "8f63dd22a6e2d576",
+        "activeNav": "模型",
+        "textLen": 1570,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "high-contrast"
+      }
+    },
+    {
+      "name": "VIS-contrast-high-contrast-aitools 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-matrix-high-contrast-settings 截图与页面有效",
+      "ok": true,
+      "extra": {
+        "file": "matrix-high-contrast-settings.png",
+        "bytes": 71051,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "sha": "f6197c156657ea50",
+        "activeNav": "设置",
+        "textLen": 408,
+        "skeletons": 0,
+        "loadingText": false,
+        "loaded": true,
+        "theme": "high-contrast"
+      }
+    },
+    {
+      "name": "VIS-contrast-high-contrast-settings 无 color-contrast 违规",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "ids": []
+      }
+    },
+    {
+      "name": "VIS-gallery-light 六类组件可见且截图有效",
+      "ok": true,
+      "extra": {
+        "sections": 6,
+        "bytes": 51207,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "theme": "light",
+        "bodyBg": "rgb(255, 255, 255)"
+      }
+    },
+    {
+      "name": "VIS-gallery-light 三主题对比度门禁",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "nodes": 0,
+        "first": []
+      }
+    },
+    {
+      "name": "VIS-gallery-dark 六类组件可见且截图有效",
+      "ok": true,
+      "extra": {
+        "sections": 6,
+        "bytes": 50351,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "theme": "dark",
+        "bodyBg": "rgb(24, 24, 27)"
+      }
+    },
+    {
+      "name": "VIS-gallery-dark 三主题对比度门禁",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "nodes": 0,
+        "first": []
+      }
+    },
+    {
+      "name": "VIS-gallery-high-contrast 六类组件可见且截图有效",
+      "ok": true,
+      "extra": {
+        "sections": 6,
+        "bytes": 42392,
+        "size": {
+          "width": 1258,
+          "height": 802
+        },
+        "theme": "high-contrast",
+        "bodyBg": "rgb(0, 0, 0)"
+      }
+    },
+    {
+      "name": "VIS-gallery-high-contrast 三主题对比度门禁",
+      "ok": true,
+      "extra": {
+        "count": 0,
+        "nodes": 0,
+        "first": []
+      }
+    },
+    {
+      "name": "VIS-theme-03 三主题画布背景互异",
+      "ok": true,
+      "extra": {
+        "values": [
+          [
+            "light",
+            "rgb(255, 255, 255)"
+          ],
+          [
+            "dark",
+            "rgb(24, 24, 27)"
+          ],
+          [
+            "high-contrast",
+            "rgb(0, 0, 0)"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "VIS-matrix-01 截图矩阵数量",
+      "ok": true,
+      "extra": {
+        "app": 30,
+        "gallery": 3
+      }
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+序号,验证项,命令/条件,通过标准,实测结果,证据
+1,T06291 组合门禁,npm run verify:t06291,全部检查通过且 exit 0,pass=73 fail=0；VERIFY_EXIT=0,evidence/t06291-verify.log
+2,核心页截图矩阵,10 页 × light/dark/high-contrast,30 张且全部有效,30 张；1258×802；最小 26762 字节；skeletons=0；loaded=true,evidence/matrix/matrix.json
+3,Design System 画廊,6 类组件 × 3 主题,3 张且六类组件可见,3 张；sections=6；最小 42392 字节,evidence/gallery/
+4,三主题生效,读取 body 背景与 data-theme,三主题背景互异且与目标一致,light rgb(255,255,255)；dark rgb(24,24,27)；high-contrast rgb(0,0,0),evidence/t06291-verify.log
+5,页面对比度门禁,axe-core 4.10.2 color-contrast × 30 上下文,0 违规,30/30 上下文 count=0,evidence/t06291-verify.log
+6,画廊对比度门禁,axe-core 4.10.2 color-contrast × 3 主题,0 违规,3/3 主题 count=0 nodes=0,evidence/t06291-verify.log
+7,Token 三主题对比度,node scripts/verify-t06286-tokens.mjs,无 failures,39 对；最低 5.02:1（light status-success-fg/bg-canvas）；failures=[],evidence/t06291-verify.log
+8,AC-04 核心页硬编码色,npm run verify:t06290,corePages=12 且 hardcodedHex=0,corePages=12 hardcodedHex=0,evidence/t06291-verify.log
+9,Codemod 幂等,npm run verify:t06290 中 dry-run,无待迁移项,files=0 replacements=0,evidence/t06291-verify.log
+10,Web 类型检查,npm --workspace web run build 的 tsc --noEmit,无类型错误,tsc 通过,evidence/t06291-build.log
+11,Web 生产构建,npm --workspace web run build,Vite 构建成功,1864 modules transformed；built in 2m 15s；exit=0,evidence/t06291-build.log
+12,T06291 提交范围,git diff --cached --name-only,仅测试与本任务报告文件,package.json、settings.tsx、2 个测试脚本、docs/t06291；不含 web/src/ui/components/** 或业务页面组件,git diff --cached

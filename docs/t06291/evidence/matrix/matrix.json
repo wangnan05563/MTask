@@ -1,0 +1,542 @@
+[
+  {
+    "theme": "light",
+    "tab": "dashboard",
+    "label": "概览",
+    "file": "matrix-light-dashboard.png",
+    "bytes": 69945,
+    "sha": "7fb1f051e5b95702",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "首页",
+    "textLen": 1215,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "light",
+    "tab": "tasks",
+    "label": "任务",
+    "file": "matrix-light-tasks.png",
+    "bytes": 47660,
+    "sha": "b5d08b930bad3d75",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "任务",
+    "textLen": 318,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "light",
+    "tab": "plan",
+    "label": "计划",
+    "file": "matrix-light-plan.png",
+    "bytes": 45872,
+    "sha": "92c048d370160e8c",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "项目",
+    "textLen": 202,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "light",
+    "tab": "req",
+    "label": "需求",
+    "file": "matrix-light-req.png",
+    "bytes": 26762,
+    "sha": "f93a55dca88313ad",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "需求",
+    "textLen": 111,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "light",
+    "tab": "report",
+    "label": "报表",
+    "file": "matrix-light-report.png",
+    "bytes": 79358,
+    "sha": "3dfa6a3d874197f1",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "报表",
+    "textLen": 595,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "light",
+    "tab": "queue",
+    "label": "队列",
+    "file": "matrix-light-queue.png",
+    "bytes": 63544,
+    "sha": "237015519838b3bc",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "AI 控制台",
+    "textLen": 402,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "light",
+    "tab": "exec-sessions",
+    "label": "执行会话",
+    "file": "matrix-light-exec-sessions.png",
+    "bytes": 183795,
+    "sha": "1643fe9775cf30b6",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "执行会话",
+    "textLen": 13281,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "light",
+    "tab": "prompts",
+    "label": "提示词",
+    "file": "matrix-light-prompts.png",
+    "bytes": 63730,
+    "sha": "05240628bfbe0348",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "提示词",
+    "textLen": 739,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "light",
+    "tab": "aitools",
+    "label": "模型",
+    "file": "matrix-light-aitools.png",
+    "bytes": 111913,
+    "sha": "16ddb9903f43b085",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "模型",
+    "textLen": 1570,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "light",
+    "tab": "settings",
+    "label": "设置",
+    "file": "matrix-light-settings.png",
+    "bytes": 83421,
+    "sha": "474fc972fdd79a0b",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "设置",
+    "textLen": 408,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "dark",
+    "tab": "dashboard",
+    "label": "概览",
+    "file": "matrix-dark-dashboard.png",
+    "bytes": 70467,
+    "sha": "617fadb7d9633fd3",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "首页",
+    "textLen": 1215,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "dark",
+    "tab": "tasks",
+    "label": "任务",
+    "file": "matrix-dark-tasks.png",
+    "bytes": 48561,
+    "sha": "5aa8a9da99ba70bf",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "任务",
+    "textLen": 318,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "dark",
+    "tab": "plan",
+    "label": "计划",
+    "file": "matrix-dark-plan.png",
+    "bytes": 46438,
+    "sha": "b74a0f8937f88427",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "项目",
+    "textLen": 202,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "dark",
+    "tab": "req",
+    "label": "需求",
+    "file": "matrix-dark-req.png",
+    "bytes": 27191,
+    "sha": "d9489eefc98b2712",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "需求",
+    "textLen": 111,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "dark",
+    "tab": "report",
+    "label": "报表",
+    "file": "matrix-dark-report.png",
+    "bytes": 77701,
+    "sha": "ea6000e44ab9cca4",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "报表",
+    "textLen": 595,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "dark",
+    "tab": "queue",
+    "label": "队列",
+    "file": "matrix-dark-queue.png",
+    "bytes": 110163,
+    "sha": "fdaf170c0cfdccca",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "AI 控制台",
+    "textLen": 5867,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "dark",
+    "tab": "exec-sessions",
+    "label": "执行会话",
+    "file": "matrix-dark-exec-sessions.png",
+    "bytes": 184432,
+    "sha": "c934090166688b34",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "执行会话",
+    "textLen": 13281,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "dark",
+    "tab": "prompts",
+    "label": "提示词",
+    "file": "matrix-dark-prompts.png",
+    "bytes": 67167,
+    "sha": "8710c435116741a1",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "提示词",
+    "textLen": 739,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "dark",
+    "tab": "aitools",
+    "label": "模型",
+    "file": "matrix-dark-aitools.png",
+    "bytes": 142998,
+    "sha": "655d00c1b69b285e",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "模型",
+    "textLen": 2647,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "dark",
+    "tab": "settings",
+    "label": "设置",
+    "file": "matrix-dark-settings.png",
+    "bytes": 97694,
+    "sha": "6150986a981fc0df",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "设置",
+    "textLen": 488,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "high-contrast",
+    "tab": "dashboard",
+    "label": "概览",
+    "file": "matrix-high-contrast-dashboard.png",
+    "bytes": 55977,
+    "sha": "09d1e7429f814632",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "首页",
+    "textLen": 1215,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "high-contrast",
+    "tab": "tasks",
+    "label": "任务",
+    "file": "matrix-high-contrast-tasks.png",
+    "bytes": 43982,
+    "sha": "4ffb2ff43e6fcae4",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "任务",
+    "textLen": 352,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "high-contrast",
+    "tab": "plan",
+    "label": "计划",
+    "file": "matrix-high-contrast-plan.png",
+    "bytes": 121634,
+    "sha": "bc4691a8f2a5a3ae",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "项目",
+    "textLen": 1488,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "high-contrast",
+    "tab": "req",
+    "label": "需求",
+    "file": "matrix-high-contrast-req.png",
+    "bytes": 44104,
+    "sha": "953e46b53f0569fc",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "需求",
+    "textLen": 647,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "high-contrast",
+    "tab": "report",
+    "label": "报表",
+    "file": "matrix-high-contrast-report.png",
+    "bytes": 72733,
+    "sha": "f2b778b1cb41a733",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "报表",
+    "textLen": 610,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "high-contrast",
+    "tab": "queue",
+    "label": "队列",
+    "file": "matrix-high-contrast-queue.png",
+    "bytes": 103394,
+    "sha": "f0096f4874b1a9ae",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "AI 控制台",
+    "textLen": 5867,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "high-contrast",
+    "tab": "exec-sessions",
+    "label": "执行会话",
+    "file": "matrix-high-contrast-exec-sessions.png",
+    "bytes": 174199,
+    "sha": "0b1d5433f4f496ad",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "执行会话",
+    "textLen": 13281,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "high-contrast",
+    "tab": "prompts",
+    "label": "提示词",
+    "file": "matrix-high-contrast-prompts.png",
+    "bytes": 55060,
+    "sha": "d81425960232f6d4",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "提示词",
+    "textLen": 739,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "high-contrast",
+    "tab": "aitools",
+    "label": "模型",
+    "file": "matrix-high-contrast-aitools.png",
+    "bytes": 94060,
+    "sha": "8f63dd22a6e2d576",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "模型",
+    "textLen": 1570,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  },
+  {
+    "theme": "high-contrast",
+    "tab": "settings",
+    "label": "设置",
+    "file": "matrix-high-contrast-settings.png",
+    "bytes": 71051,
+    "sha": "f6197c156657ea50",
+    "size": {
+      "width": 1258,
+      "height": 802
+    },
+    "activeNav": "设置",
+    "textLen": 408,
+    "skeletons": 0,
+    "loadingText": false,
+    "loaded": true,
+    "nonBlank": true
+  }
+]
