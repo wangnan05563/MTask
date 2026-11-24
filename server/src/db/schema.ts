@@ -33,7 +33,9 @@ export function initSchema(): void {
       pinned      INTEGER NOT NULL DEFAULT 0,
       category_id TEXT,
       created_at  TEXT NOT NULL,
-      updated_at  TEXT NOT NULL
+      updated_at  TEXT NOT NULL,
+      -- T06302（REQ-009）：日历视图的到期日（YYYY-MM-DD 纯日期）；NULL=未排期，存量任务零迁移成本
+      due_date    TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
     CREATE INDEX IF NOT EXISTS idx_tasks_archived ON tasks(archived);
@@ -1080,6 +1082,9 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureColumn('tasks', 'dispatch_auto', 'dispatch_auto INTEGER');
   ensureColumn('tasks', 'dispatch_last_at', 'dispatch_last_at TEXT');
   ensureColumn('tasks', 'dispatch_last_state', "dispatch_last_state TEXT NOT NULL DEFAULT ''");
+  /* T06302（REQ-009）：日历视图到期日。ensureColumn 幂等补列，存量行默认 NULL（未排期）——
+     只服务日历排布/拖拽改期，不介入列表、看板、表格与 MCP 就绪判定，既有生产口径不变。 */
+  ensureColumn('tasks', 'due_date', 'due_date TEXT');
   /* T06244 / T06249：queues.kind 区分人工队列与内部派发队列。
      存量行先补 manual（保持队列页现状），再按旧命名一次性回填 relay；运行时不再依赖名称识别。 */
   ensureColumn('queues', 'kind', "kind TEXT NOT NULL DEFAULT 'manual'");

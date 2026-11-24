@@ -1,0 +1,420 @@
+/**
+ * T06302：任务日历视图样式。
+ * 颜色只消费 semantic Token（与设计系统同源），不写十六进制色值。
+ */
+
+.mt-cal {
+  border: 1px solid var(--mt-semantic-border-default);
+  border-radius: 12px;
+  background: var(--mt-semantic-bg-elevated);
+  padding: 14px;
+  margin: 8px 0 12px;
+  color: var(--mt-semantic-text-primary);
+}
+
+.mt-cal__toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.mt-cal__title-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.mt-cal__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.3;
+}
+
+.mt-cal__subtitle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--mt-semantic-text-secondary);
+}
+
+.mt-cal__count {
+  font-size: 12px;
+  color: var(--mt-semantic-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.mt-cal__controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mt-cal__nav {
+  display: inline-flex;
+  border: 1px solid var(--mt-semantic-border-strong);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.mt-cal__icon-btn,
+.mt-cal__today-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--mt-semantic-text-primary);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.mt-cal__icon-btn {
+  width: 30px;
+  height: 28px;
+}
+
+.mt-cal__today-btn {
+  height: 28px;
+  padding: 0 10px;
+  border-left: 1px solid var(--mt-semantic-border-strong);
+  border-right: 1px solid var(--mt-semantic-border-strong);
+  font-size: 12px;
+}
+
+.mt-cal__icon-btn:hover,
+.mt-cal__today-btn:hover {
+  background: var(--mt-semantic-bg-hover);
+}
+
+.mt-cal__icon-btn:focus-visible,
+.mt-cal__today-btn:focus-visible,
+.mt-cal__mode-toggle button:focus-visible,
+.mt-cal__task:focus-visible {
+  outline: 2px solid var(--mt-semantic-border-focus);
+  outline-offset: 1px;
+}
+
+.mt-cal__mode-toggle {
+  display: inline-flex;
+  border: 1px solid var(--mt-semantic-border-strong);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.mt-cal__mode-toggle button {
+  height: 28px;
+  min-width: 34px;
+  padding: 0 10px;
+  border: none;
+  background: transparent;
+  color: var(--mt-semantic-text-primary);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.mt-cal__mode-toggle button + button {
+  border-left: 1px solid var(--mt-semantic-border-strong);
+}
+
+.mt-cal__mode-toggle button.is-active {
+  background: var(--mt-semantic-accent-primary);
+  color: var(--mt-semantic-accent-on);
+}
+
+.mt-cal__hint {
+  margin: 2px 0 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--mt-semantic-text-muted);
+}
+
+.mt-cal__grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--mt-semantic-border-default);
+  border: 1px solid var(--mt-semantic-border-default);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.mt-cal__weekday {
+  background: var(--mt-semantic-bg-subtle);
+  padding: 6px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--mt-semantic-text-secondary);
+}
+
+.mt-cal__cell {
+  min-height: 96px;
+  min-width: 0;
+  background: var(--mt-semantic-bg-elevated);
+  padding: 5px 6px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: background-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.mt-cal__grid--week .mt-cal__cell {
+  min-height: 380px;
+}
+
+.mt-cal__cell[data-outside='true'] {
+  background: var(--mt-semantic-bg-surface);
+  color: var(--mt-semantic-text-muted);
+}
+
+.mt-cal__cell[data-today='true'] {
+  box-shadow: inset 0 0 0 1px var(--mt-semantic-accent-primary);
+}
+
+.mt-cal__cell[data-over='true'] {
+  background: var(--mt-semantic-accent-soft);
+  box-shadow: inset 0 0 0 2px var(--mt-semantic-accent-primary);
+}
+
+.mt-cal__cell-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 18px;
+  padding: 0 1px;
+}
+
+.mt-cal__day {
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.mt-cal__today-tag {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--mt-semantic-accent-primary);
+  color: var(--mt-semantic-accent-on);
+  font-size: 10px;
+  line-height: 15px;
+}
+
+.mt-cal__week-month {
+  font-size: 10px;
+  color: var(--mt-semantic-text-muted);
+}
+
+.mt-cal__day-count {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--mt-semantic-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.mt-cal__cell-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.mt-cal__task {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  padding: 3px 5px 4px 7px;
+  border: 1px solid var(--mt-semantic-border-default);
+  border-left: 3px solid var(--mt-semantic-text-muted);
+  border-radius: 5px;
+  background: var(--mt-semantic-bg-surface);
+  color: var(--mt-semantic-text-primary);
+  font-family: inherit;
+  text-align: left;
+  cursor: grab;
+}
+
+.mt-cal__task:hover {
+  background: var(--mt-semantic-bg-hover);
+}
+
+.mt-cal__task:active {
+  cursor: grabbing;
+}
+
+.mt-cal__task[data-done='true'] {
+  opacity: 0.72;
+}
+
+.mt-cal__task-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 3px;
+  min-width: 0;
+}
+
+.mt-cal__grip,
+.mt-cal__done-icon {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--mt-semantic-text-muted);
+}
+
+.mt-cal__done-icon {
+  color: var(--mt-semantic-status-success-fg);
+}
+
+.mt-cal__task-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1.35;
+  word-break: break-all;
+}
+
+.mt-cal__task-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  margin-top: 1px;
+  font-size: 10px;
+  line-height: 1.3;
+  color: var(--mt-semantic-text-muted);
+}
+
+.mt-cal__task-project {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 72px;
+}
+
+.mt-cal__task-prio {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.mt-cal__more {
+  font-size: 10px;
+  color: var(--mt-semantic-text-muted);
+  padding-left: 2px;
+}
+
+/* 月视图格子矮、信息密：卡片压成单行 chip，隐藏次要 meta，靠左色条传达优先级 */
+.mt-cal__grid--month .mt-cal__task {
+  padding: 2px 4px 2px 6px;
+}
+
+.mt-cal__grid--month .mt-cal__task-head {
+  align-items: center;
+}
+
+.mt-cal__grid--month .mt-cal__grip,
+.mt-cal__grid--month .mt-cal__task-meta {
+  display: none;
+}
+
+.mt-cal__grid--month .mt-cal__task-title {
+  -webkit-line-clamp: 1;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.mt-cal__unscheduled {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px dashed var(--mt-semantic-border-strong);
+}
+
+.mt-cal__unscheduled[data-over='true'] {
+  border-top-color: var(--mt-semantic-accent-primary);
+  background: var(--mt-semantic-accent-soft);
+  border-radius: 6px;
+}
+
+.mt-cal__unscheduled-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+.mt-cal__unscheduled-tip {
+  font-size: 11px;
+  color: var(--mt-semantic-text-muted);
+}
+
+.mt-cal__unscheduled-list {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 1px 1px 5px;
+}
+
+.mt-cal__unscheduled-list .mt-cal__task {
+  width: 210px;
+  flex: 0 0 210px;
+}
+
+.mt-cal__unscheduled-empty {
+  font-size: 12px;
+  color: var(--mt-semantic-text-muted);
+  padding: 4px 2px;
+}
+
+.mt-cal__loading,
+.mt-cal__empty {
+  padding: 30px 16px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--mt-semantic-text-muted);
+  border: 1px dashed var(--mt-semantic-border-strong);
+  border-radius: 8px;
+}
+
+.mt-cal__loading {
+  border: none;
+}
+
+.mt-cal__drag-tip {
+  position: sticky;
+  bottom: 8px;
+  width: fit-content;
+  margin: 8px auto 0;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--mt-semantic-accent-primary);
+  color: var(--mt-semantic-accent-on);
+  font-size: 11px;
+}
+
+@media (max-width: 900px) {
+  .mt-cal__cell {
+    min-height: 92px;
+  }
+
+  .mt-cal__task-prio {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mt-cal__cell {
+    transition: none;
+  }
+}

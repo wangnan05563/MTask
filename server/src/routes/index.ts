@@ -1352,6 +1352,22 @@ function checkTaskPatchFields(status: string | undefined, archived: boolean | un
   return null;
 }
 
+/** T06302（REQ-009）：日历改期入参归一——undefined=不改；null/''=移入未排期；其余必须是真实存在的 YYYY-MM-DD */
+function normalizeDueDateInput(raw: unknown): { value?: string | null; error?: string } {
+  if (raw === undefined) return {};
+  if (raw === null || raw === '') return { value: null };
+  if (typeof raw !== 'string') return { error: 'dueDate 必须为 YYYY-MM-DD 字符串或 null' };
+  const trimmed = raw.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return { error: `dueDate 格式非法：${raw}（应为 YYYY-MM-DD）` };
+  const [year, month, day] = trimmed.split('-').map(Number);
+  const parsed = new Date(year, month - 1, day);
+  // 形状合法但日期不存在（2026-02-30 / 2026-13-01）也拒收，避免日历把脏值落到相邻月份
+  if (parsed.getFullYear() !== year || parsed.getMonth() !== month - 1 || parsed.getDate() !== day) {
+    return { error: `dueDate 日期不存在：${trimmed}` };
+  }
+  return { value: trimmed };
+}
+
 /** parentId 变更校验：返回错误文案（null=通过）——不可自挂；两级层级下父任务不可已是子任务 */
 function checkParentChange(taskId: string, parentId: unknown): string | null {
   if (parentId === taskId) return '父任务不能是任务自身';
@@ -1370,7 +1386,7 @@ function toParentIdColumn(parentId: unknown): string | null | undefined {
 }
 
 api.patch('/tasks/:id', (req, res) => {
-  const { title, description, priority, status, verified, aiSummary, handleResult, pinned, categoryId, parentId, color, aiState, derivedFrom, archived, dispatchAuto } = req.body ?? {}; // T00566：aiState AI 处理状态 // T00490：color 记录字体颜色 // T00779：archived 归档（派生单闭环） // T06244：dispatchAuto 任务级自动派发闸门
+  const { title, description, priority, status, verified, aiSummary, handleResult, pinned, categoryId, parentId, color, aiState, derivedFrom, archived, dispatchAuto, dueDate } = req.body ?? {}; // T00566：aiState AI 处理状态 // T00490：color 记录字体颜色 // T00779：archived 归档（派生单闭环） // T06244：dispatchAuto 任务级自动派发闸门 // T06302：dueDate 日历改期
   // T02070 裁决（待办状态二元口径）：tasks 表无 CHECK 约束，本端点与 POST /tasks 是仅有的两个
   // 非类型化写入口。第三值（doing/blocked）不会报错却会让任务从「待办/已完成」两页签同时消失并
   // 脱离 AI 待处理/监控队列，故在边界拒收，而不是让脏数据进库。
@@ -1381,6 +1397,9 @@ api.patch('/tasks/:id', (req, res) => {
     res.status(400).json({ error: 'dispatchAuto 仅允许 null / 0 / 1' });
     return;
   }
+  // T06302（REQ-009）：日历改期只接受真实存在的 YYYY-MM-DD 或 null（清空排期），不让脏值进库
+  const due = normalizeDueDateInput(dueDate);
+  if (due.error) { res.status(400).json({ error: due.error }); return; }
   // T00450：parentId 挂接/换父/解除（null）——同项目校验；父任务不可挂到自己或其后代（两级层级下后代不存在，仅防自挂）
   if (parentId !== undefined) {
     const parentError = checkParentChange(req.params.id, parentId);
@@ -1389,7 +1408,7 @@ api.patch('/tasks/:id', (req, res) => {
   // T00566 二轮：状态**自动驱动**（REST 侧同样不依赖技能）——显式 aiState 优先；
   // 否则按语义推导：验证失败→failed；标记完成→unread；回传处理结果→unread
   const autoAiState = computeAutoAiState({ aiState, verified, status, handleResult });
-  res.json(TaskService.update(req.params.id, { title, description, priority, status, verified, ai_summary: aiSummary, handle_result: handleResult, pinned, category_id: categoryId, parent_id: toParentIdColumn(parentId), color, ai_state: autoAiState, derived_from: derivedFrom, archived, dispatch_auto: dispatchAuto })); // T00779：archived 归档
+  res.json(TaskService.update(req.params.id, { title, description, priority, status, verified, ai_summary: aiSummary, handle_result: handleResult, pinned, category_id: categoryId, parent_id: toParentIdColumn(parentId), color, ai_state: autoAiState, derived_from: derivedFrom, archived, dispatch_auto: dispatchAuto, due_date: due.value })); // T00779：archived 归档 // T06302：due_date 日历排期
 });
 
 api.post('/tasks/move', (req, res) => {

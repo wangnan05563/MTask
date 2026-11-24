@@ -173,7 +173,7 @@ try {
       visible: Boolean(box && box.getBoundingClientRect().width && box.getBoundingClientRect().height && getComputedStyle(box).visibility !== 'hidden'),
     };
   })()`);
-  say('T06301-03 视图切换常驻且含列表/看板/表格三项', toggleInfo.value?.count === 3 && toggleInfo.value?.visible && ['列表视图', '看板视图', '表格视图'].every((x) => (toggleInfo.value?.labels || []).includes(x)), toggleInfo.value);
+  say('T06301-03 视图切换常驻且含列表/看板/表格三项', (toggleInfo.value?.count || 0) >= 3 && toggleInfo.value?.visible && ['列表视图', '看板视图', '表格视图'].every((x) => (toggleInfo.value?.labels || []).includes(x)), toggleInfo.value);
 
   const switchedTable = await clickByLabel('表格视图');
   const tableReady = await until(`(() => {

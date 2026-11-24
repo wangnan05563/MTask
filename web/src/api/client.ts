@@ -267,6 +267,8 @@ export interface Task {
   blocked_by?: Array<{ id: string; task_no: string | null; title: string }>;
   /** T03231（PM-203②）：项目自定义字段的值——仅非空项；`display` 已是给人看的文本（单选项回 label） */
   field_values?: TaskFieldValue[];
+  /** T06302（REQ-009）：任务到期日（YYYY-MM-DD，纯日期；null=未排期）——日历视图据此排布与拖拽改期 */
+  due_date: string | null;
   /** T00446：手动排序权重（拖拽排序结果；manual 排序模式生效） */
   user_sort: number | null;
   /** 置顶：true=固定到列表顶部 */

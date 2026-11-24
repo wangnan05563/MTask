@@ -9,6 +9,7 @@ import { askConfirm, askInput } from '../ui/dialogs';
 import { MarkdownContent } from '../ui/Markdown';
 import { TaskEventTimeline } from '../components/TaskEventTimeline';
 import { TaskDetailDrawer, type TaskDetailTab, type TaskPatch } from '../components/TaskDetailDrawer'; // T01562：真抽屉详情
+import { TaskCalendar } from '../components/TaskCalendar'; // T06302（REQ-009）：日历视图（月/周 + 拖拽改期 + 未排期分组）
 import { focusPlanNode, focusTaskByNo, type FocusTaskIntent } from '../ui/focusTask'; // T01568：外部跳转定位意图（通知/铃铛/就绪条）；T02196：徽标点击定位
 import { ProjectListHint, getProjectListSnapshot, patchProject, refreshProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
 import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：选中项有效性校验失败态提示；T02257：AI 工具列表同层接入
@@ -31,7 +32,7 @@ import { arrangeTaskTree, makeTaskMatcher, matchVerified, sortOptions, sortTasks
 import { useTaskListWindow } from '../utils/taskListWindow'; // T03215（PM-304）：文档滚动 + 变高行的窗口化
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin as togglePinShared, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
 import { useBusy, setBusy } from '../ui/busy';
-import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, CheckCheck, ChevronDown, ChevronUp, Circle, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, Download, FolderPlus, GitBranch, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, MoreHorizontal, Palette, PanelRightOpen, Pin, Plus, Save, ScanSearch, MessageSquareText, Sparkle, Sparkles, SquarePen, Table2, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
+import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, CalendarDays, Check, CheckCheck, ChevronDown, ChevronUp, Circle, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, Download, FolderPlus, GitBranch, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, MoreHorizontal, Palette, PanelRightOpen, Pin, Plus, Save, ScanSearch, MessageSquareText, Sparkle, Sparkles, SquarePen, Table2, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 import { TaskMoreMenu, type TaskMoreMenuItem } from '../ui/TaskMoreMenu'; // T05712：低频功能「...」下拉
 import { CopyButton } from '../ui/CopyButton'; // T04544：项目下拉条右缘的项目名复制按钮（复用全站统一按钮，动画/交互一致）
@@ -1025,8 +1026,8 @@ export function TasksPage() {
   // 待办/已完成区块排序：会话级偏好，默认保持后端顺序
   const [todoSort, setTodoSort] = usePersistentState<'default' | 'timedesc' | 'timeasc' | 'pdesc' | 'pasc' | 'manual'>('tasks.todoSort', 'default'); // T01697：排序偏好持久化（重启保持）
   const [doneSort, setDoneSort] = usePersistentState<'default' | 'timedesc' | 'timeasc' | 'pdesc' | 'pasc' | 'manual'>('tasks.doneSort', 'default'); // T01697
-  // T00456 / PRD UX-1：视图模式（列表/看板/表格）会话级保持；T06301 增加表格视图
-  const [viewMode, setViewMode] = useSessionState<'list' | 'board' | 'table'>('tasks.viewMode', 'list');
+  // T00456 / PRD UX-1：视图模式（列表/看板/表格/日历）会话级保持；T06301 增加表格视图；T06302 增加日历视图
+  const [viewMode, setViewMode] = useSessionState<'list' | 'board' | 'table' | 'calendar'>('tasks.viewMode', 'list');
   // T03209（PM-101）：看板隐藏空列——会话级保持，切换页签/窗口期间保持
   const [boardHideEmpty, setBoardHideEmpty] = useSessionState<boolean>('tasks.board.hideEmpty', false);
   // T03209（PM-101）：WIP 上限输入草稿（按项目存放，提交成功后清理）
@@ -1691,6 +1692,30 @@ export function TasksPage() {
     const stamp = new Date().toISOString();
     setDrawerTask((cur) => (cur?.id === taskId ? { ...cur, ...patch, updated_at: stamp } : cur));
   };
+
+  /**
+   * T06302（REQ-009）：日历改期——乐观更新三份列表，再落 PATCH dueDate；失败按原值回滚。
+   * 只写任务自身的 due_date，不碰项目计划、状态、MCP 就绪等既有口径。
+   */
+  async function rescheduleTask(taskId: string, date: string | null): Promise<void> {
+    const original = [...todo, ...done, ...shelvedTasks].find((t) => t.id === taskId)?.due_date ?? null;
+    const update = (list: Task[]): Task[] => list.map((t) => (t.id === taskId ? { ...t, due_date: date } : t));
+    setTodo(update);
+    setDone(update);
+    setShelvedTasks(update);
+    setDrawerTask((cur) => (cur?.id === taskId ? { ...cur, due_date: date } : cur));
+    try {
+      await api.patch(`/tasks/${taskId}`, { dueDate: date });
+      flash(date ? `已改期至 ${date}` : '已移入未排期');
+    } catch (e) {
+      const revert = (list: Task[]): Task[] => list.map((t) => (t.id === taskId ? { ...t, due_date: original } : t));
+      setTodo(revert);
+      setDone(revert);
+      setShelvedTasks(revert);
+      setDrawerTask((cur) => (cur?.id === taskId ? { ...cur, due_date: original } : cur));
+      flash(`改期失败：${e instanceof Error ? e.message : String(e)}`, 'error');
+    }
+  }
 
   // T00433：MCP 回传 / 队列执行 / 其他窗口改任务状态时，前端无感知——轻量轮询对比签名，有变化才刷新。
   // 保护条件：任何未保存草稿或 AI 操作进行中时跳过本轮，避免打断用户编辑（变化留待下一轮干净窗口）。
@@ -2830,6 +2855,23 @@ export function TasksPage() {
           emptyText={emptyText}
         />
       </div>
+    );
+  }
+
+  /**
+   * T06302（REQ-009）：日历视图——复用当前任务集与筛选/排序结果，只换呈现方式。
+   * 月/周切换、拖拽改期、未排期分组均在 TaskCalendar 内；页面只负责注入改期请求与详情入口。
+   */
+  function renderTaskCalendar(rows: Task[], loading = false) {
+    return (
+      <TaskCalendar
+        tasks={rows}
+        loading={loading}
+        projectNameById={projectNameById}
+        showProject={activeProject === ALL_PROJECTS}
+        onOpenTask={(task) => openDetailDrawer(task, null)}
+        onReschedule={rescheduleTask}
+      />
     );
   }
 
@@ -4545,16 +4587,18 @@ export function TasksPage() {
     );
   }
 
-  /** T00456 / PRD UX-1：视图切换（列表/看板/表格）。纯布局分组，三个按钮各带无障碍名称；
-   *  故不在容器上声明 role="group"（S6819），渲染不变。T06301：视图入口常驻可见，避免表格视图不可发现。 */
+  /** T00456 / PRD UX-1：视图切换（列表/看板/表格/日历）。每个按钮各带无障碍名称；
+   *  故不在容器上声明 role="group"（S6819），渲染不变。T06301：视图入口常驻可见；
+   *  T06302：增加日历入口（月/周 + 拖拽改期），仍只换呈现，不新增数据源。 */
   function renderViewToggle() {
     const options = [
       { key: 'list' as const, label: '列表视图', title: '列表视图 — 逐行查看与编辑任务', icon: <ListTodo size={16} /> },
       { key: 'board' as const, label: '看板视图', title: '看板视图 — 按状态分列，拖拽卡片流转状态', icon: <LayoutGrid size={16} /> },
       { key: 'table' as const, label: '表格视图', title: '表格视图 — 列宽可拖拽，表头冻结', icon: <Table2 size={16} /> },
+      { key: 'calendar' as const, label: '日历视图', title: '日历视图 — 月/周切换，拖拽卡片改到期日', icon: <CalendarDays size={16} /> },
     ];
     return (
-      <span data-t06301="view-toggle" style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }}>
+      <span data-t06301="view-toggle" data-t06302="view-toggle" style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }}>
         {options.map((option, index) => (
           <button key={option.key} className="tbtn-anim" onClick={() => setViewMode(option.key)}
             aria-label={option.label} aria-pressed={viewMode === option.key} title={option.title}
@@ -5307,6 +5351,7 @@ export function TasksPage() {
         {/* T03215（PM-304）：窗口化渲染——只渲染视口±overscan 行，其余用 ul 上下内边距占位撑出等总高的滚动区间 */}
         {viewMode === 'list' && <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom, ...densityStyle }}>{visibleTodo.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'todo', todoIds)}</Fragment>)}</ul>}
         {viewMode === 'table' && renderTaskTable(visibleTodo, 'todo', tasksPhase === 'loading' && visibleTodo.length === 0)}
+        {viewMode === 'calendar' && renderTaskCalendar(visibleTodo, tasksPhase === 'loading' && visibleTodo.length === 0)}
         {/* T02283：取数失败时不渲染空态——「暂无待办任务」会把后端故障说成没活干（项目列表失败导致
             连 activeProject 都拿不到时同理） */}
         {viewMode === 'list' && visibleTodo.length === 0 && !multiSelect && tasksPhase !== 'error' && projectList.phase !== 'error' && (
@@ -5362,6 +5407,7 @@ export function TasksPage() {
         )}
         {viewMode === 'list' && <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom, ...densityStyle }}>{visibleDone.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'done', doneIds)}</Fragment>)}</ul>}
         {viewMode === 'table' && renderTaskTable(visibleDone, 'done', tasksPhase === 'loading' && visibleDone.length === 0)}
+        {viewMode === 'calendar' && renderTaskCalendar(visibleDone, tasksPhase === 'loading' && visibleDone.length === 0)}
         {viewMode === 'list' && visibleDone.length === 0 && tasksPhase !== 'error' && (
           <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>暂无已完成任务——完成任务后在此集中查看与验证。</div>
         )}
@@ -5390,6 +5436,7 @@ export function TasksPage() {
         </div>
         {viewMode === 'list' && <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom, ...densityStyle }}>{visibleShelved.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'shelved', shelvedIds)}</Fragment>)}</ul>}
         {viewMode === 'table' && renderTaskTable(visibleShelved, 'shelved', shelvedPhase === 'loading' && visibleShelved.length === 0)}
+        {viewMode === 'calendar' && renderTaskCalendar(visibleShelved, shelvedPhase === 'loading' && visibleShelved.length === 0)}
         {viewMode === 'list' && visibleShelved.length === 0 && shelvedPhase !== 'error' && (
           <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>暂无搁置任务——点击任务行的「搁置」按钮（归档按钮前）可把任务移到这里，AI 处理待办时自动忽略。</div>
         )}
@@ -5878,7 +5925,7 @@ export function TasksPage() {
       `}</style>
       <PageHeader
         title="任务"
-        description="统一查看待办、已完成与搁置任务；列表与看板共用同一套筛选和批量操作。"
+        description="统一查看待办、已完成与搁置任务；列表、看板、表格与日历共用同一套筛选和任务集。"
         breadcrumbs={[{ label: '工作台' }, { label: '任务' }]}
       />
       {renderToolbar()}

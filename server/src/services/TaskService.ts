@@ -91,6 +91,8 @@ export interface TaskRow {
   user_sort: number | null;
   created_at: string;
   updated_at: string;
+  /** T06302（REQ-009）：日历到期日（YYYY-MM-DD）；null=未排期 */
+  due_date: string | null;
   /** T06244：任务级自动派发闸门（NULL=跟随全局，0=禁止，1=允许） */
   dispatch_auto?: number | null;
   /** T06247：最近一次派发尝试时间与结果，供详情页回显 */
@@ -143,6 +145,8 @@ export interface TaskView {
   user_sort: number | null;
   created_at: string;
   updated_at: string;
+  /** T06302（REQ-009）：日历到期日（YYYY-MM-DD）；null=未排期 */
+  due_date: string | null;
   images: TaskImageMeta[];
   /** T06244：任务级自动派发闸门（NULL=跟随全局，0=禁止，1=允许） */
   dispatch_auto?: number | null;
@@ -673,7 +677,7 @@ function decorateRows(db: ReturnType<typeof getDb>, rows: TaskRow[]): TaskView[]
 type UpdateEventPatch = Partial<Pick<TaskRow, 'status' | 'verified' | 'ai_state' | 'handle_result'>>;
 type UpdateEventBefore = { status: string; verified: number; ai_state: string; handle_result: string | null };
 /** PATCH 可写字段白名单（update 与联动副作用共用同一形状） */
-type TaskPatch = Partial<Pick<TaskRow, 'title' | 'description' | 'priority' | 'status' | 'verified' | 'ai_summary' | 'handle_result' | 'pinned' | 'category_id' | 'parent_id' | 'color' | 'ai_state' | 'ai_state_at' | 'derived_from' | 'shelved' | 'archived' | 'dispatch_auto'>>;
+type TaskPatch = Partial<Pick<TaskRow, 'title' | 'description' | 'priority' | 'status' | 'verified' | 'ai_summary' | 'handle_result' | 'pinned' | 'category_id' | 'parent_id' | 'color' | 'ai_state' | 'ai_state_at' | 'derived_from' | 'shelved' | 'archived' | 'dispatch_auto' | 'due_date'>>;
 
 /** T01072-FR1.9：旧结果留档（diff/回滚数据源）——每任务保留最近 10 条 */
 function recordResultHistory(db: ReturnType<typeof getDb>, taskId: string, prevResult: string | null): void {
