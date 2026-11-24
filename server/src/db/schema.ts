@@ -4,6 +4,7 @@ import { ensureAgentRunRiskSchema } from './agentRunRiskSchema'; // T06299（REQ
 import { ensureInboxSchema } from './inboxSchema';
 import { ensureSavedViewSchema } from './savedViewSchema'; // T06303（REQ-009 / PRD §B1）：保存视图配置表
 import { ensureImportKeySchema } from './importKeySchema'; // T06304（REQ-010 / PRD §B2）：导入来源+外部 ID 去重键
+import { ensureTemplateSchema } from './templateSchema'; // T06305（REQ-010 / PRD §B2）：任务/项目模板与实例化记录
 import { ensureModelRoutingSchema } from './modelRoutingSchema'; // T06311（REQ-038 / PRD §B9）：模型路由画像、预算与决策审计
 
 /** 首次启动建表。DDL 与 docs/技术设计.md 第 3 节保持一致。 */
@@ -1237,6 +1238,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureSavedViewSchema();
   // T06304（REQ-010 / PRD §B2）：导入去重键表；来源+外部 ID 唯一，重复项跳过并报告
   ensureImportKeySchema();
+  // T06305（REQ-010 / PRD §B2）：任务/项目模板与实例化记录；内置模板只读，实例可撤销
+  ensureTemplateSchema();
   // T06311（REQ-038 / PRD §B9）：模型路由与成本预算增量表；不动 ai_tools/队列/用量既有列
   ensureModelRoutingSchema();
 

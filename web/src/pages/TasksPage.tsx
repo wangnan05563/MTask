@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type CSSProperties } from 'react';
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { createPortal } from 'react-dom';
-import { api, imageUrl, fetchImage, imageDataURL, type AITool, type CustomField, type CustomFieldType, type Project, type PromptCategory, type ReqCategory, type SavedView, type Task, type TaskCategory, type TaskImage } from '../api/client';
+import { api, imageUrl, fetchImage, imageDataURL, type AITool, type CustomField, type CustomFieldType, type Project, type PromptCategory, type ReqCategory, type SavedView, type Task, type TaskCategory, type TaskImage, type TemplateInstanceResult } from '../api/client';
 import { ResultDiffPanel } from '../ui/ResultDiff'; // T01072-FR1.9：结果历史 diff 与回滚
 import { beautifyStore } from '../stores/beautifyStore';
 import { OPTIMIZE_SCOPE_TASKS, busyScope, optimizeStore, runOptimize, useOptimizeStore } from '../stores/optimizeStore'; // T03684：提示词优化运行态切页保持
@@ -11,6 +11,7 @@ import { TaskEventTimeline } from '../components/TaskEventTimeline';
 import { TaskDetailDrawer, type TaskDetailTab, type TaskPatch } from '../components/TaskDetailDrawer'; // T01562：真抽屉详情
 import { TaskCalendar } from '../components/TaskCalendar'; // T06302（REQ-009）：日历视图（月/周 + 拖拽改期 + 未排期分组）
 import { SavedViewMenu } from '../components/SavedViewMenu'; // T06303（REQ-009 / PRD §B1）：保存视图入口
+import { TemplateMenu } from '../components/TemplateMenu'; // T06305（REQ-010 / PRD §B2）：任务/项目模板一键实例化与撤销
 import { focusPlanNode, focusTaskByNo, type FocusTaskIntent } from '../ui/focusTask'; // T01568：外部跳转定位意图（通知/铃铛/就绪条）；T02196：徽标点击定位
 import { ProjectListHint, getProjectListSnapshot, patchProject, refreshProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
 import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：选中项有效性校验失败态提示；T02257：AI 工具列表同层接入
@@ -5095,6 +5096,27 @@ export function TasksPage() {
           onSave={() => void saveCurrentView()}
           onCopy={() => void copySavedView()}
           onDelete={() => void deleteSavedView()}
+        />
+        {/* T06305（REQ-010 / PRD §B2）：任务/项目模板一键实例化；任务模板需具体项目，项目模板可独立创建 */}
+        <TemplateMenu
+          projectId={activeProject && activeProject !== ALL_PROJECTS ? activeProject : undefined}
+          disabled={batchOpBusy}
+          onTaskInstanced={(r: TemplateInstanceResult) => {
+            void loadTasks(activeProject);
+            flash(`已从模板创建任务：${r.tasks[0]?.title ?? ''}`);
+          }}
+          onProjectInstanced={(r: TemplateInstanceResult) => {
+            setActiveProject(r.projectId);
+            void loadTasks(r.projectId);
+            void loadProjects();
+            flash(`已从模板创建项目「${r.projectName}」（${r.tasks.length} 条任务）`);
+          }}
+          onProjectUndone={(deletedProjectId: string) => {
+            if (activeProject === deletedProjectId) setActiveProject('');
+            void loadProjects();
+            flash('已撤销模板实例：项目及其模板任务已删除');
+          }}
+          onError={(message: string) => flash(message, 'error')}
         />
         {/* T06322（REQ-042 / §C3）：列表行密度切换——三档 32/40/48px，只作用于列表视图；改造仅行高与标题字号，不改变列结构 */}
         <select

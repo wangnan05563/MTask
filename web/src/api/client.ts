@@ -1104,3 +1104,46 @@ export interface SavedView {
   createdAt: string;
   updatedAt: string;
 }
+
+// T06305（REQ-010 / PRD §B2）：任务/项目模板——无宏变量，实例化直接落库
+export type TemplateType = 'task' | 'project';
+
+export interface TemplateTaskBody {
+  title: string;
+  description?: string;
+  priority?: 'low' | 'normal' | 'high' | 'urgent';
+  status?: 'todo' | 'done';
+}
+
+export interface ProjectTemplateBody {
+  description?: string;
+  tasks?: TemplateTaskBody[];
+}
+
+export interface Template {
+  id: string;
+  type: TemplateType;
+  name: string;
+  description: string;
+  schema: TemplateTaskBody | ProjectTemplateBody;
+  version: number;
+  builtin: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TemplateInstanceResult {
+  instanceId: string;
+  templateId: string;
+  type: TemplateType;
+  projectId: string;
+  projectName: string;
+  tasks: Array<{ id: string; task_no: string | null; title: string }>;
+  undoHint: string;
+}
+
+export interface TemplateUndoResult {
+  ok: boolean;
+  undoneTaskIds: string[];
+  deletedProjectId: string | null;
+}
