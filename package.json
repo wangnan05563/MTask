@@ -165,7 +165,9 @@
     "verify:t06016-icons": "python scripts/normalize-report-icons.py --check",
     "verify:t05791-backup-delete": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05791-backup-delete.mts",
     "backup:data": "node server/scripts/backup-data-package.mjs",
+    "restore:data": "node server/scripts/backup-data-package.mjs --restore",
     "verify:data-backup": "node server/scripts/verify-t06306-backup.mjs",
+    "verify:data-restore": "node server/scripts/verify-t06307-restore.mjs",
     "verify:t05793-platform-brand": "node node_modules/tsx/dist/cli.mjs scripts/tests/verify-t05793-platform-brand.mts",
     "verify:t06056-exec-session-state": "node node_modules/tsx/dist/cli.mjs scripts/verify-t06056-exec-session-state.mts",
     "verify:t06057-redispatch-routing": "node node_modules/tsx/dist/cli.mjs scripts/verify-t06057-redispatch-routing.mts",
@@ -183,6 +185,7 @@
     "pdfkit": "^0.20.1",
     "pizzip": "^3.2.0",
     "pptxgenjs": "^4.0.1",
+    "tar": "^6.2.1",
     "undici": "^7.30.1",
     "uuid": "^11.0.5",
     "web-push": "^3.6.7"

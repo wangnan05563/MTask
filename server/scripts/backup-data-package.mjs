@@ -33,6 +33,7 @@ import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
+import { x as untar } from 'tar';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..', '..');
@@ -84,11 +85,13 @@ function defaultOut(dataDir) {
   return path.join(dataDir, 'backups', `mtask-data-backup-${stamp()}.tar.gz`);
 }
 function parseArgs(argv) {
-  const opts = { mode: 'create', dataDir: '', out: '', archive: '' };
+  const opts = { mode: 'create', dataDir: '', out: '', archive: '', target: '' };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--help' || a === '-h') { opts.mode = 'help'; continue; }
     if (a === '--verify') { opts.mode = 'verify'; opts.archive = argv[++i] || ''; continue; }
+    if (a === '--restore') { opts.mode = 'restore'; opts.archive = argv[++i] || ''; continue; }
+    if (a === '--target') { opts.target = argv[++i] || ''; continue; }
     if (a === '--data-dir') { opts.dataDir = argv[++i] || ''; continue; }
     if (a === '--out') { opts.out = argv[++i] || ''; continue; }
     if (!opts.archive && !a.startsWith('--')) { opts.archive = a; opts.mode = 'verify'; continue; }
@@ -200,11 +203,19 @@ function listArchive(archive) {
   const out = runTar(['-tzf', base], dir);
   return out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
 }
-function extractArchive(archive, dest) {
-  const dir = path.dirname(archive);
-  const base = path.basename(archive);
+async function extractArchive(archive, dest) {
   fs.mkdirSync(dest, { recursive: true });
-  runTar(['-xzf', base, '-C', dest], dir);
+  // 用 tar 库解包而非 spawn 系统 tar：避免 Windows/sandbox 下子进程退出信号丢失导致挂起；
+  // preservePaths=false 拒绝绝对路径/..，与上方 safeRel 校验形成双保险。
+  await untar({
+    file: archive,
+    cwd: dest,
+    strict: true,
+    preservePaths: false,
+    // 备份只产生普通文件/目录；解包时拒绝符号链接、硬链接、设备等特殊条目，
+    // 防止恶意归档借链接把写入逃逸到目标目录之外。
+    filter: (_p, entry) => entry.type === 'File' || entry.type === 'Directory',
+  });
 }
 async function verifyPackage(archivePath) {
   const t0 = Date.now();
@@ -233,7 +244,7 @@ async function verifyPackage(archivePath) {
         throw new Error(`归档包含不安全路径：${name}`);
       }
     }
-    extractArchive(archive, tmp);
+    await extractArchive(archive, tmp);
     const manifestPath = path.join(tmp, 'manifest.json');
     if (!fs.existsSync(manifestPath)) throw new Error('归档缺少 manifest.json');
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
@@ -283,6 +294,111 @@ async function verifyPackage(archivePath) {
       warnings,
       durationMs: Date.now() - t0,
     };
+  } catch (e) {
+    errors.push(`归档解包/校验失败：${e instanceof Error ? e.message : String(e)}`);
+    return {
+      ok: false,
+      action: 'verify',
+      archive,
+      archiveSha256,
+      sidecar: { present: fs.existsSync(sidecar), ok: sidecarOk },
+      manifest: null,
+      sqliteIntegrity: null,
+      errors,
+      warnings,
+      durationMs: Date.now() - t0,
+    };
+  } finally {
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* 清理失败不覆盖主结果 */ }
+  }
+}
+
+/**
+ * 从备份包恢复到空目录：
+ * - 先完整校验归档，校验不通过绝不落盘；
+ * - 目标目录不存在则创建，存在则必须为空（防止覆盖现有数据）；
+ * - 恢复 db/mtask.db 与 files/**（去掉 files 前缀还原到数据目录根）；
+ * - 恢复后再按 manifest 对目标文件逐项复核，并写 restore-report.json。
+ */
+async function restorePackage({ archivePath, target }) {
+  const t0 = Date.now();
+  if (!archivePath) throw new Error('缺少归档路径：--restore <归档.tar.gz>');
+  if (!target) throw new Error('缺少目标目录：--target <空目录>');
+  const archive = path.resolve(archivePath);
+  const targetAbs = path.resolve(target);
+  const verify = await verifyPackage(archive);
+  if (!verify.ok) {
+    return {
+      ok: false,
+      action: 'restore',
+      archive,
+      target: targetAbs,
+      errors: ['归档校验未通过，拒绝恢复', ...(verify.errors || [])],
+      warnings: verify.warnings || [],
+      durationMs: Date.now() - t0,
+    };
+  }
+  if (fs.existsSync(targetAbs)) {
+    if (!fs.statSync(targetAbs).isDirectory()) throw new Error(`目标不是目录：${targetAbs}`);
+    if (fs.readdirSync(targetAbs).length > 0) throw new Error(`目标目录非空，拒绝覆盖：${targetAbs}`);
+  } else {
+    fs.mkdirSync(targetAbs, { recursive: true });
+  }
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mtask-data-restore-'));
+  const errors = [];
+  let manifest = null;
+  let verified = 0;
+  let bytes = 0;
+  try {
+    await extractArchive(archive, tmp);
+    manifest = JSON.parse(fs.readFileSync(path.join(tmp, 'manifest.json'), 'utf8'));
+    const dbSrc = path.join(tmp, 'db', 'mtask.db');
+    if (!fs.existsSync(dbSrc)) throw new Error('归档缺少 db/mtask.db');
+    fs.copyFileSync(dbSrc, path.join(targetAbs, 'mtask.db'));
+    const filesSrc = path.join(tmp, 'files');
+    if (fs.existsSync(filesSrc)) fs.cpSync(filesSrc, targetAbs, { recursive: true });
+
+    for (const e of manifest.entries) {
+      const rel = safeRel(String(e.path));
+      const restored = rel === 'db/mtask.db'
+        ? path.join(targetAbs, 'mtask.db')
+        : (rel.startsWith('files/') ? path.join(targetAbs, ...rel.slice(6).split('/')) : null);
+      if (!restored || !fs.existsSync(restored)) { errors.push(`恢复后文件缺失：${rel}`); continue; }
+      const actual = await sha256File(restored);
+      if (String(e.sha256).toLowerCase() !== actual) errors.push(`恢复后 SHA-256 不一致：${rel}`);
+      verified += 1;
+      bytes += fs.statSync(restored).size;
+    }
+    const db = new Database(path.join(targetAbs, 'mtask.db'), { readonly: true, fileMustExist: true });
+    let sqliteIntegrity = null;
+    try {
+      const row = db.prepare('PRAGMA integrity_check').get();
+      sqliteIntegrity = row ? Object.values(row)[0] : null;
+      if (String(sqliteIntegrity).toLowerCase() !== 'ok') errors.push(`恢复后 SQLite integrity_check 失败：${sqliteIntegrity}`);
+    } finally { db.close(); }
+    const report = {
+      format: 'mtask-data-restore-report',
+      archive,
+      archiveSha256: verify.archiveSha256,
+      manifestCreatedAt: manifest.createdAt,
+      restoredAt: new Date().toISOString(),
+      target: targetAbs,
+      files: verified,
+      bytes,
+      sqliteIntegrity,
+      errors,
+    };
+    fs.writeFileSync(path.join(targetAbs, 'restore-report.json'), `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+    return {
+      ok: errors.length === 0,
+      action: 'restore',
+      archive,
+      archiveSha256: verify.archiveSha256,
+      target: targetAbs,
+      restored: { files: verified, bytes, sqliteIntegrity },
+      errors,
+      durationMs: Date.now() - t0,
+    };
   } finally {
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* 清理失败不覆盖主结果 */ }
   }
@@ -290,10 +406,11 @@ async function verifyPackage(archivePath) {
 
 function help() {
   console.log([
-    'T06306 本地数据打包备份 / 完整性校验',
+    'T06306 本地数据打包备份 / 完整性校验 / 恢复到空目录',
     '',
     '创建：node server/scripts/backup-data-package.mjs [--data-dir <数据目录>] [--out <归档.tar.gz>]',
     '校验：node server/scripts/backup-data-package.mjs --verify <归档.tar.gz>',
+    '恢复：node server/scripts/backup-data-package.mjs --restore <归档.tar.gz> --target <空目录>',
     '',
     '默认数据目录：MTask_DATA_DIR > %APPDATA%\\mtask\\data > server/data；',
     '默认输出：<数据目录>/backups/mtask-data-backup-YYYYMMDD-HHMMSS.tar.gz。',
@@ -307,7 +424,9 @@ function help() {
     if (opts.mode === 'help') { help(); return; }
     const result = opts.mode === 'verify'
       ? await verifyPackage(opts.archive)
-      : await createPackage({ dataDir: opts.dataDir || defaultDataDir(), out: opts.out || defaultOut(opts.dataDir || defaultDataDir()) });
+      : opts.mode === 'restore'
+        ? await restorePackage({ archivePath: opts.archive, target: opts.target })
+        : await createPackage({ dataDir: opts.dataDir || defaultDataDir(), out: opts.out || defaultOut(opts.dataDir || defaultDataDir()) });
     console.log(JSON.stringify(result, null, 2));
     process.exit(result.ok ? 0 : 1);
   } catch (e) {
