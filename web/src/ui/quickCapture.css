@@ -1,0 +1,343 @@
+/* T06297（PRD §A5 / REQ-034）：快速捕获浮层。 */
+.qc-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1300;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 14vh 16px 16px;
+  box-sizing: border-box;
+  background: var(--overlay);
+}
+
+.qc-panel {
+  width: min(640px, 100%);
+  max-height: min(78vh, 720px);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card-bg);
+  color: var(--text);
+  box-shadow: 0 18px 54px rgba(0, 0, 0, .28);
+}
+
+.qc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.qc-title {
+  font-size: var(--fs-l);
+  font-weight: 600;
+}
+
+.qc-key {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+  white-space: nowrap;
+}
+
+.qc-close {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.qc-close:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.qc-body {
+  padding: 14px 16px 12px;
+}
+
+.qc-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  padding: 0 11px;
+  background: var(--surface-1);
+}
+
+.qc-input-wrap:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.qc-input {
+  flex: 1;
+  min-width: 0;
+  padding: 11px 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-xl);
+}
+
+.qc-input::placeholder {
+  color: var(--text-muted);
+  font-size: var(--fs-m);
+}
+
+.qc-preview {
+  min-height: 18px;
+  margin-top: 7px;
+  color: var(--text-secondary);
+  font-size: var(--fs-s);
+}
+
+.qc-preview strong {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.qc-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.qc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-height: 28px;
+  padding: 0 7px 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: var(--fs-s);
+}
+
+.qc-chip[data-parsed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.qc-chip-mark {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.qc-chip[data-parsed="true"] .qc-chip-mark {
+  color: var(--accent);
+}
+
+.qc-chip select,
+.qc-chip input {
+  max-width: 168px;
+  min-width: 0;
+  padding: 3px 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--fs-s);
+}
+
+.qc-chip select {
+  cursor: pointer;
+}
+
+.qc-chip input[type="date"] {
+  width: 118px;
+  cursor: pointer;
+}
+
+.qc-chip input[type="date"]::-webkit-calendar-picker-indicator {
+  opacity: .65;
+  cursor: pointer;
+}
+
+.qc-parse-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  min-height: 20px;
+  margin-top: 9px;
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+  line-height: 1.6;
+}
+
+.qc-parse-line .qc-token {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--text-secondary);
+}
+
+.qc-parse-line .qc-unresolved {
+  color: var(--danger);
+}
+
+.qc-error {
+  margin-top: 9px;
+  padding: 7px 9px;
+  border: 1px solid var(--danger);
+  border-radius: 7px;
+  background: rgba(220, 38, 38, .06);
+  color: var(--danger);
+  font-size: var(--fs-s);
+}
+
+.qc-discard {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px 9px;
+  border: 1px solid var(--warn);
+  border-radius: 7px;
+  background: rgba(217, 119, 6, .08);
+  color: var(--text);
+  font-size: var(--fs-s);
+}
+
+.qc-discard button {
+  padding: 3px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--card-bg);
+  color: var(--text);
+  font-size: var(--fs-2xs);
+}
+
+.qc-discard button.danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.qc-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px 13px;
+  border-top: 1px solid var(--border);
+}
+
+.qc-foot-hint {
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+  line-height: 1.5;
+}
+
+.qc-save {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 18px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: var(--fs-m);
+  font-weight: 600;
+}
+
+.qc-save:disabled {
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+
+.qc-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  z-index: 1400;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(560px, calc(100vw - 28px));
+  padding: 9px 12px 9px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 9px;
+  background: var(--card-bg);
+  color: var(--text);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .2);
+  font-size: var(--fs-s);
+  animation: qc-toast-in .2s ease;
+}
+
+.qc-toast[data-kind="error"] {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.qc-toast button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 9px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent);
+  font-size: var(--fs-s);
+  white-space: nowrap;
+}
+
+.qc-toast button:disabled {
+  opacity: .55;
+}
+
+@keyframes qc-toast-in {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+@media (max-width: 720px) {
+  .qc-overlay {
+    padding-top: 8vh;
+  }
+
+  .qc-panel {
+    width: 100%;
+    max-height: 84vh;
+  }
+
+  .qc-key {
+    display: none;
+  }
+
+  .qc-chip select,
+  .qc-chip input {
+    max-width: 40vw;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qc-toast { animation: none; }
+}

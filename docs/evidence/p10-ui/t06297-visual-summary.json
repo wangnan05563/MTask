@@ -1,0 +1,789 @@
+{
+  "title": "T06297 快速捕获验收 mwua7ii5",
+  "raw": "T06297 快速捕获验收 mwua7ii5 #MTask十期 !紧急 /缺陷修复 @明天",
+  "tomorrow": "2026-11-25",
+  "shortcut": {
+    "open": true,
+    "elapsedMs": 55
+  },
+  "parsed": {
+    "open": true,
+    "input": "T06297 快速捕获验收 mwua7ii5 #MTask十期 !紧急 /缺陷修复 @明天",
+    "preview": "将创建：T06297 快速捕获验收 mwua7ii5",
+    "count": 4,
+    "hint": "已解析 4 个标记：\n项目\n优先级\n类型\n日期\n明天 · 11-25",
+    "priority": "urgent",
+    "projectId": "586ae8c6-2e08-4180-86ba-732f1fab5006",
+    "projectText": "MTask十期",
+    "categoryId": "336f5dd1-1af5-4f4e-a5e8-5a02a956cbaa",
+    "categoryText": "缺陷修复",
+    "due": "2026-11-25",
+    "parsed": [
+      {
+        "kind": "priority",
+        "parsed": "true"
+      },
+      {
+        "kind": "project",
+        "parsed": "true"
+      },
+      {
+        "kind": "type",
+        "parsed": "true"
+      },
+      {
+        "kind": "due",
+        "parsed": "true"
+      }
+    ],
+    "panelWidth": 642,
+    "panelRight": 1030,
+    "panelLeft": 388,
+    "viewport": {
+      "w": 1418,
+      "h": 902
+    },
+    "scrollWidth": 1418,
+    "discard": false,
+    "toast": "",
+    "toastKind": ""
+  },
+  "edited": {
+    "open": true,
+    "input": "T06297 快速捕获验收 mwua7ii5 #MTask十期 !紧急 /缺陷修复",
+    "preview": "将创建：T06297 快速捕获验收 mwua7ii5",
+    "count": 3,
+    "hint": "已解析 3 个标记：\n项目\n优先级\n类型\n12月1日 周二",
+    "priority": "urgent",
+    "projectId": "586ae8c6-2e08-4180-86ba-732f1fab5006",
+    "projectText": "MTask十期",
+    "categoryId": "336f5dd1-1af5-4f4e-a5e8-5a02a956cbaa",
+    "categoryText": "缺陷修复",
+    "due": "2026-12-01",
+    "parsed": [
+      {
+        "kind": "priority",
+        "parsed": "true"
+      },
+      {
+        "kind": "project",
+        "parsed": "true"
+      },
+      {
+        "kind": "type",
+        "parsed": "true"
+      },
+      {
+        "kind": "due",
+        "parsed": "false"
+      }
+    ],
+    "panelWidth": 642,
+    "panelRight": 1041,
+    "panelLeft": 399,
+    "viewport": {
+      "w": 1440,
+      "h": 1000
+    },
+    "scrollWidth": 1440,
+    "discard": false,
+    "toast": "",
+    "toastKind": ""
+  },
+  "afterSave": {
+    "open": false,
+    "input": "",
+    "preview": "",
+    "count": 0,
+    "hint": "",
+    "priority": "",
+    "projectId": "",
+    "projectText": "",
+    "categoryId": "",
+    "categoryText": "",
+    "due": "",
+    "parsed": [
+      {
+        "kind": "priority",
+        "parsed": ""
+      },
+      {
+        "kind": "project",
+        "parsed": ""
+      },
+      {
+        "kind": "type",
+        "parsed": ""
+      },
+      {
+        "kind": "due",
+        "parsed": ""
+      }
+    ],
+    "panelWidth": 0,
+    "panelRight": 0,
+    "panelLeft": 0,
+    "viewport": {
+      "w": 1440,
+      "h": 1000
+    },
+    "scrollWidth": 1440,
+    "discard": false,
+    "toast": "已捕获 T06338\n撤销",
+    "toastKind": "saved"
+  },
+  "afterUndo": {
+    "open": false,
+    "input": "",
+    "preview": "",
+    "count": 0,
+    "hint": "",
+    "priority": "",
+    "projectId": "",
+    "projectText": "",
+    "categoryId": "",
+    "categoryText": "",
+    "due": "",
+    "parsed": [
+      {
+        "kind": "priority",
+        "parsed": ""
+      },
+      {
+        "kind": "project",
+        "parsed": ""
+      },
+      {
+        "kind": "type",
+        "parsed": ""
+      },
+      {
+        "kind": "due",
+        "parsed": ""
+      }
+    ],
+    "panelWidth": 0,
+    "panelRight": 0,
+    "panelLeft": 0,
+    "viewport": {
+      "w": 1280,
+      "h": 900
+    },
+    "scrollWidth": 1280,
+    "discard": false,
+    "toast": "已撤销 T06338（已移入归档）",
+    "toastKind": "undone"
+  },
+  "created": {
+    "id": "1a3d301d-ca51-48d8-a6f5-6505d3f13c1a",
+    "project_id": "586ae8c6-2e08-4180-86ba-732f1fab5006",
+    "title": "T06297 快速捕获验收 mwua7ii5",
+    "description": "⏰ 明天 · 11-25",
+    "priority": "urgent",
+    "status": "todo",
+    "archived": false,
+    "archived_at": null,
+    "ai_summary": null,
+    "created_at": "2026-11-24T05:56:17.988Z",
+    "updated_at": "2026-11-24T05:56:17.988Z",
+    "verified": false,
+    "pinned": false,
+    "category_id": "336f5dd1-1af5-4f4e-a5e8-5a02a956cbaa",
+    "handle_result": null,
+    "task_no": "T06338",
+    "parent_id": null,
+    "user_sort": null,
+    "color": "",
+    "ai_state": "",
+    "derived_from": null,
+    "history_at": null,
+    "ai_state_at": "",
+    "req_ids": null,
+    "shelved": false,
+    "progress": 0,
+    "retry_count": 0,
+    "ai_summary_at": null,
+    "ruling_state": "",
+    "ruling_result": "",
+    "ruling_at": null,
+    "dispatch_auto": null,
+    "dispatch_last_at": null,
+    "dispatch_last_state": "",
+    "images": [],
+    "blocked_by": [],
+    "gitLinks": [],
+    "gitLinkCount": 0
+  },
+  "byNo": {
+    "id": "1a3d301d-ca51-48d8-a6f5-6505d3f13c1a",
+    "project_id": "586ae8c6-2e08-4180-86ba-732f1fab5006",
+    "title": "T06297 快速捕获验收 mwua7ii5",
+    "description": "⏰ 明天 · 11-25",
+    "priority": "urgent",
+    "status": "todo",
+    "archived": true,
+    "archived_at": "2026-11-24T05:56:18.564Z",
+    "ai_summary": null,
+    "created_at": "2026-11-24T05:56:17.988Z",
+    "updated_at": "2026-11-24T05:56:18.564Z",
+    "verified": false,
+    "pinned": false,
+    "category_id": "336f5dd1-1af5-4f4e-a5e8-5a02a956cbaa",
+    "handle_result": null,
+    "task_no": "T06338",
+    "parent_id": null,
+    "user_sort": null,
+    "color": "",
+    "ai_state": "",
+    "derived_from": null,
+    "history_at": null,
+    "ai_state_at": "",
+    "req_ids": null,
+    "shelved": false,
+    "progress": 0,
+    "retry_count": 0,
+    "monitor_ready": 0,
+    "monitor_preferred_platform": null,
+    "monitor_retry": 0,
+    "exec_session_id": null,
+    "ai_summary_at": null,
+    "ruling_state": "",
+    "ruling_result": "",
+    "ruling_at": null,
+    "dispatch_auto": null,
+    "dispatch_last_at": null,
+    "dispatch_last_state": "",
+    "images": []
+  },
+  "tasksInspect": {
+    "open": true,
+    "input": "",
+    "preview": "",
+    "count": 0,
+    "hint": "支持 @日期、!优先级、#项目、/类型；保存前可直接改下方字段",
+    "priority": "normal",
+    "projectId": "sys-inbox",
+    "projectText": "收件箱",
+    "categoryId": "",
+    "categoryText": "未设类型",
+    "due": "",
+    "parsed": [
+      {
+        "kind": "priority",
+        "parsed": "false"
+      },
+      {
+        "kind": "project",
+        "parsed": "false"
+      },
+      {
+        "kind": "type",
+        "parsed": "false"
+      },
+      {
+        "kind": "due",
+        "parsed": "false"
+      }
+    ],
+    "panelWidth": 642,
+    "panelRight": 961,
+    "panelLeft": 319,
+    "viewport": {
+      "w": 1280,
+      "h": 900
+    },
+    "scrollWidth": 1280,
+    "discard": false,
+    "toast": "",
+    "toastKind": ""
+  },
+  "narrow": {
+    "open": true,
+    "input": "T06297 窄屏捕获 #MTask十期 !高 /缺陷修复 @明天",
+    "preview": "将创建：T06297 窄屏捕获",
+    "count": 4,
+    "hint": "已解析 4 个标记：\n项目\n优先级\n类型\n日期\n明天 · 11-25",
+    "priority": "high",
+    "projectId": "586ae8c6-2e08-4180-86ba-732f1fab5006",
+    "projectText": "MTask十期",
+    "categoryId": "336f5dd1-1af5-4f4e-a5e8-5a02a956cbaa",
+    "categoryText": "缺陷修复",
+    "due": "2026-11-25",
+    "parsed": [
+      {
+        "kind": "priority",
+        "parsed": "true"
+      },
+      {
+        "kind": "project",
+        "parsed": "true"
+      },
+      {
+        "kind": "type",
+        "parsed": "true"
+      },
+      {
+        "kind": "due",
+        "parsed": "true"
+      }
+    ],
+    "panelWidth": 642,
+    "panelRight": 701,
+    "panelLeft": 59,
+    "viewport": {
+      "w": 760,
+      "h": 1000
+    },
+    "scrollWidth": 760,
+    "discard": false,
+    "toast": "",
+    "toastKind": ""
+  },
+  "checks": [
+    {
+      "name": "CAPTURE-00 静态服务器 + API 代理就绪",
+      "ok": true,
+      "extra": {
+        "port": 39918,
+        "apiPort": 5195,
+        "token": true
+      }
+    },
+    {
+      "name": "CAPTURE-01 快捷键 1s 内打开 + 顶栏入口存在",
+      "ok": true,
+      "extra": {
+        "open": true,
+        "elapsedMs": 55,
+        "hasButton": true,
+        "pre": {
+          "open": true,
+          "input": "",
+          "preview": "",
+          "count": 0,
+          "hint": "支持 @日期、!优先级、#项目、/类型；保存前可直接改下方字段",
+          "priority": "normal",
+          "projectId": "sys-inbox",
+          "projectText": "收件箱",
+          "categoryId": "",
+          "categoryText": "未设类型",
+          "due": "",
+          "parsed": [
+            {
+              "kind": "priority",
+              "parsed": "false"
+            },
+            {
+              "kind": "project",
+              "parsed": "false"
+            },
+            {
+              "kind": "type",
+              "parsed": "false"
+            },
+            {
+              "kind": "due",
+              "parsed": "false"
+            }
+          ],
+          "panelWidth": 642,
+          "panelRight": 1030,
+          "panelLeft": 388,
+          "viewport": {
+            "w": 1418,
+            "h": 902
+          },
+          "scrollWidth": 1418,
+          "discard": false,
+          "toast": "",
+          "toastKind": ""
+        }
+      }
+    },
+    {
+      "name": "CAPTURE-02 四类标记解析为 chips，标题预览正确",
+      "ok": true,
+      "extra": {
+        "open": true,
+        "input": "T06297 快速捕获验收 mwua7ii5 #MTask十期 !紧急 /缺陷修复 @明天",
+        "preview": "将创建：T06297 快速捕获验收 mwua7ii5",
+        "count": 4,
+        "hint": "已解析 4 个标记：\n项目\n优先级\n类型\n日期\n明天 · 11-25",
+        "priority": "urgent",
+        "projectId": "586ae8c6-2e08-4180-86ba-732f1fab5006",
+        "projectText": "MTask十期",
+        "categoryId": "336f5dd1-1af5-4f4e-a5e8-5a02a956cbaa",
+        "categoryText": "缺陷修复",
+        "due": "2026-11-25",
+        "parsed": [
+          {
+            "kind": "priority",
+            "parsed": "true"
+          },
+          {
+            "kind": "project",
+            "parsed": "true"
+          },
+          {
+            "kind": "type",
+            "parsed": "true"
+          },
+          {
+            "kind": "due",
+            "parsed": "true"
+          }
+        ],
+        "panelWidth": 642,
+        "panelRight": 1030,
+        "panelLeft": 388,
+        "viewport": {
+          "w": 1418,
+          "h": 902
+        },
+        "scrollWidth": 1418,
+        "discard": false,
+        "toast": "",
+        "toastKind": ""
+      }
+    },
+    {
+      "name": "CAPTURE-03 日期 chip 可改，改后原标记摘除",
+      "ok": true,
+      "extra": {
+        "open": true,
+        "input": "T06297 快速捕获验收 mwua7ii5 #MTask十期 !紧急 /缺陷修复",
+        "preview": "将创建：T06297 快速捕获验收 mwua7ii5",
+        "count": 3,
+        "hint": "已解析 3 个标记：\n项目\n优先级\n类型\n12月1日 周二",
+        "priority": "urgent",
+        "projectId": "586ae8c6-2e08-4180-86ba-732f1fab5006",
+        "projectText": "MTask十期",
+        "categoryId": "336f5dd1-1af5-4f4e-a5e8-5a02a956cbaa",
+        "categoryText": "缺陷修复",
+        "due": "2026-12-01",
+        "parsed": [
+          {
+            "kind": "priority",
+            "parsed": "true"
+          },
+          {
+            "kind": "project",
+            "parsed": "true"
+          },
+          {
+            "kind": "type",
+            "parsed": "true"
+          },
+          {
+            "kind": "due",
+            "parsed": "false"
+          }
+        ],
+        "panelWidth": 642,
+        "panelRight": 1041,
+        "panelLeft": 399,
+        "viewport": {
+          "w": 1440,
+          "h": 1000
+        },
+        "scrollWidth": 1440,
+        "discard": false,
+        "toast": "",
+        "toastKind": ""
+      }
+    },
+    {
+      "name": "CAPTURE-04 保存创建任务并给撤销 toast",
+      "ok": true,
+      "extra": {
+        "open": false,
+        "input": "",
+        "preview": "",
+        "count": 0,
+        "hint": "",
+        "priority": "",
+        "projectId": "",
+        "projectText": "",
+        "categoryId": "",
+        "categoryText": "",
+        "due": "",
+        "parsed": [
+          {
+            "kind": "priority",
+            "parsed": ""
+          },
+          {
+            "kind": "project",
+            "parsed": ""
+          },
+          {
+            "kind": "type",
+            "parsed": ""
+          },
+          {
+            "kind": "due",
+            "parsed": ""
+          }
+        ],
+        "panelWidth": 0,
+        "panelRight": 0,
+        "panelLeft": 0,
+        "viewport": {
+          "w": 1440,
+          "h": 1000
+        },
+        "scrollWidth": 1440,
+        "discard": false,
+        "toast": "已捕获 T06338\n撤销",
+        "toastKind": "saved"
+      }
+    },
+    {
+      "name": "CAPTURE-05 落库字段与解析结果一致",
+      "ok": true,
+      "extra": {
+        "created": {
+          "id": "1a3d301d-ca51-48d8-a6f5-6505d3f13c1a",
+          "task_no": "T06338",
+          "project_id": "586ae8c6-2e08-4180-86ba-732f1fab5006",
+          "category_id": "336f5dd1-1af5-4f4e-a5e8-5a02a956cbaa",
+          "priority": "urgent",
+          "description": "⏰ 明天 · 11-25"
+        },
+        "expected": {
+          "projectId": "586ae8c6-2e08-4180-86ba-732f1fab5006",
+          "categoryId": "336f5dd1-1af5-4f4e-a5e8-5a02a956cbaa",
+          "tomorrow": "2026-11-25"
+        }
+      }
+    },
+    {
+      "name": "CAPTURE-06 撤销一次后任务归档且 active 不可见",
+      "ok": true,
+      "extra": {
+        "afterUndo": {
+          "open": false,
+          "input": "",
+          "preview": "",
+          "count": 0,
+          "hint": "",
+          "priority": "",
+          "projectId": "",
+          "projectText": "",
+          "categoryId": "",
+          "categoryText": "",
+          "due": "",
+          "parsed": [
+            {
+              "kind": "priority",
+              "parsed": ""
+            },
+            {
+              "kind": "project",
+              "parsed": ""
+            },
+            {
+              "kind": "type",
+              "parsed": ""
+            },
+            {
+              "kind": "due",
+              "parsed": ""
+            }
+          ],
+          "panelWidth": 0,
+          "panelRight": 0,
+          "panelLeft": 0,
+          "viewport": {
+            "w": 1280,
+            "h": 900
+          },
+          "scrollWidth": 1280,
+          "discard": false,
+          "toast": "已撤销 T06338（已移入归档）",
+          "toastKind": "undone"
+        },
+        "byNo": {
+          "task_no": "T06338",
+          "archived": true,
+          "archived_at": "2026-11-24T05:56:18.564Z"
+        },
+        "activeHit": false
+      }
+    },
+    {
+      "name": "CAPTURE-07 任意页（任务页）快捷键可用",
+      "ok": true,
+      "extra": {
+        "onTasks": {
+          "open": true,
+          "elapsedMs": 19
+        },
+        "tasksInspect": {
+          "open": true,
+          "input": "",
+          "preview": "",
+          "count": 0,
+          "hint": "支持 @日期、!优先级、#项目、/类型；保存前可直接改下方字段",
+          "priority": "normal",
+          "projectId": "sys-inbox",
+          "projectText": "收件箱",
+          "categoryId": "",
+          "categoryText": "未设类型",
+          "due": "",
+          "parsed": [
+            {
+              "kind": "priority",
+              "parsed": "false"
+            },
+            {
+              "kind": "project",
+              "parsed": "false"
+            },
+            {
+              "kind": "type",
+              "parsed": "false"
+            },
+            {
+              "kind": "due",
+              "parsed": "false"
+            }
+          ],
+          "panelWidth": 642,
+          "panelRight": 961,
+          "panelLeft": 319,
+          "viewport": {
+            "w": 1280,
+            "h": 900
+          },
+          "scrollWidth": 1280,
+          "discard": false,
+          "toast": "",
+          "toastKind": ""
+        }
+      }
+    },
+    {
+      "name": "CAPTURE-08 Esc 空态直接关闭",
+      "ok": true,
+      "extra": {
+        "closedEmpty": true
+      }
+    },
+    {
+      "name": "CAPTURE-09 Esc 脏态二次确认后丢弃",
+      "ok": true,
+      "extra": {
+        "open": true,
+        "input": "草稿 @今天",
+        "preview": "将创建：草稿",
+        "count": 1,
+        "hint": "已解析 1 个标记：\n日期\n今天 · 11-24",
+        "priority": "normal",
+        "projectId": "sys-inbox",
+        "projectText": "收件箱",
+        "categoryId": "",
+        "categoryText": "未设类型",
+        "due": "2026-11-24",
+        "parsed": [
+          {
+            "kind": "priority",
+            "parsed": "false"
+          },
+          {
+            "kind": "project",
+            "parsed": "false"
+          },
+          {
+            "kind": "type",
+            "parsed": "false"
+          },
+          {
+            "kind": "due",
+            "parsed": "true"
+          }
+        ],
+        "panelWidth": 642,
+        "panelRight": 961,
+        "panelLeft": 319,
+        "viewport": {
+          "w": 1280,
+          "h": 900
+        },
+        "scrollWidth": 1280,
+        "discard": true,
+        "toast": "",
+        "toastKind": ""
+      }
+    },
+    {
+      "name": "CAPTURE-10 1440/1280/760 截图有效且无横向溢出",
+      "ok": true,
+      "extra": {
+        "files": [
+          {
+            "file": "01-capture-parse-1440.png",
+            "bytes": 178293
+          },
+          {
+            "file": "02-capture-toast-1280.png",
+            "bytes": 150414
+          },
+          {
+            "file": "03-capture-parse-760.png",
+            "bytes": 59902
+          }
+        ],
+        "narrow": {
+          "open": true,
+          "input": "T06297 窄屏捕获 #MTask十期 !高 /缺陷修复 @明天",
+          "preview": "将创建：T06297 窄屏捕获",
+          "count": 4,
+          "hint": "已解析 4 个标记：\n项目\n优先级\n类型\n日期\n明天 · 11-25",
+          "priority": "high",
+          "projectId": "586ae8c6-2e08-4180-86ba-732f1fab5006",
+          "projectText": "MTask十期",
+          "categoryId": "336f5dd1-1af5-4f4e-a5e8-5a02a956cbaa",
+          "categoryText": "缺陷修复",
+          "due": "2026-11-25",
+          "parsed": [
+            {
+              "kind": "priority",
+              "parsed": "true"
+            },
+            {
+              "kind": "project",
+              "parsed": "true"
+            },
+            {
+              "kind": "type",
+              "parsed": "true"
+            },
+            {
+              "kind": "due",
+              "parsed": "true"
+            }
+          ],
+          "panelWidth": 642,
+          "panelRight": 701,
+          "panelLeft": 59,
+          "viewport": {
+            "w": 760,
+            "h": 1000
+          },
+          "scrollWidth": 760,
+          "discard": false,
+          "toast": "",
+          "toastKind": ""
+        }
+      }
+    },
+    {
+      "name": "CAPTURE-11 无未捕获前端异常",
+      "ok": true,
+      "extra": {
+        "consoleErrors": []
+      }
+    }
+  ]
+}

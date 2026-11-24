@@ -248,6 +248,28 @@
   white-space: nowrap;
 }
 
+/* T06297（REQ-034）：快速捕获入口——与向导同尺寸，但用强调色区分“随手记”这条高频路径。 */
+.mt-top-capture {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.mt-top-capture:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.mt-top-capture:active:not(:disabled) {
+  transform: scale(.95);
+}
+
 .mt-top-guide {
   width: 30px;
   height: 30px;

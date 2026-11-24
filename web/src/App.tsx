@@ -18,9 +18,10 @@ import { HoverCard } from './ui/HoverCard'; // T06084：后端连接状态悬浮
 import { desktopApi } from './ui/desktop'; // T02976：菜单通道下载进度的桌面桥（浏览器环境无此桥）
 import { MarkdownStyles } from './ui/Markdown';
 import { CommandPalette } from './pages/CommandPalette';
+import { QuickCapture } from './ui/QuickCapture'; // T06297（REQ-034 / PRD §A5）：全局快速捕获
 import { SettingsProvider } from './settings';
 import { MobileShell } from './mobile/MobileShell';
-import { Compass, Loader2 } from 'lucide-react'; // T03184（PM-102）：菜单图标随 TABS 一并迁入 ui/tabs.ts，此处只留命令面板入口图标
+import { Compass, Loader2, Zap } from 'lucide-react'; // T03184（PM-102）：菜单图标随 TABS 一并迁入 ui/tabs.ts，此处只留命令面板入口图标
 import { PageGuideDialog, hasSeenGuide, markGuideSeen } from './pages/PageGuide'; // T00706：通用使用向导
 import { GUIDES } from './pages/guides'; // T00706：各菜单向导内容配置
 import { useReportStream } from './reportStream'; // T01038：AI 工作台运行态（周报生成）
@@ -130,6 +131,8 @@ function Shell() {
   const [dlToast, setDlToast] = useState<DlToastState>(null);
   // T00443 / PRD UX-4：全局命令面板（T03170 / D-07：Ctrl+K 打开；T03983：Shift+F 亦可；Ctrl+F 只走页内搜索）
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // T06297（REQ-034 / PRD §A5）：全局快速捕获浮层——任意页 Ctrl/Cmd+Shift+Space 唤起
+  const [captureOpen, setCaptureOpen] = useState(false);
   // T00706：全菜单使用向导——当前菜单首次进入自动弹出，导航右侧常驻「向导」按钮随时唤起
   const guide = GUIDES[tab];
   const [guideOpen, setGuideOpen] = useState(false);
@@ -192,6 +195,15 @@ function Shell() {
   // 故 e.isComposing 必须先判（与数字键直达同一套守卫）。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // T06297（REQ-034 / PRD §A5）：Ctrl/Cmd+Shift+Space = 任意页唤起快速捕获。
+      // 输入态也放行（写东西时冒出一个想法正是这个快捷键的主场景）；IME 组合中不抢键。
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && (e.code === 'Space' || e.key === ' ')) {
+        if (e.isComposing) return;
+        e.preventDefault();
+        setPaletteOpen(false);
+        setCaptureOpen(true);
+        return;
+      }
       if (e.key.toLowerCase() === 'f' && !e.ctrlKey && !e.metaKey && e.shiftKey && !e.altKey) {
         if (e.isComposing) return;
         const anchor = e.target instanceof Element ? e.target : null;
@@ -330,6 +342,8 @@ function Shell() {
           onNavigate={(t) => { setPaletteOpen(false); setTab(t); }}
         />
       )}
+      {/* T06297（REQ-034）：浮层常驻挂载，关闭后仍保留“已捕获/撤销”toast；内层按 open 决定是否显示遮罩 */}
+      <QuickCapture open={captureOpen} onClose={() => setCaptureOpen(false)} />
       {/* 全局按钮去边框：扁平简约统一视觉，显式边框按钮随后逐个移除 */}
       <style>{`button { border: none; cursor: pointer; transition: transform .12s ease; }
         button:disabled { cursor: default; opacity: .6; }
@@ -470,6 +484,17 @@ function Shell() {
               </div>
             )}
             <div className="mt-top-actions">
+              {/* T06297（REQ-034 / PRD §A5）：顶栏常驻快速捕获入口，快捷键为 Ctrl/Cmd+Shift+Space */}
+              <button
+                type="button"
+                className="mt-top-capture"
+                data-capture-open
+                onClick={() => { setPaletteOpen(false); setCaptureOpen(true); }}
+                title="快速捕获 — Ctrl/Cmd+Shift+Space"
+                aria-label="打开快速捕获（Ctrl/Cmd+Shift+Space）"
+              >
+                <Zap size={15} />
+              </button>
               {/* T06295（REQ-032）：收件箱入口——角标数=open 条目数，unread 仅小圆点 */}
               <InboxBell />
               {/* T01064-FR1.4：全局通知中心（铃铛 + 未读角标 + 事件下拉） */}
