@@ -13,7 +13,7 @@ import { focusPlanNode, focusTaskByNo, type FocusTaskIntent } from '../ui/focusT
 import { ProjectListHint, getProjectListSnapshot, patchProject, refreshProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
 import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：选中项有效性校验失败态提示；T02257：AI 工具列表同层接入
 import { PinToggle } from '../ui/PinToggle';
-import { priorityAriaLabel, priorityBadgeLabel, priorityColor } from '../ui/priority'; // PM-302 ③：优先级 → 颜色/文案单源（列表/看板/矩阵/移动端共用）
+import { priorityAriaLabel, priorityBadgeLabel, priorityColor, priorityTone } from '../ui/priority'; // PM-302 ③：优先级 → 颜色/文案单源（列表/看板/矩阵/移动端共用）
 import { blockBadgeNames, blockBadgeNode } from '../ui/blockBadge'; // T03229（PM-202②）：阻塞徽标单源（列表行与看板卡共用）
 import { GitBadge, GitBoardBadge, gitTruncatedNote } from '../ui/gitBadge'; // 八期 §3.1：任务↔提交关联徽标（列表行 + 看板卡）
 import { GitTreePickerModal } from '../ui/GitTreePickerModal'; // 八期 §3.1.5：未回写「手动关联」批量补录走同一取数弹窗
@@ -31,7 +31,7 @@ import { arrangeTaskTree, makeTaskMatcher, matchVerified, sortOptions, sortTasks
 import { useTaskListWindow } from '../utils/taskListWindow'; // T03215（PM-304）：文档滚动 + 变高行的窗口化
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin as togglePinShared, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
 import { useBusy, setBusy } from '../ui/busy';
-import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, CheckCheck, ChevronDown, ChevronUp, Circle, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, Download, FolderPlus, GitBranch, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, MoreHorizontal, Palette, PanelRightOpen, Pin, Plus, Save, ScanSearch, MessageSquareText, Sparkle, Sparkles, SquarePen, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
+import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, Check, CheckCheck, ChevronDown, ChevronUp, Circle, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, Download, FolderPlus, GitBranch, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, MoreHorizontal, Palette, PanelRightOpen, Pin, Plus, Save, ScanSearch, MessageSquareText, Sparkle, Sparkles, SquarePen, Table2, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 import { TaskMoreMenu, type TaskMoreMenuItem } from '../ui/TaskMoreMenu'; // T05712：低频功能「...」下拉
 import { CopyButton } from '../ui/CopyButton'; // T04544：项目下拉条右缘的项目名复制按钮（复用全站统一按钮，动画/交互一致）
@@ -41,6 +41,7 @@ import { WorkspaceAskPanel } from '../ui/WorkspaceAskPanel'; // T03250：工作�
 import { AiPolishButton } from '../ui/AiPolishButton'; // T00796 二轮：正文 AI 美化（反馈/处理结果共用）
 import { AiUnavailableHint, aiBlocked, aiBlockedTitle, useAiReadiness, type AiReadiness } from '../ui/aiReadiness'; // T03176（D-14）：AI 不可用入口可见但禁用 + 原因/修复动作
 import { classifyResultMessage, createClassifyStore, runClassifyBatch, type ClassifyResponse, type ClassifyStoreState } from './tasksClassifyBatch'; // T02307：批量分类三态分流 + 账户级门禁/连续失败熔断
+import { Badge, Table, type BadgeTone, type TableColumn } from '../ui/components'; // T06301：表格视图复用 Design System 原语
 
 /** 顶部 tab 三态：待办 / 已完成 / 搁置（S4323：具名类型别名替代内联联合类型） */
 type ActiveTab = 'todo' | 'done' | 'shelved';
@@ -712,6 +713,22 @@ function TriCheckbox({ checked, indeterminate, onChange, title, label, style }: 
   );
 }
 
+/** T06301：表格视图时间列——ISO → MM-DD HH:mm；空值显示破折号。 */
+function taskTableTime(iso: string | null | undefined): string {
+  return iso ? iso.slice(5, 16).replace('T', ' ') : '—';
+}
+
+/** T06301：表格视图状态列——状态与验证合并为一枚徽标，避免行内徽标堆叠。 */
+function taskTableStatus(task: Task, kind: 'todo' | 'done' | 'shelved'): { label: string; tone: BadgeTone } {
+  if (kind === 'shelved') return { label: '搁置', tone: 'warning' };
+  if (task.status === 'done') {
+    return task.verified
+      ? { label: '已完成 · 已验证', tone: 'success' }
+      : { label: '已完成 · 待验证', tone: 'warning' };
+  }
+  return { label: '待办', tone: 'neutral' };
+}
+
 /** 剥离 AI 外层的 ```markdown ``` 代码围栏：仅当围栏包裹整段文本时去除，保留内部 Markdown 内容，异常情况原样返回 */
 function stripCodeFence(text: string): string {
   const m = /^\s*```(?:markdown|md)?\s*\n?([\s\S]*?)\n?```\s*$/.exec(text);
@@ -1008,8 +1025,8 @@ export function TasksPage() {
   // 待办/已完成区块排序：会话级偏好，默认保持后端顺序
   const [todoSort, setTodoSort] = usePersistentState<'default' | 'timedesc' | 'timeasc' | 'pdesc' | 'pasc' | 'manual'>('tasks.todoSort', 'default'); // T01697：排序偏好持久化（重启保持）
   const [doneSort, setDoneSort] = usePersistentState<'default' | 'timedesc' | 'timeasc' | 'pdesc' | 'pasc' | 'manual'>('tasks.doneSort', 'default'); // T01697
-  // T00456 / PRD UX-1：视图模式（列表/看板）会话级保持
-  const [viewMode, setViewMode] = useSessionState<'list' | 'board'>('tasks.viewMode', 'list');
+  // T00456 / PRD UX-1：视图模式（列表/看板/表格）会话级保持；T06301 增加表格视图
+  const [viewMode, setViewMode] = useSessionState<'list' | 'board' | 'table'>('tasks.viewMode', 'list');
   // T03209（PM-101）：看板隐藏空列——会话级保持，切换页签/窗口期间保持
   const [boardHideEmpty, setBoardHideEmpty] = useSessionState<boolean>('tasks.board.hideEmpty', false);
   // T03209（PM-101）：WIP 上限输入草稿（按项目存放，提交成功后清理）
@@ -1035,6 +1052,9 @@ export function TasksPage() {
   const moreBtnRef = useRef<HTMLButtonElement | null>(null);
   const morePanelRef = useRef<HTMLFieldSetElement | null>(null);
   const sortedProjects = useMemo(() => sortProjects(projects, projSortMode), [projects, projSortMode]); // T00663：排序逻辑复用共享模块
+  // T06301：表格视图按 id 取项目/分类名称，避免每行重复线性查找
+  const projectNameById = useMemo(() => new Map(projects.map((p) => [p.id, p.name])), [projects]);
+  const categoryNameById = useMemo(() => new Map(taskCats.map((c) => [c.id, c.name])), [taskCats]);
 
   /** T00655：置顶/取消置顶——置顶写入较大 sort_weight（默认序下排最前），取消归零 */
   async function toggleProjectPin(pj: Project) {
@@ -2711,6 +2731,104 @@ export function TasksPage() {
             </div>
           ))}
         </div>
+      </div>
+    );
+  }
+
+  /** T06301（REQ-009 / §C3）：表格视图——复用当前任务集与筛选/排序，只换呈现方式。
+   *  列宽可拖拽、表头在内容区滚动时冻结；不修改数据源、不新增后端查询。 */
+  function renderTaskTable(rows: Task[], kind: 'todo' | 'done' | 'shelved', loading = false) {
+    const aggregate = activeProject === ALL_PROJECTS;
+    const columns: Array<TableColumn<Task>> = [];
+    if (multiSelect) {
+      columns.push({
+        key: 'select', title: '选', ariaLabel: '选择任务', width: 44, minWidth: 40, align: 'center',
+        render: (t) => (
+          <input type="checkbox" checked={selectedIds.has(t.id)} aria-label={`选中任务 ${t.title}`}
+            onClick={(event) => event.stopPropagation()}
+            onChange={(event) => setSelectedIds((prev) => {
+              const next = new Set(prev);
+              if (event.target.checked) next.add(t.id); else next.delete(t.id);
+              return next;
+            })} />
+        ),
+      });
+    }
+    columns.push(
+      {
+        key: 'task_no', title: '编号', ariaLabel: '编号', width: 92, minWidth: 80,
+        render: (t) => <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>{t.task_no ?? '—'}</span>,
+      },
+      {
+        key: 'title', title: '任务', ariaLabel: '任务', width: 340, minWidth: 180,
+        render: (t) => (
+          <button type="button" data-t06301="row-title" title={`打开任务详情：${t.title}`}
+            onClick={(event) => { event.stopPropagation(); openDetailDrawer(t, null); }}
+            style={{ display: 'block', width: '100%', padding: 0, border: 'none', background: 'transparent', color: 'var(--text)', cursor: 'pointer', textAlign: 'left', fontWeight: 600, fontSize: 'var(--fs-m)', lineHeight: 1.4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {t.title}
+          </button>
+        ),
+      },
+      {
+        key: 'status', title: '状态', ariaLabel: '状态', width: 126, minWidth: 100,
+        render: (t) => {
+          const status = taskTableStatus(t, kind);
+          return <Badge tone={status.tone}>{status.label}</Badge>;
+        },
+      },
+      {
+        key: 'priority', title: '优先级', ariaLabel: '优先级', width: 84, minWidth: 72,
+        render: (t) => <Badge tone={priorityTone(t.priority)} dot>{priorityBadgeLabel(t.priority)}</Badge>,
+      },
+    );
+    if (aggregate) {
+      columns.push({
+        key: 'project', title: '项目', ariaLabel: '项目', width: 140, minWidth: 100,
+        render: (t) => <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>{projectNameById.get(t.project_id) ?? '—'}</span>,
+      });
+    }
+    columns.push(
+      {
+        key: 'category', title: '分类', ariaLabel: '分类', width: 110, minWidth: 80,
+        render: (t) => <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)' }}>{t.category_id ? categoryNameById.get(t.category_id) ?? '未分类' : '未分类'}</span>,
+      },
+      {
+        key: 'updated', title: '更新时间', ariaLabel: '更新时间', width: 110, minWidth: 90,
+        render: (t) => <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>{taskTableTime(t.updated_at)}</span>,
+      },
+      {
+        key: 'action', title: '操作', ariaLabel: '操作', width: 84, minWidth: 76, align: 'center',
+        render: (t) => (
+          <button type="button" aria-label={`打开任务详情：${t.title}`} title="打开任务详情抽屉"
+            onClick={(event) => { event.stopPropagation(); openDetailDrawer(t, null); }}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', cursor: 'pointer', fontSize: 'var(--fs-xs)' }}>
+            <PanelRightOpen size={16} />详情
+          </button>
+        ),
+      },
+    );
+    let emptyText = '暂无搁置任务——点击任务行的「搁置」按钮可把任务移到这里';
+    let kindLabel = '搁置';
+    if (kind === 'todo') { emptyText = '当前视图暂无待办任务——在上方输入框输入标题回车即可创建'; kindLabel = '待办'; }
+    else if (kind === 'done') { emptyText = '暂无已完成任务——完成任务后在此集中查看与验证'; kindLabel = '已完成'; }
+    return (
+      <div data-t06301="table">
+        <Table
+          className="t06301-task-table"
+          columns={columns}
+          rows={rows}
+          rowKey={(t) => t.id}
+          density={density}
+          loading={loading}
+          loadingRows={6}
+          selectedKey={drawerTask?.id}
+          onRowClick={multiSelect ? undefined : (t) => openDetailDrawer(t, null)}
+          ariaLabel={`任务表格视图：${kindLabel}列表，列宽可拖拽，表头冻结`}
+          maxHeight="min(560px, calc(100vh - 380px))"
+          minHeight={200}
+          resizable
+          emptyText={emptyText}
+        />
       </div>
     );
   }
@@ -4427,13 +4545,23 @@ export function TasksPage() {
     );
   }
 
-  /** T00456 / PRD UX-1：视图切换（列表/看板）。纯布局分组，两个按钮各带无障碍名称，
-   *  故不在容器上声明 role="group"（S6819），渲染不变。 */
+  /** T00456 / PRD UX-1：视图切换（列表/看板/表格）。纯布局分组，三个按钮各带无障碍名称；
+   *  故不在容器上声明 role="group"（S6819），渲染不变。T06301：视图入口常驻可见，避免表格视图不可发现。 */
   function renderViewToggle() {
+    const options = [
+      { key: 'list' as const, label: '列表视图', title: '列表视图 — 逐行查看与编辑任务', icon: <ListTodo size={16} /> },
+      { key: 'board' as const, label: '看板视图', title: '看板视图 — 按状态分列，拖拽卡片流转状态', icon: <LayoutGrid size={16} /> },
+      { key: 'table' as const, label: '表格视图', title: '表格视图 — 列宽可拖拽，表头冻结', icon: <Table2 size={16} /> },
+    ];
     return (
-      <span className={`op-host${viewMode === 'board' ? '' : ' op-hidden'}`} style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }}>
-        <button className="tbtn-anim" onClick={() => setViewMode('list')} aria-label="列表视图" style={{ padding: '5px 9px', border: 'none', cursor: 'pointer', display: 'inline-flex', background: viewMode === 'list' ? 'var(--accent)' : 'transparent', color: viewMode === 'list' ? 'var(--accent-text)' : 'var(--text)' }} title="列表视图"><ListTodo size={13} /></button>
-        <button className="tbtn-anim" onClick={() => setViewMode('board')} aria-label="看板视图" style={{ padding: '5px 9px', border: 'none', borderLeft: '1px solid var(--border-strong)', cursor: 'pointer', display: 'inline-flex', background: viewMode === 'board' ? 'var(--accent)' : 'transparent', color: viewMode === 'board' ? 'var(--accent-text)' : 'var(--text)' }} title="看板视图 — 按状态分列，拖拽卡片流转状态"><LayoutGrid size={13} /></button>
+      <span data-t06301="view-toggle" style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 6, overflow: 'hidden' }}>
+        {options.map((option, index) => (
+          <button key={option.key} className="tbtn-anim" onClick={() => setViewMode(option.key)}
+            aria-label={option.label} aria-pressed={viewMode === option.key} title={option.title}
+            style={{ padding: '5px 9px', border: 'none', borderLeft: index === 0 ? 'none' : '1px solid var(--border-strong)', cursor: 'pointer', display: 'inline-flex', background: viewMode === option.key ? 'var(--accent)' : 'transparent', color: viewMode === option.key ? 'var(--accent-text)' : 'var(--text)' }}>
+            {option.icon}
+          </button>
+        ))}
       </span>
     );
   }
@@ -5096,7 +5224,7 @@ export function TasksPage() {
         {csvBlock}
         {viewMode === 'board' && renderBoard()}
         {viewMode === 'board' && <div style={{ height: 8 }} />}
-        {viewMode === 'list' && (<>
+        {viewMode !== 'board' && (<>
         {/* T00757：待办/已完成/搁置 三个标题并排为 tab——激活项加粗+下方横线，未激活常规字重；仅渲染激活 tab 的列表 */}
         {/* T03620：排序/筛选控件迁到 tab 行右侧同行展示——只渲染当前 tab 自己的控件，默认隐藏、悬浮 tab 行淡入
             （沿用 .op-hidden 口径；tab 按钮常驻可见且排在控件之前，满足 T03162 键盘可达规范） */}
@@ -5177,10 +5305,11 @@ export function TasksPage() {
           </div>
         )}
         {/* T03215（PM-304）：窗口化渲染——只渲染视口±overscan 行，其余用 ul 上下内边距占位撑出等总高的滚动区间 */}
-        <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom, ...densityStyle }}>{visibleTodo.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'todo', todoIds)}</Fragment>)}</ul>
+        {viewMode === 'list' && <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom, ...densityStyle }}>{visibleTodo.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'todo', todoIds)}</Fragment>)}</ul>}
+        {viewMode === 'table' && renderTaskTable(visibleTodo, 'todo', tasksPhase === 'loading' && visibleTodo.length === 0)}
         {/* T02283：取数失败时不渲染空态——「暂无待办任务」会把后端故障说成没活干（项目列表失败导致
             连 activeProject 都拿不到时同理） */}
-        {visibleTodo.length === 0 && !multiSelect && tasksPhase !== 'error' && projectList.phase !== 'error' && (
+        {viewMode === 'list' && visibleTodo.length === 0 && !multiSelect && tasksPhase !== 'error' && projectList.phase !== 'error' && (
           <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--fs-s)', border: '1px dashed var(--border-strong)', borderRadius: 8, margin: '8px 0', lineHeight: 1.8 }}>
             当前项目暂无待办任务——在上方输入框输入标题回车即可创建；{' '}
             {tools.length === 0 ? <NoToolsHint /> : <ToolsReadyHint />}
@@ -5231,8 +5360,9 @@ export function TasksPage() {
               style={{ cursor: 'pointer' }} />
           </div>
         )}
-        <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom, ...densityStyle }}>{visibleDone.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'done', doneIds)}</Fragment>)}</ul>
-        {visibleDone.length === 0 && tasksPhase !== 'error' && (
+        {viewMode === 'list' && <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom, ...densityStyle }}>{visibleDone.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'done', doneIds)}</Fragment>)}</ul>}
+        {viewMode === 'table' && renderTaskTable(visibleDone, 'done', tasksPhase === 'loading' && visibleDone.length === 0)}
+        {viewMode === 'list' && visibleDone.length === 0 && tasksPhase !== 'error' && (
           <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>暂无已完成任务——完成任务后在此集中查看与验证。</div>
         )}
         </>)}
@@ -5258,8 +5388,9 @@ export function TasksPage() {
             label="搁置列表"
           />
         </div>
-        <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom, ...densityStyle }}>{visibleShelved.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'shelved', shelvedIds)}</Fragment>)}</ul>
-        {visibleShelved.length === 0 && shelvedPhase !== 'error' && (
+        {viewMode === 'list' && <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom, ...densityStyle }}>{visibleShelved.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'shelved', shelvedIds)}</Fragment>)}</ul>}
+        {viewMode === 'table' && renderTaskTable(visibleShelved, 'shelved', shelvedPhase === 'loading' && visibleShelved.length === 0)}
+        {viewMode === 'list' && visibleShelved.length === 0 && shelvedPhase !== 'error' && (
           <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--fs-s)' }}>暂无搁置任务——点击任务行的「搁置」按钮（归档按钮前）可把任务移到这里，AI 处理待办时自动忽略。</div>
         )}
         </>)}

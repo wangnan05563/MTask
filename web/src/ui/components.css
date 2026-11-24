@@ -252,7 +252,7 @@
 .mt-table th {
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: 2;
   background: var(--mt-component-table-header-bg);
   color: var(--mt-semantic-text-secondary);
   font-size: 12px;
@@ -260,6 +260,56 @@
   text-align: left;
   white-space: nowrap;
   border-bottom: 1px solid var(--mt-component-table-border);
+}
+
+/* T06301：可拖拽列宽——表头保留文字截断，右缘放 10px 拖拽热区 */
+.mt-table th[data-resizable='true'] {
+  padding-right: 18px;
+}
+
+.mt-table__th-text {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+
+.mt-table__resize {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.mt-table__resize::after {
+  content: '';
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  right: 3px;
+  width: 1px;
+  background: var(--mt-semantic-border-default);
+  opacity: 0.55;
+}
+
+.mt-table__resize:hover::after,
+.mt-table__resize:focus-visible::after {
+  right: 2px;
+  width: 2px;
+  background: var(--mt-semantic-accent-primary);
+  opacity: 1;
+}
+
+.mt-table__resize:focus-visible {
+  outline: var(--mt-component-focus-ring-width) solid var(--mt-component-focus-ring);
+  outline-offset: calc(var(--mt-component-focus-ring-width) * -1);
 }
 
 .mt-table td {
