@@ -1,4 +1,5 @@
 import { getDb } from './connection';
+import { ensureAgentRunSchema } from './agentRunSchema';
 
 /** 首次启动建表。DDL 与 docs/技术设计.md 第 3 节保持一致。 */
 export function initSchema(): void {
@@ -1216,6 +1217,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_archived_pinned_created ON tasks(pr
   ensureReviewLogVerdictEnum();
   // T06071（T06068 §9 Phase 0）：记忆分层/作用域/权威/双时间轴，老库幂等补列 + 回填 + 索引
   ensureMemoryLayeringColumns();
+  // T06293（REQ-036 / PRD §B6）：统一 Agent Run / RunStep 增量表；不动旧队列、会话与用量表
+  ensureAgentRunSchema();
 
   seedPromptCategories();
   // 移动端随手记默认归属项目（收件箱）：确定性 id，保证每次启动只创建一次
