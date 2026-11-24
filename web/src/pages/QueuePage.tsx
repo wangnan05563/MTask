@@ -13,13 +13,14 @@
  *   - 并行任务池：15s（T03272 既有口径）
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { AlertTriangle, ListOrdered, Pause, Pencil, Play, Plus, RotateCcw, Search, Send, Trash2 } from 'lucide-react';
+import { AlertTriangle, Pause, Pencil, Play, Plus, RotateCcw, Search, Send, Trash2 } from 'lucide-react';
 import { api, type AITool, type Queue, type QueueJob, type QueueJobSummary, type Task } from '../api/client';
 import { askConfirm, askInput } from '../ui/dialogs';
 import { HoverCard } from '../ui/HoverCard';
 import { NoticeToast, useNotice } from '../ui/notice';
 import { useProjectList } from '../ui/projectList';
 import { BTN_DANGER_OUTLINE, BTN_DISABLED, BTN_ICON, BTN_PRIMARY, BTN_SECONDARY_MD } from '../ui/primitives';
+import { PageHeader, PageShell } from '../ui/layout'; // T06327：核心页统一页面壳与页头
 import { computeQueueMetrics, type JobFilter } from './queueMetrics';
 import { DispatchRecordsPanel } from './DispatchRecordsPanel'; // T06266：内部派发队列只读视图
 import { withContextCapacity } from '../utils/modelContext';
@@ -592,25 +593,33 @@ export function QueuePage() {
   const sendHint = sendHintOf(active, pendingCount, activeJobs.length);
 
   return (
-    <section>
-      {/* 标题行：一句话说清这个菜单是干什么的 + 当前队列的关键计数 */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
-        <h2 style={{ display: 'flex', alignItems: 'center', gap: 6, margin: 0, fontSize: 'var(--fs-title)', fontWeight: 700 }}>
-          <ListOrdered size={17} style={{ color: 'var(--accent)' }} /> 队列
-        </h2>
-        <span style={{ fontSize: 'var(--fs-s)', color: 'var(--text-muted)' }}>
-          把「任务 + AI 工具」排成序列逐条交付，回执留档可采纳
-        </span>
-        <span style={{ flex: 1 }} />
-        {active && <QueueHeadline queue={active} metrics={metrics} />}
-        <QueueToolButton
-          label="派发记录"
-          hint="查看 CodeBuddy 网关 / MCP 就绪池自动派发与监督中继的内部队列（只读）"
-          icon={<Send size={14} />}
-          onClick={() => setView('dispatch')}
-          style={BTN_SECONDARY_MD}
-        />
-      </div>
+    <PageShell className="mt-queue-page">
+      <PageHeader
+        title="投递队列"
+        description="把「任务 + AI 工具」排成序列逐条交付，回执留档可采纳；队列监控与并行任务池分层展示。"
+        breadcrumbs={[{ label: '工作台' }, { label: '投递队列' }]}
+        primaryAction={(
+          <QueueToolButton
+            label="新建队列"
+            hint="创建新的任务队列"
+            icon={<Plus size={16} />}
+            onClick={() => void createQueue()}
+            style={BTN_PRIMARY}
+          />
+        )}
+        secondaryActions={(
+          <>
+            {active && <QueueHeadline queue={active} metrics={metrics} />}
+            <QueueToolButton
+              label="派发记录"
+              hint="查看 CodeBuddy 网关 / MCP 就绪池自动派发与监督中继的内部队列（只读）"
+              icon={<Send size={14} />}
+              onClick={() => setView('dispatch')}
+              style={BTN_SECONDARY_MD}
+            />
+          </>
+        )}
+      />
 
       {/* 工具条 */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
@@ -629,14 +638,6 @@ export function QueuePage() {
             return <option key={q.id} value={q.id}>{q.name}{tail}</option>;
           })}
         </select>
-
-        <QueueToolButton
-          label="新建队列"
-          hint="创建新的任务队列"
-          icon={<Plus size={16} />}
-          onClick={() => void createQueue()}
-          style={BTN_PRIMARY}
-        />
 
         {active && (
           <QueueToolButton
@@ -827,6 +828,6 @@ export function QueuePage() {
         onPauseTask={(id) => void pauseRunningTask(id)}
         now={now}
       />
-    </section>
+    </PageShell>
   );
 }

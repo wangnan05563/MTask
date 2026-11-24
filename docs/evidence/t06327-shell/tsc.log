@@ -1,0 +1,2 @@
+TSC_EXIT=0
+command: node node_modules/typescript/bin/tsc --noEmit -p web/tsconfig.json

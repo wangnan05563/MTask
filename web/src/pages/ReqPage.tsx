@@ -17,6 +17,7 @@ import { AiPolishButton, resolveAiToolId } from '../ui/AiPolishButton'; // T0079
 import { PromptOptimizeButton } from '../ui/PromptOptimizeButton'; // T00842 二轮：正文改写为结构化提示词
 import { OPTIMIZE_SCOPE_REQ, useOptimizeStore } from '../stores/optimizeStore'; // T03684：优化运行态切页保持
 import { relTime } from '../ui/format';
+import { FilterBar, PageHeader, PageShell } from '../ui/layout'; // T06327：核心页统一页面壳、页头与吸顶筛选条
 
 type ReqSortKey = 'updated_at' | 'created_at' | 'title' | 'manual';
 
@@ -529,7 +530,12 @@ export function ReqPage() {
   const planOverlayRef = useOverlayDismiss(planEntry !== null, planBusy, () => setPlanEntry(null));
 
   return (
-    <section>
+    <PageShell className="mt-req-page">
+      <PageHeader
+        title="通用需求"
+        description="沉淀可复用的优秀实现与方案；按分类维护，支持收藏、排序、转计划与测试用例追溯。"
+        breadcrumbs={[{ label: '工作台' }, { label: '通用需求' }]}
+      />
       {/* 悬浮操作按钮 + 行 hover 高亮 + 记录高亮动画：类名与任务页体验一致 */}
       <style>{`
         .arena-row { transition: background-color .15s ease, transform .12s ease; }
@@ -561,7 +567,7 @@ export function ReqPage() {
         .move-btn:hover { color: var(--accent); }
       `}</style>
       {/* 工具栏：分类切换与管理 */}
-      <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+      <FilterBar className="op-host" ariaLabel="通用需求筛选" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <select value={activeCat} aria-label="需求分类筛选" onChange={(e) => setActiveCat(e.target.value)} style={{ padding: 6, fontSize: 'var(--fs-s)', minWidth: 180, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
           {/* T05687：首项固定「全部收藏」，跨分组聚合；主题色底与普通分类区分 */}
           <option value={ALL_FAV} style={{ background: 'var(--accent)', color: 'var(--accent-text)', fontWeight: 600 }}>★ 全部收藏</option>
@@ -672,7 +678,7 @@ export function ReqPage() {
           style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', marginLeft: 'auto' }}
         />
         {notice && <output className="flash-toast">{notice}</output>}
-      </div>
+      </FilterBar>
 
       {/* 新建条目表单 */}
       {creating && (
@@ -1022,6 +1028,6 @@ export function ReqPage() {
           </div>
         </div>
       )}
-    </section>
+    </PageShell>
   );
 }

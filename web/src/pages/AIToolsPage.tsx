@@ -8,6 +8,7 @@ import { PinToggle } from '../ui/PinToggle';
 import { ProviderIcon, ProviderPresetGrid } from './AIProviderPresets';
 import { LOCAL_PROVIDER_LOGOS, inferProviderId } from '../ui/providerLogos';
 import { contextProfileFor, parseContextCapacity, withContextCapacity } from '../utils/modelContext';
+import { FilterBar, PageHeader, PageShell } from '../ui/layout'; // T06327：核心页统一页面壳、页头与吸顶筛选条
 
 /** 配置记录表单草稿（apiKey 留空 = 编辑时保留原密钥） */
 interface ToolForm {
@@ -1174,7 +1175,12 @@ export function AIToolsPage() {
   });
 
   return (
-    <section>
+    <PageShell className="mt-ai-tools-page">
+      <PageHeader
+        title="AI 工具与模型"
+        description="管理 AI 厂商接入、模型与默认整理/开发工具；连接测试、用途筛选与用量统计同页完成。"
+        breadcrumbs={[{ label: '工作台' }, { label: 'AI 工具与模型' }]}
+      />
       {/* 按钮加载旋转动画：供连接测试 / 模型获取等按钮 loading 图标使用 */}
       <style>{`@keyframes aispin{to{transform:rotate(360deg)}}.aispin{animation:aispin .8s linear infinite;display:inline-block}
         /* T00587：复制成功图标弹入动画（对齐全局 tbtn-anim 交互动画基调） */
@@ -1205,7 +1211,7 @@ export function AIToolsPage() {
           原实现 h3 后直接是三个 op-hidden 控件，纯键盘 Tab 掠过工具栏后整段筛选/搜索不可达。
           现将常驻「新增配置」按钮前置（图标旁保留文字标签）：Tab 到按钮即触发 :focus-within
           显形，后续 Tab 依 DOM 序自然抵达筛选下拉与搜索框。 */}
-      <div className="op-host" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+      <FilterBar className="op-host" ariaLabel="AI 工具筛选" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <h3 style={{ fontSize: 'var(--fs-xl)', margin: 0 }}>配置记录（{filtered.length}/{tools.length}）</h3>
         <button
           onClick={openCreate}
@@ -1239,7 +1245,7 @@ export function AIToolsPage() {
           style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)', flex: 1, minWidth: 180 }}
         />
         {notice && <output className="flash-toast">{notice}</output>}
-      </div>
+      </FilterBar>
 
       {/* T05784：厂商预制目录——后端接口动态返回；点击卡片即打开已预填的新增表单。 */}
       {(providers.length > 0 || providerError) && (
@@ -1363,6 +1369,6 @@ export function AIToolsPage() {
 
       {/* T00448 / PRD AI-1：AI 用量统计面板（近 N 天概览+按工具分组+最近明细） */}
       <UsagePanel />
-    </section>
+    </PageShell>
   );
 }

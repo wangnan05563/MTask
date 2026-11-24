@@ -8,6 +8,7 @@ import { ACCENT_PRESETS, DEFAULT_ACCENT, THEME_PRESETS } from '../theme/presets'
 import { AlignLeft, AlertTriangle, ArrowLeftRight, Ban, CheckCircle2, Download, ExternalLink, FileUp, FolderPlus, LayoutGrid, Loader2, MonitorCog, Moon, Pencil, PlugZap, RefreshCw, RotateCcw, Save, Settings2, Sun, Tags, Trash2 } from 'lucide-react';
 import { getLang, setLang, onLangChange, type Lang } from '../i18n'; // T01071-FR5.4：i18n 底座
 import { usePersistentState } from '../ui/session'; // T03271（UX-09③）：Tab 选中态跨页面/跨会话保持（沿用 T02977 口径）
+import { PageHeader, PageShell } from '../ui/layout'; // T06327：核心页统一页面壳与页头（仪表盘子页自带页头时让位）
 import { SETTINGS_TAB_LABELS, filterSettingsGroups, normalizeSettingsTab } from '../ui/settingsTabs'; // T03271（UX-09①②）：页签与分组单源
 import { SettingsHelpIcon } from '../ui/settingsHelp'; // T06019：子页说明文字改为语义图标
 import { updateCardStore, shownProgressOf, type UpdateCheckInfo } from '../stores/updateCardStore';
@@ -110,7 +111,14 @@ export function SettingsPage() {
     );
   };
   return (
-    <section>
+    <PageShell className="mt-settings-page">
+      {active !== 'dashboard' && (
+        <PageHeader
+          title="设置"
+          description="集中管理偏好、数据与运维能力；页签按用途分组，支持关键词检索直达。"
+          breadcrumbs={[{ label: '工作台' }, { label: '设置' }]}
+        />
+      )}
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <input
           value={q}
@@ -209,7 +217,7 @@ export function SettingsPage() {
       {active === 'history' && <HistoryPage />} {/* T00756：历史资产（项目快照）嵌入设置页 */}
       {active === 'help' && <HelpTab />}
       {active === 'about' && <AboutTab />}
-    </section>
+    </PageShell>
   );
 }
 

@@ -22,6 +22,7 @@ import { AiUnavailableHint, aiBlocked, aiBlockedTitle, useAiReadiness } from '..
 import { FontColorButton } from '../ui/FontColorButton';
 import { saveBlob } from '../utils/download'; // T03197：分享快照下载（文件名取自服务端 Content-Disposition）
 import { api, type AITool } from '../api/client';
+import { PageHeader, PageShell } from '../ui/layout'; // T06327：核心页统一页面壳与页头
 import { askConfirm, askInput, askInputEx, showReport } from '../ui/dialogs';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
 import { buildWorkdayCtx } from '../utils/workday'; // T01059 后续：甘特拖动
@@ -2912,6 +2913,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
   };
 
   return (
+    <PageShell className="mt-plan-page">
     <div ref={scrollRef} onScroll={onScrollSave} style={{ padding: 16, color: 'var(--text)', maxHeight: 'calc(100vh - 60px)', overflowY: 'auto' }}>
       <style>{`
         .plan-dragging { opacity: .55; transform: scale(1.01) rotate(.4deg); box-shadow: 0 6px 18px rgba(0,0,0,.22); background: var(--surface-2); }
@@ -2922,6 +2924,11 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
       <style>{planTableCss}</style>
       {/* T00519：描述为空时提示信息调浅 + 倾斜 */}
       <style>{`.plan-desc-ph::placeholder { color: var(--text-muted); opacity: .55; font-style: italic; }`}</style>
+      <PageHeader
+        title="项目计划"
+        description="按项目编排串行/并行计划、里程碑与依赖；工期、估算、需求矩阵和测试用例在同一时间线上对齐。"
+        breadcrumbs={[{ label: '工作台' }, { label: '项目计划' }]}
+      />
       {/* 工具条：项目选择 + 增删导入导出（T00491：操作控件/下拉默认隐藏，悬浮工具条显示） */}
       <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
         <PlanProjectPicker projects={projects} sortedProjects={sortedProjects} projectId={projectId} setProjectId={setProjectId}
@@ -3159,5 +3166,6 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         <MilestoneForecastPanel forecast={forecasts[fcOpenId]} onClose={() => setFcOpenId('')} />
       )}
     </div>
+    </PageShell>
   );
 }

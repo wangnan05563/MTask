@@ -10,6 +10,7 @@ import { PlatformLogo } from '../ui/PlatformLogo';
 import { ScrollArrows } from '../ui/ScrollArrows';
 import { desktopApi } from '../ui/desktop';
 import { RunDetailPage } from './RunDetailPage'; // T06298（REQ-036 / PRD §B6）：Run 追踪详情页
+import { PageHeader, PageShell } from '../ui/layout'; // T06327：核心页统一页面壳与页头
 
 /**
  * T01271-FR1.4：「执行会话」面板——展示外部平台会话的存活 / 进度 / 阶段 / 停滞标记。
@@ -399,6 +400,7 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
   }
 
   return (
+    <PageShell className="mt-exec-page">
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0, height: standalone ? '100vh' : undefined }}>
       <style>{`
         @property --exec-flow-angle {
@@ -470,6 +472,12 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
         .exec-icon-btn:active { background: var(--accent-soft, var(--surface-2)) !important; }
       `}</style>
 
+      <PageHeader
+        title="执行会话"
+        description="按状态分列观测外部平台会话的存活、进度与停滞；支持重派、置顶监控与 Run 追踪。"
+        breadcrumbs={[{ label: '工作台' }, { label: '执行会话' }]}
+      />
+
       {/* T06007：置顶监控/刷新移入右侧通知区头部（通知中心图标之后、更新时间之前）；独立监控窗保留状态徽标 */}
       {standalone && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, flexShrink: 0, paddingTop: 12, paddingLeft: 16, paddingRight: 16 }}>
@@ -493,7 +501,7 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
           gridTemplateColumns: `${leftPct}% 10px minmax(0, 1fr)`,
           gap: 0,
           minHeight: 520,
-          height: standalone ? 'calc(100vh - 96px)' : 'calc(100vh - 140px)',
+          height: standalone ? 'calc(100vh - 220px)' : 'calc(100vh - 260px)',
           padding: standalone ? '0 16px 12px' : 0,
           boxSizing: 'border-box',
           minWidth: 0,
@@ -559,6 +567,7 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
         </div>
       </div>
     </div>
+    </PageShell>
   );
 }
 
