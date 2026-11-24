@@ -17,6 +17,7 @@ import { RecurringService, TokenService } from '../services/RecurringService'; /
 import { readEventRetentionDays, setEventRetentionDays, pruneTaskEvents, countEvents } from '../services/EventRetention'; // T01064 后续：事件表保留期清理
 import { readPoolStatus, setPoolLimit } from '../services/ConcurrencyPool'; // T01066 后续：并行任务池单源
 import { ExecSessionService } from '../services/ExecSessionService'; // T01271：执行会话面板数据源
+import { GlobalSearchService, parseSearchTypes } from '../services/GlobalSearchService'; // T06296（REQ-003 / PRD §A3）：全局搜索
 import { buildTodayView } from '../services/TodayService'; // T06294（REQ-001）：Today View 首页聚合
 import { inboxService, InboxError, type InboxStatus, type InboxType } from '../services/InboxService'; // T06295（REQ-032）：可操作收件箱
 import { PushService } from '../services/PushService'; // T01440：Web Push
@@ -890,6 +891,24 @@ api.delete('/recurring/:id', (req, res) => {
   res.status(204).end();
 });
 
+/**
+ * T06296（REQ-003 / PRD §A3 / AC-02）：全局搜索统一入口。
+ *
+ * 只读本地库：任务 + Run（原生 agent_runs ∪ 旧 exec_sessions），不触碰 `/workspace/search` 的外部文件索引。
+ * `q` 为空返回最近对象；`type:task|run|all` 在 q 内生效，?type= 作为外部筛选补充。
+ * limit 是每组上限，前端命令面板取 10（默认），性能基准取 20。
+ */
+api.get('/search', (req, res) => {
+  try {
+    const q = scalarText(req.query.q ?? '').slice(0, 200);
+    const limit = Math.min(25, Math.max(1, Math.floor(Number(req.query.limit) || 10)));
+    const types = parseSearchTypes(req.query.type);
+    res.json(new GlobalSearchService().search(q, { limit, types }));
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
 // T01271-FR1.4：执行会话面板数据源——外部平台执行会话列表（存活/进度/阶段/停滞）。
 // 读取路径内部惰性判定停滞，面板打开即见正确状态（不依赖 60s 定时器恰好跑到）。
 api.get('/exec-sessions', (_req, res) => res.json(ExecSessionService.listSessions()));
@@ -900,6 +919,12 @@ api.get('/exec-sessions', (_req, res) => res.json(ExecSessionService.listSession
  * 前端比对 sig：变了才整行重取，实时性与原 2s 全量轮询等价。
  */
 api.get('/exec-sessions/digest', (_req, res) => res.json(ExecSessionService.digest()));
+// T06296：全局搜索 Run 结果按 id 深链——首屏只取最近 100 条，老会话需单独取回后并入看板。
+api.get('/exec-sessions/:id', (req, res) => {
+  const row = ExecSessionService.getSession(String(req.params.id || ''));
+  if (!row) return res.status(404).json({ error: 'session_not_found' });
+  return res.json(row);
+});
 
 // T03175（AI-402②③）：停滞/失败会话一键重派——派发经既有 RelayDispatch，校验与归位在 service 单源。
 api.post('/exec-sessions/:id/redispatch', async (req, res) => {

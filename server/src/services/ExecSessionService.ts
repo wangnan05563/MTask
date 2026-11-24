@@ -427,8 +427,23 @@ export const ExecSessionService = {
     const rows = db.prepare(
       'SELECT * FROM exec_sessions ORDER BY last_heartbeat DESC LIMIT ?',
     ).all(Math.min(500, Math.max(1, limit))) as ExecSessionRow[];
+    return this.hydrate(rows);
+  },
 
-    // 关联任务一次性批量查（SQLite 变量上限 999，按 200 分批，与 TaskService 同口径）
+  /**
+   * T06296：全局搜索的 Run 结果深链。面板首屏只取最近 100 条（T06273 性能口径），
+   * 更早的会话点进来会“页面打开了但没有卡片”；本方法按 id 取单行并复用同一份任务摘要，
+   * 前端把它并入看板后即可正确定位。返回 null 表示会话已不存在。
+   */
+  getSession(sessionRowId: string): ExecSessionView | null {
+    this.expireStaleSessions();
+    const row = getDb().prepare('SELECT * FROM exec_sessions WHERE id = ?').get(sessionRowId) as ExecSessionRow | undefined;
+    return row ? this.hydrate([row])[0] : null;
+  },
+
+  /** 会话行 → 面板视图：批量补关联任务摘要（SQLite 变量上限 999，按 200 分批）。 */
+  hydrate(rows: readonly ExecSessionRow[]): ExecSessionView[] {
+    const db = getDb();
     const ids = new Set<string>();
     for (const r of rows) for (const id of parseTaskIds(r.task_ids)) ids.add(id);
     const taskMap = new Map<string, SessionTaskBrief>();

@@ -1,0 +1,182 @@
+{
+  "pass": 9,
+  "fail": 0,
+  "checks": [
+    {
+      "name": "SEARCH-00 静态服务器 + API 代理就绪",
+      "ok": true,
+      "extra": {
+        "port": 39917,
+        "apiPort": 5195,
+        "token": true
+      }
+    },
+    {
+      "name": "SEARCH-01 Ctrl+K 打开统一搜索浮层",
+      "ok": true,
+      "extra": {
+        "open": true,
+        "hasPalette": true,
+        "rowCount": 3,
+        "groups": [
+          "任务"
+        ],
+        "labels": [
+          "任务 / T06296 [PRD] 全局搜索服务 / 开发搜索API与前端浮层，支持任务与Run查询。不索引外部库。完成定义：检索响应。 做什么：全局搜索服务；边界：不扩展本期范围外功能，不改变既有生产口径；完成定义：交付API 代码，关联 REQ-003、AC-02，通过 AC-02，并有可复核证据。 验收项：AC-02。 关联需求/验收准则： - REQ-003（需求",
+          "任务 / T06329 顶栏项目/工作区切换器 / … 的左侧导航与页签切换器；不改后端项目模型与数据库。 - 全局搜索/快速捕获分别由 T06296/T06297 承接，不在本单重复。 - 不包含移动端。 / MTask十期 · 待办 · 普通优先级",
+          "任务 / T06289 [PRD] 开发全局导航 / 构建左侧5项导航与顶栏切换器，支持折叠交互。不包含移动端。完成定义：导航交互可用。 做什么：开发全局导航；边界：不扩展本期范围外功能，不改变既有生产口径；完成定义：交付导航组件，关联 REQ-011，并有可复核证据。 关联需求/验收准则： - REQ-011（需求）：一级导航收敛为5项，使用统一页面壳规范所有页面布局。 / MTask十期 · 已完成 · 紧急优先级"
+        ],
+        "snippets": 3,
+        "hint": "命中 3 条 · 76ms",
+        "zero": false,
+        "suggestions": [],
+        "panelWidth": 620,
+        "panelRight": 1019,
+        "viewport": {
+          "w": 1418,
+          "h": 902
+        },
+        "scrollWidth": 1418
+      }
+    },
+    {
+      "name": "SEARCH-02 任务查询 T06296 精确排首并带上下文",
+      "ok": true,
+      "extra": {
+        "labels": [
+          "任务 / T06296 [PRD] 全局搜索服务 / 开发搜索API与前端浮层，支持任务与Run查询。不索引外部库。完成定义：检索响应。 做什么：全局搜索服务；边界：不扩展本期范围外功能，不改变既有生产口径；完成定义：交付API 代码，关联 REQ-003、AC-02，通过 AC-02，并有可复核证据。 验收项：AC-02。 关联需求/验收准则： - REQ-003（需求",
+          "任务 / T06329 顶栏项目/工作区切换器 / … 的左侧导航与页签切换器；不改后端项目模型与数据库。 - 全局搜索/快速捕获分别由 T06296/T06297 承接，不在本单重复。 - 不包含移动端。 / MTask十期 · 待办 · 普通优先级",
+          "任务 / T06289 [PRD] 开发全局导航 / 构建左侧5项导航与顶栏切换器，支持折叠交互。不包含移动端。完成定义：导航交互可用。 做什么：开发全局导航；边界：不扩展本期范围外功能，不改变既有生产口径；完成定义：交付导航组件，关联 REQ-011，并有可复核证据。 关联需求/验收准则： - REQ-011（需求）：一级导航收敛为5项，使用统一页面壳规范所有页面布局。 / MTask十期 · 已完成 · 紧急优先级"
+        ],
+        "snippets": 3,
+        "hint": "命中 3 条 · 76ms"
+      }
+    },
+    {
+      "name": "SEARCH-03 type:run 只出 Run 组并命中执行会话",
+      "ok": true,
+      "extra": {
+        "groups": [
+          "Run"
+        ],
+        "rows": 6,
+        "labels": [
+          "Run / T05782 D通道实机验收失败样例：读取不存在路径 / 阶段：D 通道失败样例：目标文件不存在 · 进度 0%",
+          "Run / T05793 修复豆包MCP调用被误识为WorkBuddy的显示问题 / 阶段：完工 · 进度 100% / MTask十期 · workbuddy · 已完成 · 完工",
+          "Run / T05789 设置菜单下各子页面，去掉标题图标 / 阶段：完工 · 进度 100% / MTask十期 · workbuddy · 已完成 · 完工",
+          "Run / T05780 AI用量统计视图改主题Tab切换 / 阶段：完工：左栏输入框收缩+区域边框，build与宽/窄屏UI实测通过 · 进度 100% / MTask十期 · workbuddy · 已完成 · 完工：左栏输入框收缩+区域边框，build与宽/窄屏UI实测通过",
+          "Run / T05782 D通道实机验收失败样例：读取不存在路径 / 阶段：D 通道失败样例：目标文件不存在 · 进度 0% / MTask十期 · workbuddy · 失败 · D 通道失败样例：目标文件不存在"
+        ]
+      }
+    },
+    {
+      "name": "SEARCH-04 ↑↓ 可切换结果高亮",
+      "ok": true,
+      "extra": {
+        "backgrounds": [
+          "rgba(0, 0, 0, 0)",
+          "rgb(243, 244, 246)",
+          "rgba(0, 0, 0, 0)"
+        ],
+        "firstDiffers": true
+      }
+    },
+    {
+      "name": "SEARCH-05 点 Run 直达执行会话并高亮目标卡片",
+      "ok": true,
+      "extra": {
+        "clicked": true,
+        "onExec": true,
+        "expected": "41598873-7d64-4759-a173-dc65b71896a1",
+        "page": true,
+        "focused": true,
+        "sessionId": "41598873-7d64-4759-a173-dc65b71896a1",
+        "status": "failed",
+        "title": "MTask十期\n3 天前\nworkbuddy-T05782-20261120154827\n重派\n阶段：D 通道失败样例：目标文件不存在\n待上报\nT05782\nD",
+        "probe": {
+          "events": [
+            {
+              "id": "41598873-7d64-4759-a173-dc65b71896a1",
+              "at": 3040.199999988079
+            }
+          ],
+          "stored": null,
+          "cards": 101,
+          "ids": [
+            "389f3486-c241-4da0-9103-a7c145700bbc",
+            "d575e355-bcc9-41f5-b009-9cc48a67352e",
+            "1cbea279-c310-44de-81fc-59c8d81dbea6",
+            "21520651-6a30-492b-a3db-1ead5ec91508",
+            "91dd3854-db64-4715-9657-c66e709d0c50",
+            "b607d808-a216-4b7f-a09a-110d10b25b7f",
+            "d2506a23-172c-4c40-b9a8-386b4217b09e",
+            "b04a06e9-51c1-4b3a-9798-f276192f5f10",
+            "b69de9e6-3ab3-4171-b2b8-a5e1ac51592f",
+            "2aba7628-9e5d-4bdf-a73a-c742bdf57da0",
+            "1891e043-6074-45c1-a42d-9546ba4d8245",
+            "eb3cad6f-d984-4bc0-9f4b-460b69b6ab22"
+          ],
+          "hasExpected": true,
+          "classes": [
+            "exec-kanban-card exec-card-running",
+            "exec-kanban-card exec-card-running",
+            "exec-kanban-card",
+            "exec-kanban-card",
+            "exec-kanban-card",
+            "exec-kanban-card"
+          ]
+        }
+      }
+    },
+    {
+      "name": "SEARCH-06 零结果给搜索建议",
+      "ok": true,
+      "extra": {
+        "zero": true,
+        "suggestions": [
+          "减少关键词，只保留标题中的一个词",
+          "按任务编号搜索，例如 T06296",
+          "按 Run 会话 ID、阶段或平台搜索，例如 workbuddy",
+          "去掉 type: / project: / status: 条件后重试"
+        ]
+      }
+    },
+    {
+      "name": "SEARCH-07 三档截图有效且无横向溢出",
+      "ok": true,
+      "extra": {
+        "files": [
+          {
+            "file": "01-search-task-1440.png",
+            "bytes": 203569
+          },
+          {
+            "file": "02-search-run-1280.png",
+            "bytes": 215305
+          },
+          {
+            "file": "03-search-zero-760.png",
+            "bytes": 116909
+          },
+          {
+            "file": "04-run-focus-1280.png",
+            "bytes": 198983
+          }
+        ],
+        "panelWidth": 620,
+        "viewport": {
+          "w": 1280,
+          "h": 900
+        },
+        "scrollWidth": 1280
+      }
+    },
+    {
+      "name": "SEARCH-08 无未捕获前端异常",
+      "ok": true,
+      "extra": {
+        "consoleErrors": []
+      }
+    }
+  ]
+}

@@ -3,6 +3,7 @@ import { Activity, Info, Loader2, Pin, RefreshCw, RotateCcw } from 'lucide-react
 import { api, type ExecSession } from '../api/client';
 import { EmptyState } from '../ui/EmptyState';
 import { focusTaskByNo } from '../ui/focusTask';
+import { consumeExecSessionFocus } from '../ui/focusExecSession'; // T06296：全局搜索点 Run 后定位会话卡片
 import { fullTime, relTime } from '../ui/format';
 import { NotificationFeed } from '../ui/NotificationFeed';
 import { PlatformLogo } from '../ui/PlatformLogo';
@@ -139,10 +140,34 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
   const cardRefs = useRef(new Map<string, HTMLDivElement>());
   const prevRectsRef = useRef(new Map<string, DOMRect>());
   const prevStatusRef = useRef(new Map<string, string>());
+  /** T06296：全局搜索点 Run 的待定位会话；列表尚未加载时先存着，渲染完成后再滚动。 */
+  const pendingFocusRef = useRef<string | null>(null);
+  /** T06296：目标会话可能早于「最近 100 条」首屏；记住 id，列表每次刷新都把它并回看板。 */
+  const pinnedSessionIdRef = useRef<string | null>(null);
+  const extraSessionsRef = useRef(new Map<string, ExecSession>());
 
   const load = useCallback(async () => {
     try {
-      setRows(await api.get<ExecSession[]>('/exec-sessions'));
+      const list = await api.get<ExecSession[]>('/exec-sessions');
+      const pinned = pinnedSessionIdRef.current;
+      let merged = list;
+      if (pinned) {
+        const inList = list.some((s) => s.id === pinned);
+        if (inList) extraSessionsRef.current.delete(pinned);
+        else {
+          let extra = extraSessionsRef.current.get(pinned);
+          if (!extra) {
+            try {
+              extra = await api.get<ExecSession>(`/exec-sessions/${encodeURIComponent(pinned)}`);
+              extraSessionsRef.current.set(pinned, extra);
+            } catch {
+              extra = undefined; // 会话已被清理：不伪造卡片，按首屏列表展示
+            }
+          }
+          if (extra) merged = [extra, ...list.filter((s) => s.id !== pinned)];
+        }
+      }
+      setRows(merged);
       setError('');
     } catch (e) {
       setError(String((e as Error).message ?? e));
@@ -150,6 +175,50 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
       setLoading(false);
     }
   }, []);
+
+  /** T06296：滚动到目标会话并给一次高亮脉冲；卡片还没挂载就留给 rows 更新后的 effect。 */
+  const applySessionFocus = useCallback((id: string) => {
+    const el = cardRefs.current.get(id);
+    if (!el) {
+      pendingFocusRef.current = id;
+      return;
+    }
+    pendingFocusRef.current = null;
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    el.classList.remove('exec-card-focus');
+    // 重新触发 CSS 动画：读一次布局属性即可重置 animation。
+    void el.offsetWidth;
+    el.classList.add('exec-card-focus');
+    globalThis.setTimeout(() => el.classList.remove('exec-card-focus'), 1800);
+  }, []);
+
+  useEffect(() => {
+    const id = consumeExecSessionFocus();
+    if (id) {
+      // T06296：先记 pin，load() 会判断是否在首屏 100 条内，不在则单取详情并回填。
+      pinnedSessionIdRef.current = id;
+      pendingFocusRef.current = id;
+    }
+  }, []);
+
+  useEffect(() => {
+    const onFocus = (e: Event) => {
+      const id = (e as CustomEvent<{ id?: string }>).detail?.id;
+      if (!id) return;
+      pendingFocusRef.current = id;
+      pinnedSessionIdRef.current = id;
+      if (cardRefs.current.has(id)) applySessionFocus(id);
+      else void load(); // 会话不在当前首屏：取详情后由 rows 更新 effect 定位
+    };
+    globalThis.addEventListener('mtaskFocusExecSession', onFocus);
+    return () => globalThis.removeEventListener('mtaskFocusExecSession', onFocus);
+  }, [applySessionFocus, load]);
+
+  useEffect(() => {
+    if (loading) return;
+    const id = pendingFocusRef.current;
+    if (id) applySessionFocus(id);
+  }, [loading, rows, applySessionFocus]);
 
   // L3 丁档：2s 轮询只拉 `{sig}`（~100B），指纹变了才整行重取；
   // 原实现每 2s 拉 51,346B 的整行列表，重绘时机与本形态等价。
@@ -331,6 +400,20 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
         @keyframes exec-spin { to { transform: rotate(360deg) } }
         @keyframes exec-card-in { from { opacity: 0; transform: translateY(4px) } to { opacity: 1; transform: none } }
         @keyframes exec-running-flow { to { --exec-flow-angle: 360deg } }
+        /* T06296：搜索命中定位——脉冲与运行流光分开，避免和 active 卡片的 ::before 抢视觉。 */
+        @keyframes exec-card-focus {
+          0%, 100% { outline-color: transparent; box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
+          18% { outline-color: var(--accent); box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 16%, transparent); }
+          55% { outline-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent); }
+        }
+        .exec-kanban-card.exec-card-focus {
+          outline: 2px solid var(--accent);
+          outline-offset: 2px;
+          animation: exec-card-focus 1.6s ease-out;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .exec-kanban-card.exec-card-focus { animation: none; }
+        }
         .exec-kanban-card { will-change: transform; }
         .exec-kanban-card:hover { border-color: var(--border-strong) !important; box-shadow: 0 4px 14px rgba(15,23,42,.08); }
         /* T05766：只有进行中的会话显示绿色旋转流光边框；已停滞/失败/完成保持静态边框。
@@ -579,6 +662,7 @@ function SessionCard({ s, cardRef, enterAnimation = false }: { readonly s: ExecS
       ref={cardRef}
       className={`exec-kanban-card${s.status === 'active' ? ' exec-card-running' : ''}`}
       data-lck="exec-session-card"
+      data-session-id={s.id}
       data-status={s.status}
       style={{ ...card, display: 'flex', flexDirection: 'column', gap: 6, animation: enterAnimation ? 'exec-card-in .24s ease-out' : undefined }}
     >

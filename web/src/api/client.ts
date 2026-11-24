@@ -291,6 +291,57 @@ export interface Task {
   images: TaskImage[];
 }
 
+/* ---------- T06296（REQ-003 / PRD §A3）：全局搜索 ---------- */
+
+export type SearchHitType = 'task' | 'run';
+export type SearchHitSource = 'task' | 'agent_run' | 'exec_session';
+export type SearchMatch = 'exact' | 'prefix' | 'contains' | 'recent';
+
+export interface SearchHit {
+  type: SearchHitType;
+  id: string;
+  title: string;
+  subtitle: string;
+  snippet: string;
+  status: string;
+  taskId: string | null;
+  taskNo: string | null;
+  projectId: string | null;
+  projectName: string;
+  updatedAt: string | null;
+  source: SearchHitSource;
+  match: SearchMatch;
+  score: number;
+}
+
+export interface SearchGroup {
+  type: SearchHitType;
+  label: string;
+  total: number;
+  items: SearchHit[];
+}
+
+export interface SearchOutOfSight {
+  total: number;
+  archived: number;
+  history: number;
+  shelved: number;
+}
+
+export interface SearchResponse {
+  query: string;
+  normalizedQuery: string;
+  groups: SearchGroup[];
+  total: number;
+  limit: number;
+  elapsedMs: number;
+  degraded: boolean;
+  hint: string;
+  zeroResult: boolean;
+  suggestions: string[];
+  outOfSight: SearchOutOfSight;
+}
+
 /* ---------- 八期（§3.1/§3.2）任务 ↔ Git 提交：客户端类型，字段名与服务端下发一致 ---------- */
 
 /** 关联来源（开放枚举，`ci` 预留给未来 CI 回写） */
