@@ -54,6 +54,59 @@ export interface ReceiptWarning {
   blocking: boolean;
 }
 
+type WebSearchState = 'off' | 'ok' | 'empty';
+
+/** T06060：描述里没有“来源”二字，不代表可以不给来源；资讯/热点类任务默认要求可核验链接 */
+function isNewsLikeText(text: string): boolean {
+  // “动态”单独出现时可能是开发任务的“动态表单/动态加载”，只有行业/AI/技术等限定词后的动态才算资讯。
+  return /新闻|资讯|日报|周报|早报|晚报|简报|热点|行业动态|市场动态|AI动态|技术动态/i.test(text);
+}
+
+/** URL 只在 scheme/host 上做归一；path 通常大小写敏感，不能整体 lowerCase */
+function normalizeSourceUrl(raw: string): string {
+  const trimmed = raw.replace(/[.,;:!?)\]}）】。，、；："'”’]+$/g, '').replace(/\/$/, '');
+  try {
+    const url = new URL(trimmed);
+    url.hash = '';
+    return `${url.protocol}//${url.host.toLowerCase()}${url.pathname.replace(/\/$/, '')}${url.search}`;
+  } catch {
+    return trimmed.toLowerCase();
+  }
+}
+
+/** 按“条目起始行”切块：- / 1. / **1. / 第1条 / ① 都算一条，续行归入同一条 */
+function splitReceiptEntries(text: string): string[] {
+  const startRe = /^[-*]\s+|^\*\*\d+[.、)]|^\d+[.、)]|^[①②③④⑤⑥⑦⑧⑨⑩]|^\*\*第\d+条|^第\d+条/;
+  const lines = text.split(/\r?\n/);
+  const blocks: string[] = [];
+  let current: string[] | null = null;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (startRe.test(trimmed)) {
+      if (current) blocks.push(current.join('\n'));
+      current = [trimmed];
+    } else if (current) {
+      current.push(trimmed);
+    }
+  }
+  if (current) blocks.push(current.join('\n'));
+  return blocks;
+}
+
+/** 从 buildQueueWebContext 的编号行提取标题/URL，供格式门判断“发布类来源”而不只看 URL 关键词 */
+function parseWebContextItems(webContext: string): Array<{ title: string; url: string }> {
+  const items: Array<{ title: string; url: string }> = [];
+  const re = /^\s*\d+\.\s*(.+?)\n\s*(https?:\/\/[^\s]+)/gm;
+  for (const match of webContext.matchAll(re)) {
+    const title = match[1].trim();
+    const url = match[2].replace(/[.,;:!?)\]}）】。，、；："'”’]+$/g, '');
+    if (title && url) items.push({ title, url });
+    if (items.length >= 20) break;
+  }
+  return items;
+}
+
 /**
  * T06076 质量门：队列回执不是「有字就合格」。
  * 当前工具都是普通 LLM（无联网），「今日资讯」类任务最容易产出自述知识截止的假时效内容；
@@ -104,101 +157,162 @@ export function receiptWarnings(job: Pick<QueueJobRow, 'request_payload' | 'resp
     out.push({ code: 'placeholder', label: '疑似占位内容', detail: '回执含 TODO/待补充/未生成等占位词，可能不是完整结论', blocking: true });
   }
   let description = '';
+  let title = '';
   let webSources: string[] = [];
+  let webSearchState: WebSearchState = 'off';
+  let webItemText = '';
   try {
-    const payload = JSON.parse(job.request_payload ?? '{}') as { description?: unknown; webSources?: unknown };
+    const payload = JSON.parse(job.request_payload ?? '{}') as {
+      title?: unknown;
+      description?: unknown;
+      webSources?: unknown;
+      webSearchState?: unknown;
+      webItems?: unknown;
+    };
+    title = String(payload.title ?? '');
     description = String(payload.description ?? '');
     if (Array.isArray(payload.webSources)) webSources = payload.webSources.filter((url): url is string => typeof url === 'string');
+    if (payload.webSearchState === 'ok' || payload.webSearchState === 'empty' || payload.webSearchState === 'off') {
+      webSearchState = payload.webSearchState;
+    } else if (webSources.length > 0) {
+      // 兼容 276 之前没有 webSearchState 的旧快照
+      webSearchState = 'ok';
+    }
+    if (Array.isArray(payload.webItems)) {
+      webItemText = payload.webItems
+        .filter((item): item is { title?: unknown; url?: unknown } => !!item && typeof item === 'object')
+        .map((item) => `${String(item.title ?? '')} ${String(item.url ?? '')}`)
+        .join(' ');
+    }
   } catch { /* request_payload 不是 JSON 时只看回执本身 */ }
+  const hasUrl = /https?:\/\//i.test(text);
   const wantsSource = /来源|出处|引用|链接|标注/.test(description);
-  if (wantsSource && !/https?:\/\//i.test(text)) {
-    out.push({
-      code: 'no_source',
-      label: '任务要求来源但无链接',
-      detail: '任务描述要求标注来源，回执正文没有任何 http(s) 链接，来源不可核验',
-      blocking: true,
-    });
-  }
-  // 来源必须来自发送时注入的检索结果；模型改写仓库名/路径同样视为不可核验。
-  // 即使任务没写「来源」二字，只要回执引用了链接，链接也必须能对回检索结果。
-  if (webSources.length > 0 && /https?:\/\//i.test(text)) {
-    const normalize = (url: string) => url.replace(/[.,;:!?)\]}）】。，、；："'”’]+$/g, '').replace(/\/$/, '').toLowerCase();
-    const allowed = new Set(webSources.map(normalize));
-    const cited = [...new Set((text.match(/https?:\/\/[^\s)\]>"']+/g) ?? []).map(normalize))];
-    const unknown = cited.filter((url) => !allowed.has(url));
-    if (unknown.length > 0) {
+  const newsLike = isNewsLikeText(`${title}\n${description}`);
+  const requiresSource = wantsSource || newsLike;
+  if (webSearchState === 'empty') {
+    if (hasUrl) {
       out.push({
         code: 'no_source',
-        label: '来源链接不在检索结果',
-        detail: `回执引用了未注入的来源：${unknown.slice(0, 3).join('、')}；链接必须原样复制检索结果，不得改写仓库名或路径`,
+        label: '检索失败但回执仍带链接',
+        detail: '本次检索没有可用来源，回执中的链接不可核验，疑似编造',
         blocking: true,
       });
+    } else if (requiresSource) {
+      out.push({
+        code: 'no_source',
+        label: '检索无可用来源且回执无来源',
+        detail: '本次检索没有可用来源，任务又要求可核验信息，回执没有给出任何来源链接',
+        blocking: true,
+      });
+    }
+  } else {
+    if (requiresSource && !hasUrl) {
+      out.push({
+        code: 'no_source',
+        label: '回执没有可核验来源',
+        detail: webSearchState === 'ok'
+          ? '本次已注入检索结果，但回执没有任何来源链接'
+          : '任务要求或属于资讯/热点类内容，回执正文没有 http(s) 链接',
+        blocking: true,
+      });
+    }
+    // 来源必须来自发送时注入的检索结果；模型改写仓库名/路径同样视为不可核验。
+    if (webSources.length > 0 && hasUrl) {
+      const allowed = new Set(webSources.map(normalizeSourceUrl));
+      const cited = [...new Set((text.match(/https?:\/\/[^\s)\]>"']+/g) ?? []).map(normalizeSourceUrl))];
+      const unknown = cited.filter((url) => !allowed.has(url));
+      if (unknown.length > 0) {
+        out.push({
+          code: 'no_source',
+          label: '来源链接不在检索结果',
+          detail: `回执引用了未注入的来源：${unknown.slice(0, 3).join('、')}；链接必须原样复制检索结果，不得改写仓库名或路径`,
+          blocking: true,
+        });
+      }
     }
   }
   // T06060/T06059：任务给出了硬格式（分段/行数），回执不能只“看起来像资讯”。
-  const sectionMatch = description.match(/按((?:[「“][^」”]+[」”][、，,]?)+)分段/);
-  if (sectionMatch) {
-    const names = [...sectionMatch[1].matchAll(/[「“]([^」”]+)[」”]/g)].map((m) => m[1]);
-    const missing = names.filter((name) => !text.includes(name));
-    if (missing.length > 0) {
-      out.push({
-        code: 'format',
-        label: '未按任务要求分段',
-        detail: `任务要求分段：${names.join(' / ')}；回执缺少：${missing.join(' / ')}`,
-        blocking: true,
-      });
-    }
-    if (names.includes('新项目')) {
-      const section = text.match(/新项目([\s\S]*?)(?=版本更新|其他动态|$)/)?.[1] ?? '';
-      if (section && !/https?:\/\/github\.com\/[^/\s]+\/[^/\s]+/i.test(section)) {
+  // 这些格式规则只对资讯/热点类任务生效，避免开发任务的“整理 3 条/按模块分段”被误伤。
+  if (newsLike) {
+    const sectionMatch = description.match(/按((?:[「“][^」”]+[」”][、，,]?)+)分段/);
+    if (sectionMatch) {
+      const names = [...sectionMatch[1].matchAll(/[「“]([^」”]+)[」”]/g)].map((m) => m[1]);
+      const missing = names.filter((name) => !text.includes(name));
+      if (missing.length > 0) {
         out.push({
           code: 'format',
-          label: '新项目段缺少 GitHub 仓库',
-          detail: '任务要求 GitHub 上冒头的项目，「新项目」段必须列出 github.com/owner/repo 形式的仓库链接',
+          label: '未按任务要求分段',
+          detail: `任务要求分段：${names.join(' / ')}；回执缺少：${missing.join(' / ')}`,
+          blocking: true,
+        });
+      }
+      if (names.includes('新项目')) {
+        const section = text.match(/新项目([\s\S]*?)(?=版本更新|其他动态|$)/)?.[1] ?? '';
+        const sectionEmpty = /本期无|无符合条件|暂无/.test(section);
+        if (section && !sectionEmpty && !/https?:\/\/github\.com\/[^/\s]+\/[^/\s]+/i.test(section)) {
+          out.push({
+            code: 'format',
+            label: '新项目段缺少 GitHub 仓库',
+            detail: '任务要求 GitHub 上冒头的项目，「新项目」段必须列出 github.com/owner/repo 形式的仓库链接',
+            blocking: true,
+          });
+        }
+      }
+      if (names.includes('版本更新')) {
+        const section = text.match(/版本更新([\s\S]*?)(?=其他动态|$)/)?.[1] ?? '';
+        // 优先用标题/URL 文本判断发布类来源；旧快照没有 webItems 时回落到 URL 关键词。
+        const releaseText = `${webItemText} ${webSources.join(' ')}`;
+        const hasReleaseSource = /introducing|release|new-model|announcement|发布|上线|新版本|正式推出/i.test(releaseText);
+        if (section && /本期无/.test(section) && hasReleaseSource) {
+          out.push({
+            code: 'format',
+            label: '版本更新段误报本期无',
+            detail: '检索结果中存在发布类条目，但「版本更新」写本期无；发布类条目应归入该段',
+            blocking: true,
+          });
+        }
+      }
+    }
+    const lineLimit = description.match(/全文\s*(\d+)\s*行以内/);
+    if (lineLimit) {
+      const nonEmptyLines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).length;
+      if (nonEmptyLines > Number(lineLimit[1])) {
+        out.push({
+          code: 'format',
+          label: '超出任务行数限制',
+          detail: `任务要求全文不超过 ${lineLimit[1]} 行，回执非空行数为 ${nonEmptyLines}`,
           blocking: true,
         });
       }
     }
-    if (names.includes('版本更新')) {
-      const section = text.match(/版本更新([\s\S]*?)(?=其他动态|$)/)?.[1] ?? '';
-      const hasReleaseSource = webSources.some((url) => /introducing|release|new-model|announcement/i.test(url));
-      if (section && /本期无/.test(section) && hasReleaseSource) {
+    const countRange = description.match(/(\d+)\s*[-~至]\s*(\d+)\s*条/);
+    const countExact = countRange ? null : description.match(/(?:整理|筛选|输出|列出)\s*(\d+)\s*条/);
+    const entryBlocks = splitReceiptEntries(text);
+    if (countRange || countExact) {
+      const min = countRange ? Number(countRange[1]) : Number(countExact![1]);
+      const max = countRange ? Number(countRange[2]) : min;
+      if (entryBlocks.length < min || entryBlocks.length > max) {
         out.push({
           code: 'format',
-          label: '版本更新段误报本期无',
-          detail: '检索结果中存在发布类条目，但「版本更新」写本期无；发布类条目应归入该段',
+          label: '条目数量不符合任务要求',
+          detail: `任务要求 ${countRange ? `${min}–${max}` : min} 条，回执识别到 ${entryBlocks.length} 条`,
           blocking: true,
         });
       }
     }
-  }
-  const lineLimit = description.match(/全文\s*(\d+)\s*行以内/);
-  if (lineLimit) {
-    const nonEmptyLines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).length;
-    if (nonEmptyLines > Number(lineLimit[1])) {
-      out.push({
-        code: 'format',
-        label: '超出任务行数限制',
-        detail: `任务要求全文不超过 ${lineLimit[1]} 行，回执非空行数为 ${nonEmptyLines}`,
-        blocking: true,
-      });
-    }
-  }
-  const countRange = description.match(/(\d+)\s*[-~至]\s*(\d+)\s*条/);
-  const countExact = countRange ? null : description.match(/(?:整理|筛选|输出|列出)\s*(\d+)\s*条/);
-  if (countRange || countExact) {
-    const entries = text.split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => /^[-*]\s+|^\*\*\d+[.、)]|^\d+[.、)]|^[①②③④⑤⑥⑦⑧⑨⑩]|^\*\*第\d+条|^第\d+条/.test(line));
-    const min = countRange ? Number(countRange[1]) : Number(countExact![1]);
-    const max = countRange ? Number(countRange[2]) : min;
-    if (entries.length < min || entries.length > max) {
-      out.push({
-        code: 'format',
-        label: '条目数量不符合任务要求',
-        detail: `任务要求 ${countRange ? `${min}–${max}` : min} 条，回执识别到 ${entries.length} 条`,
-        blocking: true,
-      });
+    // 任务要求“每条”附来源时，逐条检查；只在检索成功时做，检索失败由上面的 empty 分支处理。
+    if (requiresSource && webSearchState !== 'empty' && entryBlocks.length > 0) {
+      const missing = entryBlocks
+        .map((block, index) => (/https?:\/\//i.test(block) ? 0 : index + 1))
+        .filter((index) => index > 0);
+      if (missing.length > 0) {
+        out.push({
+          code: 'no_source',
+          label: '部分条目缺少来源',
+          detail: `第 ${missing.join('、')} 条没有来源链接；任务要求每条信息附来源`,
+          blocking: true,
+        });
+      }
     }
   }
   return out;
@@ -236,6 +350,22 @@ export interface QueueItemInput {
 
 function now(): string {
   return new Date().toISOString();
+}
+
+/**
+ * 同步发送/提交会在 buildSender/buildSubmitter 中更新 request_payload；
+ * 调用方持有的 job 对象仍是发送前的旧快照。自动完成质量门前必须重新读库，
+ * 否则 source/format 检查拿不到本次注入的 webSources。
+ */
+function latestRequestPayload(jobId: string, fallback: string | null): string | null {
+  try {
+    const latest = getDb()
+      .prepare('SELECT request_payload FROM queue_jobs WHERE id = ?')
+      .get(jobId) as { request_payload: string | null } | undefined;
+    return latest?.request_payload ?? fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 /**
@@ -305,7 +435,7 @@ async function submitOneJob(
         "UPDATE queue_jobs SET status = 'success', response_payload = ?, error = NULL, ticket = NULL, submitted_at = ?, finished_at = ? WHERE id = ?",
       ).run(result.content, now(), now(), job.id);
       logService.log('INFO', 'queue', `队列任务同步完成：job=${job.id.slice(0, 8)}（响应 ${result.content.length} 字符）`);
-      autoCompleteQueueTask(job.task_id, job.request_payload, result.content);
+      autoCompleteQueueTask(job.task_id, latestRequestPayload(job.id, job.request_payload), result.content);
       notifyChange('queue');
       return false;
     }
@@ -344,7 +474,7 @@ async function sendOneJob(
     db.prepare(
       "UPDATE queue_jobs SET status = ?, response_payload = ?, error = ?, finished_at = ? WHERE id = ?",
     ).run(result.ok ? 'success' : 'failed', result.content ?? null, result.error ?? null, now(), job.id);
-    if (result.ok) autoCompleteQueueTask(job.task_id, job.request_payload, result.content ?? null);
+    if (result.ok) autoCompleteQueueTask(job.task_id, latestRequestPayload(job.id, job.request_payload), result.content ?? null);
     notifyChange('queue');
   } catch (e) {
     db.prepare("UPDATE queue_jobs SET status = 'failed', error = ?, finished_at = ? WHERE id = ?")
@@ -687,7 +817,7 @@ export const QueueService = {
         if (result.status === 'success') {
           db.prepare("UPDATE queue_jobs SET status = 'success', response_payload = ?, error = NULL, finished_at = ? WHERE id = ?")
             .run(result.content ?? null, now(), job.id);
-          autoCompleteQueueTask(job.task_id, job.request_payload, result.content ?? job.response_payload);
+          autoCompleteQueueTask(job.task_id, latestRequestPayload(job.id, job.request_payload), result.content ?? job.response_payload);
           notifyChange('queue');
         } else if (result.status === 'failed' || result.status === 'timeout') {
           db.prepare("UPDATE queue_jobs SET status = ?, error = ?, finished_at = ? WHERE id = ?")
@@ -707,6 +837,11 @@ export const QueueService = {
 
   /** 快照任务上下文到 request_payload（发送前固化，避免任务被改导致回执错位） */
   snapshotTaskContext(task: TaskView, projectName: string, webContext = ''): string {
+    const webSources = [...new Set((webContext.match(/https?:\/\/[^\s)\]>"']+/g) ?? [])
+      .map((url) => url.replace(/[.,;:!?)\]}）】。，、；："'”’]+$/g, '')))];
+    // no-source 上下文也可能包含诊断里的 URL；优先按上下文语义判定，不能只看 URL 数量。
+    const noSourceContext = /^联网检索：已尝试公开搜索，但没有获取到可用来源/.test(webContext);
+    const webSearchState: WebSearchState = !webContext ? 'off' : noSourceContext || webSources.length === 0 ? 'empty' : 'ok';
     return JSON.stringify({
       taskId: task.id,
       title: task.title,
@@ -715,7 +850,9 @@ export const QueueService = {
       projectName,
       priority: task.priority,
       // 用于回执来源链接核验：只允许引用发送时注入的检索结果
-      webSources: [...new Set((webContext.match(/https?:\/\/[^\s)\]>"']+/g) ?? []).map((url) => url.replace(/[.,;:!?]+$/, '')))],
+      webSources,
+      webSearchState,
+      webItems: parseWebContextItems(webContext),
     }, null, 2);
   },
 };

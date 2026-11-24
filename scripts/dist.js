@@ -78,10 +78,12 @@ const ROOT = path.resolve(__dirname, '..');
     outDir = resolveOutputDir(ROOT, abiOpts);
   }
 
-  // 参数为本仓库固定字面量 + npm script 透传的已知 flag，无外部用户输入进入命令行
-  const cmd = ['electron-builder', '--win', `-c.buildVersion=${version}`, `--config.directories.output=${outDir}`, ...builderArgs.filter((a) => !a.startsWith('--config.directories.output='))].join(' ');
-  console.log(`[dist] ${cmd}`);
-  const child = spawn(cmd, { cwd: ROOT, shell: true, stdio: 'inherit', env: buildChildEnv() });
+  // 参数不拼进 shell 字符串：路径可能带空格，附加参数也不应成为命令注入入口。
+  const builderCli = path.join(ROOT, 'node_modules', 'electron-builder', 'out', 'cli', 'cli.js');
+  const builderArgsFinal = builderArgs.filter((a) => !a.startsWith('--config.directories.output='));
+  const cmd = [process.execPath, builderCli, '--win', `-c.buildVersion=${version}`, `--config.directories.output=${outDir}`, ...builderArgsFinal];
+  console.log(`[dist] ${cmd.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(' ')}`);
+  const child = spawn(cmd[0], cmd.slice(1), { cwd: ROOT, shell: false, stdio: 'inherit', env: buildChildEnv() });
 
   // 成功、失败、被子进程异常终止都要还原 ABI（否则本地 node 直跑 server/dist 会 ERR_DLOPEN_FAILED）
   child.on('exit', (code) => {

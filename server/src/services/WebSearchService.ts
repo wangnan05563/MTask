@@ -11,7 +11,8 @@
  * 只读取公开搜索结果，不登录、不抓取需要授权的页面。
  */
 import { getSetting } from './AppSettings';
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { ProxyAgent } from 'undici';
 
 export interface WebSearchItem {
@@ -240,6 +241,14 @@ function stripHtml(input: string): string {
   return decodeEntities(input.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
 }
 
+/** 外部网页文本进入提示词前去掉可能在数据段落里伪造边界的标签和控制字符 */
+function sanitizePromptText(input: string): string {
+  return input
+    .replace(/<\/?untrusted_search_results>/gi, '')
+    .replace(/[\u0000-\u001f]/g, ' ')
+    .trim();
+}
+
 function safeUrl(raw: string): string | null {
   try {
     const url = new URL(decodeEntities(raw));
@@ -254,6 +263,16 @@ function extractDateToken(input: string): string {
   const m = input.match(/20\d{2}\s*[-/年.]\s*(\d{1,2})\s*[-/月.]\s*(\d{1,2})/);
   if (!m) return '';
   return `20${m[0].slice(2, 4)}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+}
+
+/** T06060：把“最近三天/最近 3 天”转成检索窗口，不能一律按 7 天新闻处理 */
+function parseRecentDays(input: string): number | undefined {
+  const cn: Record<string, number> = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+  const m = input.match(/最近\s*([一二三四五六七八九十]|\d{1,2})\s*天/);
+  if (!m) return undefined;
+  const raw = m[1];
+  const n = /^\d+$/.test(raw) ? Number(raw) : cn[raw];
+  return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
 /**
@@ -342,9 +361,10 @@ export function buildEnglishQuery(title: string, description: string): string {
 
 let cachedProxyUrl: string | undefined;
 let proxyDispatcher: ProxyAgent | null = null;
+const execFileAsync = promisify(execFile);
 
 /** 读取本机代理：设置项 > 环境变量 > Windows 系统代理；GitHub 在部分网络下只能经代理访问 */
-function webProxyUrl(): string {
+async function webProxyUrl(): Promise<string> {
   if (cachedProxyUrl !== undefined) return cachedProxyUrl;
   const configured = (getSetting('queue.webSearchProxy') || '').trim();
   if (configured) return (cachedProxyUrl = configured);
@@ -352,7 +372,7 @@ function webProxyUrl(): string {
   if (env) return (cachedProxyUrl = env);
   if (process.platform === 'win32') {
     try {
-      const out = execFileSync('reg', [
+      const { stdout: out } = await execFileAsync('reg', [
         'query',
         'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings',
         '/v',
@@ -373,7 +393,7 @@ async function fetchText(url: string, timeoutMs = 10000, viaProxy = false): Prom
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const proxy = viaProxy ? webProxyUrl() : '';
+    const proxy = viaProxy ? await webProxyUrl() : '';
     if (proxy && !proxyDispatcher) proxyDispatcher = new ProxyAgent(proxy);
     const res = await fetch(url, {
       signal: ctrl.signal,
@@ -455,13 +475,17 @@ async function searchAuthoritativeFeeds(
  * GitHub Trending 页面直接给出「stars this week」，比通用搜索更容易拿到真实新项目；
  * 解析失败/限流时静默返回空，不阻断队列发送。
  */
-async function searchGithubTrending(maxItems = 3): Promise<WebSearchItem[]> {
+async function searchGithubTrending(maxItems = 3, windowDays = 0, errors?: string[]): Promise<WebSearchItem[]> {
   // GitHub 偶发 429/连接抖动；空结果不缓存，短暂退避后重试一次，
   // 避免「新项目」段因为一次抓取失败整段变成“本期无”。
+  // 3 天窗口优先 daily；daily 无结果时第二次回落到 weekly，避免直接空段。
+  const initialSince = windowDays > 0 && windowDays <= 3 ? 'daily' : 'weekly';
+  let lastError = '';
   for (let attempt = 0; attempt < 2; attempt++) {
+    const since = attempt === 0 ? initialSince : 'weekly';
     try {
-      const html = await fetchText('https://github.com/trending?since=weekly', 12000, true);
-      const articles = [...html.matchAll(/<article class="Box-row">([\s\S]*?)<\/article>/g)];
+      const html = await fetchText(`https://github.com/trending?since=${since}`, 12000, true);
+      const articles = [...html.matchAll(/<article\b[^>]*class="[^"]*Box-row[^"]*"[^>]*>([\s\S]*?)<\/article>/g)];
       const out: WebSearchItem[] = [];
       for (const article of articles) {
         const body = article[1];
@@ -471,10 +495,11 @@ async function searchGithubTrending(maxItems = 3): Promise<WebSearchItem[]> {
         const repo = hrefMatch[2];
         if (!/^[A-Za-z0-9_.-]+$/.test(owner) || !/^[A-Za-z0-9_.-]+$/.test(repo)) continue;
         const title = stripHtml(hrefMatch[3]).replace(/\s+/g, ' ').trim() || `${owner}/${repo}`;
-        const descMatch = body.match(/<p class="col-9[^"]*"[^>]*>([\s\S]*?)<\/p>/i);
+        const descMatch = body.match(/<p[^>]*class="[^"]*col-9[^"]*"[^>]*>([\s\S]*?)<\/p>/i);
         const desc = stripHtml(descMatch?.[1] ?? '');
-        const stars = body.match(/([\d,]+)\s+stars this week/i)?.[1] ?? '';
-        const snippet = `${desc}${stars ? ` · 本周新增 ${stars} stars` : ''}`.slice(0, 500);
+        const stars = body.match(/([\d,]+)\s+stars (?:this week|today)/i)?.[1] ?? '';
+        const periodLabel = since === 'daily' ? '今日' : '本周';
+        const snippet = `${desc}${stars ? ` · ${periodLabel}新增 ${stars} stars` : ''}`.slice(0, 500);
         out.push({
           title,
           url: `https://github.com/${owner}/${repo}`,
@@ -485,9 +510,13 @@ async function searchGithubTrending(maxItems = 3): Promise<WebSearchItem[]> {
         if (out.length >= maxItems) break;
       }
       if (out.length > 0) return out;
-    } catch { /* 重试一次；仍失败则返回空，不阻断队列 */ }
+      lastError = `GitHub Trending（${since}）：未解析到条目（页面结构可能变化）`;
+    } catch (e) {
+      lastError = `GitHub Trending（${since}）：${e instanceof Error ? e.message : String(e)}`;
+    }
     if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 600));
   }
+  if (lastError) errors?.push(lastError);
   return [];
 }
 
@@ -611,11 +640,21 @@ export function rankWebSearchItems(
   return { items: kept, rawCount, droppedCount: rawCount - kept.length };
 }
 
+function dedupeKey(raw: string): string {
+  try {
+    const url = new URL(raw);
+    // 同源去重只看 host/path/search；path 大小写在部分站点有语义，不能整体转小写。
+    return `${url.host.toLowerCase()}${url.pathname.replace(/\/$/, '')}${url.search}`;
+  } catch {
+    return raw.replace(/^https?:\/\//, '').replace(/\/$/, '').toLowerCase();
+  }
+}
+
 function dedupeItems(items: WebSearchItem[]): WebSearchItem[] {
   const seen = new Set<string>();
   const out: WebSearchItem[] = [];
   for (const it of items) {
-    const key = it.url.replace(/^https?:\/\//, '').replace(/\/$/, '').toLowerCase();
+    const key = dedupeKey(it.url);
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(it);
@@ -672,9 +711,11 @@ export async function searchWeb(
   return value;
 }
 
-/** 测试/设置变更后清缓存 */
+/** 测试/设置变更后清缓存；代理缓存也必须一起清，否则改了设置仍走旧代理 */
 export function clearWebSearchCache(): void {
   cache.clear();
+  cachedProxyUrl = undefined;
+  proxyDispatcher = null;
 }
 
 /**
@@ -684,9 +725,9 @@ export function clearWebSearchCache(): void {
 export function buildNoSourceContext(queries: string[], dateToken = '', errors: string[] = []): string {
   return [
     '联网检索：已尝试公开搜索，但没有获取到可用来源（已过滤广告/无关结果）。',
-    `检索词：${queries.join(' / ')}${dateToken ? `；日期：${dateToken}` : ''}`,
+    `检索词：${sanitizePromptText(queries.join(' / '))}${dateToken ? `；日期：${dateToken}` : ''}`,
     '请勿编造新闻、日期或链接。如任务要求时效性内容，回执中必须明确写「未获取到可用来源」，并说明建议补充的检索源（如 OpenAI/Anthropic 官方博客、arXiv、机器之心、量子位）。',
-    errors.length ? `检索诊断：${errors.join('；')}` : '',
+    errors.length ? `检索诊断：${sanitizePromptText(errors.join('；'))}` : '',
   ].filter(Boolean).join('\n');
 }
 
@@ -700,9 +741,10 @@ export async function buildQueueWebContext(title: string, description: string): 
   const terms = buildRelevanceTerms(title, description);
   const dateToken = extractDateToken(taskText);
   const isNews = /新闻|资讯|动态|日报|周报|早报|晚报|简报/.test(taskText);
-  const isToday = /当天|今日|今天|每日|当日/.test(taskText);
-  // 「当天/每日」只看 2 天窗口；一般新闻看 7 天；普通任务不做时间过滤
-  const maxAgeDays = isNews ? (isToday ? 2 : 7) : 0;
+  const recentDays = parseRecentDays(taskText);
+  // “当天/今日”必须按当天；每日推送可放宽到 2 天；明确写了“最近 N 天”则按 N 天。
+  const exactToday = /当天|当日|今日|今天/.test(taskText) && !/每日/.test(taskText);
+  const maxAgeDays = recentDays ?? (isNews ? (exactToday ? 0.5 : 2) : 0);
   const primary = buildSearchQuery(title, description);
   const english = buildEnglishQuery(title, description);
   if (!primary && !english) return '';
@@ -721,7 +763,10 @@ export async function buildQueueWebContext(title: string, description: string): 
   // 权威 RSS 与通用搜索并行：RSS 快且可核验，通用搜索只做兜底
   const feedPromise = searchAuthoritativeFeeds(terms, maxAgeDays, dateToken);
   const githubPromise = githubHot
-    ? searchGithubTrending(2).catch(() => [] as WebSearchItem[])
+    ? searchGithubTrending(2, maxAgeDays, errors).catch((e: unknown) => {
+      errors.push(`GitHub Trending：${e instanceof Error ? e.message : String(e)}`);
+      return [] as WebSearchItem[];
+    })
     : Promise.resolve([] as WebSearchItem[]);
   // 三条查询并行，最多等一轮网络超时；只有主查询允许 DDG 兜底，控制队列等待时间
   const searchPromise = Promise.allSettled(
@@ -756,13 +801,17 @@ export async function buildQueueWebContext(title: string, description: string): 
 
   const lines = finalItems.map((it, i) => {
     const source = it.source || (it.provider === 'duckduckgo' ? 'DuckDuckGo 公开搜索' : 'Bing 公开搜索');
-    return `${i + 1}. ${it.title}\n   ${it.url}\n   ${it.snippet || '（无摘要）'}\n   来源：${source}${it.publishedAt ? `（${publishedDateToken(it.publishedAt) || it.publishedAt}）` : ''}（已过滤）`;
+    const published = it.publishedAt ? (publishedDateToken(it.publishedAt) || sanitizePromptText(it.publishedAt)) : '';
+    return `${i + 1}. ${sanitizePromptText(it.title)}\n   ${sanitizePromptText(it.url)}\n   ${sanitizePromptText(it.snippet || '（无摘要）')}\n   来源：${sanitizePromptText(source)}${published ? `（${published}）` : ''}（已过滤）`;
   });
   return [
-    `检索词：${queries.join(' / ')}${dateToken ? `；日期：${dateToken}` : ''}`,
+    '<untrusted_search_results>',
+    `检索词：${sanitizePromptText(queries.join(' / '))}${dateToken ? `；日期：${dateToken}` : ''}`,
     '以下结果已按域名/标题/关键词过滤并按相关度排序，只保留权威或相关来源。',
     '只能引用以下链接中的信息；不得编造新闻、日期或来源。若结果不足以回答，请直接说明缺口。',
+    errors.length ? `检索诊断：${sanitizePromptText(errors.join('；'))}` : '',
     '',
     ...lines,
-  ].join('\n');
+    '</untrusted_search_results>',
+  ].filter(Boolean).join('\n');
 }
