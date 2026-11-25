@@ -1,0 +1,42 @@
+# T06326 模态层浏览器探针
+
+- 日期：2026-11-25
+- 环境：Chrome headless 1280×900，本地临时 React 探针（真实 Dialog/Popover 组件，非生产页）
+- 命令：`node scripts/tests/_probe-t06326.mjs`
+- 结果：`PASS=17 FAIL=0`
+
+## 覆盖点
+
+1. Dialog 打开后 body `overflow=hidden`、`#root` 同时设置 `inert` 与 `aria-hidden=true`。
+2. Dialog 内打开 Popover，Esc 只关闭 Popover，Dialog 保留。
+3. Popover 关闭后焦点回到 `.mt-popover__trigger`。
+4. Popover 关闭后 Dialog 仍保持背景锁定。
+5. 第二次 Esc 关闭 Dialog，背景锁完整恢复，焦点回到原触发按钮。
+6. 嵌套 Dialog A+B：Esc 只关闭最上层 B；A 保持打开且背景继续锁定；再按 Esc 才关闭 A 并解锁。
+7. `closeOnEsc=false` 的顶层 Dialog 会吞掉 Esc，不关闭自身，也不会误关下层。
+8. 遮罩点击仍可关闭。
+9. Tab 焦点环：焦点在面板末项时按 Tab 回到面板首项，焦点不逃出 Dialog。
+
+## 原始输出
+
+```text
+[PASS] T06326-B01 探针挂载
+[PASS] T06326-B02 初始无背景锁 → {"inert":false,"aria":null,"overflow":""}
+[PASS] T06326-B03 Dialog A 打开且背景锁定 → {"inert":true,"aria":"true","overflow":"hidden"}
+[PASS] T06326-B04 Dialog 内 Popover 打开
+[PASS] T06326-B05 Esc 只关 Popover，Dialog 保留 → {"dialogs":["A"]}
+[PASS] T06326-B06 Popover 关闭后焦点回触发器 → {"active":"mt-popover__trigger"}
+[PASS] T06326-B07 Dialog 仍在时背景持续锁定 → {"inert":true,"aria":"true","overflow":"hidden"}
+[PASS] T06326-B08 第二次 Esc 关闭 Dialog 并解锁背景 → {"inert":false,"aria":null,"overflow":""}
+[PASS] T06326-B09 Dialog 关闭后焦点回原触发器 → {"active":"open-a"}
+[PASS] T06326-B10 嵌套 Dialog A+B 同时打开 → ["A","B"]
+[PASS] T06326-B11 Esc 只关最上层 B → {"dialogs":["A"]}
+[PASS] T06326-B12 关闭 B 后 A 仍在且背景锁定 → {"inert":true,"aria":"true","overflow":"hidden"}
+[PASS] T06326-B13 关闭 A 后背景完全解锁 → {"inert":false,"aria":null,"overflow":""}
+[PASS] T06326-B14 closeOnEsc=false 时 Esc 不关闭顶层 → {"dialogs":["C"]}
+[PASS] T06326-B15 遮罩点击仍可关闭
+[PASS] T06326-B16 Tab 焦点从末项回到面板首项 → {"inside":true,"first":"mt-btn mt-icon-btn","active":"mt-btn mt-icon-btn"}
+[PASS] T06326-B17 Tab 探针收尾关闭
+
+PASS=17 FAIL=0
+```
