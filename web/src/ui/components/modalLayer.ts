@@ -34,6 +34,11 @@ function onDocumentEscape(event: globalThis.KeyboardEvent): void {
   const top = escapeStack[escapeStack.length - 1];
   if (!top) return;
   event.preventDefault();
+  // 栈顶已消费 Esc：阻断继续冒泡到 More/Drawer 等页面级 keydown，
+  // 否则同一次 Esc 会连带关闭背景面板或第二个确认框。
+  // stopImmediatePropagation 还负责挡住同一 document 上的其他 bubble 监听。
+  event.stopPropagation();
+  event.stopImmediatePropagation();
   top.handle();
 }
 
@@ -42,6 +47,10 @@ function ensureEscapeListener(): void {
   document.addEventListener('keydown', onDocumentEscape, true);
   escapeListenerBound = true;
 }
+
+// 模块加载即绑定，确保早于页面级 Escape 监听（如 ProjectSwitcher 的 document capture）
+// 注册；有浮层时 stopImmediatePropagation 才能真正阻断它们，而不是被它们抢先响应。
+if (typeof document !== 'undefined') ensureEscapeListener();
 
 function pushEscapeLayer(id: symbol, handle: () => void): void {
   ensureEscapeListener();
@@ -82,9 +91,19 @@ export function useEscapeLayer(open: boolean, enabled: boolean, onEscape: () => 
 }
 
 
+function isVisibleFocusable(node: HTMLElement): boolean {
+  if (node.matches(':disabled')) return false;
+  if (node.closest('[inert]')) return false;
+  if (node.closest('[aria-hidden="true"]')) return false;
+  const style = window.getComputedStyle(node);
+  if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+  // display:none 的祖先不会把 display 继承给子节点，必须用盒模型存在性兜底；
+  // 这同时排除 display:contents 等无可聚焦盒子的边界元素。
+  return node.getClientRects().length > 0;
+}
+
 function focusableIn(panel: HTMLElement): HTMLElement[] {
-  return Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE))
-    .filter((node) => !node.hasAttribute('disabled') && node.getAttribute('aria-hidden') !== 'true');
+  return Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(isVisibleFocusable);
 }
 
 function lockBackground(panel: HTMLElement | null): void {

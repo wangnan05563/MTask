@@ -1,6 +1,7 @@
 import { createRoot } from 'react-dom/client';
 import { useEffect, useRef, useState, type CSSProperties, type ReactElement } from 'react';
 import { Check, X } from 'lucide-react';
+import { useEscapeLayer } from './components/modalLayer';
 
 /**
  * Promise 风格的模态对话框，替代 window.prompt / window.confirm。
@@ -48,7 +49,11 @@ function mountDialog(render: (close: () => void) => ReactElement): void {
   const container = document.createElement('div');
   document.body.appendChild(container);
   const root = createRoot(container);
+  let closed = false;
   const close = () => {
+    // Esc 与遮罩 mousedown 可能在同一交互里先后触发；重复 unmount 会让 React 报警，也会重复 resolve。
+    if (closed) return;
+    closed = true;
     root.unmount();
     container.remove();
   };
@@ -65,6 +70,10 @@ function InputDialog({ options, onSubmit }: InputDialogProps) {
   const [value, setValue] = useState(options.defaultValue ?? '');
   const ref = useRef<HTMLInputElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const cancel = () => onSubmit(null);
+
+  // Esc 走统一栈，且只触发栈顶；避免与打开本弹窗的 More/Drawer 同时响应一次 Escape。
+  useEscapeLayer(true, true, cancel);
 
   useEffect(() => {
     ref.current?.focus();
@@ -76,20 +85,19 @@ function InputDialog({ options, onSubmit }: InputDialogProps) {
     const trimmed = value.trim();
     onSubmit(trimmed || (options.allowEmpty ? '' : null));
   };
-  const cancel = () => onSubmit(null);
 
   // 遮罩点击关闭用文档级事件委托 + ref 包含性判断（S6848），避免在非交互遮罩上挂交互 handler
   useEffect(() => {
     const onDocMouseDown = (e: MouseEvent) => {
-      if (panelRef.current && e.target instanceof Node && !panelRef.current.contains(e.target)) cancel();
+      if (panelRef.current && e.target instanceof Node && !panelRef.current.contains(e.target)) onSubmit(null);
     };
     document.addEventListener('mousedown', onDocMouseDown);
     return () => document.removeEventListener('mousedown', onDocMouseDown);
-  });
+  }, [onSubmit]);
 
   return (
     <div style={overlayStyle}>
-      <div ref={panelRef} style={panelStyle} role="dialog" aria-modal="true" aria-label={options.title}>
+      <div ref={panelRef} tabIndex={-1} style={panelStyle} role="dialog" aria-modal="true" aria-label={options.title}>
         <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, marginBottom: 12 }}>{options.title}</div>
         {options.description && (
           <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', marginBottom: 10 }}>{options.description}</div>
@@ -101,7 +109,6 @@ function InputDialog({ options, onSubmit }: InputDialogProps) {
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') ok();
-            if (e.key === 'Escape') cancel();
           }}
           placeholder={options.placeholder}
           style={{ width: '100%', padding: 8, border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-l)', boxSizing: 'border-box' }}
@@ -133,27 +140,23 @@ interface ConfirmDialogProps {
 
 function ConfirmDialog({ message, onSubmit, zIndex = 1000 }: ConfirmDialogProps) {
   const panelRef = useRef<HTMLDivElement>(null);
+  const cancel = () => onSubmit(false);
 
-  // Escape 关闭用 globalThis 监听（S7764，环境无关的全局对象）；
-  // 遮罩点击关闭同 InputDialog 改为文档级事件委托（S6848），resolve(false) 行为不变
+  // Esc 走统一栈；同一时刻只有最上层响应，避免确认框与背后的 More/Drawer 一起关闭。
+  useEscapeLayer(true, true, cancel);
+
+  // 遮罩点击关闭保持文档级事件委托（S6848），resolve(false) 行为不变
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onSubmit(false);
-    };
     const onDocMouseDown = (e: MouseEvent) => {
       if (panelRef.current && e.target instanceof Node && !panelRef.current.contains(e.target)) onSubmit(false);
     };
-    globalThis.addEventListener('keydown', onKey);
     document.addEventListener('mousedown', onDocMouseDown);
-    return () => {
-      globalThis.removeEventListener('keydown', onKey);
-      document.removeEventListener('mousedown', onDocMouseDown);
-    };
+    return () => document.removeEventListener('mousedown', onDocMouseDown);
   }, [onSubmit]);
 
   return (
     <div style={{ ...overlayStyle, zIndex }}>
-      <div ref={panelRef} style={panelStyle} role="alertdialog" aria-modal="true" aria-label="确认操作">
+      <div ref={panelRef} tabIndex={-1} style={panelStyle} role="alertdialog" aria-modal="true" aria-label="确认操作">
         <div style={{ fontSize: 'var(--fs-l)', marginBottom: 16, whiteSpace: 'pre-wrap' }}>{message}</div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           <button className="ghost" onClick={() => onSubmit(false)} title="取消 — 取消并关闭确认" aria-label="取消：取消并关闭确认" style={{ padding: '6px 14px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}><X size={14} style={{ verticalAlign: '-2px' }} />取消</button>
@@ -244,15 +247,16 @@ function InputDialogEx({ options, onSubmit }: InputDialogExProps) {
       ? !numRequired
       : Number(num) >= (options.numberField.min ?? Number.NEGATIVE_INFINITY) && Number.isFinite(Number(num)));
 
+  // Esc 走统一浮层栈，避免与 More/Drawer 的 Esc 监听级联关闭。
+  useEscapeLayer(true, true, () => onSubmit(null));
+
   useEffect(() => { ref.current?.focus(); }, []);
   useEffect(() => {
     const onDocMouseDown = (e: MouseEvent) => {
       if (panelRef.current && e.target instanceof Node && !panelRef.current.contains(e.target)) onSubmit(null);
     };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onSubmit(null); };
-    globalThis.addEventListener('keydown', onKey);
     document.addEventListener('mousedown', onDocMouseDown);
-    return () => { globalThis.removeEventListener('keydown', onKey); document.removeEventListener('mousedown', onDocMouseDown); };
+    return () => document.removeEventListener('mousedown', onDocMouseDown);
   }, [onSubmit]);
 
   const ok = () => { if (text.trim() && numOk) onSubmit({ text: text.trim(), selectValue: sel, numberValue: showNum && num.trim() !== '' ? Number(num) : null }); };
@@ -260,7 +264,7 @@ function InputDialogEx({ options, onSubmit }: InputDialogExProps) {
 
   return (
     <div style={overlayStyle}>
-      <div ref={panelRef} style={panelStyle} role="dialog" aria-modal="true" aria-label={options.title}>
+      <div ref={panelRef} tabIndex={-1} style={panelStyle} role="dialog" aria-modal="true" aria-label={options.title}>
         <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, marginBottom: 12 }}>{options.title}</div>
         <label style={fieldLabel}>{options.select.label}</label>
         <select value={sel} onChange={(e) => setSel(e.target.value)} aria-label={options.select.label}
@@ -334,11 +338,10 @@ function ReportDialog({ options, onClose }: ReportDialogProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
   const items = options.items ?? [];
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    globalThis.addEventListener('keydown', onKey);
-    return () => globalThis.removeEventListener('keydown', onKey);
-  }, [onClose]);
+
+  // Esc 走统一浮层栈；报告弹窗可能从 Dialog/Drawer 内打开，只关最上层。
+  useEscapeLayer(true, true, onClose);
+
   const copyAll = async () => {
     const text = [options.title, options.intro ?? '', ...items, options.footnote ?? ''].filter(Boolean).join('\n');
     try {
@@ -351,7 +354,7 @@ function ReportDialog({ options, onClose }: ReportDialogProps) {
   };
   return (
     <div style={overlayStyle}>
-      <div ref={panelRef} role="dialog" aria-modal="true" aria-label={options.title}
+      <div ref={panelRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label={options.title}
         style={{ ...panelStyle, minWidth: 420, maxWidth: 640, maxHeight: '76vh', display: 'flex', flexDirection: 'column' }}>
         <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, marginBottom: 8 }}>{options.title}</div>
         {options.intro && (

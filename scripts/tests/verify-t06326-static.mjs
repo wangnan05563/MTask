@@ -75,6 +75,12 @@ const modalGates = [
   'useEscapeLayer',
   'ensureEscapeListener',
   'enabledRef.current',
+  'event.stopPropagation()',
+  'event.stopImmediatePropagation()',
+  'focusableIn',
+  "node.closest('[inert]')",
+  "node.closest('[aria-hidden=\"true\"]')",
+  'node.getClientRects().length > 0',
   "body.style.overflow = 'hidden'",
   "root.setAttribute('inert', '')",
   "root.setAttribute('aria-hidden', 'true')",
@@ -83,6 +89,24 @@ const modalGates = [
 ];
 const missingModalGates = modalGates.filter((marker) => !modalLayer.includes(marker));
 say('T06326-09 模态层 Esc 栈/滚动锁/背景 inert/焦点拉回齐全', missingModalGates.length === 0, { missingModalGates });
+
+const toastSource = read('Toast');
+const toastTimerManaged = toastSource.includes('单一 timer 管理点')
+  && toastSource.includes('timers.current.has(item.id)')
+  && !toastSource.includes('keptIds');
+say('T06326-11 Toast timer 由 items effect 单点管理', toastTimerManaged, {
+  hasEffectMarker: toastSource.includes('单一 timer 管理点'),
+  hasTimerDedup: toastSource.includes('timers.current.has(item.id)'),
+  legacyUpdaterCleanup: toastSource.includes('keptIds'),
+});
+
+const dialogsSource = readFileSync(join(ROOT, 'web/src/ui/dialogs.tsx'), 'utf8');
+const dialogEscapeLayers = (dialogsSource.match(/useEscapeLayer\(true, true,/g) ?? []).length;
+const legacyDialogKeydown = /(globalThis|document)\.addEventListener\('keydown'/.test(dialogsSource);
+say('T06326-12 四个 Promise 弹窗全部接入统一 Esc 栈', dialogEscapeLayers >= 4 && !legacyDialogKeydown, {
+  dialogEscapeLayers,
+  legacyDialogKeydown,
+});
 
 const css = readFileSync(join(ROOT, 'web/src/ui/components.css'), 'utf8');
 const tabsOverflowReady = /\.mt-tabs__list\s*\{[^}]*overflow-x:\s*auto/.test(css)
