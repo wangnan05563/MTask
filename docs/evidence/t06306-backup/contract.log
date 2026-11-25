@@ -1,0 +1,13 @@
+[PASS] T06306-01 备份归档生成 → {"ok":true,"action":"create","archive":"C:\\PYFIX_~4\\t06306-fixture-C1t88X\\mtask-data-backup-test.tar.gz","archiveSize":1137,"archiveSha256":"ed3839e3108b7f7e51751216ed55e7590474238db376b23fd34fff0fac3b1c8b","manifest":{"format":"mtask-data-backup","createdAt":"2026-11-25T07:12:00.926Z","files":3,"bytes":12317,"skipped":5},"durationMs":5429}
+[PASS] T06306-02 旁车 SHA-256 与归档一致 → {"sidecar":true}
+[PASS] T06306-03 归档含 manifest/db/业务数据 → {"entries":["./","./db/","./files/","./manifest.json","./files/artifacts/","./files/templates/","./files/templates/t.json","./files/artifacts/card/","./files/artifacts/card/a.txt","./db/mtask.db"]}
+[PASS] T06306-D 排除敏感目录/临时文件/旧快照/日志 → {"entries":["./","./db/","./files/","./manifest.json","./files/artifacts/","./files/templates/","./files/templates/t.json","./files/artifacts/card/","./files/artifacts/card/a.txt","./db/mtask.db"]}
+[PASS] T06306-05 备份归档可完整校验 → {"ok":true,"action":"verify","archive":"C:\\PYFIX_~4\\t06306-fixture-C1t88X\\mtask-data-backup-test.tar.gz","archiveSha256":"ed3839e3108b7f7e51751216ed55e7590474238db376b23fd34fff0fac3b1c8b","sidecar":{"present":true,"ok":true},"manifest":{"format":"mtask-data-backup","createdAt":"2026-11-25T07:12:00.926Z","files":3,"bytes":12317},"sqliteIntegrity":"ok","errors":[],"warnings":[],"durationMs":5276}
+[PASS] T06306-06 篡改归档被旁车哈希拦截 → {"ok":false,"action":"verify","archive":"C:\\PYFIX_~4\\t06306-fixture-C1t88X\\tampered.tar.gz","archiveSha256":"c4c88a375043850f249ef8b8001f8cd1c51d6d2031b96d180d442f66d855677b","sidecar":{"present":true,"ok":false},"manifest":null,"sqliteIntegrity":null,"errors":["旁车 SHA-256 不一致：期望 ed3839e3108b7f7e51751216ed55e7590474238db376b23fd34fff0fac3b1c8b，实际 c4c88a375043850f249ef8b8001f8cd1c51d6d2031b96d180d442f66d855677b","归档解包/校验失败：zlib: incorrect length check"],"warnings":[],"durationMs":3426}
+[PASS] T06306-07 归档内 manifest 哈希被逐文件校验拦截 → {"ok":false,"action":"verify","archive":"C:\\PYFIX_~4\\t06306-fixture-C1t88X\\bad-internal.tar.gz","archiveSha256":"5cef0249fea88ef946dae91f83e217e4c280cdaa83260a72d88494bdff8000f6","sidecar":{"present":false,"ok":null},"manifest":{"format":"mtask-data-backup","createdAt":"2026-11-25T07:12:00.926Z","files":3,"bytes":12317},"sqliteIntegrity":"ok","errors":["SHA-256 不一致：files/artifacts/card/a.txt"],"warnings":["缺少 .sha256 旁车文件，仅按归档内 manifest 校验"],"durationMs":2505}
+[PASS] T06306-08 SQLite integrity_check 参与校验 → {"integrity":"ok"}
+{
+  "pass": 8,
+  "fail": 0,
+  "tmp": "C:\\PYFIX_~4\\t06306-fixture-C1t88X"
+}

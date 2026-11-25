@@ -1,0 +1,7 @@
+date=2026-11-25T15:13:39.7105277+08:00
+node=v22.23.2
+git_head=13d01bbe032564f7133b660c643f3a6350e35b1c
+tar=bsdtar 3.5.2 - libarchive 3.5.2 zlib/1.2.5.f-ipp 
+test=server/scripts/verify-t06306-backup.mjs
+result=8/8 PASS
+production_data=not touched (no real 103MB rerun)
