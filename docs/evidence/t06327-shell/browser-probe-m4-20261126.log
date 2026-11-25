@@ -1,0 +1,29 @@
+# M-4 FilterBar 吸顶几何浏览器探针
+
+- 日期：2026-11-26
+- 环境：Chrome headless 1440×900 / 760×900，真实 `PageShell + FilterBar` 组件，页面壳 CSS 原样加载
+- 命令：`node scripts/tests/_probe-t06327.mjs`
+- 结果：`PASS=9 FAIL=0`
+
+## 覆盖点
+
+1. `.mt-app-main` 将 `--mt-page-sticky-top` 设为 `56px`，FilterBar 计算样式为 `position: sticky; top: 56px`。
+2. 滚动 300px / 664px 后，FilterBar 顶边始终等于 56px 顶栏底边，误差 ≤ 1.5px，不被顶栏覆盖。
+3. FilterBar `z-index=20`，低于顶栏 `z-index=30`。
+4. 760px 窄屏下仍保持吸顶，且不与顶栏重叠。
+
+## 原始输出
+
+```text
+[PASS] M4-B01 探针挂载
+[PASS] M4-B02 FilterBar 使用 sticky 且变量为 56px → {"scrollY":0,"barTop":100,"barBottom":148,"topbarTop":0,"topbarBottom":56,"position":"sticky","cssTop":"56px","z":"20"}
+[PASS] M4-B03-300 滚动 300px 后 FilterBar 不压顶栏 → {"scrollY":300,"barTop":56,"barBottom":104,"topbarTop":0,"topbarBottom":56,"position":"sticky","cssTop":"56px","z":"20"}
+[PASS] M4-B04-300 FilterBar 层级低于顶栏 → {"z":"20"}
+[PASS] M4-B03-700 滚动 700px 后 FilterBar 不压顶栏 → {"scrollY":664,"barTop":56,"barBottom":104,"topbarTop":0,"topbarBottom":56,"position":"sticky","cssTop":"56px","z":"20"}
+[PASS] M4-B04-700 FilterBar 层级低于顶栏 → {"z":"20"}
+[PASS] M4-B03-1200 滚动 1200px 后 FilterBar 不压顶栏 → {"scrollY":664,"barTop":56,"barBottom":104,"topbarTop":0,"topbarBottom":56,"position":"sticky","cssTop":"56px","z":"20"}
+[PASS] M4-B04-1200 FilterBar 层级低于顶栏 → {"z":"20"}
+[PASS] M4-B05 760 窄屏仍吸顶且不重叠 → {"scrollY":664,"barTop":56,"barBottom":104,"topbarTop":0,"topbarBottom":56,"position":"sticky","cssTop":"56px","z":"20"}
+
+PASS=9 FAIL=0
+```
