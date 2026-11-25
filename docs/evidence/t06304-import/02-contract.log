@@ -1,0 +1,18 @@
+[PASS] 测试服务就绪 → {"ok":true,"service":"mtask-server","time":"2026-11-25T06:22:06.338Z"}
+[PASS] 测试项目创建 → {"projectId":"855af63c-64b9-45f6-9a77-d25b02332ac4"}
+[PASS] CSV 自动识别 Jira → "jira"
+[PASS] Issue key 自动映射为外部 ID → "Issue key"
+[PASS] CSV 预览 2 条通过 → {"items":2,"errors":0}
+[PASS] 预览携带外部 ID → "JIRA-101"
+[PASS] 首次确认导入 2 条 → {"ok":true,"count":2,"skipped":0}
+[PASS] 同来源+外部 ID 预览判重 → {"items":0,"errors":2}
+[PASS] 错误信息带来源+外部 ID → ["来源+外部 ID 重复：jira:JIRA-101","来源+外部 ID 重复：jira:JIRA-102"]
+[PASS] 外部 ID 改名后仍判重 → ["来源+外部 ID 重复：jira:JIRA-101","来源+外部 ID 重复：jira:JIRA-102"]
+[PASS] 重复确认全部跳过 → {"ok":true,"count":0,"skipped":2}
+[PASS] 异常条目返回 400 → "/api/tasks/import-csv/confirm HTTP 400: {\"error\":\"it.title?.trim is not a function\"}"
+[PASS] 批量失败整体回滚，未落半批 → {"before":1,"after":1}
+[PASS] JSON 识别 Trello → "trello"
+[PASS] Trello 卡片携带 id → {"title":"T06304 Trello 卡片","description":"来自 Trello","priority":"normal","externalId":"card-t06304-1","status":"todo","categoryId":null,"categoryName":""}
+[PASS] Trello 首次导入 1 条 → {"ok":true,"count":1,"skipped":0}
+[PASS] Trello 重复卡片判重 → [{"row":1,"message":"来源+外部 ID 重复：trello:card-t06304-1"}]
+{"pass":true,"checks":17,"projectId":"855af63c-64b9-45f6-9a77-d25b02332ac4","projectName":"T06304 导入契约 1795587726354"}

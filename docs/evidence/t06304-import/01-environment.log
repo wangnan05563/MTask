@@ -1,0 +1,7 @@
+date=2026-11-25T14:25:08.3641404+08:00
+node=v22.23.2
+git_head=19dfdae347efc0b11fc1df2e9d289fbdfd0268e8
+api=mtask-server
+data_dir=C:\Users\hspcadmin\AppData\Local\Temp\t06304-ui
+static_dir=web/dist
+production=127.0.0.1:39877 untouched
