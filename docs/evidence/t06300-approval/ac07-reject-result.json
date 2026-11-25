@@ -1,0 +1,65 @@
+{
+  "pass": 5,
+  "fail": 0,
+  "checks": [
+    {
+      "name": "AC07-01 R2 门禁创建待审批",
+      "ok": true,
+      "extra": {
+        "decision": "ask",
+        "approvalId": "8e54d938-e05e-4e61-92f0-8169267e75cc"
+      }
+    },
+    {
+      "name": "AC07-02 拒绝返回 rejected",
+      "ok": true,
+      "extra": {
+        "status": "rejected",
+        "decidedBy": "web-ui"
+      }
+    },
+    {
+      "name": "AC07-03 Run 终止为 cancelled/approval_rejected",
+      "ok": true,
+      "extra": {
+        "status": "cancelled",
+        "error_code": "approval_rejected"
+      }
+    },
+    {
+      "name": "AC07-04 审计写入 rejected 事件",
+      "ok": true,
+      "extra": {
+        "rejected": [
+          {
+            "id": "2677f311-e221-4744-881a-b1e955a88dcd",
+            "runId": "run-t06300-reject-mwvp1la2",
+            "stepId": "run-t06300-reject-mwvp1la2-s1",
+            "approvalId": "8e54d938-e05e-4e61-92f0-8169267e75cc",
+            "projectId": "p-t06300-reject-mwvp1la2",
+            "eventType": "rejected",
+            "riskLevel": "R2",
+            "action": "覆盖并删除生产数据文件",
+            "actor": "web-ui",
+            "reason": "AC-07 拒绝审计验证",
+            "detail": "{\"decision\":\"rejected\"}",
+            "createdAt": "2026-11-25T05:39:21.137Z"
+          }
+        ],
+        "auditCount": 2
+      }
+    },
+    {
+      "name": "AC07-05 审计序列含 approval_requested -> rejected",
+      "ok": true,
+      "extra": {
+        "requested": [
+          "approval_requested"
+        ],
+        "rejected": [
+          "rejected"
+        ]
+      }
+    }
+  ]
+}

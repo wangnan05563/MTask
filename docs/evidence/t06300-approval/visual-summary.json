@@ -1,0 +1,350 @@
+{
+  "gate": {
+    "level": "R2",
+    "source": "classifier",
+    "reasons": [
+      "显式动作类型：delete",
+      "命中 R2 动作：覆盖、删除或批量写"
+    ],
+    "decision": "ask",
+    "auditId": "7dec15a7-1773-442f-8699-27bb24713fb2",
+    "approval": {
+      "id": "1d0c3737-24ee-4a55-b22f-47ff06d31067",
+      "runId": "run-t06300-ui",
+      "stepId": "run-t06300-ui-s1",
+      "approvalStepId": "e3c101e6-b0b5-4975-a1cc-6d0196fba629",
+      "projectId": "p-t06300-ui",
+      "riskLevel": "R2",
+      "action": "覆盖并删除生产数据文件",
+      "impact": "将删除 server/data/mtask.db（含 42 条任务、8 个项目与 Run 审计），删除后无法从回收站恢复。",
+      "diff": "--- a/server/data/mtask.db\n+++ b/server/data/mtask.db\n@@ -1,6 +1,4 @@\n- tasks: 42 rows\n- projects: 8 rows\n- agent_run_audit: 137 rows\n- agent_run_approvals: 3 rows\n+ tasks: 0 rows\n+ projects: 0 rows\n+ (数据库文件被覆盖)",
+      "preview": "rm -f server/data/mtask.db\n# 随后以空库重启，原任务与审计不可恢复",
+      "requester": "workbuddy/T06300-ui",
+      "status": "pending",
+      "reason": "",
+      "decidedBy": "",
+      "decidedAt": null,
+      "expiresAt": "2026-11-26T05:37:56.390Z",
+      "createdAt": "2026-11-25T05:37:56.389Z",
+      "updatedAt": "2026-11-25T05:37:56.389Z"
+    }
+  },
+  "runBefore": {
+    "page": true,
+    "id": "run-t06300-ui",
+    "status": "awaiting_approval",
+    "cta": true,
+    "approvalText": "审批\n等待审批\n高风险步骤正在等待人工处理。\n处理审批",
+    "scrollWidth": 1440,
+    "viewport": {
+      "w": 1440,
+      "h": 1000
+    }
+  },
+  "modal1440": {
+    "modal": true,
+    "risk": "R2 覆盖/删除",
+    "impact": "将删除 server/data/mtask.db（含 42 条任务、8 个项目与 Run 审计），删除后无法从回收站恢复。",
+    "diffLines": 11,
+    "preview": "rm -f server/data/mtask.db\n# 随后以空库重启，原任务与审计不可恢复",
+    "approve": "批准并继续",
+    "reject": "拒绝并终止",
+    "reason": true,
+    "expiry": "剩余\n23 小时后",
+    "width": 762,
+    "right": 1101,
+    "viewport": {
+      "w": 1440,
+      "h": 1000
+    },
+    "scrollWidth": 1440
+  },
+  "modal1280": {
+    "modal": true,
+    "risk": "R2 覆盖/删除",
+    "impact": "将删除 server/data/mtask.db（含 42 条任务、8 个项目与 Run 审计），删除后无法从回收站恢复。",
+    "diffLines": 11,
+    "preview": "rm -f server/data/mtask.db\n# 随后以空库重启，原任务与审计不可恢复",
+    "approve": "批准并继续",
+    "reject": "拒绝并终止",
+    "reason": true,
+    "expiry": "剩余\n23 小时后",
+    "width": 762,
+    "right": 1021,
+    "viewport": {
+      "w": 1280,
+      "h": 900
+    },
+    "scrollWidth": 1280
+  },
+  "modal760": {
+    "modal": true,
+    "risk": "R2 覆盖/删除",
+    "impact": "将删除 server/data/mtask.db（含 42 条任务、8 个项目与 Run 审计），删除后无法从回收站恢复。",
+    "diffLines": 11,
+    "preview": "rm -f server/data/mtask.db\n# 随后以空库重启，原任务与审计不可恢复",
+    "approve": "批准并继续",
+    "reject": "拒绝并终止",
+    "reason": true,
+    "expiry": "剩余\n23 小时后",
+    "width": 714,
+    "right": 737,
+    "viewport": {
+      "w": 760,
+      "h": 1000
+    },
+    "scrollWidth": 760
+  },
+  "after": {
+    "page": true,
+    "status": "running",
+    "notice": "已批准：审批已记录，Run 可继续执行。",
+    "approval": "审批\n已批准\n更新：2026-11-25 13:38"
+  },
+  "approvedEvents": [
+    {
+      "id": "2b2ac28e-4526-4e93-98cd-d08575e1dacf",
+      "runId": "run-t06300-ui",
+      "stepId": "run-t06300-ui-s1",
+      "approvalId": "1d0c3737-24ee-4a55-b22f-47ff06d31067",
+      "projectId": "p-t06300-ui",
+      "eventType": "approved",
+      "riskLevel": "R2",
+      "action": "覆盖并删除生产数据文件",
+      "actor": "web-ui",
+      "reason": "",
+      "detail": "{\"decision\":\"approved\"}",
+      "createdAt": "2026-11-25T05:38:11.181Z"
+    }
+  ],
+  "checks": [
+    {
+      "name": "T06300-00 测试 API 就绪",
+      "ok": true,
+      "extra": {
+        "ok": true,
+        "service": "mtask-server",
+        "time": "2026-11-25T05:37:55.978Z"
+      }
+    },
+    {
+      "name": "T06300-00b 测试夹具写入",
+      "ok": true,
+      "extra": {
+        "project": "p-t06300-ui",
+        "session": "sess-t06300-ui",
+        "run": "run-t06300-ui"
+      }
+    },
+    {
+      "name": "T06300-01 R2 门禁创建待审批",
+      "ok": true,
+      "extra": {
+        "level": "R2",
+        "source": "classifier",
+        "reasons": [
+          "显式动作类型：delete",
+          "命中 R2 动作：覆盖、删除或批量写"
+        ],
+        "decision": "ask",
+        "auditId": "7dec15a7-1773-442f-8699-27bb24713fb2",
+        "approval": {
+          "id": "1d0c3737-24ee-4a55-b22f-47ff06d31067",
+          "runId": "run-t06300-ui",
+          "stepId": "run-t06300-ui-s1",
+          "approvalStepId": "e3c101e6-b0b5-4975-a1cc-6d0196fba629",
+          "projectId": "p-t06300-ui",
+          "riskLevel": "R2",
+          "action": "覆盖并删除生产数据文件",
+          "impact": "将删除 server/data/mtask.db（含 42 条任务、8 个项目与 Run 审计），删除后无法从回收站恢复。",
+          "diff": "--- a/server/data/mtask.db\n+++ b/server/data/mtask.db\n@@ -1,6 +1,4 @@\n- tasks: 42 rows\n- projects: 8 rows\n- agent_run_audit: 137 rows\n- agent_run_approvals: 3 rows\n+ tasks: 0 rows\n+ projects: 0 rows\n+ (数据库文件被覆盖)",
+          "preview": "rm -f server/data/mtask.db\n# 随后以空库重启，原任务与审计不可恢复",
+          "requester": "workbuddy/T06300-ui",
+          "status": "pending",
+          "reason": "",
+          "decidedBy": "",
+          "decidedAt": null,
+          "expiresAt": "2026-11-26T05:37:56.390Z",
+          "createdAt": "2026-11-25T05:37:56.389Z",
+          "updatedAt": "2026-11-25T05:37:56.389Z"
+        }
+      }
+    },
+    {
+      "name": "T06300-02 执行会话卡片出现追踪入口",
+      "ok": true,
+      "extra": {
+        "session": "sess-t06300-ui"
+      }
+    },
+    {
+      "name": "T06300-03 待审批 Run 显示处理入口",
+      "ok": true,
+      "extra": {
+        "page": true,
+        "id": "run-t06300-ui",
+        "status": "awaiting_approval",
+        "cta": true,
+        "approvalText": "审批\n等待审批\n高风险步骤正在等待人工处理。\n处理审批",
+        "scrollWidth": 1440,
+        "viewport": {
+          "w": 1440,
+          "h": 1000
+        }
+      }
+    },
+    {
+      "name": "T06300-04 审批弹窗字段完整",
+      "ok": true,
+      "extra": {
+        "modal": true,
+        "risk": "R2 覆盖/删除",
+        "impact": "将删除 server/data/mtask.db（含 42 条任务、8 个项目与 Run 审计），删除后无法从回收站恢复。",
+        "diffLines": 11,
+        "preview": "rm -f server/data/mtask.db\n# 随后以空库重启，原任务与审计不可恢复",
+        "approve": "批准并继续",
+        "reject": "拒绝并终止",
+        "reason": true,
+        "expiry": "剩余\n23 小时后",
+        "width": 762,
+        "right": 1101,
+        "viewport": {
+          "w": 1440,
+          "h": 1000
+        },
+        "scrollWidth": 1440
+      }
+    },
+    {
+      "name": "T06300-05 超时显示未来时点而非「刚刚」",
+      "ok": true,
+      "extra": {
+        "expiry": "剩余\n23 小时后"
+      }
+    },
+    {
+      "name": "T06300-06 1280 无横向溢出",
+      "ok": true,
+      "extra": {
+        "shot1280": {
+          "file": "02-approval-modal-1280.png",
+          "bytes": 141762
+        },
+        "modal1280": {
+          "modal": true,
+          "risk": "R2 覆盖/删除",
+          "impact": "将删除 server/data/mtask.db（含 42 条任务、8 个项目与 Run 审计），删除后无法从回收站恢复。",
+          "diffLines": 11,
+          "preview": "rm -f server/data/mtask.db\n# 随后以空库重启，原任务与审计不可恢复",
+          "approve": "批准并继续",
+          "reject": "拒绝并终止",
+          "reason": true,
+          "expiry": "剩余\n23 小时后",
+          "width": 762,
+          "right": 1021,
+          "viewport": {
+            "w": 1280,
+            "h": 900
+          },
+          "scrollWidth": 1280
+        }
+      }
+    },
+    {
+      "name": "T06300-07 760 窄屏无横向溢出",
+      "ok": true,
+      "extra": {
+        "shot760": {
+          "file": "03-approval-modal-760.png",
+          "bytes": 105115
+        },
+        "modal760": {
+          "modal": true,
+          "risk": "R2 覆盖/删除",
+          "impact": "将删除 server/data/mtask.db（含 42 条任务、8 个项目与 Run 审计），删除后无法从回收站恢复。",
+          "diffLines": 11,
+          "preview": "rm -f server/data/mtask.db\n# 随后以空库重启，原任务与审计不可恢复",
+          "approve": "批准并继续",
+          "reject": "拒绝并终止",
+          "reason": true,
+          "expiry": "剩余\n23 小时后",
+          "width": 714,
+          "right": 737,
+          "viewport": {
+            "w": 760,
+            "h": 1000
+          },
+          "scrollWidth": 760
+        }
+      }
+    },
+    {
+      "name": "T06300-08 批准后弹窗关闭且 Run 恢复运行",
+      "ok": true,
+      "extra": {
+        "page": true,
+        "status": "running",
+        "notice": "已批准：审批已记录，Run 可继续执行。",
+        "approval": "审批\n已批准\n更新：2026-11-25 13:38"
+      }
+    },
+    {
+      "name": "T06300-09 批准写入审计",
+      "ok": true,
+      "extra": {
+        "approvedEvents": [
+          {
+            "id": "2b2ac28e-4526-4e93-98cd-d08575e1dacf",
+            "runId": "run-t06300-ui",
+            "stepId": "run-t06300-ui-s1",
+            "approvalId": "1d0c3737-24ee-4a55-b22f-47ff06d31067",
+            "projectId": "p-t06300-ui",
+            "eventType": "approved",
+            "riskLevel": "R2",
+            "action": "覆盖并删除生产数据文件",
+            "actor": "web-ui",
+            "reason": "",
+            "detail": "{\"decision\":\"approved\"}",
+            "createdAt": "2026-11-25T05:38:11.181Z"
+          }
+        ],
+        "auditCount": 9
+      }
+    },
+    {
+      "name": "T06300-10 三档截图有效",
+      "ok": true,
+      "extra": {
+        "files": [
+          {
+            "file": "00-run-awaiting-1440.png",
+            "bytes": 122490
+          },
+          {
+            "file": "01-approval-modal-1440.png",
+            "bytes": 191145
+          },
+          {
+            "file": "02-approval-modal-1280.png",
+            "bytes": 141762
+          },
+          {
+            "file": "03-approval-modal-760.png",
+            "bytes": 105115
+          },
+          {
+            "file": "04-approval-approved-1440.png",
+            "bytes": 117850
+          }
+        ]
+      }
+    },
+    {
+      "name": "T06300-11 无未捕获前端异常",
+      "ok": true,
+      "extra": {
+        "consoleErrors": []
+      }
+    }
+  ]
+}
