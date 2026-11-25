@@ -35,6 +35,7 @@ export const Switch = forwardRef<HTMLButtonElement, SwitchProps>(function Switch
     id,
     name,
     value = 'on',
+    onClick,
     ...rest
   },
   ref,
@@ -70,7 +71,10 @@ export const Switch = forwardRef<HTMLButtonElement, SwitchProps>(function Switch
         aria-errormessage={errorId}
         aria-invalid={error ? true : undefined}
         disabled={isDisabled}
-        onClick={toggle}
+        onClick={(event) => {
+          onClick?.(event);
+          if (!event.defaultPrevented) toggle();
+        }}
       >
         <span className="mt-switch__track" aria-hidden="true">
           {loading

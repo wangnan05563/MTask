@@ -60,6 +60,11 @@ if (!/aria-label="面包屑"/.test(shell)) failures.push('PageHeader 面包屑�
 if (!/ariaLabel = '筛选条'/.test(shell)) failures.push('FilterBar 默认可访问名缺失');
 if (!/--mt-page-max:\s*1440px/.test(css)) failures.push('页面壳 1440px 上限缺失');
 if (!/position:\s*sticky/.test(css)) failures.push('筛选条吸顶规则缺失');
+if (!/\.mt-app-main\s*\{[^}]*--mt-page-sticky-top:\s*56px/.test(css)) {
+  failures.push('主壳未把筛选条吸顶偏移设为 56px，滚动时会被顶栏遮挡');
+}
+const app = read('web/src/App.tsx');
+if (!/className="mt-app-main"/.test(app)) failures.push('App 主容器缺少 mt-app-main，吸顶偏移不会生效');
 if (!/export \{ PageShell, PageHeader, FilterBar \}/.test(index)) failures.push('统一布局出口不完整');
 
 const pageShellCount = pages.reduce((n, [, file]) => n + (fs.readFileSync(path.join(root, file), 'utf8').match(/<PageShell/g) ?? []).length, 0);

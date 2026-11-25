@@ -1161,9 +1161,16 @@ export function ReportPage() {
   // T06329：顶栏切换项目时把报表范围同步过去；顶栏「全部项目」清空多选，回到全量聚合。
   const [globalProject] = useActiveProject();
   const lastGlobalProject = useRef(globalProject);
+  const scopeInitialized = useRef(false);
   useEffect(() => {
-    const mountedWithGlobalScope = globalProject !== '' && projectIds.length === 0;
-    if (lastGlobalProject.current === globalProject && !mountedWithGlobalScope) return;
+    // 首次进入只做默认范围填充；之后仅响应 globalProject 的真实变化。
+    // 不能用 projectIds.length===0 作为“挂载时”判据，否则用户主动清空范围会被立即回写成具体项目。
+    if (!scopeInitialized.current) {
+      scopeInitialized.current = true;
+      if (globalProject && projectIds.length === 0) setProjectIds([globalProject]);
+      return;
+    }
+    if (lastGlobalProject.current === globalProject) return;
     lastGlobalProject.current = globalProject;
     setProjectIds(globalProject ? [globalProject] : []);
   }, [globalProject, projectIds.length, setProjectIds]);

@@ -92,7 +92,19 @@ export function ToastProvider({ children, duration = 4500, max = 4 }: ToastProvi
   const toast = useCallback((options: ToastOptions) => {
     counter.current += 1;
     const id = `mt-toast-${counter.current}`;
-    setItems((current) => [...current.slice(-(max - 1)), { ...options, id }]);
+    const limit = Math.max(1, Math.floor(max));
+    setItems((current) => {
+      const kept = limit <= 1 ? [] : current.slice(-(limit - 1));
+      // 被队列上限淘汰的 toast 不会再显示，对应 timer 必须同步清理，避免到期空跑与泄漏。
+      const keptIds = new Set(kept.map((item) => item.id));
+      for (const [timerId, timer] of timers.current) {
+        if (!keptIds.has(timerId)) {
+          window.clearTimeout(timer);
+          timers.current.delete(timerId);
+        }
+      }
+      return [...kept, { ...options, id }];
+    });
     const ttl = options.duration ?? duration;
     if (ttl > 0 && typeof window !== 'undefined') {
       const timer = window.setTimeout(() => dismiss(id), ttl);

@@ -32,6 +32,7 @@ export interface PageHeaderProps {
   /**
    * T06342：页面外壳的顶部标签已经显示页面名，核心页不再重复渲染面包屑/可见大标题/说明。
    * 仍保留隐藏的 h1 维护读屏与 SEO 语义，只把操作槽留在页头。
+   * minimal 下 description/breadcrumbs 会被忽略（保留参数仅为兼容既有调用方）。
    */
   readonly minimal?: boolean;
 }
@@ -60,6 +61,10 @@ export function PageHeader({
   ) : null;
 
   if (minimal) {
+    // T06342：无操作槽时不再渲染空的 header（8px 上内边距 + 8px 下外边距），只保留读屏 h1。
+    if (!actions) {
+      return <h1 id={titleId} className="mt-page-title-visually-hidden">{title}</h1>;
+    }
     return (
       <header className={`mt-page-header mt-page-header--minimal${className ? ` ${className}` : ''}`}>
         <h1 id={titleId} className="mt-page-title-visually-hidden">{title}</h1>

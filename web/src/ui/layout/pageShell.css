@@ -5,6 +5,11 @@
   --mt-page-sticky-top: 0px;
 }
 
+/* 主壳顶栏是 sticky 的 56px 导航；页面筛选条吸顶必须让出这段高度，否则会被顶栏盖住。 */
+.mt-app-main {
+  --mt-page-sticky-top: 56px;
+}
+
 .mt-page-shell {
   width: 100%;
   max-width: var(--mt-page-max);

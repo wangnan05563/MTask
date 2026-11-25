@@ -125,11 +125,24 @@ function clampInt(value: unknown, fallback: number, min: number, max: number): n
   return Math.min(max, Math.max(min, Math.floor(n)));
 }
 
-function validateTime(name: string, value: unknown): string | null {
+interface ValidatedTime {
+  readonly value: string;
+  readonly exclusive: boolean;
+}
+
+function validateTime(name: 'from' | 'to', value: unknown): ValidatedTime | null {
   if (value === undefined || value === null || value === '') return null;
   const raw = String(value).trim();
-  if (!Number.isFinite(Date.parse(raw))) throw new RunQueryError('invalid_time_range', `${name} 不是有效时间`);
-  return raw;
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(raw);
+  const ts = Date.parse(dateOnly ? `${raw}T00:00:00.000Z` : raw);
+  if (!Number.isFinite(ts)) throw new RunQueryError('invalid_time_range', `${name} 不是有效时间`);
+  const date = new Date(ts);
+  if (dateOnly && name === 'to') {
+    // date-only 的 to 表示“包含当天”，SQL 使用次日 00:00 的 < 边界。
+    date.setUTCDate(date.getUTCDate() + 1);
+    return { value: date.toISOString(), exclusive: true };
+  }
+  return { value: date.toISOString(), exclusive: false };
 }
 
 export class RunQueryService {
@@ -148,7 +161,11 @@ export class RunQueryService {
   }
 
   private assertSchema(): void {
-    if (!this.hasTable('agent_runs')) throw new RunQueryError('schema_missing');
+    // list 同时依赖 agent_run_steps 的 step_count 与 tasks/projects 的 join；
+    // 缺任一表都应显式返回 503 schema_missing，而不是让 SQL 在请求期抛 500。
+    for (const table of ['agent_runs', 'agent_run_steps', 'tasks', 'projects']) {
+      if (!this.hasTable(table)) throw new RunQueryError('schema_missing');
+    }
   }
 
   private resolveTaskRef(raw: string | undefined): string | null {
@@ -174,6 +191,14 @@ export class RunQueryService {
     const q = String(options.q ?? '').trim().slice(0, 120);
     const from = validateTime('from', options.from);
     const to = validateTime('to', options.to);
+    if (from && to) {
+      const fromTs = Date.parse(from.value);
+      const toTs = Date.parse(to.value);
+      // date-only 的 to 已转成次日 00:00 的独占边界，from 与之相等也会得到空范围。
+      if (to.exclusive ? fromTs >= toTs : fromTs > toTs) {
+        throw new RunQueryError('invalid_time_range', 'from 不能晚于 to');
+      }
+    }
 
     const where: string[] = [];
     const params: unknown[] = [];
@@ -195,11 +220,11 @@ export class RunQueryService {
     }
     if (from) {
       where.push("COALESCE(ar.started_at, ar.created_at) >= ?");
-      params.push(from);
+      params.push(from.value);
     }
     if (to) {
-      where.push("COALESCE(ar.started_at, ar.created_at) <= ?");
-      params.push(to);
+      where.push(`COALESCE(ar.started_at, ar.created_at) ${to.exclusive ? '<' : '<='} ?`);
+      params.push(to.value);
     }
     if (q) {
       const like = `%${q}%`;

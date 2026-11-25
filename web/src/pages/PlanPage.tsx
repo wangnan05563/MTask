@@ -16,7 +16,7 @@ import { estimatesApi, type EstimatesResponse } from '../api/estimates'; // T020
 import { GUIDE_SEEN_EVENT, hasSeenGuide } from './PageGuide'; // T03183（PM-103）：向导已读事件——同页同源 dialog 只留一个
 import { GUIDE_SEEN_KEY, EmptyProjectGuide, dismissEmptyGuide, isEmptyGuideDismissed, type ProjectEmptiness } from './ProjectGuide'; // T03183（PM-103）：零资料项目三步引导
 import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin, reorderProjects, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
-import { ProjectListHint, getProjectListSnapshot, refreshProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
+import { ProjectListHint, refreshProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表取数容错层
 import { ResourceHint, useResource } from '../ui/resourceState'; // T02213：节假日取数改走可见失败态层（工期换算依赖）
 import { AiUnavailableHint, aiBlocked, aiBlockedTitle, useAiReadiness } from '../ui/aiReadiness'; // T03176（D-14）：AI 不可用入口可见但禁用 + 原因/修复动作
 import { FontColorButton } from '../ui/FontColorButton';
@@ -1503,14 +1503,13 @@ export function PlanPage() {
   // T02201：项目列表取数交统一容错层（加载中/失败可见 + 重试，失败不缓存冒充正常数据）
   const projectList = useProjectList();
   const { projects } = projectList;
-  // T00460：切页保状态——项目选择会话级持久化，切回不重置
+  // T00460：切页保状态——项目选择沿用全局工作区上下文（localStorage 跨页持久化）。
+  // T06329 修正：Plan 不再用 session 旧项目覆盖“全部项目”，也不在自动兜底时写全局。
   const [globalProject, setGlobalProject] = useActiveProject();
-  const [sessionProjectId, setSessionProjectId] = useSessionState('plan.projectId', '');
-  const projectId = globalProject || sessionProjectId;
+  const projectId = globalProject;
   const setProjectId = useCallback((id: string) => {
-    setSessionProjectId(id);
-    if (id) setGlobalProject(id);
-  }, [setSessionProjectId, setGlobalProject]);
+    setGlobalProject(id);
+  }, [setGlobalProject]);
   const [plans, setPlans] = useState<PlanTask[]>([]);
   // T03194（PM-204）：里程碑达成预测（按 milestoneId 索引）+ 取数失败态 + 明细面板开关
   const [forecasts, setForecasts] = useState<Record<string, MilestoneForecast>>({});
@@ -1769,12 +1768,11 @@ export function PlanPage() {
 
   const flash = (msg: string) => { setNotice(msg); setTimeout(() => setNotice(''), 3000); };
 
-  /** T00657：项目列表（下拉徽标含待办/未验证与计划计数）——取数交 T02201 统一容错层，本函数保留「首个项目兜底选中」语义 */
+  /** T00657：项目列表（下拉徽标含待办/未验证与计划计数）——取数交 T02201 统一容错层。
+   *  T06329：不再“首个项目兜底选中”；顶栏「全部项目」时保留显式空范围，让用户通过项目选择器决定。 */
   const loadProjects = useCallback(async () => {
     await refreshProjectList();
-    const ps = getProjectListSnapshot();
-    if (ps.length > 0 && !projectId) setProjectId(ps[0].id);
-  }, [projectId, setProjectId]);
+  }, []);
   useEffect(() => { void loadProjects(); }, [loadProjects]);
   // T00657：任务与计划变更会改变项目下拉计数 → 订阅变更实时刷新（服务端同步失效项目列表缓存）
   useEffect(() => api.openChangeStream((kind) => {
@@ -1847,7 +1845,17 @@ export function PlanPage() {
   }, [depMenuId]);
 
   const reload = useCallback(() => {
-    if (!projectId) return;
+    if (!projectId) {
+      // T06329：切到「全部项目」时清空上一项目的计划与叠加信息，
+      // 否则空态判据 plans.length 会被旧项目数据占住，页面看起来仍在展示别的项目。
+      setPlans([]);
+      setForecasts({});
+      setForecastAt('');
+      setForecastErr('');
+      setSnapCoverage(null);
+      setSnapErr('');
+      return;
+    }
     void api.get<PlanTask[]>(`/plans?projectId=${projectId}`).then(setPlans).catch((e) => flash(String(e.message ?? e)));
     // T03194：预测是叠加信息——失败不能清掉计划表，但要在工具条留痕（不静默当"无预测"）
     void api.get<MilestoneForecastReport>(`/plans/milestone-forecast?projectId=${projectId}`)
@@ -3140,9 +3148,11 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               {/* T01072-FR1.10：统一空态——动作直达新建入口 */}
               <EmptyState
                 icon={<CalendarPlus size={18} />}
-                title="当前项目暂无计划任务"
-                hint="可「新建计划任务」逐条创建，或「导入 Excel」批量导入；也可在 AI 工作台用「AI 项目计划导入」从 PRD 自动拆解。"
-                action={{ label: '新建计划任务', onClick: () => void createPlan() }}
+                title={projectId ? '当前项目暂无计划任务' : '请先选择项目'}
+                hint={projectId
+                  ? '可「新建计划任务」逐条创建，或「导入 Excel」批量导入；也可在 AI 工作台用「AI 项目计划导入」从 PRD 自动拆解。'
+                  : '顶栏当前为「全部项目」；请在工具条的项目选择器中选择具体项目后查看或编排计划。'}
+                action={projectId ? { label: '新建计划任务', onClick: () => void createPlan() } : undefined}
               />
             </td></tr>
           )}

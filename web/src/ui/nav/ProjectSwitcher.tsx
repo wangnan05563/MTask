@@ -39,7 +39,10 @@ export function ProjectSwitcher() {
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   const options = [{ id: '', name: '全部项目' }, ...projects.map((p) => ({ id: p.id, name: p.name }))];
-  const label = activeProjectLabel(projectId, projects);
+  // 首屏项目列表未返回时不要把仍未解析的 ID 误报为“项目已删除”。
+  const label = projectId && projects.length === 0
+    ? (phase === 'loading' ? '项目列表加载中…' : phase === 'error' ? '项目列表加载失败' : activeProjectLabel(projectId, projects))
+    : activeProjectLabel(projectId, projects);
 
   const close = useCallback((restoreFocus = true) => {
     setOpen(false);

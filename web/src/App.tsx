@@ -462,7 +462,7 @@ function Shell() {
           onToggle={toggleNav}
           onSelect={setTab}
         />
-        <main style={{ flex: 1, minWidth: 0, minHeight: '100vh' }}>
+        <main className="mt-app-main" style={{ flex: 1, minWidth: 0, minHeight: '100vh' }}>
           <header className="mt-top-switcher" aria-label="页面切换">
             <span className="mt-top-group">{activeGroup.label}</span>
             <ProjectSwitcher />

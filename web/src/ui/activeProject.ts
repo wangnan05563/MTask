@@ -16,12 +16,42 @@ export const ALL_PROJECTS = '__all__';
 const listeners = new Set<() => void>();
 let snapshot: string | null = null;
 
-function readStored(): string {
+/**
+ * T06329 迁移兼容：旧实现用 usePersistentState 写入 JSON 字符串（例如 `"p1"` / `""`），
+ * 新 store 直接写裸串。这里同时接受两种格式，并把旧哨兵 `__all__` 统一归一化为空串。
+ */
+export function normalizeActiveProject(raw: string | null): string {
+  if (!raw) return '';
+  let value = raw;
   try {
-    return globalThis.localStorage?.getItem(ACTIVE_PROJECT_KEY) ?? '';
+    const parsed = JSON.parse(raw);
+    if (typeof parsed === 'string') value = parsed;
+    else if (parsed === null) value = '';
+  } catch {
+    /* 新格式是裸串，JSON.parse 失败时按原值处理 */
+  }
+  return value === ALL_PROJECTS ? '' : value;
+}
+
+function readStored(): string {
+  let storage: Storage | undefined;
+  let raw: string | null = null;
+  try {
+    storage = globalThis.localStorage;
+    raw = storage?.getItem(ACTIVE_PROJECT_KEY) ?? null;
   } catch {
     return '';
   }
+  const value = normalizeActiveProject(raw);
+  // 读到旧 JSON 值时顺手迁移成新格式，避免每次启动重复解析与再次被误判为项目 ID。
+  if (storage && raw !== null && raw !== value) {
+    try {
+      storage.setItem(ACTIVE_PROJECT_KEY, value);
+    } catch {
+      /* 隐私模式/配额失败不影响本次内存值 */
+    }
+  }
+  return value;
 }
 
 function emit(): void {
@@ -34,7 +64,7 @@ export function getActiveProject(): string {
 }
 
 export function setActiveProject(projectId: string): void {
-  const next = projectId || '';
+  const next = projectId === ALL_PROJECTS ? '' : (projectId || '');
   if (next === getActiveProject()) return;
   snapshot = next;
   try {

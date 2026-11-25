@@ -10,7 +10,7 @@ async function main() {
   (globalThis as unknown as { document: { baseURI: string } }).document = { baseURI: 'http://localhost/' };
 
   const { ProjectSwitcher } = await import('../../web/src/ui/nav/ProjectSwitcher.tsx');
-  const { activeProjectLabel, getActiveProject, setActiveProject } = await import('../../web/src/ui/activeProject.ts');
+  const { activeProjectLabel, getActiveProject, setActiveProject, normalizeActiveProject } = await import('../../web/src/ui/activeProject.ts');
 
   const failures: string[] = [];
   const must = (label: string, text: string, marker: string) => {
@@ -34,6 +34,19 @@ async function main() {
   if (activeProjectLabel('', []) !== '全部项目') failures.push('空作用域展示名应为「全部项目」');
   if (activeProjectLabel('p1', [{ id: 'p1', name: '四期' }]) !== '四期') failures.push('已知项目未展示项目名');
   if (activeProjectLabel('gone', [{ id: 'p1', name: '四期' }]) !== '项目已删除') failures.push('已删项目未给出明确未知态');
+  // T06329 迁移：旧 usePersistentState 写入的是 JSON 字符串，新 store 必须兼容并归一化 __all__。
+  const migrationCases: Array<[string | null, string]> = [
+    [JSON.stringify('p1'), 'p1'],
+    [JSON.stringify(''), ''],
+    [JSON.stringify('__all__'), ''],
+    ['p1', 'p1'],
+    ['', ''],
+    [null, ''],
+  ];
+  for (const [raw, expected] of migrationCases) {
+    const actual = normalizeActiveProject(raw);
+    if (actual !== expected) failures.push(`旧 activeProject 迁移错误：${JSON.stringify(raw)} -> ${actual}，期望 ${expected}`);
+  }
   setActiveProject('p1');
   if (getActiveProject() !== 'p1') failures.push('setActiveProject 未更新内存快照（localStorage 不可用时应降级生效）');
   setActiveProject('');

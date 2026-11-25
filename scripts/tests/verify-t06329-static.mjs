@@ -39,6 +39,7 @@ for (const marker of [
   'export function setActiveProject',
   'export function useActiveProject',
   'export function activeProjectLabel',
+  'export function normalizeActiveProject',
   'useSyncExternalStore',
   "addEventListener('storage'",
   'localStorage',
@@ -110,8 +111,16 @@ mustNot('任务页', tasks, "const ALL_PROJECTS = '__all__'");
 must('任务页', tasks, 'projectId === ALL_PROJECTS ? \'\' : projectId');
 
 must('计划页', plan, "from '../ui/activeProject'");
-must('计划页', plan, 'const projectId = globalProject || sessionProjectId');
+must('计划页', plan, 'const projectId = globalProject');
 must('计划页', plan, 'setGlobalProject(id)');
+mustNot('计划页', plan, 'const projectId = globalProject || sessionProjectId');
+mustNot('计划页', plan, 'setProjectId(ps[0].id)');
+const planReload = plan.indexOf('const reload = useCallback');
+const planEmptyGuard = plan.indexOf('if (!projectId) {', planReload);
+const planClearPlans = plan.indexOf('setPlans([])', planEmptyGuard);
+if (planReload < 0 || planEmptyGuard < 0 || planClearPlans < 0) {
+  failures.push('计划页切到全部项目时未清空上一项目的 plans，空态会被旧数据占住');
+}
 must('需求页', req, "from '../ui/activeProject'");
 must('需求页', req, 'useActiveProject()');
 mustNot('需求页', req, "usePersistentState('tasks.activeProject'");
@@ -119,6 +128,8 @@ must('队列页', queue, "from '../ui/activeProject'");
 must('队列页', queue, 'const projectId = globalProject');
 must('报表页', report, "from '../ui/activeProject'");
 must('报表页', report, 'setProjectIds(globalProject ? [globalProject] : [])');
+must('报表页', report, 'scopeInitialized');
+mustNot('报表页', report, 'mountedWithGlobalScope');
 
 const out = {
   files: {

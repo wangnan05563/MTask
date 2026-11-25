@@ -4664,31 +4664,47 @@ export function TasksPage() {
     );
   }
 
-  /** 工具条 AI 美化按钮：进行中变为「取消」，否则批量美化全部待办 */
+  /** 「更多」内的 AI 美化启动入口：进行中时由工具条外置状态接管取消/进度，避免随 More 关闭被隐藏。 */
   function renderBeautifyToolbarButton() {
-    // 提示文案平铺成 if/else（取消 > AI 不可用 > 正常），消除嵌套三元（S3358）
-    let titleAttr: string;
-    if (anyBeautify) titleAttr = '取消 — 停止当前批量美化';
-    else if (aiDown) titleAttr = aiBlockedTitle(readiness, 'AI 美化全部待办 — 批量润色所有待办任务标题');
-    else titleAttr = 'AI 美化全部待办 — 批量润色所有待办任务标题';
+    if (anyBeautify) return null;
+    // 提示文案平铺成 if/else（AI 不可用 > 正常），消除嵌套三元（S3358）
+    const titleAttr = aiDown
+      ? aiBlockedTitle(readiness, 'AI 美化全部待办 — 批量润色所有待办任务标题')
+      : 'AI 美化全部待办 — 批量润色所有待办任务标题';
     return (
-      <>
+      <button
+        onClick={handleBeautifyToggle}
+        disabled={todo.length === 0 || aiDown}
+        title={titleAttr}
+        aria-label="AI 美化全部待办"
+        data-t06343="beautify"
+        className="tbtn-anim"
+        style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)' }}
+      >
+        <Wand2 size={13} />
+        <span>AI 美化待办</span>
+        {todo.length > 0 ? todo.length : ''}
+      </button>
+    );
+  }
+
+  /** 工具条常驻美化状态：单条/批量进行中都展示取消与进度，不依赖「更多」展开。 */
+  function renderBeautifyStatus() {
+    if (!anyBeautify) return null;
+    return (
+      <span data-t06343="beautify-status" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
         <button
           onClick={handleBeautifyToggle}
-          disabled={!anyBeautify && (todo.length === 0 || aiDown)}
-          title={titleAttr}
-          aria-label={anyBeautify ? '取消批量美化' : 'AI 美化全部待办'}
-          data-t06343="beautify"
-          className={anyBeautify ? 'task-breathe' : 'tbtn-anim'}
-          style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: anyBeautify ? 'var(--accent)' : 'transparent', color: anyBeautify ? 'var(--accent-text)' : 'var(--text)' }}
+          title="取消 — 停止当前 AI 美化"
+          aria-label="取消 AI 美化"
+          className="task-breathe"
+          style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--accent)', color: 'var(--accent-text)' }}
         >
           <Wand2 size={13} />
-          <span>{anyBeautify ? '取消美化' : 'AI 美化待办'}</span>
-          {!anyBeautify && todo.length > 0 ? todo.length : ''}
+          <span>取消美化</span>
         </button>
-        {/* 工具条整体连贯进度提示：单条/批量美化进行中展示（优化进行中文案在各任务描述区展示），完成/取消后清空 */}
-        {anyBeautify && <output className="flash-toast" style={{ top: 48 }}><span className="task-breathe" style={{ color: 'var(--accent)' }}>{batchBusy ? '正在批量美化标题…' : '正在美化标题…'}</span></output>}
-      </>
+        <output className="flash-toast" style={{ top: 48 }}><span className="task-breathe" style={{ color: 'var(--accent)' }}>{batchBusy ? '正在批量美化标题…' : '正在美化标题…'}</span></output>
+      </span>
     );
   }
 
@@ -5207,6 +5223,7 @@ export function TasksPage() {
             </button>
           )}
         </span>
+        {renderBeautifyStatus()}
         {/* T03623 / T06343：低频功能收进「更多」——保存视图、工作空间问答、AI 美化、行密度、Git 徽标与导出/筛选；
             按钮常驻可见（折叠入口不能只靠悬浮发现），展开态高亮，生效筛选数以徽标提示。 */}
         <button type="button" ref={moreBtnRef} onClick={() => setMoreOpen((v) => !v)}

@@ -679,12 +679,12 @@ export class RunLegacyMapper {
         if (existing) {
           this.db.prepare(`
             UPDATE agent_runs
-               SET status = ?, model = ?, prompt_version = ?, tokens = ?, cost = ?, executor = ?,
-                   started_at = ?, ended_at = ?, error_code = ?, updated_at = ?
+               SET task_id = ?, project_id = ?, queue_id = ?, status = ?, model = ?, prompt_version = ?,
+                   tokens = ?, cost = ?, executor = ?, started_at = ?, ended_at = ?, error_code = ?, updated_at = ?
              WHERE id = ?
           `).run(
-            run.status, run.model, run.promptVersion, run.tokens, run.cost, run.executor,
-            run.startedAt, run.endedAt, run.errorCode, nowIso(), runId,
+            run.taskId, run.projectId, run.queueId, run.status, run.model, run.promptVersion,
+            run.tokens, run.cost, run.executor, run.startedAt, run.endedAt, run.errorCode, nowIso(), runId,
           );
         } else {
           this.db.prepare(`

@@ -71,6 +71,8 @@ if (!/data-t06305="template-menu"/.test(read('web/src/components/TemplateMenu.ts
 
 if (!text.includes('aria-label="更多：低频操作与筛选"')) failures.push('「更多」入口的可访问名未覆盖低频操作');
 if (!text.includes('data-t06343="beautify"')) failures.push('AI 美化按钮缺少 T06343 标识');
+if (!toolbar.includes('{renderBeautifyStatus()}')) failures.push('美化运行态未外置到「更多」之外');
+if (!text.includes('if (anyBeautify) return null;')) failures.push('美化运行态仍可能随「更多」一起渲染取消/进度');
 
 const result = { morePanelMarkers: morePanel.length, toolbarLength: toolbar.length, formLength: newTaskForm.length, failures };
 console.log(JSON.stringify(result, null, 2));

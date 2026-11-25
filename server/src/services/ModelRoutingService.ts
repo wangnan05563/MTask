@@ -869,7 +869,8 @@ export const ModelRoutingService = {
       const selectedToolId = String(r.selected_tool_id ?? '');
       const candidates = (() => {
         try {
-          return JSON.parse(String(r.candidates_json ?? '[]')) as RouteCandidate[];
+          const parsed: unknown = JSON.parse(String(r.candidates_json ?? '[]'));
+          return Array.isArray(parsed) ? parsed as RouteCandidate[] : [];
         } catch {
           return [];
         }
