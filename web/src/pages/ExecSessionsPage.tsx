@@ -129,6 +129,14 @@ function statusColumns(rows: ExecSession[]) {
 }
 
 export function ExecSessionsPage({ standalone = false }: { readonly standalone?: boolean }) {
+  // L-10：独立监控窗由 Electron 以独立窗口打开，body 的 UA 默认 8px margin 会让 100vh 页面多出 16px
+  // 纵向滚动（底栏被截、短窗口更明显）。只在该模式清零 body margin，退出时恢复，不影响主应用。
+  useEffect(() => {
+    if (!standalone) return undefined;
+    const prev = document.body.style.margin;
+    document.body.style.margin = '0';
+    return () => { document.body.style.margin = prev; };
+  }, [standalone]);
   const [rows, setRows] = useState<ExecSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');

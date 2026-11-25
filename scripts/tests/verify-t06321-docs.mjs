@@ -16,6 +16,10 @@ const CHROME = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 const AXE = process.env.AXE_PATH || 'C:/Users/hspcadmin/AppData/Local/Temp/eval_t171_clean/tests/phase3/vendor/axe.min.js';
 const OUT = 'C:/Users/hspcadmin/AppData/Local/Temp/t06321-docs';
 const EVID = 'D:/code/otherProjects/MTask/docs/evidence/p10-ui';
+// L-4：版本号由构建注入，门禁也以仓库根 package.json 为单一来源，避免帮助页与安装包版本漂移。
+const APP_VERSION = process.env.MTASK_APP_VERSION
+  || JSON.parse(readFileSync('D:/code/otherProjects/MTask/package.json', 'utf8')).version;
+const LOG_TITLE = `十期更新日志（${APP_VERSION}）`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 mkdirSync(OUT, { recursive: true });
 mkdirSync(EVID, { recursive: true });
@@ -122,7 +126,7 @@ try {
   await until(`!document.querySelector('[aria-label="关闭向导"]')`, 5_000);
   say('T06321-05b 帮助页使用向导已关闭（截图与 axe 无遮挡）', closeGuide2 === true && await evl(`!document.querySelector('[aria-label="关闭向导"]')`));
 
-  const modules = ['十期更新日志（0.1.1123.284）', '首页 · 今日与收件箱', '保存视图、模板与导入', 'Run 追踪与人工审批', '主题、无障碍与离线'];
+  const modules = [LOG_TITLE, '首页 · 今日与收件箱', '保存视图、模板与导入', 'Run 追踪与人工审批', '主题、无障碍与离线'];
   const coverage = await evl(`(() => {
     const text = document.querySelector('#help-panel')?.innerText || '';
     return { names: ${JSON.stringify(modules)}.map(n => ({ n, ok: text.includes(n) })), len: text.length, count: (text.match(/^\\s*[^\\n]{2,40}\\n/gm) || []).length };
@@ -144,15 +148,16 @@ try {
   const searchResult = await evl(`(async () => {
     const input = document.querySelector('[data-help-search]');
     if (!input) return { error: 'no-search' };
+    const title = ${JSON.stringify(LOG_TITLE)};
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
     setter?.call(input, '十期更新');
     input.dispatchEvent(new Event('input', { bubbles: true }));
     await new Promise(r => setTimeout(r, 300));
     const text = document.querySelector('#help-panel')?.innerText || '';
-    const count = (text.match(/十期更新日志（0.1.1123.284）/g) || []).length;
+    const count = text.split(title).length - 1;
     setter?.call(input, '');
     input.dispatchEvent(new Event('input', { bubbles: true }));
-    return { count, has: text.includes('十期更新日志（0.1.1123.284）'), cleared: !(document.querySelector('[data-help-search]')?.value || '') };
+    return { count, has: text.includes(title), cleared: !(document.querySelector('[data-help-search]')?.value || '') };
   })()`);
   say('T06321-08 帮助搜索可命中十期更新模块并清空恢复', searchResult?.has === true && searchResult?.cleared === true, searchResult);
 

@@ -17,7 +17,7 @@
       "extra": {
         "ok": true,
         "service": "mtask-server",
-        "time": "2026-11-24T21:05:12.565Z"
+        "time": "2026-11-25T17:22:48.276Z"
       }
     },
     {
@@ -46,7 +46,7 @@
       "extra": {
         "names": [
           {
-            "n": "十期更新日志（0.1.1123.284）",
+            "n": "十期更新日志（0.1.1125.285）",
             "ok": true
           },
           {
@@ -66,8 +66,8 @@
             "ok": true
           }
         ],
-        "len": 10538,
-        "count": 180
+        "len": 10544,
+        "count": 179
       }
     },
     {
@@ -105,7 +105,7 @@
       "ok": true,
       "extra": {
         "file": "D:\\code\\otherProjects\\MTask\\docs\\evidence\\p10-ui\\56-t06321-help-docs-1440.png",
-        "bytes": 164995
+        "bytes": 167019
       }
     },
     {
@@ -130,11 +130,11 @@
       "ok": true,
       "extra": {
         "file": "D:\\code\\otherProjects\\MTask\\docs\\evidence\\p10-ui\\57-t06321-help-docs-760.png",
-        "bytes": 124467
+        "bytes": 126666
       }
     }
   ],
   "passed": 15,
   "total": 15,
-  "at": "2026-11-24T21:05:18.597Z"
+  "at": "2026-11-25T17:23:04.406Z"
 }

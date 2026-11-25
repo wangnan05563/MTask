@@ -1,0 +1,16 @@
+[PASS] T06343-H1-00 隔离服务就绪 → {"ok":true,"service":"mtask-server","time":"2026-11-25T19:36:44.205Z"}
+[PASS] T06343-H1-00b 测试项目就绪 → {"projectId":"6eee51d5-3b9c-4d69-8a49-31f7f8f8a384"}
+[PASS] T06343-H1-00c 测试任务就绪 → {"tasks":3}
+[PASS] T06343-H1-00d AI 代理就绪 → {"proxy":"http://127.0.0.1:5220","api":"http://127.0.0.1:5218"}
+[PASS] T06343-H1-01 任务页与工具条就绪 → {"rows":3}
+[PASS] T06343-H1-02 初始 More 收起且无美化状态 → {"moreExpanded":"false","panelDisplay":"none","panelVisible":false,"statusExists":false,"statusVisible":false,"statusInPanel":false,"statusText":"","statusCancelVisible":false,"rowBeautifyVisible":false}
+[PASS] T06343-H1-03 单条美化启动后状态出现 → {"moreExpanded":"false","panelDisplay":"none","panelVisible":false,"statusExists":true,"statusVisible":true,"statusInPanel":false,"statusText":"取消美化\n正在美化标题…","statusCancelVisible":true,"rowBeautifyVisible":false}
+[PASS] T06343-H1-04 单条状态在 More 外且 More 保持收起 → {"moreExpanded":"false","panelDisplay":"none","panelVisible":false,"statusExists":true,"statusVisible":true,"statusInPanel":false,"statusText":"取消美化\n正在美化标题…","statusCancelVisible":true,"rowBeautifyVisible":false}
+[PASS] T06343-H1-05 单条状态含取消按钮与进度达文案 → "取消美化\n正在美化标题…"
+[PASS] T06343-H1-06 单条取消后状态消失且请求被中止 → {"state":{"moreExpanded":"false","panelDisplay":"none","panelVisible":false,"statusExists":false,"statusVisible":false,"statusInPanel":false,"statusText":"","statusCancelVisible":false,"rowBeautifyVisible":false},"abortedDelta":1,"calls":1,"active":1}
+[PASS] T06343-H1-07 批量美化前置确认框出现 → {"open":true}
+[PASS] T06343-H1-08 批量美化运行态出现 → {"moreExpanded":"true","panelDisplay":"flex","panelVisible":true,"statusExists":true,"statusVisible":true,"statusInPanel":false,"statusText":"取消美化\n正在批量美化标题…","statusCancelVisible":true,"rowBeautifyVisible":false}
+[PASS] T06343-H1-09 收起 More 后批量状态仍可见且位于面板外 → {"moreExpanded":"false","panelDisplay":"none","panelVisible":false,"statusExists":true,"statusVisible":true,"statusInPanel":false,"statusText":"取消美化\n正在批量美化标题…","statusCancelVisible":true,"rowBeautifyVisible":false}
+[PASS] T06343-H1-10 批量取消后状态消失且请求被中止 → {"abortedDelta":3,"totalAborts":4,"calls":[{"title":"待美化标题三","aborted":true},{"title":"待美化标题三","aborted":true},{"title":"待美化标题二","aborted":true},{"title":"待美化标题一","aborted":true}]}
+[PASS] T06343-H1-11 取消后 More 启动入口恢复 → {"moreExpanded":"false","panelDisplay":"none","panelVisible":false,"statusExists":false,"statusVisible":false,"statusInPanel":false,"statusText":"","statusCancelVisible":false,"rowBeautifyVisible":false}
+PASS=15 FAIL=0 OUT=docs/evidence/t06343-beautify

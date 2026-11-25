@@ -11,6 +11,8 @@ import { Check, Copy } from 'lucide-react';
  */
 
 type Sub = 'features' | 'mcp' | 'skill' | 'config' | 'quickstart';
+/** T06321 L-4：版本号来自构建注入；非 Vite 环境（单测/脚本）显示「开发构建」，不再硬编码历史版本。 */
+const APP_VERSION = typeof __MTASK_VERSION__ === 'string' && __MTASK_VERSION__ ? __MTASK_VERSION__ : '开发构建';
 const SUBS: { key: Sub; label: string }[] = [
   { key: 'features', label: '功能说明' },
   { key: 'mcp', label: 'MCP 接口' },
@@ -159,7 +161,7 @@ const HELP_CSS = `
 interface FeatureModule { name: string; overview: string; steps?: string[]; tips?: string[]; }
 const FEATURES: FeatureModule[] = [
   {
-    name: '十期更新日志（0.1.1123.284）',
+    name: `十期更新日志（${APP_VERSION}）`,
     overview: '十期面向用户的变化：今日首页、可操作收件箱、任务与 Run 统一搜索、保存视图与模板、Run 追踪与人工审批、主题与无障碍、离线草稿、完整备份与恢复。',
     steps: [
       '首页默认进入「今日」：四格摘要 + 今日行动 / 等我处理 / AI 正在跑三组卡片，可按项目筛选；项目统计按需展开',
@@ -170,7 +172,7 @@ const FEATURES: FeatureModule[] = [
       '设置可选浅色/深色/跟随系统与主题预设、强调色；移动端随手记离线存草稿，恢复网络后自动同步',
     ],
     tips: [
-      '版本号 0.1.1123.284；全量 AC（首屏/搜索/滚动/硬编码色/无障碍/去重/审计/主题）8/8 通过，证据见发布文档',
+      `版本号 ${APP_VERSION}；全量 AC（首屏/搜索/滚动/硬编码色/无障碍/去重/审计/主题）8/8 通过，证据见发布文档`,
       '表格列宽拖拽、日历视图与批量选择器已在十期交付；真实网关接入仍属后续范围，本手册不承诺已交付',
       '升级安装包前建议先在「设置 → 数据迁移」导出备份；覆盖安装会保留用户数据',
     ],

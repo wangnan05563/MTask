@@ -1,0 +1,10 @@
+[PASS] T06329-H3-00 测试 API 就绪 → {"ok":true,"service":"mtask-server","time":"2026-11-25T19:37:30.178Z"}
+[PASS] T06329-H3-00b 旧 session 项目就绪 → {"q":"828d70ad-fd08-4423-9645-b0829a79b1c0"}
+[PASS] T06329-H3-01 计划页就绪
+[PASS] T06329-H3-02 全部项目 + 旧 session Q：不自动选 Q/首项目 → {"trigger":{"label":"选择项目","text":"选择项目"},"bodyHasNeedProject":true,"bodyHasQ":false,"active":""}
+[PASS] T06329-H3-03 全部项目下明确显示「请先选择项目」 → {"trigger":{"label":"选择项目","text":"选择项目"},"bodyHasNeedProject":true,"bodyHasQ":false,"active":""}
+[PASS] T06329-H3-04 旧 session Q 不改写全局项目 → {"trigger":{"label":"选择项目","text":"选择项目"},"bodyHasNeedProject":true,"bodyHasQ":false,"active":""}
+[PASS] T06329-H3-05 顶栏切到 Q → {"clicked":true}
+[PASS] T06329-H3-06 切到 Q 后计划页跟随具体项目 → {"trigger":{"label":"选择项目：T06329 H3 旧会话项目 1795635450184（已完成 0 / 进行中 0 / 待开始 0）","text":"T06329 H3 旧会话项目 1795635450184\n0\n0\n0"},"bodyHasNeedProject":false,"bodyHasQ":true,"active":"828d70ad-fd08-4423-9645-b0829a79b1c0"}
+[PASS] T06329-H3-07 顶栏切到 Q 后全局项目为 Q → {"trigger":{"label":"选择项目：T06329 H3 旧会话项目 1795635450184（已完成 0 / 进行中 0 / 待开始 0）","text":"T06329 H3 旧会话项目 1795635450184\n0\n0\n0"},"bodyHasNeedProject":false,"bodyHasQ":true,"active":"828d70ad-fd08-4423-9645-b0829a79b1c0"}
+PASS=9 FAIL=0 OUT=docs/evidence/t06329-scope

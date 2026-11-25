@@ -1,17 +1,17 @@
 [PASS] T06321-00 发布文档存在
 [PASS] T06321-00b axe 依赖存在 → {"AXE":"C:/Users/hspcadmin/AppData/Local/Temp/eval_t171_clean/tests/phase3/vendor/axe.min.js"}
-[PASS] T06321-01 隔离服务就绪 → {"ok":true,"service":"mtask-server","time":"2026-11-24T21:05:12.565Z"}
+[PASS] T06321-01 隔离服务就绪 → {"ok":true,"service":"mtask-server","time":"2026-11-25T19:35:48.622Z"}
 [PASS] T06321-02 首页加载完成
 [PASS] T06321-03 使用向导已关闭
 [PASS] T06321-04 设置页可达
 [PASS] T06321-05 功能说明页默认可达
 [PASS] T06321-05b 帮助页使用向导已关闭（截图与 axe 无遮挡）
-[PASS] T06321-06 十期五个新增模块全部在帮助页 → {"names":[{"n":"十期更新日志（0.1.1123.284）","ok":true},{"n":"首页 · 今日与收件箱","ok":true},{"n":"保存视图、模板与导入","ok":true},{"n":"Run 追踪与人工审批","ok":true},{"n":"主题、无障碍与离线","ok":true}],"len":10538,"count":180}
+[PASS] T06321-06 十期五个新增模块全部在帮助页 → {"names":[{"n":"十期更新日志（0.1.1125.285）","ok":true},{"n":"首页 · 今日与收件箱","ok":true},{"n":"保存视图、模板与导入","ok":true},{"n":"Run 追踪与人工审批","ok":true},{"n":"主题、无障碍与离线","ok":true}],"len":10544,"count":179}
 [PASS] T06321-07 命令面板说明已改为任务+Run 并含搜索语法 → {"old":false,"unified":true,"searchSyntax":true,"runMatch":true,"zero":true}
 [PASS] T06321-08 帮助搜索可命中十期更新模块并清空恢复 → {"count":1,"has":true,"cleared":true}
 [PASS] T06321-09 帮助页 axe WCAG2 A/AA serious/critical=0 → {"total":0,"serious":[],"all":[],"passes":18}
-[PASS] T06321-10 1440 帮助文档截图 → {"file":"D:\\code\\otherProjects\\MTask\\docs\\evidence\\p10-ui\\56-t06321-help-docs-1440.png","bytes":164995}
+[PASS] T06321-10 1440 帮助文档截图 → {"file":"D:\\code\\otherProjects\\MTask\\docs\\evidence\\p10-ui\\56-t06321-help-docs-1440.png","bytes":167019}
 [PASS] T06321-11 760 窄屏帮助面板无横向溢出 → {"wide":false,"panel":{"scroll":456,"client":456},"tabs":{"scroll":456,"client":456,"count":5},"viewport":760}
-[PASS] T06321-12 760 帮助文档截图 → {"file":"D:\\code\\otherProjects\\MTask\\docs\\evidence\\p10-ui\\57-t06321-help-docs-760.png","bytes":124467}
+[PASS] T06321-12 760 帮助文档截图 → {"file":"D:\\code\\otherProjects\\MTask\\docs\\evidence\\p10-ui\\57-t06321-help-docs-760.png","bytes":126666}
 
 15/15 PASS

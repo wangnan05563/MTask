@@ -1,0 +1,18 @@
+[PASS] T06314-API-00 隔离服务就绪 → {"ok":true,"service":"mtask-server","time":"2026-11-25T19:39:40.999Z"}
+[PASS] T06314-API-01 5k 数据集就绪 → {"todo_count":5000,"done_count":0}
+[PASS] T06314-API-02 搜索返回行数受 limit=200 约束 → {"q":"压测任务","rows":200}
+[PASS] T06314-API-02-1 搜索返回行数受 limit=200 约束 → {"q":"性能滚动","rows":200}
+[PASS] T06314-API-02-2 搜索返回行数受 limit=200 约束 → {"q":"T06314-4","rows":200}
+[PASS] T06314-API-02-3 搜索返回行数受 limit=200 约束 → {"q":"压测任务 4999","rows":1}
+[PASS] T06314-API-03 5k 搜索 p95 < 300ms → {"p50":28.6,"p95":37.5,"max":43.6,"min":6.8}
+[PASS] T06314-UI-01 5k 项目任务页首屏可用 → {"rows":22,"ms":658}
+[PASS] T06314-UI-02 首屏按页加载且 DOM 行数有界 → {"rows":22}
+[PASS] T06314-UI-03 切到看板视图 → {"board":true}
+[PASS] T06314-UI-04 看板首屏卡片与两列结构 → {"boardCards200":200,"boardCols":2}
+[PASS] T06314-UI-05 看板首屏(200卡) 滚动帧率 → {"frames":157,"elapsed":2599.2,"avgFps":60,"p95":16.8,"max":16.9,"longFrames":0,"scrollY":5460,"scrollHeight":7358}
+[PASS] T06314-UI-05b 看板首屏 DOM 卡片数=当前页 → {"boardCards200":200}
+[PASS] T06314-UI-06 5k 全量续取后 DOM 行仍窗口化 → {"rows5k":26,"loaded":35,"apiSample":1,"ms":19112}
+[PASS] T06314-UI-07 列表5k全量 滚动帧率 → {"frames":149,"elapsed":2582.4000000000015,"avgFps":57.3,"p95":17.1,"max":66.6,"longFrames":2,"scrollY":109824,"scrollHeight":190450}
+[PASS] T06314-UI-08 5k 全量切看板后的 DOM 卡片规模 → {"boardCards5k":5000,"switchMs":1101}
+[PASS] T06314-UI-09 看板5k全量 滚动帧率 → {"frames":155,"elapsed":2599.100000000002,"avgFps":59.3,"p95":16.9,"max":50,"longFrames":1,"scrollY":102711,"scrollHeight":175342}
+PASS=17 FAIL=0 OUT=C:/Users/hspcadmin/AppData/Local/Temp/t06314-ui

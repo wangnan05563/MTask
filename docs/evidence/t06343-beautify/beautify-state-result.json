@@ -1,0 +1,219 @@
+{
+  "pass": 15,
+  "fail": 0,
+  "checks": [
+    {
+      "name": "T06343-H1-00 隔离服务就绪",
+      "ok": true,
+      "extra": {
+        "ok": true,
+        "service": "mtask-server",
+        "time": "2026-11-25T19:36:44.205Z"
+      }
+    },
+    {
+      "name": "T06343-H1-00b 测试项目就绪",
+      "ok": true,
+      "extra": {
+        "projectId": "6eee51d5-3b9c-4d69-8a49-31f7f8f8a384"
+      }
+    },
+    {
+      "name": "T06343-H1-00c 测试任务就绪",
+      "ok": true,
+      "extra": {
+        "tasks": 3
+      }
+    },
+    {
+      "name": "T06343-H1-00d AI 代理就绪",
+      "ok": true,
+      "extra": {
+        "proxy": "http://127.0.0.1:5220",
+        "api": "http://127.0.0.1:5218"
+      }
+    },
+    {
+      "name": "T06343-H1-01 任务页与工具条就绪",
+      "ok": true,
+      "extra": {
+        "rows": 3
+      }
+    },
+    {
+      "name": "T06343-H1-02 初始 More 收起且无美化状态",
+      "ok": true,
+      "extra": {
+        "moreExpanded": "false",
+        "panelDisplay": "none",
+        "panelVisible": false,
+        "statusExists": false,
+        "statusVisible": false,
+        "statusInPanel": false,
+        "statusText": "",
+        "statusCancelVisible": false,
+        "rowBeautifyVisible": false
+      }
+    },
+    {
+      "name": "T06343-H1-03 单条美化启动后状态出现",
+      "ok": true,
+      "extra": {
+        "moreExpanded": "false",
+        "panelDisplay": "none",
+        "panelVisible": false,
+        "statusExists": true,
+        "statusVisible": true,
+        "statusInPanel": false,
+        "statusText": "取消美化\n正在美化标题…",
+        "statusCancelVisible": true,
+        "rowBeautifyVisible": false
+      }
+    },
+    {
+      "name": "T06343-H1-04 单条状态在 More 外且 More 保持收起",
+      "ok": true,
+      "extra": {
+        "moreExpanded": "false",
+        "panelDisplay": "none",
+        "panelVisible": false,
+        "statusExists": true,
+        "statusVisible": true,
+        "statusInPanel": false,
+        "statusText": "取消美化\n正在美化标题…",
+        "statusCancelVisible": true,
+        "rowBeautifyVisible": false
+      }
+    },
+    {
+      "name": "T06343-H1-05 单条状态含取消按钮与进度达文案",
+      "ok": true,
+      "extra": "取消美化\n正在美化标题…"
+    },
+    {
+      "name": "T06343-H1-06 单条取消后状态消失且请求被中止",
+      "ok": true,
+      "extra": {
+        "state": {
+          "moreExpanded": "false",
+          "panelDisplay": "none",
+          "panelVisible": false,
+          "statusExists": false,
+          "statusVisible": false,
+          "statusInPanel": false,
+          "statusText": "",
+          "statusCancelVisible": false,
+          "rowBeautifyVisible": false
+        },
+        "abortedDelta": 1,
+        "calls": 1,
+        "active": 1
+      }
+    },
+    {
+      "name": "T06343-H1-07 批量美化前置确认框出现",
+      "ok": true,
+      "extra": {
+        "open": true
+      }
+    },
+    {
+      "name": "T06343-H1-08 批量美化运行态出现",
+      "ok": true,
+      "extra": {
+        "moreExpanded": "true",
+        "panelDisplay": "flex",
+        "panelVisible": true,
+        "statusExists": true,
+        "statusVisible": true,
+        "statusInPanel": false,
+        "statusText": "取消美化\n正在批量美化标题…",
+        "statusCancelVisible": true,
+        "rowBeautifyVisible": false
+      }
+    },
+    {
+      "name": "T06343-H1-09 收起 More 后批量状态仍可见且位于面板外",
+      "ok": true,
+      "extra": {
+        "moreExpanded": "false",
+        "panelDisplay": "none",
+        "panelVisible": false,
+        "statusExists": true,
+        "statusVisible": true,
+        "statusInPanel": false,
+        "statusText": "取消美化\n正在批量美化标题…",
+        "statusCancelVisible": true,
+        "rowBeautifyVisible": false
+      }
+    },
+    {
+      "name": "T06343-H1-10 批量取消后状态消失且请求被中止",
+      "ok": true,
+      "extra": {
+        "abortedDelta": 3,
+        "totalAborts": 4,
+        "calls": [
+          {
+            "title": "待美化标题三",
+            "aborted": true
+          },
+          {
+            "title": "待美化标题三",
+            "aborted": true
+          },
+          {
+            "title": "待美化标题二",
+            "aborted": true
+          },
+          {
+            "title": "待美化标题一",
+            "aborted": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "T06343-H1-11 取消后 More 启动入口恢复",
+      "ok": true,
+      "extra": {
+        "moreExpanded": "false",
+        "panelDisplay": "none",
+        "panelVisible": false,
+        "statusExists": false,
+        "statusVisible": false,
+        "statusInPanel": false,
+        "statusText": "",
+        "statusCancelVisible": false,
+        "rowBeautifyVisible": false
+      }
+    }
+  ],
+  "abortedBeautify": 4,
+  "beautifyCalls": [
+    {
+      "url": "/api/ai/beautify",
+      "title": "待美化标题三",
+      "aborted": true,
+      "at": "2026-11-25T19:36:47.467Z"
+    },
+    {
+      "url": "/api/ai/beautify",
+      "title": "待美化标题三",
+      "aborted": true,
+      "at": "2026-11-25T19:36:47.806Z"
+    },
+    {
+      "url": "/api/ai/beautify",
+      "title": "待美化标题二",
+      "aborted": true,
+      "at": "2026-11-25T19:36:47.807Z"
+    },
+    {
+      "url": "/api/ai/beautify",
+      "title": "待美化标题一",
+      "aborted": true,
+      "at": "2026-11-25T19:36:47.807Z"
+    }
+  ]
+}

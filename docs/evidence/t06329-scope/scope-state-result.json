@@ -1,0 +1,96 @@
+{
+  "pass": 10,
+  "fail": 0,
+  "checks": [
+    {
+      "name": "T06329-H2-00 测试 API 就绪",
+      "ok": true,
+      "extra": {
+        "ok": true,
+        "service": "mtask-server",
+        "time": "2026-11-25T19:37:18.148Z"
+      }
+    },
+    {
+      "name": "T06329-H2-00b 两个测试项目就绪",
+      "ok": true,
+      "extra": {
+        "p": "e3e4e63b-a8a1-42f0-abbb-f96d71153e6c",
+        "q": "a6711ed2-bc70-4d4c-9b4c-1d6ad8376519"
+      }
+    },
+    {
+      "name": "T06329-H2-01 报表页与范围选择器就绪",
+      "ok": true
+    },
+    {
+      "name": "T06329-H2-02 已有 session Q、顶栏 P：范围保留 Q，不被静默覆盖",
+      "ok": true,
+      "extra": {
+        "text": "T06329 H2 旧会话项目 1795635438154 1/8",
+        "title": "项目范围：T06329 H2 旧会话项目 1795635438154 — 可勾选 2~8 个项目聚合生成",
+        "expanded": "false",
+        "allLabel": false,
+        "count": "1/8"
+      }
+    },
+    {
+      "name": "T06329-H2-03 用户清空后保持「全部项目」，effect 不回写 P",
+      "ok": true,
+      "extra": {
+        "text": "全部项目 不限",
+        "title": "项目范围：全部项目（不限范围） — 可勾选 2~8 个项目聚合生成",
+        "expanded": "true",
+        "allLabel": true,
+        "count": ""
+      }
+    },
+    {
+      "name": "T06329-H2-04 清空后等待 1.2s 仍为「全部项目」",
+      "ok": true,
+      "extra": {
+        "text": "全部项目 不限",
+        "title": "项目范围：全部项目（不限范围） — 可勾选 2~8 个项目聚合生成",
+        "expanded": "true",
+        "allLabel": true,
+        "count": ""
+      }
+    },
+    {
+      "name": "T06329-H2-05 顶栏可切到 Q",
+      "ok": true,
+      "extra": {
+        "clicked": true
+      }
+    },
+    {
+      "name": "T06329-H2-06 顶栏真正切到 Q 后范围同步为 Q",
+      "ok": true,
+      "extra": {
+        "text": "T06329 H2 旧会话项目 1795635438154 1/8",
+        "title": "项目范围：T06329 H2 旧会话项目 1795635438154 — 可勾选 2~8 个项目聚合生成",
+        "expanded": "true",
+        "allLabel": false,
+        "count": "1/8"
+      }
+    },
+    {
+      "name": "T06329-H2-07 顶栏可切到全部项目",
+      "ok": true,
+      "extra": {
+        "clicked": true
+      }
+    },
+    {
+      "name": "T06329-H2-08 顶栏全部项目后范围清空",
+      "ok": true,
+      "extra": {
+        "text": "全部项目 不限",
+        "title": "项目范围：全部项目（不限范围） — 可勾选 2~8 个项目聚合生成",
+        "expanded": "true",
+        "allLabel": true,
+        "count": ""
+      }
+    }
+  ]
+}

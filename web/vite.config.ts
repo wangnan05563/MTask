@@ -1,4 +1,5 @@
-import { realpathSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
@@ -8,12 +9,29 @@ import react from '@vitejs/plugin-react';
 // 统一 root 到 realpath，正常目录下与 process.cwd() 等价，junction 下则对齐到目标盘。
 const projectRoot = realpathSync(process.cwd());
 
+// T06321 L-4：帮助页版本号不再硬编码，构建时从仓库根 package.json 注入；
+// MTASK_APP_VERSION 可覆盖（打包脚本/CI 可在不改文件的前提下注入实际安装包版本）。
+function resolveAppVersion(): string {
+  const fromEnv = (process.env.MTASK_APP_VERSION ?? '').trim();
+  if (fromEnv) return fromEnv;
+  try {
+    const pkg = JSON.parse(readFileSync(resolve(projectRoot, '..', 'package.json'), 'utf8')) as { version?: string };
+    return String(pkg.version ?? '').trim();
+  } catch {
+    return '';
+  }
+}
+const appVersion = resolveAppVersion();
+
 export default defineConfig({
   root: projectRoot,
   // 相对路径引用资源：Electron 打包版以 file:// 加载 web/dist，
   // 绝对路径 /assets/... 会解析到磁盘根目录导致白板
   base: './',
   plugins: [react()],
+  define: {
+    __MTASK_VERSION__: JSON.stringify(appVersion),
+  },
   build: {
     // 默认清空输出目录；沙箱 safe-delete 回收站不可用时清空会超时，
     // 设 MTASK_NO_EMPTY=1 跳过清空（仅写新文件），便于受限环境出包

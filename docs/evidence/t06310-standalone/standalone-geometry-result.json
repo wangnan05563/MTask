@@ -1,0 +1,180 @@
+{
+  "pass": 9,
+  "fail": 0,
+  "checks": [
+    {
+      "name": "T06310-L10-00 测试 API 就绪",
+      "ok": true,
+      "extra": {
+        "ok": true,
+        "service": "mtask-server",
+        "time": "2026-11-25T19:35:59.956Z"
+      }
+    },
+    {
+      "name": "T06310-L10-01 独立监控窗双栏就绪",
+      "ok": true
+    },
+    {
+      "name": "T06310-L10-02 900×500 页面无纵向溢出",
+      "ok": true,
+      "extra": {
+        "viewport": {
+          "w": 900,
+          "h": 500
+        },
+        "scroll": {
+          "body": 500,
+          "doc": 500,
+          "y": 0
+        },
+        "outer": {
+          "top": 0,
+          "bottom": 500,
+          "height": 500,
+          "width": 900
+        },
+        "grid": {
+          "top": 79,
+          "bottom": 500,
+          "height": 421,
+          "width": 900
+        },
+        "left": {
+          "top": 79,
+          "bottom": 490,
+          "height": 411,
+          "width": 694.4
+        },
+        "right": {
+          "top": 79,
+          "bottom": 488,
+          "height": 409,
+          "width": 163.6
+        },
+        "gridStyle": {
+          "minHeight": "0px",
+          "height": "421px",
+          "flex": "1 1 0px"
+        },
+        "pageStyle": {
+          "minHeight": "0px",
+          "height": "500px"
+        }
+      }
+    },
+    {
+      "name": "T06310-L10-03 900×500 grid 贴合视口且不越界",
+      "ok": true,
+      "extra": {
+        "top": 79,
+        "bottom": 500,
+        "height": 421,
+        "width": 900
+      }
+    },
+    {
+      "name": "T06310-L10-04 900×500 双栏都在视口内",
+      "ok": true,
+      "extra": {
+        "left": {
+          "top": 79,
+          "bottom": 490,
+          "height": 411,
+          "width": 694.4
+        },
+        "right": {
+          "top": 79,
+          "bottom": 488,
+          "height": 409,
+          "width": 163.6
+        }
+      }
+    },
+    {
+      "name": "T06310-L10-05 900×500 standalone grid 无 100vh-260 固定高、minHeight 为 0",
+      "ok": true,
+      "extra": {
+        "minHeight": "0px",
+        "height": "421px",
+        "flex": "1 1 0px"
+      }
+    },
+    {
+      "name": "T06310-L10-06 760×420 页面无纵向溢出",
+      "ok": true,
+      "extra": {
+        "viewport": {
+          "w": 760,
+          "h": 420
+        },
+        "scroll": {
+          "body": 420,
+          "doc": 420,
+          "y": 0
+        },
+        "outer": {
+          "top": 0,
+          "bottom": 420,
+          "height": 420,
+          "width": 760
+        },
+        "grid": {
+          "top": 79,
+          "bottom": 420,
+          "height": 341,
+          "width": 760
+        },
+        "left": {
+          "top": 79,
+          "bottom": 410,
+          "height": 331,
+          "width": 582.4
+        },
+        "right": {
+          "top": 79,
+          "bottom": 408,
+          "height": 329,
+          "width": 135.6
+        },
+        "gridStyle": {
+          "minHeight": "0px",
+          "height": "341px",
+          "flex": "1 1 0px"
+        },
+        "pageStyle": {
+          "minHeight": "0px",
+          "height": "420px"
+        }
+      }
+    },
+    {
+      "name": "T06310-L10-07 760×420 grid 贴合视口且不越界",
+      "ok": true,
+      "extra": {
+        "top": 79,
+        "bottom": 420,
+        "height": 341,
+        "width": 760
+      }
+    },
+    {
+      "name": "T06310-L10-08 760×420 双栏都在视口内",
+      "ok": true,
+      "extra": {
+        "left": {
+          "top": 79,
+          "bottom": 410,
+          "height": 331,
+          "width": 582.4
+        },
+        "right": {
+          "top": 79,
+          "bottom": 408,
+          "height": 329,
+          "width": 135.6
+        }
+      }
+    }
+  ]
+}
