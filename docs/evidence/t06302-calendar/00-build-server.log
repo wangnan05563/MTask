@@ -1,0 +1,9 @@
+
+> mtask@0.1.1123.284 build:server
+> npm run build -w mtask-server
+
+
+> mtask-server@0.1.0 build
+> tsc -p tsconfig.json && node scripts/sync-skills.cjs
+
+[OK] skills synced

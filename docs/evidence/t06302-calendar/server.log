@@ -1,0 +1,7 @@
+[mtask] web 静态已伺服: D:\code\otherProjects\MTask\web\dist
+[startup] schema init 306ms
+[mtask] server ready at http://127.0.0.1:39932 (boot 321ms)
+[mtask] health: http://127.0.0.1:39932/api/health
+[mtask] tunnel auto-start: skipped (未勾选「后端启动时自动开启隧道」)
+[startup] maintenance done in 8369ms (ready+maintenance)
+[mtask] POST /update/check 200 4828ms

@@ -215,7 +215,7 @@ try {
   say('T06302-03 生产构建加载成功', Boolean(appReady));
 
   await evl(`(() => {
-    localStorage.setItem('tasks.activeProject', ${JSON.stringify(JSON.stringify(PROJECT_ID))});
+    localStorage.setItem('tasks.activeProject', ${JSON.stringify(PROJECT_ID)});
     localStorage.setItem('mtask.guide.seen.tasks', '1');
     sessionStorage.setItem('tasks.viewMode', JSON.stringify('list'));
     sessionStorage.removeItem('tasks.calendarMode');

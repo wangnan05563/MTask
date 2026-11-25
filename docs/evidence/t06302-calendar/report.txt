@@ -1,0 +1,26 @@
+[PASS] T06302-00 隔离后端就绪（生产 :39877 未被触碰） → {"port":39932,"dist":"D:\\code\\otherProjects\\MTask\\web\\dist","log":"C:\\Users\\hspcadmin\\AppData\\Local\\Temp\\t06302-calendar-final\\server.log"}
+[PASS] T06302-01 隔离夹具创建（项目 1 + 任务 4） → {"projectId":"abbabe41-e5d1-4da7-95ce-c1b49a69d601","tasks":[{"id":"216413f6-e855-44ea-87b9-21a45d1c8446","no":"T00001","due":null},{"id":"980fb4a1-6b68-4485-9ffc-c1399fee790e","no":"T00002","due":null},{"id":"43b154c6-5234-4a15-9b55-27ad676f0383","no":"T00003","due":null},{"id":"07bd7ff2-fcc6-4931-96b1-819efcd6faf1","no":"T00004","due":null}]}
+[PASS] T06302-02 非法改期日期在 API 边界拒收（400） → {"status":400,"body":{"error":"dueDate 日期不存在：2026-02-30"}}
+[PASS] T06302-03 生产构建加载成功
+[PASS] T06302-04 任务页视图切换入口加载
+[PASS] T06302-04b 首次使用向导不遮挡验收 → {"guide":"none"}
+[PASS] T06302-05 视图切换常驻且含日历入口 → {"count":4,"labels":["列表视图","看板视图","表格视图","日历视图"],"visible":true}
+[PASS] T06302-06 日历视图渲染
+[PASS] T06302-07 月视图为 7×6 网格、默认月并被选中 → {"mode":"month","weekdayCount":7,"cellCount":42,"unscheduledCount":"3 项","totalCards":3,"scheduledCards":0,"unscheduledCards":3,"range":"2026年11月","monthPressed":"true"}
+[PASS] T06302-08 未排期任务单独分组（待办页签 3 项全部未排期） → {"unscheduledCards":3,"scheduledCards":0,"label":"3 项"}
+[PASS] T06302-09 日历视图不出现甘特图 → {"hasGanttText":false,"ganttNodes":0}
+[PASS] T06302-10 拖拽未排期任务到日期格并落库 → {"drag":{"ok":true,"target":"2026-11-25","sourceTitle":"T06302 日历排期 Alpha（紧急）\nT00001\nT06302 日历验收 mwvm9aa0\n紧急"},"ui":{"inDay":1,"unscheduled":"2 项"},"due":"2026-11-25"}
+[PASS] T06302-11 日历格之间拖拽改期且旧格清空 → {"drag":{"ok":true,"target":"2026-11-27"},"due":"2026-11-27","ui":{"inTarget":1,"inOld":0}}
+[PASS] T06302-12 键盘 Alt+→ 可改期（+1 天） → {"due":"2026-11-28","expected":"2026-11-28"}
+[PASS] T06302-13 周视图切换为 7 列且范围连续 → {"mode":"week","weekPressed":"true","cells":7,"weekdayCount":7,"range":"2026-11-23 ～ 2026-11-29","first":"2026-11-23","last":"2026-11-29","cards":1}
+[PASS] T06302-14 light 周视图截图有效 → {"bytes":29689,"sha":"a8bea38e91bf1fab","size":{"width":954,"height":609},"clip":{"x":272,"y":407,"width":954,"height":608.828125,"scale":1}}
+[PASS] T06302-15 可返回月视图
+[PASS] T06302-16 light 月视图截图有效 → {"bytes":33175,"sha":"4f18fc87522958e8","size":{"width":954,"height":865},"clip":{"x":272,"y":407,"width":954,"height":864.828125,"scale":1}}
+[PASS] T06302-17 拖回未排期即清空排期 → {"due":null,"ui":{"count":"3 项","cards":3}}
+[PASS] T06302-18 刷新后视图保持且改期结果持久 → {"reload":{"mode":"month","session":"\"calendar\"","inDay":1,"unscheduled":"2 项"},"due":"2026-11-25"}
+[PASS] T06302-19 已完成页签同样提供日历视图 → {"exists":true,"cards":1,"hasDone":true}
+[PASS] T06302-20 待办页签可返回
+[PASS] T06302-21 dark 月视图截图有效 → {"bytes":32298,"sha":"8c78fd0a8d85f24d","size":{"width":954,"height":865},"clip":{"x":272,"y":407,"width":954,"height":864.828125,"scale":1}}
+[PASS] T06302-22 日历视图 color-contrast 门禁 → {"count":0,"nodes":0}
+[PASS] T06302-23 改期只写 due_date，不影响状态/标题 → {"due":"2026-11-25","status":"todo","title":"T06302 日历排期 Alpha（紧急）"}
+[PASS] T06302-24 页面无运行时异常 → []
