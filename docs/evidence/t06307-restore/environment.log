@@ -1,0 +1,6 @@
+date=2026-11-25T15:30:00+08:00
+node=v22.23.2
+git_head=23b4be307e86ee8158fb51a7fd42a996b52e5e28
+test=server/scripts/verify-t06307-restore.mjs
+result=13/13 PASS
+production_data=not touched (no real 103MB restore rerun)

@@ -1,0 +1,18 @@
+[PASS] T06307-01 备份包生成 → {"ok":true,"action":"create","archive":"C:\\PYFIX_~4\\t06307-fixture-Ji2m0Z\\data.tar.gz","archiveSize":1180,"archiveSha256":"f4cd902ba3980b9f1b922063e12ddf48acc967646f74be6fd706053c2a271183","manifest":{"format":"mtask-data-backup","createdAt":"2026-11-25T07:29:06.288Z","files":3,"bytes":12320,"skipped":1},"durationMs":2316}
+[PASS] T06307-02 恢复前完整性校验通过 → {"ok":true,"action":"verify","archive":"C:\\PYFIX_~4\\t06307-fixture-Ji2m0Z\\data.tar.gz","archiveSha256":"f4cd902ba3980b9f1b922063e12ddf48acc967646f74be6fd706053c2a271183","sidecar":{"present":true,"ok":true},"manifest":{"format":"mtask-data-backup","createdAt":"2026-11-25T07:29:06.288Z","files":3,"bytes":12320},"sqliteIntegrity":"ok","errors":[],"warnings":[],"durationMs":4790}
+[PASS] T06307-03 备份恢复到空目录 → {"ok":true,"action":"restore","archive":"C:\\PYFIX_~4\\t06307-fixture-Ji2m0Z\\data.tar.gz","archiveSha256":"f4cd902ba3980b9f1b922063e12ddf48acc967646f74be6fd706053c2a271183","target":"C:\\PYFIX_~4\\t06307-fixture-Ji2m0Z\\restored","restored":{"files":3,"bytes":12320,"sqliteIntegrity":"ok"},"errors":[],"durationMs":5866}
+[PASS] T06307-04 恢复报告写入目标目录 → {"report":true}
+[PASS] T06307-05 恢复后数据库内容一致 → {"rows":[{"id":"T-1","title":"恢复验证任务","status":"todo"},{"id":"T-2","title":"已完成任务","status":"done"}]}
+[PASS] T06307-06 恢复后 SQLite 完整性通过 → {"integrity":{"integrity_check":"ok"}}
+[PASS] T06307-07 恢复后业务文件字节一致 → {"restoredArtifact":"restore-evidence\n"}
+[PASS] T06307-08 恢复报告记录归档哈希与文件数 → {"format":"mtask-data-restore-report","archive":"C:\\PYFIX_~4\\t06307-fixture-Ji2m0Z\\data.tar.gz","archiveSha256":"f4cd902ba3980b9f1b922063e12ddf48acc967646f74be6fd706053c2a271183","manifestCreatedAt":"2026-11-25T07:29:06.288Z","restoredAt":"2026-11-25T07:29:35.386Z","target":"C:\\PYFIX_~4\\t06307-fixture-Ji2m0Z\\restored","files":3,"bytes":12320,"sqliteIntegrity":"ok","errors":[]}
+[PASS] T06307-09 非空目录拒绝覆盖 → {"ok":false,"action":"restore","error":"目标目录非空，拒绝覆盖：C:\\PYFIX_~4\\t06307-fixture-Ji2m0Z\\non-empty"}
+[PASS] T06307-10 拒绝后原目录内容未被改写 → {"entries":["keep.txt"]}
+[PASS] T06307-11 损坏归档拒绝恢复 → {"ok":false,"action":"restore","archive":"C:\\PYFIX_~4\\t06307-fixture-Ji2m0Z\\corrupted.tar.gz","target":"C:\\PYFIX_~4\\t06307-fixture-Ji2m0Z\\corrupt-target","errors":["归档校验未通过，拒绝恢复","旁车 SHA-256 不一致：期望 f4cd902ba3980b9f1b922063e12ddf48acc967646f74be6fd706053c2a271183，实际 64fae8b932223200d0403b908027012bc05ffa52d339c1cff55560ebb2148251","归档解包/校验失败：zlib: incorrect length check"],"warnings":[],"durationMs":1118}
+[PASS] T06307-12 校验失败不落盘 → {"exists":false}
+[PASS] T06307-13 缺少目标目录拒绝恢复 → {"ok":false,"action":"restore","error":"缺少目标目录：--target <空目录>"}
+{
+  "pass": 13,
+  "fail": 0,
+  "tmp": "C:\\PYFIX_~4\\t06307-fixture-Ji2m0Z"
+}
