@@ -1,0 +1,28 @@
+[PASS] T06343-00 测试 API 就绪 → {"ok":true,"service":"mtask-server","time":"2026-11-25T09:31:25.507Z"}
+[PASS] T06343-00b 测试项目就绪 → {"projectId":"fc029cd7-e765-4bb9-9651-be1c3fb08f31"}
+[PASS] T06343-00c 已切到具体测试项目 → {"clicked":true}
+[PASS] T06343-01 1440 工具条主排单行 → [104]
+[PASS] T06343-02 1440 低频项全部在 More 且默认不可见 → {"savedView":{"exists":true,"inPanel":true,"visible":false},"saveView":{"exists":true,"inPanel":true,"visible":false},"copyView":{"exists":true,"inPanel":true,"visible":false},"deleteView":{"exists":true,"inPanel":true,"visible":false},"wsAsk":{"exists":true,"inPanel":true,"visible":false},"beautify":{"exists":true,"inPanel":true,"visible":false},"density":{"exists":true,"inPanel":true,"visible":false},"git":{"exists":true,"inPanel":true,"visible":false},"projectActions":{"exists":true,"inPanel":true,"visible":false},"exportSelect":{"exists":true,"inPanel":true,"visible":false}}
+[PASS] T06343-03 More 默认收起且不渲染占位 → {"expanded":"false","display":"none"}
+[PASS] T06343-04 搜索框收缩且可见 → {"width":160}
+[PASS] T06343-05 模板入口可见并前置于添加任务 → {"templateFirst":true,"templateTop":147,"addTop":147}
+[PASS] T06343-06 1440 收起态截图有效 → {"file":"00-tasks-toolbar-1440.png","bytes":52067}
+[PASS] T06343-07 More 展开且 8 类低频入口可见 → {"expanded":"true","display":"flex","low":{"savedView":{"exists":true,"inPanel":true,"visible":true},"saveView":{"exists":true,"inPanel":true,"visible":true},"copyView":{"exists":true,"inPanel":true,"visible":true},"deleteView":{"exists":true,"inPanel":true,"visible":true},"wsAsk":{"exists":true,"inPanel":true,"visible":true},"beautify":{"exists":true,"inPanel":true,"visible":true},"density":{"exists":true,"inPanel":true,"visible":true},"git":{"exists":true,"inPanel":true,"visible":true},"projectActions":{"exists":true,"inPanel":true,"visible":true},"exportSelect":{"exists":true,"inPanel":true,"visible":true}}}
+[PASS] T06343-07b 低频项目操作也收进 More → {"exists":true,"inPanel":true,"visible":true}
+[PASS] T06343-08 More 面板 1440 不横向溢出 → {"panelWidth":1136,"panelRight":1408,"scrollWidth":1440}
+[PASS] T06343-09 1440 展开态截图有效 → {"file":"01-tasks-more-1440.png","bytes":79477}
+[PASS] T06343-10 More 可再次收起 → {"expanded":"false","display":"none"}
+[PASS] T06343-11 1280 首排不换行且无溢出 → {"rows":[104],"scrollWidth":1280}
+[PASS] T06343-12 1280 截图有效 → {"file":"02-tasks-toolbar-1280.png","bytes":51099}
+[PASS] T06343-12b 1024 无横向溢出 → {"scrollWidth":1024,"rows":[104,141]}
+[PASS] T06343-12c 1024 截图有效 → {"file":"04-tasks-toolbar-1024.png","bytes":49326}
+[PASS] T06343-13 760 无横向溢出 → {"scrollWidth":760,"rows":[112,149]}
+[PASS] T06343-14 760 More 面板不撑出横向滚动 → {"panelWidth":456,"panelRight":728,"scrollWidth":760}
+[PASS] T06343-15 760 展开态截图有效 → {"file":"03-tasks-more-760.png","bytes":71009}
+[PASS] T06343-16 模板入口交互保持 → {"opened":{"value":true},"panel":true,"ready":true,"text":"从模板新建\n无变量 · 一键实例化\n标准交付项目\n项目模板 · 内置\n应用\n内置 · 需求到发布的标准项目骨架（4 条任务）\n将创建：项目 + 4 条任务\n需求澄清与验收标准（high）\n方案设计与评审\n开发与自测\n验收与发布（high）\n功能开发任务\n任务模板 · 内置\n应用\n内置 · 单条功能开发任务的字段骨架\n将创建：功能开发：（normal / todo）\n## 目标\n\n## 验收标准\n\n## 影响范围\n"}
+[PASS] T06343-99 全程无未捕获异常 → {"consoleErrors":[]}
+{
+  "pass": 23,
+  "fail": 0,
+  "out": "docs/evidence/t06343-toolbar"
+}

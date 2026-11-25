@@ -1,0 +1,266 @@
+[PASS] T06342-00 测试 API 就绪 → {"ok":true,"service":"mtask-server","time":"2026-11-25T09:28:08.305Z"}
+[PASS] T06342-00b 测试项目就绪 → {"projectId":"eab31f88-4b8d-457c-868d-274b1d800fa8"}
+[PASS] T06342-1440-dashboard 页面加载
+[PASS] T06342-1440-dashboard minimal 页头生效 → {"title":"今日","headerHeight":32}
+[PASS] T06342-1440-dashboard 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1440-dashboard 隐藏 h1 可访问 → {"title":"今日","titleHidden":true}
+[PASS] T06342-1440-dashboard 页头收敛且内容不贴顶 → {"headerHeight":32,"headerBottom":120,"firstContentTop":128,"gap":8}
+[PASS] T06342-1440-dashboard 无横向溢出 → {"scrollWidth":1440,"width":1440}
+[PASS] T06342-1440-dashboard 操作槽保留 → {"visibleActions":2}
+[PASS] T06342-1440-dashboard 截图有效 → {"file":"00-dashboard-1440.png","bytes":110960}
+[PASS] T06342-1440-inbox 页面加载
+[PASS] T06342-1440-inbox minimal 页头生效 → {"title":"收件箱","headerHeight":38}
+[PASS] T06342-1440-inbox 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1440-inbox 隐藏 h1 可访问 → {"title":"收件箱","titleHidden":true}
+[PASS] T06342-1440-inbox 页头收敛且内容不贴顶 → {"headerHeight":38,"headerBottom":126,"firstContentTop":134,"gap":8}
+[PASS] T06342-1440-inbox 无横向溢出 → {"scrollWidth":1440,"width":1440}
+[PASS] T06342-1440-inbox 操作槽保留 → {"visibleActions":1}
+[PASS] T06342-1440-tasks 页面加载
+[PASS] T06342-1440-tasks minimal 页头生效 → {"title":"任务","headerHeight":8}
+[PASS] T06342-1440-tasks 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1440-tasks 隐藏 h1 可访问 → {"title":"任务","titleHidden":true}
+[PASS] T06342-1440-tasks 页头收敛且内容不贴顶 → {"headerHeight":8,"headerBottom":96,"firstContentTop":104,"gap":8}
+[PASS] T06342-1440-tasks 无横向溢出 → {"scrollWidth":1440,"width":1440}
+[PASS] T06342-1440-tasks 截图有效 → {"file":"00-tasks-1440.png","bytes":117105}
+[PASS] T06342-1440-aitools 页面加载
+[PASS] T06342-1440-aitools minimal 页头生效 → {"title":"AI 工具与模型","headerHeight":8}
+[PASS] T06342-1440-aitools 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1440-aitools 隐藏 h1 可访问 → {"title":"AI 工具与模型","titleHidden":true}
+[PASS] T06342-1440-aitools 页头收敛且内容不贴顶 → {"headerHeight":8,"headerBottom":96,"firstContentTop":104,"gap":8}
+[PASS] T06342-1440-aitools 无横向溢出 → {"scrollWidth":1440,"width":1440}
+[PASS] T06342-1440-prompts 页面加载
+[PASS] T06342-1440-prompts minimal 页头生效 → {"title":"提示词","headerHeight":8}
+[PASS] T06342-1440-prompts 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1440-prompts 隐藏 h1 可访问 → {"title":"提示词","titleHidden":true}
+[PASS] T06342-1440-prompts 页头收敛且内容不贴顶 → {"headerHeight":8,"headerBottom":96,"firstContentTop":104,"gap":8}
+[PASS] T06342-1440-prompts 无横向溢出 → {"scrollWidth":1440,"width":1440}
+[PASS] T06342-1440-req 页面加载
+[PASS] T06342-1440-req minimal 页头生效 → {"title":"通用需求","headerHeight":8}
+[PASS] T06342-1440-req 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1440-req 隐藏 h1 可访问 → {"title":"通用需求","titleHidden":true}
+[PASS] T06342-1440-req 页头收敛且内容不贴顶 → {"headerHeight":8,"headerBottom":96,"firstContentTop":104,"gap":8}
+[PASS] T06342-1440-req 无横向溢出 → {"scrollWidth":1440,"width":1440}
+[PASS] T06342-1440-plan 页面加载
+[PASS] T06342-1440-plan minimal 页头生效 → {"title":"项目计划","headerHeight":8}
+[PASS] T06342-1440-plan 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1440-plan 隐藏 h1 可访问 → {"title":"项目计划","titleHidden":true}
+[PASS] T06342-1440-plan 页头收敛且内容不贴顶 → {"headerHeight":8,"headerBottom":112,"firstContentTop":120,"gap":8}
+[PASS] T06342-1440-plan 无横向溢出 → {"scrollWidth":1440,"width":1440}
+[PASS] T06342-1440-queue 页面加载
+[PASS] T06342-1440-queue minimal 页头生效 → {"title":"投递队列","headerHeight":40}
+[PASS] T06342-1440-queue 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1440-queue 隐藏 h1 可访问 → {"title":"投递队列","titleHidden":true}
+[PASS] T06342-1440-queue 页头收敛且内容不贴顶 → {"headerHeight":40,"headerBottom":128,"firstContentTop":136,"gap":8}
+[PASS] T06342-1440-queue 无横向溢出 → {"scrollWidth":1440,"width":1440}
+[PASS] T06342-1440-queue 操作槽保留 → {"visibleActions":2}
+[PASS] T06342-1440-queue 截图有效 → {"file":"00-queue-1440.png","bytes":78451}
+[PASS] T06342-1440-exec-sessions 页面加载
+[PASS] T06342-1440-exec-sessions minimal 页头生效 → {"title":"执行会话","headerHeight":8}
+[PASS] T06342-1440-exec-sessions 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1440-exec-sessions 隐藏 h1 可访问 → {"title":"执行会话","titleHidden":true}
+[PASS] T06342-1440-exec-sessions 页头收敛且内容不贴顶 → {"headerHeight":8,"headerBottom":96,"firstContentTop":116,"gap":20}
+[PASS] T06342-1440-exec-sessions 无横向溢出 → {"scrollWidth":1440,"width":1440}
+[PASS] T06342-1440-settings 页面加载
+[PASS] T06342-1440-settings minimal 页头生效 → {"title":"设置","headerHeight":8}
+[PASS] T06342-1440-settings 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1440-settings 隐藏 h1 可访问 → {"title":"设置","titleHidden":true}
+[PASS] T06342-1440-settings 页头收敛且内容不贴顶 → {"headerHeight":8,"headerBottom":96,"firstContentTop":104,"gap":8}
+[PASS] T06342-1440-settings 无横向溢出 → {"scrollWidth":1440,"width":1440}
+[PASS] T06342-1440-settings 截图有效 → {"file":"00-settings-1440.png","bytes":102151}
+[PASS] T06342-1280-dashboard 页面加载
+[PASS] T06342-1280-dashboard minimal 页头生效 → {"title":"今日","headerHeight":32}
+[PASS] T06342-1280-dashboard 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1280-dashboard 隐藏 h1 可访问 → {"title":"今日","titleHidden":true}
+[PASS] T06342-1280-dashboard 页头收敛且内容不贴顶 → {"headerHeight":32,"headerBottom":120,"firstContentTop":128,"gap":8}
+[PASS] T06342-1280-dashboard 无横向溢出 → {"scrollWidth":1280,"width":1280}
+[PASS] T06342-1280-dashboard 操作槽保留 → {"visibleActions":2}
+[PASS] T06342-1280-inbox 页面加载
+[PASS] T06342-1280-inbox minimal 页头生效 → {"title":"收件箱","headerHeight":38}
+[PASS] T06342-1280-inbox 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1280-inbox 隐藏 h1 可访问 → {"title":"收件箱","titleHidden":true}
+[PASS] T06342-1280-inbox 页头收敛且内容不贴顶 → {"headerHeight":38,"headerBottom":126,"firstContentTop":134,"gap":8}
+[PASS] T06342-1280-inbox 无横向溢出 → {"scrollWidth":1280,"width":1280}
+[PASS] T06342-1280-inbox 操作槽保留 → {"visibleActions":1}
+[PASS] T06342-1280-tasks 页面加载
+[PASS] T06342-1280-tasks minimal 页头生效 → {"title":"任务","headerHeight":8}
+[PASS] T06342-1280-tasks 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1280-tasks 隐藏 h1 可访问 → {"title":"任务","titleHidden":true}
+[PASS] T06342-1280-tasks 页头收敛且内容不贴顶 → {"headerHeight":8,"headerBottom":96,"firstContentTop":104,"gap":8}
+[PASS] T06342-1280-tasks 无横向溢出 → {"scrollWidth":1280,"width":1280}
+[PASS] T06342-1280-aitools 页面加载
+[PASS] T06342-1280-aitools minimal 页头生效 → {"title":"AI 工具与模型","headerHeight":8}
+[PASS] T06342-1280-aitools 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1280-aitools 隐藏 h1 可访问 → {"title":"AI 工具与模型","titleHidden":true}
+[PASS] T06342-1280-aitools 页头收敛且内容不贴顶 → {"headerHeight":8,"headerBottom":96,"firstContentTop":104,"gap":8}
+[PASS] T06342-1280-aitools 无横向溢出 → {"scrollWidth":1280,"width":1280}
+[PASS] T06342-1280-prompts 页面加载
+[PASS] T06342-1280-prompts minimal 页头生效 → {"title":"提示词","headerHeight":8}
+[PASS] T06342-1280-prompts 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1280-prompts 隐藏 h1 可访问 → {"title":"提示词","titleHidden":true}
+[PASS] T06342-1280-prompts 页头收敛且内容不贴顶 → {"headerHeight":8,"headerBottom":96,"firstContentTop":104,"gap":8}
+[PASS] T06342-1280-prompts 无横向溢出 → {"scrollWidth":1280,"width":1280}
+[PASS] T06342-1280-req 页面加载
+[PASS] T06342-1280-req minimal 页头生效 → {"title":"通用需求","headerHeight":8}
+[PASS] T06342-1280-req 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1280-req 隐藏 h1 可访问 → {"title":"通用需求","titleHidden":true}
+[PASS] T06342-1280-req 页头收敛且内容不贴顶 → {"headerHeight":8,"headerBottom":96,"firstContentTop":104,"gap":8}
+[PASS] T06342-1280-req 无横向溢出 → {"scrollWidth":1280,"width":1280}
+[PASS] T06342-1280-plan 页面加载
+[PASS] T06342-1280-plan minimal 页头生效 → {"title":"项目计划","headerHeight":8}
+[PASS] T06342-1280-plan 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1280-plan 隐藏 h1 可访问 → {"title":"项目计划","titleHidden":true}
+[PASS] T06342-1280-plan 页头收敛且内容不贴顶 → {"headerHeight":8,"headerBottom":112,"firstContentTop":120,"gap":8}
+[PASS] T06342-1280-plan 无横向溢出 → {"scrollWidth":1280,"width":1280}
+[PASS] T06342-1280-queue 页面加载
+[PASS] T06342-1280-queue minimal 页头生效 → {"title":"投递队列","headerHeight":40}
+[PASS] T06342-1280-queue 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1280-queue 隐藏 h1 可访问 → {"title":"投递队列","titleHidden":true}
+[PASS] T06342-1280-queue 页头收敛且内容不贴顶 → {"headerHeight":40,"headerBottom":128,"firstContentTop":136,"gap":8}
+[PASS] T06342-1280-queue 无横向溢出 → {"scrollWidth":1280,"width":1280}
+[PASS] T06342-1280-queue 操作槽保留 → {"visibleActions":2}
+[PASS] T06342-1280-exec-sessions 页面加载
+[PASS] T06342-1280-exec-sessions minimal 页头生效 → {"title":"执行会话","headerHeight":8}
+[PASS] T06342-1280-exec-sessions 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1280-exec-sessions 隐藏 h1 可访问 → {"title":"执行会话","titleHidden":true}
+[PASS] T06342-1280-exec-sessions 页头收敛且内容不贴顶 → {"headerHeight":8,"headerBottom":96,"firstContentTop":116,"gap":20}
+[PASS] T06342-1280-exec-sessions 无横向溢出 → {"scrollWidth":1280,"width":1280}
+[PASS] T06342-1280-settings 页面加载
+[PASS] T06342-1280-settings minimal 页头生效 → {"title":"设置","headerHeight":8}
+[PASS] T06342-1280-settings 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1280-settings 隐藏 h1 可访问 → {"title":"设置","titleHidden":true}
+[PASS] T06342-1280-settings 页头收敛且内容不贴顶 → {"headerHeight":8,"headerBottom":96,"firstContentTop":104,"gap":8}
+[PASS] T06342-1280-settings 无横向溢出 → {"scrollWidth":1280,"width":1280}
+[PASS] T06342-1024-dashboard 页面加载
+[PASS] T06342-1024-dashboard minimal 页头生效 → {"title":"今日","headerHeight":32}
+[PASS] T06342-1024-dashboard 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1024-dashboard 隐藏 h1 可访问 → {"title":"今日","titleHidden":true}
+[PASS] T06342-1024-dashboard 页头收敛且内容不贴顶 → {"headerHeight":32,"headerBottom":120,"firstContentTop":128,"gap":8}
+[PASS] T06342-1024-dashboard 无横向溢出 → {"scrollWidth":1024,"width":1024}
+[PASS] T06342-1024-dashboard 操作槽保留 → {"visibleActions":2}
+[PASS] T06342-1024-inbox 页面加载
+[PASS] T06342-1024-inbox minimal 页头生效 → {"title":"收件箱","headerHeight":38}
+[PASS] T06342-1024-inbox 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1024-inbox 隐藏 h1 可访问 → {"title":"收件箱","titleHidden":true}
+[PASS] T06342-1024-inbox 页头收敛且内容不贴顶 → {"headerHeight":38,"headerBottom":126,"firstContentTop":134,"gap":8}
+[PASS] T06342-1024-inbox 无横向溢出 → {"scrollWidth":1024,"width":1024}
+[PASS] T06342-1024-inbox 操作槽保留 → {"visibleActions":1}
+[PASS] T06342-1024-tasks 页面加载
+[PASS] T06342-1024-tasks minimal 页头生效 → {"title":"任务","headerHeight":8}
+[PASS] T06342-1024-tasks 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1024-tasks 隐藏 h1 可访问 → {"title":"任务","titleHidden":true}
+[PASS] T06342-1024-tasks 页头收敛且内容不贴顶 → {"headerHeight":8,"headerBottom":96,"firstContentTop":104,"gap":8}
+[PASS] T06342-1024-tasks 无横向溢出 → {"scrollWidth":1024,"width":1024}
+[PASS] T06342-1024-aitools 页面加载
+[PASS] T06342-1024-aitools minimal 页头生效 → {"title":"AI 工具与模型","headerHeight":8}
+[PASS] T06342-1024-aitools 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1024-aitools 隐藏 h1 可访问 → {"title":"AI 工具与模型","titleHidden":true}
+[PASS] T06342-1024-aitools 页头收敛且内容不贴顶 → {"headerHeight":8,"headerBottom":96,"firstContentTop":104,"gap":8}
+[PASS] T06342-1024-aitools 无横向溢出 → {"scrollWidth":1024,"width":1024}
+[PASS] T06342-1024-prompts 页面加载
+[PASS] T06342-1024-prompts minimal 页头生效 → {"title":"提示词","headerHeight":8}
+[PASS] T06342-1024-prompts 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1024-prompts 隐藏 h1 可访问 → {"title":"提示词","titleHidden":true}
+[PASS] T06342-1024-prompts 页头收敛且内容不贴顶 → {"headerHeight":8,"headerBottom":96,"firstContentTop":104,"gap":8}
+[PASS] T06342-1024-prompts 无横向溢出 → {"scrollWidth":1024,"width":1024}
+[PASS] T06342-1024-req 页面加载
+[PASS] T06342-1024-req minimal 页头生效 → {"title":"通用需求","headerHeight":8}
+[PASS] T06342-1024-req 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1024-req 隐藏 h1 可访问 → {"title":"通用需求","titleHidden":true}
+[PASS] T06342-1024-req 页头收敛且内容不贴顶 → {"headerHeight":8,"headerBottom":96,"firstContentTop":104,"gap":8}
+[PASS] T06342-1024-req 无横向溢出 → {"scrollWidth":1024,"width":1024}
+[PASS] T06342-1024-plan 页面加载
+[PASS] T06342-1024-plan minimal 页头生效 → {"title":"项目计划","headerHeight":8}
+[PASS] T06342-1024-plan 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1024-plan 隐藏 h1 可访问 → {"title":"项目计划","titleHidden":true}
+[PASS] T06342-1024-plan 页头收敛且内容不贴顶 → {"headerHeight":8,"headerBottom":112,"firstContentTop":120,"gap":8}
+[PASS] T06342-1024-plan 无横向溢出 → {"scrollWidth":1024,"width":1024}
+[PASS] T06342-1024-queue 页面加载
+[PASS] T06342-1024-queue minimal 页头生效 → {"title":"投递队列","headerHeight":40}
+[PASS] T06342-1024-queue 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1024-queue 隐藏 h1 可访问 → {"title":"投递队列","titleHidden":true}
+[PASS] T06342-1024-queue 页头收敛且内容不贴顶 → {"headerHeight":40,"headerBottom":128,"firstContentTop":136,"gap":8}
+[PASS] T06342-1024-queue 无横向溢出 → {"scrollWidth":1024,"width":1024}
+[PASS] T06342-1024-queue 操作槽保留 → {"visibleActions":2}
+[PASS] T06342-1024-exec-sessions 页面加载
+[PASS] T06342-1024-exec-sessions minimal 页头生效 → {"title":"执行会话","headerHeight":8}
+[PASS] T06342-1024-exec-sessions 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1024-exec-sessions 隐藏 h1 可访问 → {"title":"执行会话","titleHidden":true}
+[PASS] T06342-1024-exec-sessions 页头收敛且内容不贴顶 → {"headerHeight":8,"headerBottom":96,"firstContentTop":116,"gap":20}
+[PASS] T06342-1024-exec-sessions 无横向溢出 → {"scrollWidth":1024,"width":1024}
+[PASS] T06342-1024-settings 页面加载
+[PASS] T06342-1024-settings minimal 页头生效 → {"title":"设置","headerHeight":8}
+[PASS] T06342-1024-settings 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-1024-settings 隐藏 h1 可访问 → {"title":"设置","titleHidden":true}
+[PASS] T06342-1024-settings 页头收敛且内容不贴顶 → {"headerHeight":8,"headerBottom":96,"firstContentTop":104,"gap":8}
+[PASS] T06342-1024-settings 无横向溢出 → {"scrollWidth":1024,"width":1024}
+[PASS] T06342-760-dashboard 页面加载
+[PASS] T06342-760-dashboard minimal 页头生效 → {"title":"今日","headerHeight":40}
+[PASS] T06342-760-dashboard 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-760-dashboard 隐藏 h1 可访问 → {"title":"今日","titleHidden":true}
+[PASS] T06342-760-dashboard 页头收敛且内容不贴顶 → {"headerHeight":40,"headerBottom":128,"firstContentTop":136,"gap":8}
+[PASS] T06342-760-dashboard 无横向溢出 → {"scrollWidth":760,"width":760}
+[PASS] T06342-760-dashboard 操作槽保留 → {"visibleActions":2}
+[PASS] T06342-760-inbox 页面加载
+[PASS] T06342-760-inbox minimal 页头生效 → {"title":"收件箱","headerHeight":46}
+[PASS] T06342-760-inbox 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-760-inbox 隐藏 h1 可访问 → {"title":"收件箱","titleHidden":true}
+[PASS] T06342-760-inbox 页头收敛且内容不贴顶 → {"headerHeight":46,"headerBottom":134,"firstContentTop":142,"gap":8}
+[PASS] T06342-760-inbox 无横向溢出 → {"scrollWidth":760,"width":760}
+[PASS] T06342-760-inbox 操作槽保留 → {"visibleActions":1}
+[PASS] T06342-760-tasks 页面加载
+[PASS] T06342-760-tasks minimal 页头生效 → {"title":"任务","headerHeight":16}
+[PASS] T06342-760-tasks 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-760-tasks 隐藏 h1 可访问 → {"title":"任务","titleHidden":true}
+[PASS] T06342-760-tasks 页头收敛且内容不贴顶 → {"headerHeight":16,"headerBottom":104,"firstContentTop":112,"gap":8}
+[PASS] T06342-760-tasks 无横向溢出 → {"scrollWidth":760,"width":760}
+[PASS] T06342-760-tasks 截图有效 → {"file":"01-tasks-760.png","bytes":45102}
+[PASS] T06342-760-aitools 页面加载
+[PASS] T06342-760-aitools minimal 页头生效 → {"title":"AI 工具与模型","headerHeight":16}
+[PASS] T06342-760-aitools 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-760-aitools 隐藏 h1 可访问 → {"title":"AI 工具与模型","titleHidden":true}
+[PASS] T06342-760-aitools 页头收敛且内容不贴顶 → {"headerHeight":16,"headerBottom":104,"firstContentTop":112,"gap":8}
+[PASS] T06342-760-aitools 无横向溢出 → {"scrollWidth":760,"width":760}
+[PASS] T06342-760-prompts 页面加载
+[PASS] T06342-760-prompts minimal 页头生效 → {"title":"提示词","headerHeight":16}
+[PASS] T06342-760-prompts 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-760-prompts 隐藏 h1 可访问 → {"title":"提示词","titleHidden":true}
+[PASS] T06342-760-prompts 页头收敛且内容不贴顶 → {"headerHeight":16,"headerBottom":104,"firstContentTop":112,"gap":8}
+[PASS] T06342-760-prompts 无横向溢出 → {"scrollWidth":760,"width":760}
+[PASS] T06342-760-req 页面加载
+[PASS] T06342-760-req minimal 页头生效 → {"title":"通用需求","headerHeight":16}
+[PASS] T06342-760-req 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-760-req 隐藏 h1 可访问 → {"title":"通用需求","titleHidden":true}
+[PASS] T06342-760-req 页头收敛且内容不贴顶 → {"headerHeight":16,"headerBottom":104,"firstContentTop":112,"gap":8}
+[PASS] T06342-760-req 无横向溢出 → {"scrollWidth":760,"width":760}
+[PASS] T06342-760-plan 页面加载
+[PASS] T06342-760-plan minimal 页头生效 → {"title":"项目计划","headerHeight":16}
+[PASS] T06342-760-plan 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-760-plan 隐藏 h1 可访问 → {"title":"项目计划","titleHidden":true}
+[PASS] T06342-760-plan 页头收敛且内容不贴顶 → {"headerHeight":16,"headerBottom":120,"firstContentTop":128,"gap":8}
+[PASS] T06342-760-plan 无横向溢出 → {"scrollWidth":760,"width":760}
+[PASS] T06342-760-plan 截图有效 → {"file":"01-plan-760.png","bytes":52491}
+[PASS] T06342-760-queue 页面加载
+[PASS] T06342-760-queue minimal 页头生效 → {"title":"投递队列","headerHeight":48}
+[PASS] T06342-760-queue 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-760-queue 隐藏 h1 可访问 → {"title":"投递队列","titleHidden":true}
+[PASS] T06342-760-queue 页头收敛且内容不贴顶 → {"headerHeight":48,"headerBottom":136,"firstContentTop":144,"gap":8}
+[PASS] T06342-760-queue 无横向溢出 → {"scrollWidth":760,"width":760}
+[PASS] T06342-760-queue 操作槽保留 → {"visibleActions":2}
+[PASS] T06342-760-exec-sessions 页面加载
+[PASS] T06342-760-exec-sessions minimal 页头生效 → {"title":"执行会话","headerHeight":16}
+[PASS] T06342-760-exec-sessions 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-760-exec-sessions 隐藏 h1 可访问 → {"title":"执行会话","titleHidden":true}
+[PASS] T06342-760-exec-sessions 页头收敛且内容不贴顶 → {"headerHeight":16,"headerBottom":104,"firstContentTop":124,"gap":20}
+[PASS] T06342-760-exec-sessions 无横向溢出 → {"scrollWidth":760,"width":760}
+[PASS] T06342-760-settings 页面加载
+[PASS] T06342-760-settings minimal 页头生效 → {"title":"设置","headerHeight":16}
+[PASS] T06342-760-settings 无可见标题/面包屑 → {"visibleH1":[],"visibleBreadcrumbs":0,"visibleTitleClasses":0}
+[PASS] T06342-760-settings 隐藏 h1 可访问 → {"title":"设置","titleHidden":true}
+[PASS] T06342-760-settings 页头收敛且内容不贴顶 → {"headerHeight":16,"headerBottom":104,"firstContentTop":112,"gap":8}
+[PASS] T06342-760-settings 无横向溢出 → {"scrollWidth":760,"width":760}
+[PASS] T06342-99 全程无未捕获异常 → {"consoleErrors":[]}
+{
+  "pass": 261,
+  "fail": 0,
+  "out": "D:\\code\\otherProjects\\MTask\\docs\\evidence\\t06343-regress-t06342"
+}

@@ -434,12 +434,12 @@ const GIT_TOGGLE_TITLE_ON = 'Git 徽标（已显示）— 点击隐藏任务行�
 const GIT_TOGGLE_TITLE_OFF = 'Git 徽标（已隐藏）— 点击显示任务行的提交关联徽标；会话内保持（默认隐藏，悬浮工具栏显示）';
 
 /** 「更多」按钮提示：已展开态 */
-const MORE_TITLE_OPEN = '更多（已展开）— 再次点击或点击空白处收起第二排功能';
+const MORE_TITLE_OPEN = '更多（已展开）— 再次点击或点击空白处收起低频功能';
 
 /** 「更多」按钮提示：收起态，生效筛选数单独拼装，避免嵌套模板字符串 */
 function moreTitleCollapsed(activeCount: number): string {
   const badge = activeCount > 0 ? `（当前 ${activeCount} 项筛选生效）` : '';
-  return `更多 — 展开导出项目 / 分类筛选 / 优先级筛选 / 自定义字段筛选与排序${badge}`;
+  return `更多 — 展开保存视图、工作空间问答、AI 美化、行密度、Git 徽标与筛选${badge}`;
 }
 
 /** 项目导出下拉提示 */
@@ -4678,11 +4678,13 @@ export function TasksPage() {
           disabled={!anyBeautify && (todo.length === 0 || aiDown)}
           title={titleAttr}
           aria-label={anyBeautify ? '取消批量美化' : 'AI 美化全部待办'}
-          className={anyBeautify ? 'task-breathe' : 'op-hidden'} // T00759：默认隐藏悬浮显示；批量进行中保持可见
-          style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, background: anyBeautify ? 'var(--accent)' : 'transparent', color: anyBeautify ? 'var(--accent-text)' : 'var(--text)' }}
+          data-t06343="beautify"
+          className={anyBeautify ? 'task-breathe' : 'tbtn-anim'}
+          style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: anyBeautify ? 'var(--accent)' : 'transparent', color: anyBeautify ? 'var(--accent-text)' : 'var(--text)' }}
         >
           <Wand2 size={13} />
-          {anyBeautify ? '取消' : todo.length}
+          <span>{anyBeautify ? '取消美化' : 'AI 美化待办'}</span>
+          {!anyBeautify && todo.length > 0 ? todo.length : ''}
         </button>
         {/* 工具条整体连贯进度提示：单条/批量美化进行中展示（优化进行中文案在各任务描述区展示），完成/取消后清空 */}
         {anyBeautify && <output className="flash-toast" style={{ top: 48 }}><span className="task-breathe" style={{ color: 'var(--accent)' }}>{batchBusy ? '正在批量美化标题…' : '正在美化标题…'}</span></output>}
@@ -4834,24 +4836,72 @@ export function TasksPage() {
           if (activeProject === ALL_PROJECTS) { flash('全部项目视图下请先选择具体项目再提问'); return; }
           setWsAskOpen(true);
         }}
-        className="op-hidden tbtn-anim"
+        className="tbtn-anim"
         disabled={off}
         data-t03250="ask-entry"
-        title={`${reason}（默认隐藏，悬浮工具栏显示）`}
+        title={`${reason}（低频入口，收在“更多”面板）`}
         aria-label="工作空间只读问答"
-        style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', color: 'var(--text-muted)', border: 'none', borderRadius: 6, cursor: off ? 'not-allowed' : 'pointer' }}
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', color: 'var(--text-muted)', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: off ? 'not-allowed' : 'pointer' }}
       >
         <MessageSquareText size={13} style={{ flexShrink: 0 }} />
+        <span>工作空间问答</span>
       </button>
     );
   }
 
-  /** 「更多」面板：导出与筛选（折叠入口在工具条尾部，展开时独占一行） */
+  /** 「更多」面板：低频操作与筛选（折叠入口在工具条尾部，展开时独占一行；关闭时保留 DOM 但不占位） */
   function renderMorePanel() {
     return (
-<fieldset ref={morePanelRef} data-t03623="more-panel" aria-label="更多功能：导出与筛选"
-        /* order:9 + flexBasis:100%：仍排在 DOM 中「更多」按钮之后（键盘顺序不变），视觉上独占工具条最后一行 */
-        style={{ order: 9, flexBasis: '100%', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', margin: 0, minWidth: 0, padding: '8px 10px', border: '1px solid var(--border-strong)', borderRadius: 8, background: 'var(--surface)' }}>
+<fieldset ref={morePanelRef} data-t03623="more-panel" data-t06343="more-panel" aria-label="更多功能：低频操作与筛选"
+        /* order:9 + flexBasis:100%：仍排在 DOM 中「更多」按钮之后（键盘顺序不变），视觉上独占工具条最后一行。
+           常驻挂载、关闭时 display:none：既保证低频控件不占首排空间，也保留既有测试/脚本的 DOM 定位。 */
+        style={{ order: 9, flexBasis: '100%', display: moreOpen ? 'flex' : 'none', gap: 8, alignItems: 'center', flexWrap: 'wrap', margin: 0, minWidth: 0, padding: '8px 10px', border: '1px solid var(--border-strong)', borderRadius: 8, background: 'var(--surface)' }}>
+        {/* T06343：低频操作统一收口——保存视图、工作空间问答、AI 美化、行密度、Git 徽标 */}
+        <span data-t06343="saved-view" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>视图</span>
+          <SavedViewMenu
+            views={savedViews}
+            activeId={savedViewId}
+            busy={savedViewBusy}
+            disabled={!activeProject || activeProject === ALL_PROJECTS}
+            onSelect={applySavedView}
+            onSave={() => void saveCurrentView()}
+            onCopy={() => void copySavedView()}
+            onDelete={() => void deleteSavedView()}
+          />
+        </span>
+        {renderWsAskButton()}
+        {renderBeautifyToolbarButton()}
+        <span data-t06343="density" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>行密度</span>
+          <select
+            data-t06322="density"
+            value={density}
+            onChange={(e) => setDensityRaw(e.target.value)}
+            disabled={viewMode !== 'list'}
+            title={viewMode === 'list'
+              ? '列表行密度 — 紧凑 32px / 舒适 40px / 宽松 48px；只调整行高与标题字号，不改变列结构'
+              : '列表行密度仅作用于列表视图，切回列表后可调'}
+            aria-label="列表行密度调节"
+            style={{ fontSize: 'var(--fs-s)', padding: '5px 6px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', cursor: viewMode === 'list' ? 'pointer' : 'not-allowed', opacity: viewMode === 'list' ? 1 : 0.55 }}
+          >
+            {TASK_DENSITY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{`${o.label} · ${o.hint}`}</option>)}
+          </select>
+        </span>
+        <button type="button" data-t03343="git-toggle" aria-pressed={gitOn} aria-label="显示 Git 提交徽标"
+          title={gitOn ? GIT_TOGGLE_TITLE_ON : GIT_TOGGLE_TITLE_OFF}
+          onClick={() => setGitOn((v) => !v)} className="tbtn-anim"
+          style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', fontSize: 'var(--fs-s)', ...(gitOn ? GIT_TOGGLE_ACTIVE : GIT_TOGGLE_IDLE) }}>
+          <GitBranch size={13} />Git 徽标
+        </button>
+        {/* T06343：项目管理动作属于低频操作，收进「更多」以释放首排水平空间 */}
+        <span data-t06343="project-actions" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>项目</span>
+          {renderProjectActionButtons()}
+        </span>
+        {/* T03176：AI 不可用时给原因 + 「去模型管理」；T06343 收进「更多」，避免状态条独占首排 */}
+        {aiDown && readiness && <AiUnavailableHint r={readiness} compact />}
+        <span aria-hidden="true" style={{ width: 1, height: 20, background: 'var(--border)', flexShrink: 0 }} />
         {/* T03267（PM-402）：项目级导出——任务/计划 × Markdown/JSON；全部项目视图下不可用（导出必须落到具体项目） */}
         <select value="" disabled={exportDisabled(exportBusy, activeProject)}
           data-t03267="project-export" aria-label="导出项目任务或计划"
@@ -5062,8 +5112,6 @@ export function TasksPage() {
         >
           <ScanSearch size={13} style={{ flexShrink: 0 }} />
         </button>
-        {/* T03250：工作空间只读问答入口——紧跟全文检索；T03251 起「未绑定工作空间」也置灰并给原因 */}
-                {renderWsAskButton()}
         {/* T00655：项目排序图标——位于项目选择框之后、新建项目图标之前（悬浮/点击交互动画由 tbtn-anim 提供） */}
         <span ref={projSortRef} style={{ position: 'relative', display: 'inline-flex' }}>
           <button
@@ -5090,63 +5138,11 @@ export function TasksPage() {
             </div>
           )}
         </span>
-        <span className="op-hidden" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
-        {renderProjectActionButtons()}
         </span>
-        </span>
-        {renderBeautifyToolbarButton()}
         {renderClassifyButton()}
         {/* T02257：AI 工具列表取数失败时在工具条给出可见失败态与重试入口（此前静默为空） */}
         <ResourceHint view={toolsRes} label="AI 工具列表" />
-        {/* T03176（D-14）：AI 不可用时工具条给一次原因 + 「去模型管理」，AI 按钮保留可见但禁用 */}
-        {aiDown && readiness && <AiUnavailableHint r={readiness} compact />}
         {renderViewToggle()}
-        {/* T06303（REQ-009 / PRD §B1）：保存视图选择/保存/复制/删除；全部项目视图下禁用 */}
-        <SavedViewMenu
-          views={savedViews}
-          activeId={savedViewId}
-          busy={savedViewBusy}
-          disabled={!activeProject || activeProject === ALL_PROJECTS}
-          onSelect={applySavedView}
-          onSave={() => void saveCurrentView()}
-          onCopy={() => void copySavedView()}
-          onDelete={() => void deleteSavedView()}
-        />
-        {/* T06305（REQ-010 / PRD §B2）：任务/项目模板一键实例化；任务模板需具体项目，项目模板可独立创建 */}
-        <TemplateMenu
-          projectId={activeProject && activeProject !== ALL_PROJECTS ? activeProject : undefined}
-          disabled={batchOpBusy}
-          onTaskInstanced={(r: TemplateInstanceResult) => {
-            void loadTasks(activeProject);
-            flash(`已从模板创建任务：${r.tasks[0]?.title ?? ''}`);
-          }}
-          onProjectInstanced={(r: TemplateInstanceResult) => {
-            setActiveProject(r.projectId);
-            void loadTasks(r.projectId);
-            void loadProjects();
-            flash(`已从模板创建项目「${r.projectName}」（${r.tasks.length} 条任务）`);
-          }}
-          onProjectUndone={(deletedProjectId: string) => {
-            if (activeProject === deletedProjectId) setActiveProject('');
-            void loadProjects();
-            flash('已撤销模板实例：项目及其模板任务已删除');
-          }}
-          onError={(message: string) => flash(message, 'error')}
-        />
-        {/* T06322（REQ-042 / §C3）：列表行密度切换——三档 32/40/48px，只作用于列表视图；改造仅行高与标题字号，不改变列结构 */}
-        <select
-          data-t06322="density"
-          value={density}
-          onChange={(e) => setDensityRaw(e.target.value)}
-          disabled={viewMode !== 'list'}
-          title={viewMode === 'list'
-            ? '列表行密度 — 紧凑 32px / 舒适 40px / 宽松 48px；只调整行高与标题字号，不改变列结构'
-            : '列表行密度仅作用于列表视图，切回列表后可调'}
-          aria-label="列表行密度调节"
-          style={{ fontSize: 'var(--fs-s)', padding: '5px 6px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', cursor: viewMode === 'list' ? 'pointer' : 'not-allowed', opacity: viewMode === 'list' ? 1 : 0.55 }}
-        >
-          {TASK_DENSITY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{`${o.label} · ${o.hint}`}</option>)}
-        </select>
         {renderMultiSelectButton()}
         {/* T00481/T00720/T00728：全部收起/展开——描述、AI 摘要、处理结果三组折叠状态联动，覆盖待办+已完成全部列表；
             T00728：收起为高频操作优先——有展开内容时点击一律收起，全部收起后点击才展开；
@@ -5186,29 +5182,12 @@ export function TasksPage() {
           <input type="file" accept=".csv,.json" style={FILE_INPUT_SR_ONLY} data-t03214="import-file-input" disabled={batchOpBusy}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) { void onCsvFile(f); } e.target.value = ''; }} />
         </label>
-        {/* 八期 §3.1.1：Git 徽标显隐开关（会话级）——关闭时列表/看板行内徽标整体不渲染，也不再发起摘要批量请求；
-            T03645：与其它低频入口同级改为「默认隐藏、悬浮工具栏显示」 */}
-        <button type="button" data-t03343="git-toggle" aria-pressed={gitOn} aria-label="显示 Git 提交徽标"
-          title={gitOn ? GIT_TOGGLE_TITLE_ON : GIT_TOGGLE_TITLE_OFF}
-          onClick={() => setGitOn((v) => !v)} className="op-hidden tbtn-anim"
-          style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', fontSize: 'var(--fs-s)', ...(gitOn ? GIT_TOGGLE_ACTIVE : GIT_TOGGLE_IDLE) }}>
-          <GitBranch size={13} />Git
-        </button>
         {/* T02952：搜索框 + 框内左侧清空按钮（有内容才显示；悬浮倾斜 5°~10° 由 .ws-clear-btn 提供；点击清空且光标留框内）
-            T03645 试过两条让位方案，都被逐档实测否掉，故搜索框尺寸保持原样：
-            ① 把 [搜索框][更多] 包成一个尾组——组是原子的，行宽不足时整组一起下沉，「更多」反而脱离首排
-               （T03623 UI-06 实测组宽 224 换行到第二排）；
-            ② 给搜索框加 width:150/minWidth:96/flexShrink:1 让它先让位——逐档实测（t03645 门 UI-13c/13d）
-               出厂尺寸下 1440→1180 全程「更多」都留在首排，把搜索框再撑宽 76px（258px、禁止压缩）到 1240px 档仍留在首排，
-               说明首排本有富余，这套让位样式不承重，属于多余的复杂度。
-            T04592：移除搜索框 span 的 marginLeft:'auto'——它把 [搜索框][更多] 顶到工具条最右端、窄窗时换行下沉，
-            与 Git 徽标/一键收起拉开大段空白；改为随流左对齐紧凑排列，控件间距由容器 gap 统一收口。
-            搜索框 flex:1 1 120px：基准宽 120 保证行宽不足时仍排首行不换行（flex-wrap 按基准宽判定换行，
-            单纯 flexShrink/minWidth:0 拦不住），富余时增长到 maxWidth:220 封顶；input width:100%/minWidth:0 跟随伸缩。 */}
-        <span style={{ position: 'relative', display: 'inline-flex', flex: '1 1 120px', minWidth: 0, maxWidth: 220 }}>
+            T06343：工具条首排只留高频操作，搜索框从 220px 收缩到 160px，给模板/添加任务与常用按钮让位；
+            窄窗仍保留 120px 基准与换行兜底，不制造横向溢出。 */}
+        <span style={{ position: 'relative', display: 'inline-flex', flex: '1 1 120px', minWidth: 0, maxWidth: 160 }}>
           <input
             ref={searchInputRef}
-            className="op-hidden"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="搜索标题/描述/编号…" data-page-search
@@ -5228,12 +5207,11 @@ export function TasksPage() {
             </button>
           )}
         </span>
-        {/* T03623：不常用功能收进「更多」——导出项目/分类筛选/优先级筛选/自定义字段筛选与排序移到第二排，
-            按钮常驻可见（折叠入口不能只靠悬浮发现），展开态高亮，生效筛选数以徽标提示。
-            T03645：整组移到搜索框右侧（DOM 与视觉同序），工具条尾部固定为 [搜索框] [更多]。 */}
+        {/* T03623 / T06343：低频功能收进「更多」——保存视图、工作空间问答、AI 美化、行密度、Git 徽标与导出/筛选；
+            按钮常驻可见（折叠入口不能只靠悬浮发现），展开态高亮，生效筛选数以徽标提示。 */}
         <button type="button" ref={moreBtnRef} onClick={() => setMoreOpen((v) => !v)}
           className="tbtn-anim" data-t03623="more-trigger"
-          aria-haspopup="true" aria-expanded={moreOpen} aria-label="更多：导出与筛选"
+          aria-haspopup="true" aria-expanded={moreOpen} aria-label="更多：低频操作与筛选"
           title={moreOpen ? MORE_TITLE_OPEN : moreTitleCollapsed(moreActiveCount)}
           style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', padding: '5px 7px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', fontSize: 'var(--fs-s)', ...(moreOpen ? TOGGLE_STYLE_ACTIVE : TOGGLE_STYLE_IDLE) }}>
           <MoreHorizontal size={14} />
@@ -5242,7 +5220,7 @@ export function TasksPage() {
               style={{ position: 'absolute', top: -2, right: -2, minWidth: 12, height: 12, padding: '0 2px', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-2xs)', lineHeight: '12px', textAlign: 'center' }}>{moreActiveCount}</span>
           )}
         </button>
-                {moreOpen && renderMorePanel()}
+                {renderMorePanel()}
         <NoticeToast notice={notice} onDismiss={dismissNotice} />
       </div>
     );
@@ -5327,6 +5305,27 @@ export function TasksPage() {
           )}
           <button onClick={() => setNewDescOpen(!newDescOpen)} title="描述/截图 — 展开或收起描述与截图上传区" aria-label={newDescOpen ? '收起描述与截图编辑区' : '展开描述与截图编辑区'} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}>{newDescOpen ? <ChevronUp size={13} /> : <ImagePlus size={13} />}</button>
           </span>
+          {/* T06343：模板入口前置——从工具栏移到「添加任务」按钮之前，保持一键实例化与撤销逻辑不变 */}
+          <TemplateMenu
+            projectId={activeProject && activeProject !== ALL_PROJECTS ? activeProject : undefined}
+            disabled={batchOpBusy}
+            onTaskInstanced={(r: TemplateInstanceResult) => {
+              void loadTasks(activeProject);
+              flash(`已从模板创建任务：${r.tasks[0]?.title ?? ''}`);
+            }}
+            onProjectInstanced={(r: TemplateInstanceResult) => {
+              setActiveProject(r.projectId);
+              void loadTasks(r.projectId);
+              void loadProjects();
+              flash(`已从模板创建项目「${r.projectName}」（${r.tasks.length} 条任务）`);
+            }}
+            onProjectUndone={(deletedProjectId: string) => {
+              if (activeProject === deletedProjectId) setActiveProject('');
+              void loadProjects();
+              flash('已撤销模板实例：项目及其模板任务已删除');
+            }}
+            onError={(message: string) => flash(message, 'error')}
+          />
           <button className="tbtn-anim" onClick={() => void createTask()} disabled={creating} title={creating ? '添加中 — 正在智能分类并保存任务' : '添加任务 — 创建新任务并保存到当前项目'} aria-label={creating ? '添加中：正在智能分类并保存任务' : '添加任务：创建新任务并保存到当前项目'} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 4px', color: creating ? 'var(--text-muted)' : 'var(--text)' }}>
             {creating ? <Loader2 size={13} className="aispin" /> : <Plus size={13} />}
           </button>
