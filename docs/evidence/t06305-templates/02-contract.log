@@ -1,0 +1,21 @@
+[PASS] 测试服务就绪 → {"ok":true,"service":"mtask-server","time":"2026-11-25T07:02:35.791Z"}
+[PASS] 任务模板目标项目创建 → {"id":"23881636-764c-4f7b-966d-3716646728ef","name":"T06305 模板契约 1795590155879","description":"","sort_weight":0,"wip_limit":10,"created_at":"2026-11-25T07:02:36.239Z","updated_at":"2026-11-25T07:02:36.239Z","timezone":"","product_key":"","memory_auto_extract":1,"workspace_path":"","history_at":null,"archived":0}
+[PASS] 内置任务模板存在 → ["project:标准交付项目","task:功能开发任务"]
+[PASS] 内置项目模板存在 → ["project:标准交付项目","task:功能开发任务"]
+[PASS] 内置模板不可改/不可删
+[PASS] 自定义任务模板创建 → {"id":"2ed07394-8572-49f5-881d-f1a4d60237fa","builtin":false}
+[PASS] 同类型重名模板拒绝
+[PASS] 非法任务模板 schema 拒绝
+[PASS] 任务模板缺 projectId 拒绝
+[PASS] 任务模板实例化建 1 条任务 → {"instanceId":"7e03b4f9-df62-4518-b8c2-25040451b060","templateId":"2ed07394-8572-49f5-881d-f1a4d60237fa","type":"task","projectId":"23881636-764c-4f7b-966d-3716646728ef","projectName":"T06305 模板契约 1795590155879","tasks":[{"id":"f1906a56-102a-4f78-a466-5125b88b17c4","task_no":"T00001","title":"T06305 自定义任务"}],"undoHint":"撤销将归档本次创建的任务"}
+[PASS] 实例任务字段落库正确 → {"id":"f1906a56-102a-4f78-a466-5125b88b17c4","task_no":"T00001","project_id":"23881636-764c-4f7b-966d-3716646728ef","title":"T06305 自定义任务","description":"来自自定义模板","priority":"high","status":"todo","verified":false,"archived":false,"archived_at":null,"ai_summary":null,"pinned":false,"category_id":null,"created_at":"2026-11-25T07:02:36.450Z","updated_at":"2026-11-25T07:02:36.450Z","due_date":null,"color":"","handle_result":null,"ai_summary_at":null,"ai_state":"","retry_count":0,"ai_state_at":"","derived_from":null,"ruling_state":"","ruling_result":"","ruling_at":null,"progress":0,"shelved":false,"history_at":null,"req_ids":null,"dispatch_auto":null,"dispatch_last_at":null,"dispatch_last_state":"","parent_id":null,"user_sort":null,"images":[],"blocked_by":[],"gitLinks":[],"gitLinkCount":0}
+[PASS] 任务实例撤销 → {"ok":true,"undoneTaskIds":["f1906a56-102a-4f78-a466-5125b88b17c4"],"deletedProjectId":null}
+[PASS] 撤销后任务进入归档 → ["f1906a56-102a-4f78-a466-5125b88b17c4"]
+[PASS] 重复撤销拒绝
+[PASS] 项目模板实例化建项目+2 任务 → {"instanceId":"cdf14f32-9ce5-48be-927d-559c9b36e8a6","templateId":"ef005c6e-991e-4195-bfee-995ae7070890","type":"project","projectId":"a892d290-ac86-4a1c-89f5-ce36147ba25e","projectName":"T06305 自定义项目 1795590156516","tasks":[{"id":"d00cc88d-f88b-4794-a2ed-9abcf97c1d56","task_no":"T00002","title":"T06305 项目任务甲"},{"id":"d6ee8bd5-4b37-4c99-bf11-0ecdc8eb7716","task_no":"T00003","title":"T06305 项目任务乙"}],"undoHint":"撤销将删除本次创建的项目及其任务"}
+[PASS] 项目行已创建 → {"projectId":"a892d290-ac86-4a1c-89f5-ce36147ba25e"}
+[PASS] 项目模板任务落库 2 条 → ["T06305 项目任务乙:done","T06305 项目任务甲:todo"]
+[PASS] 项目实例撤销删除项目 → {"ok":true,"undoneTaskIds":["d00cc88d-f88b-4794-a2ed-9abcf97c1d56","d6ee8bd5-4b37-4c99-bf11-0ecdc8eb7716"],"deletedProjectId":"a892d290-ac86-4a1c-89f5-ce36147ba25e"}
+[PASS] 撤销后项目已不存在
+[PASS] 项目新增任务后拒绝整体撤销 → "{\"error\":\"项目已被继续编辑（新增 1 条任务），不能整体撤销\"}"
+{"pass":true,"checks":20,"projectId":"23881636-764c-4f7b-966d-3716646728ef","customTaskTemplate":"2ed07394-8572-49f5-881d-f1a4d60237fa","customProjectTemplate":"ef005c6e-991e-4195-bfee-995ae7070890"}

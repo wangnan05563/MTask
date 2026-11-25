@@ -162,7 +162,7 @@ try {
   await evl(`(() => { try {
     localStorage.setItem('mtask.guide.seen.dashboard', '1');
     localStorage.setItem('mtask.guide.seen.exec-sessions', '1');
-    localStorage.setItem('tasks.activeProject', ${JSON.stringify(JSON.stringify(projectId))});
+    localStorage.setItem('tasks.activeProject', ${JSON.stringify(projectId)});
   } catch {} return true; })()`);
   await send('Page.navigate', { url: `${API}/index.html` });
   await until(`Boolean(document.querySelector('#root aside'))`, 25_000);

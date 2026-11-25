@@ -1,0 +1,153 @@
+{
+  "pass": 14,
+  "fail": 0,
+  "checks": [
+    {
+      "name": "T06305-00 测试 API 就绪",
+      "ok": true,
+      "extra": {
+        "ok": true,
+        "service": "mtask-server",
+        "time": "2026-11-25T07:02:51.744Z"
+      }
+    },
+    {
+      "name": "T06305-00b 宿主项目就绪",
+      "ok": true,
+      "extra": {
+        "projectId": "11a22c9b-de65-4c88-ac9d-a91c9dbb9988"
+      }
+    },
+    {
+      "name": "T06305-01 模板入口打开并列出内置任务/项目模板",
+      "ok": true,
+      "extra": {
+        "text": "从模板新建\n无变量 · 一键实例化\n标准交付项目\n项目模板 · 内置\n应用\n内置 · 需求到发布的标准项目骨架（4 条任务）\n将创建：项目 + 4 条任务\n需求澄清与验收标准（high）\n方案设计与评审\n开发与自测\n验收与发布（high）\n功能开发任务\n任务模板 · 内置\n应用\n内置 · 单条功能开发任务的字段骨架\n将创建：功能开发：（normal / todo）\n## 目标\n\n## 验收标准\n\n## 影响范围\n\nT06305 自定义项目 1795590156516\n项目模板\n应用\n两任务项目模板\n将创建：项目 + 2 条任务\nT06305 项目任务甲（high）\nT06305 项目任务乙（low）\nT06305 自定义任务 1795590156380\n任务模板\n应用\n自定义任务模板\n将创建：T06305 自定义任务（high / todo）\n来自自定义模板",
+        "rows": 4,
+        "taskRows": 2,
+        "projectRows": 2,
+        "taskDisabled": false,
+        "width": 402,
+        "left": 307,
+        "right": 709,
+        "scrollWidth": 1440,
+        "viewport": {
+          "w": 1440,
+          "h": 1000
+        }
+      }
+    },
+    {
+      "name": "T06305-02 已选具体项目，任务模板可应用",
+      "ok": true,
+      "extra": {
+        "taskDisabled": false
+      }
+    },
+    {
+      "name": "T06305-03 任务模板一键实例化回执",
+      "ok": true,
+      "extra": {
+        "appliedTask": true,
+        "taskResult": "已创建 1 条任务\n项目：T06305 UI 模板验证 1795590171765\n功能开发：\n撤销\n完成"
+      }
+    },
+    {
+      "name": "T06305-04 任务落库到当前项目且字段来自模板",
+      "ok": true,
+      "extra": {
+        "id": "006856f0-57bf-4591-b245-9b38bd89aab2",
+        "title": "功能开发：",
+        "priority": "normal",
+        "status": "todo"
+      }
+    },
+    {
+      "name": "T06305-05 1440 任务实例截图有效且无横向溢出",
+      "ok": true,
+      "extra": {
+        "shot": {
+          "file": "00-t06305-task-instance-1440.png",
+          "bytes": 65503
+        },
+        "scrollWidth": 1440
+      }
+    },
+    {
+      "name": "T06305-06 任务实例撤销后归档",
+      "ok": true,
+      "extra": {
+        "undoMsg": "已撤销：本次创建的任务已归档",
+        "archived": {
+          "id": "006856f0-57bf-4591-b245-9b38bd89aab2",
+          "archived": true,
+          "archived_at": "2026-11-25T07:03:02.652Z"
+        }
+      }
+    },
+    {
+      "name": "T06305-07 项目模板一键创建项目+4 任务回执",
+      "ok": true,
+      "extra": {
+        "appliedProject": true,
+        "projectResult": "已创建项目「标准交付项目」\n4 条模板任务已入项目\n需求澄清与验收标准、方案设计与评审、开发与自测、验收与发布\n撤销将删除新项目及其任务；项目里加过任务后不可整体撤销。\n撤销\n完成"
+      }
+    },
+    {
+      "name": "T06305-08 新项目与 4 条模板任务落库",
+      "ok": true,
+      "extra": {
+        "project": {
+          "id": "4b1aba94-9f66-4aff-9620-0444543c932f",
+          "name": "标准交付项目"
+        },
+        "tasks": [
+          "验收与发布:todo",
+          "开发与自测:todo",
+          "方案设计与评审:todo",
+          "需求澄清与验收标准:todo"
+        ]
+      }
+    },
+    {
+      "name": "T06305-09 1440 项目实例截图有效",
+      "ok": true,
+      "extra": {
+        "file": "01-t06305-project-instance-1440.png",
+        "bytes": 77027
+      }
+    },
+    {
+      "name": "T06305-10 760 面板不撑出横向滚动",
+      "ok": true,
+      "extra": {
+        "shot": {
+          "file": "02-t06305-project-instance-760.png",
+          "bytes": 72767
+        },
+        "panel": {
+          "width": 402,
+          "left": 307,
+          "right": 709
+        },
+        "scrollWidth": 760
+      }
+    },
+    {
+      "name": "T06305-11 项目实例撤销删除项目",
+      "ok": true,
+      "extra": {
+        "undoProjectMsg": "已撤销：项目及其模板任务已删除",
+        "projectId": "4b1aba94-9f66-4aff-9620-0444543c932f",
+        "projectStillThere": false
+      }
+    },
+    {
+      "name": "T06305-12 全程无未捕获异常",
+      "ok": true,
+      "extra": {
+        "consoleErrors": []
+      }
+    }
+  ]
+}

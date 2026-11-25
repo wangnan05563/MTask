@@ -1,0 +1,6 @@
+[mtask] web 静态已伺服: D:\code\otherProjects\MTask\web\dist
+[startup] schema init 422ms
+[mtask] server ready at http://127.0.0.1:5203 (boot 446ms)
+[mtask] health: http://127.0.0.1:5203/api/health
+[mtask] tunnel auto-start: skipped (已由环境变量 MTASK_TUNNEL_AUTO_START 关闭)
+[startup] maintenance skipped by MTASK_SKIP_STARTUP_MAINTENANCE=1
