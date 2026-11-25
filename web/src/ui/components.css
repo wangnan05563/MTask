@@ -1026,6 +1026,11 @@
   align-items: center;
   gap: 2px;
   border-bottom: 1px solid var(--mt-semantic-border-default);
+  /* 窄屏多 tab 不挤压变形：保留单行，横向滚动查看，滚动条按需显示。 */
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
 }
 
 .mt-tabs[data-variant='pill'] .mt-tabs__list {
@@ -1049,6 +1054,7 @@
   font-size: 13px;
   cursor: pointer;
   white-space: nowrap;
+  flex: 0 0 auto;
 }
 
 .mt-tabs[data-size='sm'] .mt-tabs__tab {

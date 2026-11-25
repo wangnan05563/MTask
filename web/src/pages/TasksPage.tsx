@@ -182,10 +182,11 @@ interface BatchReceipt {
  *  行高口径：line-height 20px + 上下内边距 5/9/13px + 1px 上下边框 = 32/40/48px；
  *  只改行高与标题字号，不改列结构/操作区布局；持久化到 localStorage，刷新与切页保持。 */
 type TaskDensity = 'compact' | 'comfortable' | 'loose';
-const TASK_DENSITY_STYLE: Record<TaskDensity, { padY: string; titleSize: string; lineHeight: string }> = {
-  compact: { padY: '5px', titleSize: '14px', lineHeight: '20px' },
-  comfortable: { padY: '9px', titleSize: '15px', lineHeight: '20px' },
-  loose: { padY: '13px', titleSize: '16px', lineHeight: '20px' },
+const TASK_DENSITY_STYLE: Record<TaskDensity, { padY: string; titleSize: string; lineHeight: string; intrinsicSize: string }> = {
+  // intrinsicSize 取“行内容高 + 上下 6px margin”的近似值，供 content-visibility 屏外占位使用。
+  compact: { padY: '5px', titleSize: '14px', lineHeight: '20px', intrinsicSize: '44px' },
+  comfortable: { padY: '9px', titleSize: '15px', lineHeight: '20px', intrinsicSize: '52px' },
+  loose: { padY: '13px', titleSize: '16px', lineHeight: '20px', intrinsicSize: '60px' },
 };
 const TASK_DENSITY_OPTIONS: ReadonlyArray<{ value: TaskDensity; label: string; hint: string }> = [
   { value: 'compact', label: '紧凑', hint: '32px 行高' },
@@ -818,6 +819,7 @@ export function TasksPage() {
     '--task-density-pad-y': TASK_DENSITY_STYLE[density].padY,
     '--task-density-title-size': TASK_DENSITY_STYLE[density].titleSize,
     '--task-density-line-height': TASK_DENSITY_STYLE[density].lineHeight,
+    '--task-density-intrinsic': TASK_DENSITY_STYLE[density].intrinsicSize,
   } as CSSProperties;
   // T00786：工作空间全文检索面板显隐（建议相对工作空间选择器就近放置）
   const [wsSearchOpen, setWsSearchOpen] = useState(false);
@@ -6090,8 +6092,9 @@ export function TasksPage() {
         .verify-icon { animation: verify-pop 0.35s ease; }
         @keyframes aispin { to { transform: rotate(360deg); } }
         .aispin { animation: aispin 0.8s linear infinite; display: inline-block; }
-        /* T06314：任务行沿用 T01067 的屏外跳过渲染；原 .cv-auto 样式只注入设置页，任务页此前挂类不生效。 */
-        .cv-auto { content-visibility: auto; contain-intrinsic-size: auto 40px; }
+        /* T06314：任务行沿用 T01067 的屏外跳过渲染；原 .cv-auto 样式只注入设置页，任务页此前挂类不生效。
+           T06329 后续：估算值跟随行密度（44/52/60px），并限定到任务行，避免与全局 .cv-auto 级联冲突。 */
+        .task-item.cv-auto { content-visibility: auto; contain-intrinsic-size: auto var(--task-density-intrinsic, 44px); }
         /* T00466：与提示词页 arena-row 特效统一——边框、刷新 flush、点击微缩放 */
         .task-item { border: 1px solid var(--border); border-radius: 8px; margin: 6px 0; transition: background-color 0.15s ease, transform .12s ease; }
         .task-item:hover { background: var(--surface-2); }

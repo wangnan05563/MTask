@@ -66,7 +66,24 @@ for (const [label, name, markers] of ariaGates) {
 }
 say('T06326-06 13 个原语关键可访问性/交互标记齐全', ariaFailures.length === 0, { ariaFailures });
 
+const modalLayer = readFileSync(join(UI, 'modalLayer.ts'), 'utf8');
+const modalGates = [
+  'modalStack',
+  'modalStack[modalStack.length - 1] !== id',
+  "body.style.overflow = 'hidden'",
+  "root.setAttribute('inert', '')",
+  "root.setAttribute('aria-hidden', 'true')",
+  'modalStack.lastIndexOf(id)',
+  'trapTab(event, panel)',
+];
+const missingModalGates = modalGates.filter((marker) => !modalLayer.includes(marker));
+say('T06326-09 模态层 Esc 栈/滚动锁/背景 inert/焦点拉回齐全', missingModalGates.length === 0, { missingModalGates });
+
 const css = readFileSync(join(ROOT, 'web/src/ui/components.css'), 'utf8');
+const tabsOverflowReady = /\.mt-tabs__list\s*\{[^}]*overflow-x:\s*auto/.test(css)
+  && /\.mt-tabs__tab\s*\{[^}]*flex:\s*0 0 auto/.test(css);
+say('T06326-10 Tabs 窄屏横向滚动且 tab 不压缩', tabsOverflowReady, {});
+
 const cssSelectors = [
   '.mt-select__control', '.mt-choice__mark', '.mt-radio__mark', '.mt-switch__track',
   '.mt-overlay', '.mt-dialog', '.mt-drawer', '.mt-popover__panel', '.mt-tooltip__bubble',

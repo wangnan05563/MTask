@@ -50,6 +50,9 @@ for (const label of ['AI 工具与模型', '通用需求']) {
 
 if (!/active !== 'dashboard'/.test(source['设置'])) failures.push('设置页未让位仪表盘子页页头，存在双 h1 风险');
 if (!/calc\(100vh - 260px\)/.test(source['执行会话'])) failures.push('执行会话页未为新页头预留高度');
+if (!/minHeight: standalone \? 0 : 520/.test(source['执行会话']) || !/flex: standalone \? '1 1 0'/.test(source['执行会话'])) {
+  failures.push('执行会话 standalone 未用 flex 填充剩余高度，短窗口会溢出');
+}
 if (!source['投递队列'].includes('primaryAction={(')) failures.push('投递队列页未把新建队列收口到页头主操作槽');
 
 const shell = read('web/src/ui/layout/PageShell.tsx');

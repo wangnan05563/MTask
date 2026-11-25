@@ -401,7 +401,7 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
 
   return (
     <PageShell className="mt-exec-page">
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0, height: standalone ? '100vh' : undefined }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0, minHeight: 0, height: standalone ? '100vh' : undefined }}>
       <style>{`
         @property --exec-flow-angle {
           syntax: '<angle>';
@@ -500,8 +500,9 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
           display: 'grid',
           gridTemplateColumns: `${leftPct}% 10px minmax(0, 1fr)`,
           gap: 0,
-          minHeight: 520,
-          height: standalone ? 'calc(100vh - 220px)' : 'calc(100vh - 260px)',
+          minHeight: standalone ? 0 : 520,
+          flex: standalone ? '1 1 0' : undefined,
+          height: standalone ? undefined : 'calc(100vh - 260px)',
           padding: standalone ? '0 16px 12px' : 0,
           boxSizing: 'border-box',
           minWidth: 0,
