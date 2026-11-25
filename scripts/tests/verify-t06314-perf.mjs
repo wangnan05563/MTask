@@ -150,7 +150,7 @@ try {
   await send('Page.navigate', { url: `${API}/index.html` });
   await until(`Boolean(document.querySelector('#root aside'))`, 30_000);
   await evl(`(() => {
-    localStorage.setItem('tasks.activeProject', ${JSON.stringify(JSON.stringify(PROJECT))});
+    localStorage.setItem('tasks.activeProject', ${JSON.stringify(PROJECT)});
     localStorage.setItem('mtask.guide.seen.dashboard', '1');
     localStorage.setItem('mtask.guide.seen.exec-sessions', '1');
     sessionStorage.setItem('tasks.viewMode', '"list"');
