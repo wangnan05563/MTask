@@ -4912,9 +4912,11 @@ export function TasksPage() {
           style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', fontSize: 'var(--fs-s)', ...(gitOn ? GIT_TOGGLE_ACTIVE : GIT_TOGGLE_IDLE) }}>
           <GitBranch size={13} />Git 徽标
         </button>
-        {/* T06343：项目管理动作属于低频操作，收进「更多」以释放首排水平空间 */}
+        {/* T06343：项目管理动作属于低频操作，收进「更多」以释放首排水平空间。
+            L-3：入口仍在 More 内，但项目分组用 title 明示危险动作与二次确认，避免只剩图标。 */}
         <span data-t06343="project-actions" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>项目</span>
+          <span title="项目操作 — 新建/改名/产品标签/删除当前项目；删除需二次确认且不可恢复"
+            style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>项目</span>
           {renderProjectActionButtons()}
         </span>
         {/* T03176：AI 不可用时给原因 + 「去模型管理」；T06343 收进「更多」，避免状态条独占首排 */}
