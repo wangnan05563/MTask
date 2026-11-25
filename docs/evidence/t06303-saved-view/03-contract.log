@@ -1,0 +1,8 @@
+{
+  "pass": true,
+  "checks": 7,
+  "viewsInA": 2,
+  "viewsInB": 1
+}
+(node:20160) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
