@@ -1,0 +1,8 @@
+date=2026-11-25T16:30:00+08:00
+node=v22.23.2
+git_head=e8df35d7993dfebf5ba61a396f79b575d600a292
+api=http://127.0.0.1:5212
+data_dir=C:\Users\hspcadmin\AppData\Local\Temp\t06308-dedupe
+dedupe_test=15/15 PASS
+t06304_regression=17/17 PASS
+production=127.0.0.1:39877 untouched
