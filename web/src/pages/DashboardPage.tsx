@@ -283,6 +283,7 @@ export function DashboardPage() {
     <PageShell>
       <PageHeader
         title="今日"
+        minimal
         description={`${dateLabel} · 先做最要紧的事；一屏看完待办、需要你处理的积压和 AI 进度。`}
         secondaryActions={(
           <>

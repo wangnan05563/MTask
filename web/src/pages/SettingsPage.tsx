@@ -115,8 +115,8 @@ export function SettingsPage() {
       {active !== 'dashboard' && (
         <PageHeader
           title="设置"
+          minimal
           description="集中管理偏好、数据与运维能力；页签按用途分组，支持关键词检索直达。"
-          breadcrumbs={[{ label: '工作台' }, { label: '设置' }]}
         />
       )}
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 10 }}>

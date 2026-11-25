@@ -6136,8 +6136,8 @@ export function TasksPage() {
       `}</style>
       <PageHeader
         title="任务"
+        minimal
         description="统一查看待办、已完成与搁置任务；列表、看板、表格与日历共用同一套筛选和任务集。"
-        breadcrumbs={[{ label: '工作台' }, { label: '任务' }]}
       />
       {renderToolbar()}
       {/* T00771：新建项目后的工作空间绑定弹窗——见 renderWsPickDialog */}

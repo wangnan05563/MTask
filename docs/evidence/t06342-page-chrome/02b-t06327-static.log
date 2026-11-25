@@ -1,0 +1,14 @@
+{
+  "corePages": 10,
+  "pageShellCount": 10,
+  "pageHeaderCount": 10,
+  "filterBarPages": [
+    "首页",
+    "收件箱",
+    "提示词",
+    "AI 工具与模型",
+    "通用需求"
+  ],
+  "failures": []
+}
+PASS: T06327 其余核心页统一页面壳、页头与筛选条门禁通过。

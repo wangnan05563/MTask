@@ -1,0 +1,12 @@
+T06342 页头精简验收环境
+时间：2026-11-25 16:51 (UTC+8)
+仓库：D:\code\otherProjects\MTask
+分支：main
+起始 HEAD：3a249e525252a879a28bf03f119ac73e208003bd
+Node：v22.23.2
+隔离服务：http://127.0.0.1:5212（PID 11612，MTASK_STATIC_DIR=web/dist）
+健康检查：{"ok":true,"service":"mtask-server","time":"2026-11-25T08:51:55.751Z"}
+页面入口静态资源：assets/index-D5f-Cf2M.js（与本轮 build 产物一致）
+Chrome：C:\Program Files\Google\Chrome\Application\chrome.exe 可用
+测试项目：370e9766-0bc9-4a4d-b490-5224c2f2a32c（隔离库新建，仅用于本页验收）
+生产 MTask :39877 未触碰。

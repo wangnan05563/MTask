@@ -23,6 +23,32 @@
   flex-wrap: wrap;
 }
 
+/* T06342：外壳标签已显示页面名，核心页只保留操作槽，去掉重复面包屑/大标题/说明。 */
+.mt-page-header--minimal {
+  align-items: center;
+  justify-content: flex-end;
+  min-height: 0;
+  padding: 8px 0 0;
+  margin-bottom: 8px;
+  border-bottom: none;
+}
+
+.mt-page-header--minimal .mt-page-header-actions {
+  margin-left: auto;
+}
+
+.mt-page-title-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .mt-page-header-main {
   min-width: 0;
   display: flex;

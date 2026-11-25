@@ -1,0 +1,7 @@
+{
+  "corePages": 10,
+  "minimalPages": 10,
+  "breadcrumbCallers": [],
+  "failures": []
+}
+PASS: T06342 核心页重复面包屑/大标题静态门禁通过。

@@ -29,6 +29,11 @@ export interface PageHeaderProps {
   readonly secondaryActions?: ReactNode;
   readonly viewSwitch?: ReactNode;
   readonly className?: string;
+  /**
+   * T06342：页面外壳的顶部标签已经显示页面名，核心页不再重复渲染面包屑/可见大标题/说明。
+   * 仍保留隐藏的 h1 维护读屏与 SEO 语义，只把操作槽留在页头。
+   */
+  readonly minimal?: boolean;
 }
 
 function BreadcrumbItem({ item }: { readonly item: PageBreadcrumb }) {
@@ -43,8 +48,26 @@ function BreadcrumbItem({ item }: { readonly item: PageBreadcrumb }) {
 
 /** 页头规范：面包屑、唯一标题、说明、主/次操作与视图切换同一落位。 */
 export function PageHeader({
-  title, titleId, description, breadcrumbs = [], primaryAction, secondaryActions, viewSwitch, className,
+  title, titleId, description, breadcrumbs = [], primaryAction, secondaryActions, viewSwitch, className, minimal = false,
 }: PageHeaderProps) {
+  const hasActions = Boolean(primaryAction || secondaryActions || viewSwitch);
+  const actions = hasActions ? (
+    <div className="mt-page-header-actions">
+      {viewSwitch && <div className="mt-page-view-switch">{viewSwitch}</div>}
+      {secondaryActions && <div className="mt-page-secondary-actions">{secondaryActions}</div>}
+      {primaryAction && <div className="mt-page-primary-action" data-page-primary-action="true">{primaryAction}</div>}
+    </div>
+  ) : null;
+
+  if (minimal) {
+    return (
+      <header className={`mt-page-header mt-page-header--minimal${className ? ` ${className}` : ''}`}>
+        <h1 id={titleId} className="mt-page-title-visually-hidden">{title}</h1>
+        {actions}
+      </header>
+    );
+  }
+
   return (
     <header className={`mt-page-header${className ? ` ${className}` : ''}`}>
       <div className="mt-page-header-main">
@@ -61,13 +84,7 @@ export function PageHeader({
         <h1 id={titleId} className="mt-page-title">{title}</h1>
         {description && <p className="mt-page-description">{description}</p>}
       </div>
-      {(primaryAction || secondaryActions || viewSwitch) && (
-        <div className="mt-page-header-actions">
-          {viewSwitch && <div className="mt-page-view-switch">{viewSwitch}</div>}
-          {secondaryActions && <div className="mt-page-secondary-actions">{secondaryActions}</div>}
-          {primaryAction && <div className="mt-page-primary-action" data-page-primary-action="true">{primaryAction}</div>}
-        </div>
-      )}
+      {actions}
     </header>
   );
 }

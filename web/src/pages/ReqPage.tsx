@@ -534,8 +534,8 @@ export function ReqPage() {
     <PageShell className="mt-req-page">
       <PageHeader
         title="通用需求"
+        minimal
         description="沉淀可复用的优秀实现与方案；按分类维护，支持收藏、排序、转计划与测试用例追溯。"
-        breadcrumbs={[{ label: '工作台' }, { label: '通用需求' }]}
       />
       {/* 悬浮操作按钮 + 行 hover 高亮 + 记录高亮动画：类名与任务页体验一致 */}
       <style>{`

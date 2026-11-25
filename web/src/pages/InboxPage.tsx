@@ -153,6 +153,7 @@ export function InboxPage() {
     <PageShell className="mt-inbox-page">
       <PageHeader
         title="收件箱"
+        minimal
         description="统一处理 AI 失败、待我决策、待验证与系统停滞；认领不改变 open 状态，转任务生成普通任务。本页不接邮件。"
         primaryAction={(
           <Button

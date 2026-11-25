@@ -2933,8 +2933,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
       <style>{`.plan-desc-ph::placeholder { color: var(--text-muted); opacity: .55; font-style: italic; }`}</style>
       <PageHeader
         title="项目计划"
+        minimal
         description="按项目编排串行/并行计划、里程碑与依赖；工期、估算、需求矩阵和测试用例在同一时间线上对齐。"
-        breadcrumbs={[{ label: '工作台' }, { label: '项目计划' }]}
       />
       {/* 工具条：项目选择 + 增删导入导出（T00491：操作控件/下拉默认隐藏，悬浮工具条显示） */}
       <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>

@@ -1178,8 +1178,8 @@ export function AIToolsPage() {
     <PageShell className="mt-ai-tools-page">
       <PageHeader
         title="AI 工具与模型"
+        minimal
         description="管理 AI 厂商接入、模型与默认整理/开发工具；连接测试、用途筛选与用量统计同页完成。"
-        breadcrumbs={[{ label: '工作台' }, { label: 'AI 工具与模型' }]}
       />
       {/* 按钮加载旋转动画：供连接测试 / 模型获取等按钮 loading 图标使用 */}
       <style>{`@keyframes aispin{to{transform:rotate(360deg)}}.aispin{animation:aispin .8s linear infinite;display:inline-block}

@@ -942,8 +942,8 @@ export function PromptsPage() {
       `}</style>
       <PageHeader
         title="提示词"
+        minimal
         description="按分类管理、发起与优化提示词模板；分类筛选与视图切换在滚动时保持可见。"
-        breadcrumbs={[{ label: 'AI 控制台' }, { label: '提示词' }]}
       />
       <FilterBar ariaLabel="提示词筛选">
       {/* 工具栏：分类切换与管理 */}

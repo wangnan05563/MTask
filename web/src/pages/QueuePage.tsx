@@ -599,8 +599,8 @@ export function QueuePage() {
     <PageShell className="mt-queue-page">
       <PageHeader
         title="投递队列"
+        minimal
         description="把「任务 + AI 工具」排成序列逐条交付，回执留档可采纳；队列监控与并行任务池分层展示。"
-        breadcrumbs={[{ label: '工作台' }, { label: '投递队列' }]}
         primaryAction={(
           <QueueToolButton
             label="新建队列"

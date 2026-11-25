@@ -474,8 +474,8 @@ export function ExecSessionsPage({ standalone = false }: { readonly standalone?:
 
       <PageHeader
         title="执行会话"
+        minimal
         description="按状态分列观测外部平台会话的存活、进度与停滞；支持重派、置顶监控与 Run 追踪。"
-        breadcrumbs={[{ label: '工作台' }, { label: '执行会话' }]}
       />
 
       {/* T06007：置顶监控/刷新移入右侧通知区头部（通知中心图标之后、更新时间之前）；独立监控窗保留状态徽标 */}

@@ -1,0 +1,7 @@
+{
+  "fullBytes": 1136,
+  "minimalBytes": 345,
+  "nonStickyBytes": 93,
+  "failures": []
+}
+PASS: T06327 页面壳、页头与筛选条 SSR 门禁通过。
