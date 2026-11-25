@@ -1,0 +1,24 @@
+[PASS] T06326-B01 探针挂载
+[PASS] T06326-B02 初始无背景锁 → {"inert":false,"aria":null,"overflow":""}
+[PASS] T06326-B03 Dialog A 打开且背景锁定 → {"inert":true,"aria":"true","overflow":"hidden"}
+[PASS] T06326-B04 Dialog 内 Popover 打开
+[PASS] T06326-B05 Esc 只关 Popover，Dialog 保留 → {"dialogs":["A"]}
+[PASS] T06326-B06 Popover 关闭后焦点回触发器 → {"active":"mt-popover__trigger"}
+[PASS] T06326-B07 Dialog 仍在时背景持续锁定 → {"inert":true,"aria":"true","overflow":"hidden"}
+[PASS] T06326-B08 第二次 Esc 关闭 Dialog 并解锁背景 → {"inert":false,"aria":null,"overflow":""}
+[PASS] T06326-B09 Dialog 关闭后焦点回原触发器 → {"active":"open-a"}
+[PASS] T06326-B10 嵌套 Dialog A+B 同时打开 → ["A","B"]
+[PASS] T06326-B11 Esc 只关最上层 B → {"dialogs":["A"]}
+[PASS] T06326-B12 关闭 B 后 A 仍在且背景锁定 → {"inert":true,"aria":"true","overflow":"hidden"}
+[PASS] T06326-B13 关闭 A 后背景完全解锁 → {"inert":false,"aria":null,"overflow":""}
+[PASS] T06326-B14 closeOnEsc=false 时 Esc 不关闭顶层 → {"dialogs":["C"]}
+[PASS] T06326-B15 遮罩点击仍可关闭
+[PASS] T06326-B16 Tab 焦点从末项回到面板首项 → {"inside":true,"first":"mt-btn mt-icon-btn","active":"mt-btn mt-icon-btn"}
+[PASS] T06326-B17 Tab 探针收尾关闭
+[PASS] T06326-B18 max=1 淘汰旧 toast 后新 toast 可见 → {"firstToast":["A"],"afterB":["B"]}
+[PASS] T06326-B19 新 toast 的 timer 未被淘汰逻辑误清，按 TTL 自动消失 → {"afterTtl":[]}
+[PASS] T06326-B20 确认框 Esc 只关确认框，不连带关闭 More → {"moreBefore":"true","moreAfter":"true"}
+[PASS] T06326-B21 无浮层时 Esc 仍可关闭 More → {"moreClosed":true}
+[PASS] T06326-B22 Tab 跳过 display:none 后的末项回到面板首项 → {"tabAfterHidden":{"before":"focus-last","after":"","afterClass":"mt-btn mt-icon-btn","afterInside":true,"ids":[{"id":"focus-first","connected":true,"rects":1,"display":"inline-block","visibility":"visible","parentDisplay":"block","inertAncestor":false,"ariaHiddenAncestor":false},{"id":"focus-last","connected":true,"rects":1,"display":"inline-block","visibility":"visible","parentDisplay":"block","inertAncestor":false,"ariaHiddenAncestor":false},{"id":"focus-hidden","connected":true,"rects":0,"display":"inline-block","visibility":"visible","parentDisplay":"none","inertAncestor":false,"ariaHiddenAncestor":false}],"panel":true,"panelTag":"SECTION"}}
+
+PASS=22 FAIL=0
