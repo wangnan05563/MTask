@@ -809,6 +809,11 @@ export function TasksPage() {
   // 项目为顶栏全局上下文（localStorage 持久化 + 跨页订阅）；任务页复用 __all__ 哨兵表示全部项目
   const [globalProject, setGlobalProject] = useActiveProject();
   const activeProject = globalProject || ALL_PROJECTS;
+  // 「全部项目」是聚合视图，不是具体项目：改名/删除/产品标签/工作空间操作必须显式排除。
+  const hasConcreteProject = activeProject !== ALL_PROJECTS;
+  // 任务列表请求代际：切项目/筛选/刷新都会失效在途响应，防止旧项目数据写进新作用域。
+  const fetchSeqRef = useRef(0);
+  const loadedTasksScopeRef = useRef<string | null>(null);
   const setActiveProject = useCallback((projectId: string) => {
     setGlobalProject(projectId === ALL_PROJECTS ? '' : projectId);
   }, [setGlobalProject]);
@@ -1252,8 +1257,12 @@ export function TasksPage() {
    * 分页拉取任务。搜索/分类经后端过滤后再分页，保证分页下检索结果完整（而非只搜已加载页）；
    * offset=0 且 replace=true 为重置拉取（切项目/搜索/分类/操作后刷新），否则为追加下一页。
    */
-  const fetchTasks = useCallback(async (projectId: string, offset: number, replace: boolean) => {
-    if (!projectId) return;
+  const fetchTasks = useCallback(async (projectId: string, offset: number, replace: boolean): Promise<number> => {
+    const seq = ++fetchSeqRef.current;
+    // 整表刷新（切项目/筛选/操作后/SSE）优先于「加载更多」：旧追加请求即使未返回也已被本代际作废，
+    // 必须在这里收掉它的 loading，否则 loadingMore 会卡在 true 让后续分页永远进不去。
+    if (replace) setLoadingMore(false);
+    if (!projectId) return seq;
     const p = buildTaskListParams(projectId, offset, {
       search, catFilter, priorityFilter, fieldFilterField, fieldFilterOp, fieldFilterValue, fieldSort,
     });
@@ -1273,13 +1282,18 @@ export function TasksPage() {
       const page = Array.isArray(res) ? { items: res, total: null as number | null } : { items: res.items, total: res.total };
       list = page.items;
       fetchedTotal = page.total;
-      setServerTotal(page.total);
-      setTasksPhase('ready'); setTasksError('');
     } catch (e) {
+      if (seq !== fetchSeqRef.current) return seq;
       setTasksPhase('error');
       setTasksError(e instanceof Error ? e.message : String(e));
-      return;
+      // 主列表失败后不会再发搁置请求；若切项目时已清空搁置数据，不能让搁置 tab 永远停在加载态。
+      setShelvedPhase('error');
+      setShelvedError('主列表加载失败，搁置列表未刷新，请重试');
+      return seq;
     }
+    if (seq !== fetchSeqRef.current) return seq;
+    setServerTotal(fetchedTotal);
+    setTasksPhase('ready'); setTasksError('');
     const nextTodo = list.filter((t) => t.status === 'todo');
     const nextDone = list.filter((t) => t.status === 'done');
     setTodo((prev) => (replace ? nextTodo : [...prev, ...nextTodo]));
@@ -1302,17 +1316,20 @@ export function TasksPage() {
       ps.set('shelved', '1');
       ps.delete('offset');
       const nextShelved = await api.get<Task[]>(`/tasks?${ps.toString()}`);
+      if (seq !== fetchSeqRef.current) return seq;
       setShelvedTasks(nextShelved);
       setShelvedPhase('ready');
       setShelvedError('');
       const findShelved = (id: string) => findTaskInLists([nextShelved], id);
       setDrawerTask((cur) => newerDrawerTask(cur, findShelved));
     } catch (e) {
+      if (seq !== fetchSeqRef.current) return seq;
       // T02290：保留「搁置拉取失败不打断主列表」的既有取舍，只是不再无声——置 error 让搁置 tab 给出原因与重试，
       // 旧数据仍在 shelvedTasks 里，由 ResourceHint 的 stale 语义标成「上次成功的数据，可能过期」。
       setShelvedPhase('error');
       setShelvedError(e instanceof Error ? e.message : String(e));
     }
+    return seq;
   }, [search, catFilter, priorityFilter, fieldFilterField, fieldFilterOp, fieldFilterValue, fieldSort]);
 
   const loadTasks = useCallback(async (projectId: string) => {
@@ -1326,10 +1343,13 @@ export function TasksPage() {
   const loadMore = useCallback(async () => {
     if (!activeProject || loadingMore || !hasMore) return;
     setLoadingMore(true);
+    const request = fetchTasks(activeProject, todo.length + done.length, false);
+    const requestSeq = fetchSeqRef.current;
     try {
-      await fetchTasks(activeProject, todo.length + done.length, false);
+      await request;
     } finally {
-      setLoadingMore(false);
+      // 只允许最后一次「加载更多」收掉自己的 loading；切项目后的旧请求不能把新请求的 loading 清掉或续上旧页。
+      if (requestSeq === fetchSeqRef.current) setLoadingMore(false);
     }
   }, [activeProject, loadingMore, hasMore, todo.length, done.length, fetchTasks]);
 
@@ -1604,6 +1624,24 @@ export function TasksPage() {
   // 初始/切项目加载；搜索与分类变化会重建 loadTasks（经 fetchTasks 依赖透传），此处防抖 300ms 后重置分页拉取，
   // 避免搜索框逐击键都打后端
   useEffect(() => {
+    // 作用域/筛选变化立即作废在途请求：不能等 300ms 防抖结束才作废，否则旧响应可能在此窗口写回。
+    fetchSeqRef.current += 1;
+    setLoadingMore(false);
+    // 切项目时先撤掉上一项目的行与叠加快照，避免加载窗口内把旧项目任务显示/操作在新项目标题下。
+    const scopeChanged = loadedTasksScopeRef.current !== activeProject;
+    loadedTasksScopeRef.current = activeProject;
+    if (scopeChanged) {
+      setTodo([]);
+      setDone([]);
+      setShelvedTasks([]);
+      setServerTotal(null);
+      setHasMore(false);
+      setPageStatus(null);
+      setTasksPhase('loading'); setTasksError('');
+      setShelvedPhase('loading'); setShelvedError('');
+      setSelectedIds(new Set());
+      setDrawerTask(null); setDrawerTab(null);
+    }
     if (!activeProject) return;
     const t = setTimeout(() => void loadTasks(activeProject), 300);
     return () => clearTimeout(t);
@@ -1982,7 +2020,7 @@ export function TasksPage() {
 
   /** T04133：存量项目补绑入口（项目操作按钮组）——预填当前值实现回显，留空即清空绑定 */
   async function editProductKey() {
-    if (!activeProject || activeProject === ALL_PROJECTS) return flash('请先选择具体项目');
+    if (!hasConcreteProject) return flash('请先选择具体项目');
     const cur = projects.find((p) => p.id === activeProject);
     const value = await askInput({
       title: `设置「${cur?.name ?? ''}」的产品标签`,
@@ -1996,9 +2034,9 @@ export function TasksPage() {
   /** 修改当前项目名称：弹输入框预填当前名称，确认后 PATCH 更新并刷新列表。
    *  项目 id 不变故不改 activeProject，仅由 loadProjects 反映到下拉框名称。 */
   async function renameProject() {
-    if (!activeProject) return flash('请先选择要修改的项目');
+    if (!hasConcreteProject) return flash('请先选择具体项目');
     const proj = projects.find((p) => p.id === activeProject);
-    if (!proj) return;
+    if (!proj) return flash('该项目不存在或已被删除，请刷新项目列表');
     const name = await askInput({ title: '修改项目名称', placeholder: '请输入项目名称', defaultValue: proj.name });
     if (!name || name.trim() === proj.name) return;
     try {
@@ -2013,9 +2051,9 @@ export function TasksPage() {
   /** 删除项目：风险操作。先弹确认框（说明不可恢复 + 任务将一并删除），确认后再删除。
    *  删除成功后当前项目已被移除：清空 activeProject 使 loadProjects 自动回退到首个有效项目，避免挂到不存在的项目上。 */
   async function deleteProject() {
-    if (!activeProject) return flash('请先选择要删除的项目');
+    if (!hasConcreteProject) return flash('请先选择具体项目');
     const proj = projects.find((p) => p.id === activeProject);
-    if (!proj) return;
+    if (!proj) return flash('该项目不存在或已被删除，请刷新项目列表');
     // 系统收件箱是移动端随手记默认归属，后端已禁止删除；前端提前拦截给出与后端一致的明确提示
     if (proj.id === 'sys-inbox') return flash('系统收件箱项目不可删除');
     const ok = await askConfirm(
@@ -4725,30 +4763,30 @@ export function TasksPage() {
         {/* 修改当前项目名称：轻量操作，弹输入框预填当前名称；置于删除按钮前，与删除同属「当前项目」操作区 */}
         <button
           onClick={() => void renameProject()}
-          disabled={!activeProject}
-          title="修改项目名称 — 重命名当前选中项目"
+          disabled={!hasConcreteProject}
+          title={hasConcreteProject ? '修改项目名称 — 重命名当前选中项目' : '请先在项目选择器中选择具体项目'}
           aria-label="修改项目名称：重命名当前选中项目"
-          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: activeProject ? 'pointer' : 'not-allowed', opacity: activeProject ? 1 : 0.5 }}
+          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: hasConcreteProject ? 'pointer' : 'not-allowed', opacity: hasConcreteProject ? 1 : 0.5 }}
         >
           <SquarePen size={13} />
         </button>
         {/* T04133（PRD MEM-101③）：存量项目补绑产品标签——预填当前值，留空即清空 */}
         <button
           onClick={() => void editProductKey()}
-          disabled={!activeProject}
-          title="产品标签 — 设置当前项目所属产品（留空＝未绑定）"
+          disabled={!hasConcreteProject}
+          title={hasConcreteProject ? '产品标签 — 设置当前项目所属产品（留空＝未绑定）' : '请先在项目选择器中选择具体项目'}
           aria-label="设置产品标签：补绑当前项目所属产品"
-          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: activeProject ? 'pointer' : 'not-allowed', opacity: activeProject ? 1 : 0.5 }}
+          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: hasConcreteProject ? 'pointer' : 'not-allowed', opacity: hasConcreteProject ? 1 : 0.5 }}
         >
           <Tags size={13} />
         </button>
         {/* 删除当前项目：风险操作，点击后弹确认框，确认才执行；危险色标示 */}
         <button
           onClick={() => void deleteProject()}
-          disabled={!activeProject}
-          title="删除项目 — 删除当前选中项目及其全部任务（不可恢复，需二次确认）"
+          disabled={!hasConcreteProject}
+          title={hasConcreteProject ? '删除项目 — 删除当前选中项目及其全部任务（不可恢复，需二次确认）' : '请先在项目选择器中选择具体项目'}
           aria-label="删除项目：删除当前选中项目及其全部任务"
-          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', color: 'var(--danger)', background: 'transparent', border: '1px solid var(--danger)', borderRadius: 6, cursor: activeProject ? 'pointer' : 'not-allowed', opacity: activeProject ? 1 : 0.5 }}
+          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', color: 'var(--danger)', background: 'transparent', border: '1px solid var(--danger)', borderRadius: 6, cursor: hasConcreteProject ? 'pointer' : 'not-allowed', opacity: hasConcreteProject ? 1 : 0.5 }}
         >
           <Trash2 size={13} />
         </button>
@@ -4839,19 +4877,19 @@ export function TasksPage() {
 
   /** 工作空间只读问答入口——禁用原因按「未绑定 > 未选项目 > AI 不可用 > 正常」平铺 */
   function renderWsAskButton() {
-    const proj = activeProject && activeProject !== ALL_PROJECTS ? projects.find((p) => p.id === activeProject) : undefined;
+    const proj = hasConcreteProject ? projects.find((p) => p.id === activeProject) : undefined;
     const noWs = !!proj && !proj.workspace_path;
-    const off = !activeProject || aiDown || noWs;
-    // 提示原因按「未绑定 > 未选项目 > AI 不可用 > 正常」平铺成 if/else，消除嵌套三元与取反条件（S3358/S7735）
+    const off = !hasConcreteProject || aiDown || noWs;
+    // 提示原因按「未绑定 > 未选具体项目 > AI 不可用 > 正常」平铺成 if/else，消除嵌套三元与取反条件（S3358/S7735）
     let reason: string;
-    if (activeProject && noWs) reason = '该项目尚未绑定工作空间 — 先在工作空间下拉条里绑定仓库目录再提问';
-    else if (activeProject && aiDown) reason = aiBlockedTitle(readiness, '工作空间只读问答 — 依据代码片段作答并给出 file:line 引用（只读）');
-    else if (activeProject) reason = '工作空间只读问答 — 依据代码片段作答并给出可跳转的 file:line 引用（只读，不改任何文件）';
-    else reason = '请先选择项目再就工作空间提问';
+    if (hasConcreteProject && noWs) reason = '该项目尚未绑定工作空间 — 先在工作空间下拉条里绑定仓库目录再提问';
+    else if (hasConcreteProject && aiDown) reason = aiBlockedTitle(readiness, '工作空间只读问答 — 依据代码片段作答并给出 file:line 引用（只读）');
+    else if (hasConcreteProject) reason = '工作空间只读问答 — 依据代码片段作答并给出可跳转的 file:line 引用（只读，不改任何文件）';
+    else reason = '全部项目视图下请先选择具体项目再就工作空间提问';
     return (
       <button
         onClick={() => {
-          if (activeProject === ALL_PROJECTS) { flash('全部项目视图下请先选择具体项目再提问'); return; }
+          if (!hasConcreteProject) { flash('全部项目视图下请先选择具体项目再提问'); return; }
           setWsAskOpen(true);
         }}
         className="tbtn-anim"
@@ -5112,8 +5150,7 @@ export function TasksPage() {
         <WorkspaceSelect
           project={projects.find((p) => p.id === activeProject) ?? null}
           onBind={(path) => {
-            if (!activeProject) { flash('请先选择要绑定工作空间的项目'); return Promise.resolve(); }
-            if (activeProject === ALL_PROJECTS) { flash('全部项目视图下请先选择具体项目再绑定工作空间'); return Promise.resolve(); }
+            if (!hasConcreteProject) { flash('全部项目视图下请先选择具体项目再绑定工作空间'); return Promise.resolve(); }
             return bindWorkspace(activeProject, path);
           }}
           flash={flash}
@@ -5121,14 +5158,14 @@ export function TasksPage() {
         {/* T00786：工作空间全文检索入口——语义紧跟工作空间，键入关键词全文检索并展示 partial 提示 */}
         <button
           onClick={() => {
-            if (activeProject === ALL_PROJECTS) { flash('全部项目视图下请先选择具体项目再检索工作空间'); return; }
+            if (!hasConcreteProject) { flash('全部项目视图下请先选择具体项目再检索工作空间'); return; }
             setWsSearchOpen(true);
           }}
           className="op-hidden tbtn-anim"
-          disabled={!activeProject}
-          title={wsSearchTitle(activeProject)}
+          disabled={!hasConcreteProject}
+          title={hasConcreteProject ? wsSearchTitle(activeProject) : '全部项目视图下请先选择具体项目再检索工作空间'}
           aria-label="工作空间全文检索"
-          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', color: 'var(--text-muted)', border: 'none', borderRadius: 6, cursor: activeProject ? 'pointer' : 'not-allowed' }}
+          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', color: 'var(--text-muted)', border: 'none', borderRadius: 6, cursor: hasConcreteProject ? 'pointer' : 'not-allowed' }}
         >
           <ScanSearch size={13} style={{ flexShrink: 0 }} />
         </button>

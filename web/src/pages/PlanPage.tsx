@@ -1507,10 +1507,17 @@ export function PlanPage() {
   // T06329 修正：Plan 不再用 session 旧项目覆盖“全部项目”，也不在自动兜底时写全局。
   const [globalProject, setGlobalProject] = useActiveProject();
   const projectId = globalProject;
+  const projectIdRef = useRef(projectId);
+  projectIdRef.current = projectId;
   const setProjectId = useCallback((id: string) => {
     setGlobalProject(id);
   }, [setGlobalProject]);
   const [plans, setPlans] = useState<PlanTask[]>([]);
+  const [plansLoading, setPlansLoading] = useState(false);
+  // 切项目时旧请求必须失效：序号 + AbortController 双保险，避免慢响应把新项目数据覆盖回旧项目。
+  const planLoadSeqRef = useRef(0);
+  const planAbortRef = useRef<AbortController | null>(null);
+  const loadedProjectRef = useRef<string | null>(null);
   // T03194（PM-204）：里程碑达成预测（按 milestoneId 索引）+ 取数失败态 + 明细面板开关
   const [forecasts, setForecasts] = useState<Record<string, MilestoneForecast>>({});
   const [forecastAt, setForecastAt] = useState('');
@@ -1845,10 +1852,18 @@ export function PlanPage() {
   }, [depMenuId]);
 
   const reload = useCallback(() => {
+    const seq = ++planLoadSeqRef.current;
+    planAbortRef.current?.abort();
+    const ac = new AbortController();
+    planAbortRef.current = ac;
+    const scopeChanged = loadedProjectRef.current !== projectId;
+    loadedProjectRef.current = projectId;
+
     if (!projectId) {
       // T06329：切到「全部项目」时清空上一项目的计划与叠加信息，
       // 否则空态判据 plans.length 会被旧项目数据占住，页面看起来仍在展示别的项目。
       setPlans([]);
+      setPlansLoading(false);
       setForecasts({});
       setForecastAt('');
       setForecastErr('');
@@ -1856,21 +1871,49 @@ export function PlanPage() {
       setSnapErr('');
       return;
     }
-    void api.get<PlanTask[]>(`/plans?projectId=${projectId}`).then(setPlans).catch((e) => flash(String(e.message ?? e)));
+
+    // 切项目时先撤掉旧项目的行，避免请求返回前用户对上一项目的计划执行编辑/删除。
+    if (scopeChanged) {
+      setPlans([]);
+      setForecasts({});
+      setForecastAt('');
+      setForecastErr('');
+      setSnapCoverage(null);
+      setSnapErr('');
+    }
+    setPlansLoading(true);
+
+    const sameScope = () => seq === planLoadSeqRef.current && projectIdRef.current === projectId;
+    void api.get<PlanTask[]>(`/plans?projectId=${projectId}`, ac.signal)
+      .then((list) => { if (sameScope()) setPlans(list); })
+      .catch((e) => {
+        if (sameScope() && !ac.signal.aborted) flash(String(e.message ?? e));
+      })
+      .finally(() => { if (sameScope()) setPlansLoading(false); });
     // T03194：预测是叠加信息——失败不能清掉计划表，但要在工具条留痕（不静默当"无预测"）
-    void api.get<MilestoneForecastReport>(`/plans/milestone-forecast?projectId=${projectId}`)
+    void api.get<MilestoneForecastReport>(`/plans/milestone-forecast?projectId=${projectId}`, ac.signal)
       .then((r) => {
+        if (!sameScope()) return;
         setForecasts(Object.fromEntries(r.milestones.map((m) => [m.milestoneId, m])));
         setForecastAt(r.at);
         setForecastErr('');
       })
-      .catch((e) => { setForecasts({}); setForecastErr(String((e as Error).message ?? e)); });
+      .catch((e) => {
+        if (!sameScope() || ac.signal.aborted) return;
+        setForecasts({}); setForecastErr(String((e as Error).message ?? e));
+      });
     // T03237（PM-205）：洞察快照覆盖——只展示真实积累起点与缺失日，缺失不读成 0
-    void api.get<SnapshotCoverageReport>(`/metrics/day-snapshots/coverage?projectId=${projectId}`)
-      .then((r) => { setSnapCoverage(r); setSnapErr(''); })
-      .catch((e) => { setSnapCoverage(null); setSnapErr(String((e as Error).message ?? e)); });
+    void api.get<SnapshotCoverageReport>(`/metrics/day-snapshots/coverage?projectId=${projectId}`, ac.signal)
+      .then((r) => { if (sameScope()) { setSnapCoverage(r); setSnapErr(''); } })
+      .catch((e) => {
+        if (!sameScope() || ac.signal.aborted) return;
+        setSnapCoverage(null); setSnapErr(String((e as Error).message ?? e));
+      });
   }, [projectId]);
-  useEffect(() => { reload(); }, [reload]);
+  useEffect(() => {
+    reload();
+    return () => planAbortRef.current?.abort();
+  }, [reload]);
 
   // T02196：按「计划行 id」定位来源节点并高亮（任务标题旁「计划/里程碑」徽标点击）。
   // 口径：只有「不看这一屏就看不到目标行」的状态才允许改变——父里程碑处于收起态时展开它；
@@ -2451,6 +2494,7 @@ export function PlanPage() {
    *  数据仍是甘特同一份 plans（plan_tasks），本视图只展示与开详情，编辑留在列表/甘特入口。
    *  编排三件事：与甘特区分的微型说明 + 粒度切换（T01565）+ 节点详情抽屉（复用 FR-3.2 SlideOver）。 */
   function renderTimeline() {
+    if (plansLoading && plans.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-s)', padding: 16 }}>正在加载计划任务…</div>;
     // T01576：阶段折叠——与列表/甘特共用同一份 `plan.collapsedMs`（键=里程碑 id），
     // 故此处一键收起/展开会与列表视图互相影响，这是刻意口径（避免两套折叠记忆互不相认）。
     const tlMsIds = plans.filter((p) => p.kind === 'milestone').map((p) => p.id);
@@ -2534,6 +2578,7 @@ export function PlanPage() {
 
   /** 甘特主视图：横向日轴 + 串行任务条 + 周末/节假日底纹 + 今日线 + 进度内嵌 */
   function renderGantt() {
+    if (plansLoading && plans.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-s)', padding: 16 }}>正在加载计划任务…</div>;
     if (plans.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-s)', padding: 16 }}>暂无计划任务，先创建或导入。</div>;
     const dates = plans.flatMap((p) => [p.start_date, p.end_date]).filter(Boolean).sort((a, b) => a.localeCompare(b));
     // 评审 P2-3：边界防护——全部计划无日期（如批量导入未带排期）时避免 NaN 渲染异常
@@ -3148,11 +3193,13 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
               {/* T01072-FR1.10：统一空态——动作直达新建入口 */}
               <EmptyState
                 icon={<CalendarPlus size={18} />}
-                title={projectId ? '当前项目暂无计划任务' : '请先选择项目'}
-                hint={projectId
-                  ? '可「新建计划任务」逐条创建，或「导入 Excel」批量导入；也可在 AI 工作台用「AI 项目计划导入」从 PRD 自动拆解。'
-                  : '顶栏当前为「全部项目」；请在工具条的项目选择器中选择具体项目后查看或编排计划。'}
-                action={projectId ? { label: '新建计划任务', onClick: () => void createPlan() } : undefined}
+                title={plansLoading ? '正在加载计划任务…' : projectId ? '当前项目暂无计划任务' : '请先选择项目'}
+                hint={plansLoading
+                  ? '正在从服务端读取当前项目的计划数据，请稍候。'
+                  : projectId
+                    ? '可「新建计划任务」逐条创建，或「导入 Excel」批量导入；也可在 AI 工作台用「AI 项目计划导入」从 PRD 自动拆解。'
+                    : '顶栏当前为「全部项目」；请在工具条的项目选择器中选择具体项目后查看或编排计划。'}
+                action={!plansLoading && projectId ? { label: '新建计划任务', onClick: () => void createPlan() } : undefined}
               />
             </td></tr>
           )}
