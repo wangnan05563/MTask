@@ -4,6 +4,7 @@
  */
 import { forwardRef, useEffect, useId, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
+import { useEscapeLayer } from './modalLayer';
 
 export type PopoverPlacement = 'bottom-start' | 'bottom-end' | 'top-start' | 'top-end';
 
@@ -57,21 +58,41 @@ export const Popover = forwardRef<HTMLButtonElement, PopoverProps>(function Popo
     }
   };
 
+  const focusTrigger = () => {
+    window.setTimeout(() => {
+      rootRef.current?.querySelector<HTMLButtonElement>('.mt-popover__trigger')?.focus();
+    }, 0);
+  };
+
+  const closeFromEsc = () => {
+    setOpen(false);
+    focusTrigger();
+  };
+
+  // L-7：Popover 与 Dialog/Drawer 共用 Esc 栈；打开时 Esc 只关 Popover，并把焦点还给触发器。
+  useEscapeLayer(isOpen, closeOnEsc, closeFromEsc);
+
   useEffect(() => {
     if (!isOpen) return;
     const onPointerDown = (event: PointerEvent) => {
       if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
     };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && closeOnEsc) setOpen(false);
-    };
     document.addEventListener('pointerdown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown, true);
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown, true);
-    };
-  }, [isOpen, closeOnEsc]);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, [isOpen]);
+
+  // 受控关闭、点击面板内动作关闭等场景，若焦点落在已被移除的面板里，回落到触发器。
+  const wasOpenRef = useRef(isOpen);
+  useEffect(() => {
+    if (isOpen) {
+      wasOpenRef.current = true;
+      return;
+    }
+    if (!wasOpenRef.current) return;
+    wasOpenRef.current = false;
+    const active = document.activeElement;
+    if (!active || active === document.body) focusTrigger();
+  }, [isOpen]);
 
   return (
     <div ref={rootRef} className={['mt-popover', className].filter(Boolean).join(' ')} data-placement={placement}>
