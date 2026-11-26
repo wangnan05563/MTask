@@ -5,7 +5,8 @@ import { api, imageUrl, fetchImage, imageDataURL, type AITool, type CustomField,
 import { ResultDiffPanel } from '../ui/ResultDiff'; // T01072-FR1.9：结果历史 diff 与回滚
 import { beautifyStore } from '../stores/beautifyStore';
 import { OPTIMIZE_SCOPE_TASKS, busyScope, optimizeStore, runOptimize, useOptimizeStore } from '../stores/optimizeStore'; // T03684：提示词优化运行态切页保持
-import { askConfirm, askInput } from '../ui/dialogs';
+import { askConfirm, askInput, askProductTag } from '../ui/dialogs';
+import { ProductTagCombobox } from '../ui/ProductTagCombobox';
 import { MarkdownContent } from '../ui/Markdown';
 import { TaskEventTimeline } from '../components/TaskEventTimeline';
 import { TaskDetailDrawer, type TaskDetailTab, type TaskPatch } from '../components/TaskDetailDrawer'; // T01562：真抽屉详情
@@ -2095,30 +2096,35 @@ export function TasksPage() {
     flash(`已绑定工作空间：${path}`);
   }
 
-  /** T04133（PRD MEM-101③ / MEM-501）：保存产品标签——PATCH 后同步本地项目列表，保证下拉/弹窗回显 */
-  async function saveProductKey(projectId: string, raw: string): Promise<void> {
+  /** T04133（PRD MEM-101③ / MEM-501）：保存产品标签——PATCH 后同步本地项目列表，保证下拉/弹窗回显。
+   *  T06407：返回是否保存成功，供 combobox 创建失败时保留下拉与输入。 */
+  async function saveProductKey(projectId: string, raw: string): Promise<boolean> {
     try {
       const updated = await api.patch<Project>(`/projects/${projectId}`, { productKey: raw });
       const value = updated?.product_key ?? raw.trim().toLowerCase();
       patchProject(projectId, { product_key: value });
       setPkDraft(value);
       flash(value ? `产品标签已设为 ${value}` : '已清空产品标签');
+      return true;
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e), 'error');
+      return false;
     }
   }
 
-  /** T04133：存量项目补绑入口（项目操作按钮组）——预填当前值实现回显，留空即清空绑定 */
+  /** T04133 / T06407：存量项目补绑入口——候选来自现有项目 product_key；选中即保存，输入可快速创建 */
   async function editProductKey() {
     if (!hasConcreteProject) return flash('请先选择具体项目');
     const cur = projects.find((p) => p.id === activeProject);
-    const value = await askInput({
+    const value = await askProductTag({
       title: `设置「${cur?.name ?? ''}」的产品标签`,
-      placeholder: `留空＝未绑定产品；已有：${productKeyOptions.join(' / ') || '暂无'}`,
+      options: productKeyOptions,
       defaultValue: cur?.product_key ?? '',
+      hint: `选择已有标签，或输入新名称创建；留空并确定＝清空绑定。当前候选 ${productKeyOptions.length} 个。`,
+      placeholder: '如：wiki / mtask',
+      onSave: (next) => saveProductKey(activeProject, next),
     });
-    if (value === null) return; // 取消；空串是有效的「清空绑定」
-    await saveProductKey(activeProject, value);
+    if (value === null) return; // 取消；成功路径已在弹窗 onSave 中落库
   }
 
   /** 修改当前项目名称：弹输入框预填当前名称，确认后 PATCH 更新并刷新列表。
@@ -6071,7 +6077,7 @@ export function TasksPage() {
     return (
       <dialog open
         aria-label="绑定工作空间"
-        style={{ position: 'fixed', inset: 0, zIndex: 900, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: '18vh' }}>
+        style={{ position: 'fixed', inset: 0, zIndex: 900, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '18vh 0 0', width: '100vw', height: '100vh', maxWidth: 'none', maxHeight: 'none', margin: 0, border: 0, boxSizing: 'border-box', overflowY: 'auto' }}>
         <div
           style={{ width: 300, background: 'var(--card-bg)', color: 'var(--text)', border: '1px solid var(--border-strong)', borderRadius: 10, boxShadow: '0 12px 40px rgba(0,0,0,.25)', padding: 12 }}>
           <div style={{ fontSize: 'var(--fs-m)', fontWeight: 600, marginBottom: 2 }}>为「{wsPickForNew.name}」选择工作空间</div>
@@ -6089,21 +6095,21 @@ export function TasksPage() {
               flash={flash}
             />
           </div>
-          {/* T04133（PRD MEM-101③ / MEM-501）：产品标签栏——下拉选已有或输入新建，保存后回显 */}
+          {/* T04133（PRD MEM-101③ / MEM-501）：产品标签栏——T06407 改为带下拉/快速创建的 combobox */}
           <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border-strong)' }}>
             <label htmlFor="new-project-product-key" style={{ display: 'block', fontSize: 'var(--fs-s)', marginBottom: 4 }}>产品标签（可选，留空＝未绑定产品）</label>
-            <input
-              id="new-project-product-key"
-              list="product-key-options"
+            <ProductTagCombobox
+              inputId="new-project-product-key"
               value={pkDraft}
-              onChange={(e) => setPkDraft(e.target.value)}
+              options={productKeyOptions}
+              onChange={setPkDraft}
+              onCreate={(value) => saveProductKey(wsPickForNew.id, value)}
               placeholder="如：wiki / mtask"
-              aria-label="产品标签"
-              style={{ width: '100%', boxSizing: 'border-box', fontSize: 'var(--fs-s)', padding: '4px 6px', background: 'var(--card-bg)', color: 'var(--text)', border: '1px solid var(--border-strong)', borderRadius: 6 }}
+              ariaLabel="产品标签"
             />
-            <datalist id="product-key-options">
-              {productKeyOptions.map((k) => <option key={k} value={k} />)}
-            </datalist>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4 }}>
+              聚焦查看已有标签；输入无完全匹配时可创建新标签并绑定当前项目。
+            </div>
             <button onClick={() => void saveProductKey(wsPickForNew.id, pkDraft)}
               style={{ marginTop: 6, width: '100%', fontSize: 'var(--fs-s)', padding: '5px 0', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'transparent', color: 'var(--text)', cursor: 'pointer' }}>
               <Save size={12} style={{ verticalAlign: -2, marginRight: 4 }} />保存产品标签

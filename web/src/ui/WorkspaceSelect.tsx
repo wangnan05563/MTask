@@ -107,7 +107,7 @@ export function WorkspaceSelect({ project, onBind, flash, variant = 'trigger' }:
 
   const panel = (
     <div aria-label="选择工作空间"
-      style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 8, boxShadow: '0 6px 18px rgba(0,0,0,.16)', zIndex: 45, width: 260, padding: 6, color: 'var(--text)' }}>
+      style={{ position: variant === 'bare' ? 'static' : 'absolute', top: variant === 'bare' ? undefined : '100%', left: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 8, boxShadow: '0 6px 18px rgba(0,0,0,.16)', zIndex: 45, width: variant === 'bare' ? '100%' : 260, maxWidth: 260, padding: 6, color: 'var(--text)' }}>
       {/* 搜索工作空间 */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 5, border: '1px solid var(--border)', borderRadius: 6, padding: '4px 8px', marginBottom: 4 }}>
         <Search size={12} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />

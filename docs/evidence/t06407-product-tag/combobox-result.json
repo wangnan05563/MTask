@@ -1,0 +1,396 @@
+{
+  "checks": [
+    {
+      "name": "T06407-00 三个探针项目就绪",
+      "ok": true,
+      "extra": {
+        "target": "beea7ebd-f130-4820-8e85-1c1b332658b6",
+        "alpha": "821d51b4-ffc2-49af-acd7-630a81bce2a9",
+        "beta": "55684c28-38d2-4640-91dd-fec14e013ca3"
+      }
+    },
+    {
+      "name": "T06407-01 顶栏切到 Target",
+      "ok": true,
+      "extra": {
+        "ok": true
+      }
+    },
+    {
+      "name": "T06407-02 打开项目「更多」面板",
+      "ok": true
+    },
+    {
+      "name": "T06407-03 产品标签弹窗打开",
+      "ok": true
+    },
+    {
+      "name": "T06407-04 空输入展示全部候选",
+      "ok": true,
+      "extra": [
+        {
+          "text": "qa-tag-alpha",
+          "create": false,
+          "active": true,
+          "selected": false,
+          "index": 0
+        },
+        {
+          "text": "qa-tag-beta",
+          "create": false,
+          "active": false,
+          "selected": false,
+          "index": 1
+        },
+        {
+          "text": "qa-tag-target",
+          "create": false,
+          "active": false,
+          "selected": false,
+          "index": 2
+        }
+      ]
+    },
+    {
+      "name": "T06407-05 防抖过滤并展示创建项",
+      "ok": true,
+      "extra": [
+        {
+          "text": "qa-tag-alpha",
+          "create": false,
+          "active": true,
+          "selected": false,
+          "index": 0
+        },
+        {
+          "text": "创建「qa-tag-a」",
+          "create": true,
+          "active": false,
+          "selected": false,
+          "index": 1
+        }
+      ]
+    },
+    {
+      "name": "T06407-06 选择已有标签并保存",
+      "ok": true,
+      "extra": {
+        "clickAlpha": {
+          "ok": true,
+          "text": "qa-tag-alpha"
+        },
+        "actual": "qa-tag-alpha"
+      }
+    },
+    {
+      "name": "T06407-07 无匹配显示创建「qa-tag-gamma」",
+      "ok": true,
+      "extra": [
+        {
+          "text": "创建「qa-tag-gamma」",
+          "create": true,
+          "active": true,
+          "selected": false,
+          "index": 0
+        }
+      ]
+    },
+    {
+      "name": "T06407-08 快速创建新标签并保存",
+      "ok": true,
+      "extra": {
+        "clickCreate": {
+          "ok": true,
+          "text": "创建「qa-tag-gamma」"
+        },
+        "actual": "qa-tag-gamma"
+      }
+    },
+    {
+      "name": "T06407-09 大小写/trim 归一化重名不显示创建项",
+      "ok": true,
+      "extra": [
+        {
+          "text": "qa-tag-gamma",
+          "create": false,
+          "active": true,
+          "selected": true,
+          "index": 0
+        }
+      ]
+    },
+    {
+      "name": "T06407-10 Esc 先关闭下拉，弹窗仍保留",
+      "ok": true,
+      "extra": {
+        "afterEsc1": {
+          "exists": true,
+          "value": "QA-TAG-GAMMA",
+          "expanded": "false",
+          "activeDescendant": null,
+          "menuOpen": false,
+          "opts": [],
+          "error": "",
+          "hint": ""
+        },
+        "dialogStillOpen": true
+      }
+    },
+    {
+      "name": "T06407-11 Esc 再关闭产品标签弹窗",
+      "ok": true
+    },
+    {
+      "name": "T06407-12 ArrowDown 移动活动项",
+      "ok": true,
+      "extra": {
+        "activeDescendant": "product-tag-r4-option-1",
+        "opts": [
+          {
+            "text": "qa-tag-alpha",
+            "active": false
+          },
+          {
+            "text": "qa-tag-beta",
+            "active": true
+          },
+          {
+            "text": "qa-tag-gamma",
+            "active": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "T06407-13 Enter 选中活动项并保存",
+      "ok": true,
+      "extra": {
+        "actual": "qa-tag-beta"
+      }
+    },
+    {
+      "name": "T06407-14a 保存失败路径重新打开弹窗",
+      "ok": true,
+      "extra": {
+        "openFail": true,
+        "failDialogOpen": true
+      }
+    },
+    {
+      "name": "T06407-14 保存失败保留输入并提示",
+      "ok": true,
+      "extra": {
+        "exists": true,
+        "value": "qa-tag-fail",
+        "expanded": "true",
+        "activeDescendant": "product-tag-r5-option-0",
+        "menuOpen": true,
+        "opts": [
+          {
+            "text": "创建「qa-tag-fail」",
+            "create": true,
+            "active": true,
+            "selected": false,
+            "index": 0
+          }
+        ],
+        "error": "创建「qa-tag-fail」失败，请重试",
+        "hint": ""
+      }
+    },
+    {
+      "name": "T06407-15 新项目工作空间弹窗打开",
+      "ok": true
+    },
+    {
+      "name": "T06407-16 新项目产品标签使用 combobox",
+      "ok": true
+    },
+    {
+      "name": "T06407-16b 新项目聚焦展示已有候选",
+      "ok": true,
+      "extra": {
+        "exists": true,
+        "value": "",
+        "expanded": "true",
+        "activeDescendant": "new-project-product-key-option-0",
+        "menuOpen": true,
+        "opts": [
+          {
+            "text": "qa-tag-alpha",
+            "create": false,
+            "active": true,
+            "selected": false,
+            "index": 0
+          },
+          {
+            "text": "qa-tag-beta",
+            "create": false,
+            "active": false,
+            "selected": false,
+            "index": 1
+          }
+        ],
+        "error": "",
+        "hint": ""
+      }
+    },
+    {
+      "name": "T06407-17 新项目弹窗显示创建项",
+      "ok": true,
+      "extra": [
+        {
+          "text": "创建「qa-tag-delta」",
+          "create": true,
+          "active": true,
+          "selected": false,
+          "index": 0
+        }
+      ]
+    },
+    {
+      "name": "T06407-18 新项目快速创建并落库",
+      "ok": true,
+      "extra": {
+        "id": "ef269dbe-048d-46bf-bc4e-0793e375e0a6",
+        "before": "",
+        "after": "qa-tag-delta"
+      }
+    },
+    {
+      "name": "T06407-19 关闭新项目工作空间弹窗",
+      "ok": true
+    },
+    {
+      "name": "T06407-20 760 窄屏无横向溢出且候选可见",
+      "ok": true,
+      "extra": {
+        "sw760": {
+          "ok": true
+        },
+        "s760": {
+          "exists": true,
+          "value": "qa-tag-a",
+          "expanded": "true",
+          "activeDescendant": "product-tag-r7-option-0",
+          "menuOpen": true,
+          "opts": [
+            {
+              "text": "qa-tag-alpha",
+              "create": false,
+              "active": true,
+              "selected": false,
+              "index": 0
+            },
+            {
+              "text": "创建「qa-tag-a」",
+              "create": true,
+              "active": false,
+              "selected": false,
+              "index": 1
+            }
+          ],
+          "error": "",
+          "hint": ""
+        },
+        "layout760": {
+          "viewport": [
+            760,
+            900
+          ],
+          "scrollWidth": 760,
+          "panel": {
+            "left": 154.921875,
+            "right": 605.0625,
+            "top": 332,
+            "bottom": 568
+          }
+        }
+      }
+    }
+  ],
+  "target": {
+    "id": "beea7ebd-f130-4820-8e85-1c1b332658b6",
+    "name": "T06407 探针 Target",
+    "description": "T06407 browser probe",
+    "sort_weight": 0,
+    "wip_limit": 10,
+    "created_at": "2026-11-26T08:16:54.208Z",
+    "updated_at": "2026-11-26T08:48:07.662Z",
+    "timezone": "",
+    "product_key": "qa-tag-target",
+    "memory_auto_extract": 1,
+    "workspace_path": "",
+    "history_at": null,
+    "archived": 0,
+    "todo_count": 0,
+    "done_count": 0,
+    "unverified_count": 0,
+    "plan_done": 0,
+    "plan_doing": 0,
+    "plan_open": 0
+  },
+  "alpha": {
+    "id": "821d51b4-ffc2-49af-acd7-630a81bce2a9",
+    "name": "T06407 探针 Alpha",
+    "description": "T06407 browser probe",
+    "sort_weight": 0,
+    "wip_limit": 10,
+    "created_at": "2026-11-26T08:16:54.155Z",
+    "updated_at": "2026-11-26T08:16:54.155Z",
+    "timezone": "",
+    "product_key": "qa-tag-alpha",
+    "memory_auto_extract": 1,
+    "workspace_path": "",
+    "history_at": null,
+    "archived": 0,
+    "todo_count": 0,
+    "done_count": 0,
+    "unverified_count": 0,
+    "plan_done": 0,
+    "plan_doing": 0,
+    "plan_open": 0
+  },
+  "beta": {
+    "id": "55684c28-38d2-4640-91dd-fec14e013ca3",
+    "name": "T06407 探针 Beta",
+    "description": "T06407 browser probe",
+    "sort_weight": 0,
+    "wip_limit": 10,
+    "created_at": "2026-11-26T08:16:54.202Z",
+    "updated_at": "2026-11-26T08:16:54.202Z",
+    "timezone": "",
+    "product_key": "qa-tag-beta",
+    "memory_auto_extract": 1,
+    "workspace_path": "",
+    "history_at": null,
+    "archived": 0,
+    "todo_count": 0,
+    "done_count": 0,
+    "unverified_count": 0,
+    "plan_done": 0,
+    "plan_doing": 0,
+    "plan_open": 0
+  },
+  "newProject": {
+    "id": "ef269dbe-048d-46bf-bc4e-0793e375e0a6",
+    "name": "T06407 新项目探针",
+    "description": "",
+    "sort_weight": 0,
+    "wip_limit": 10,
+    "created_at": "2026-11-26T08:48:43.431Z",
+    "updated_at": "2026-11-26T08:48:44.954Z",
+    "timezone": "",
+    "product_key": "qa-tag-delta",
+    "memory_auto_extract": 1,
+    "workspace_path": "",
+    "history_at": null,
+    "archived": 0,
+    "todo_count": 0,
+    "done_count": 0,
+    "unverified_count": 0,
+    "plan_done": 0,
+    "plan_doing": 0,
+    "plan_open": 0
+  }
+}

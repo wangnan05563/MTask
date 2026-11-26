@@ -2,6 +2,7 @@ import { createRoot } from 'react-dom/client';
 import { useEffect, useRef, useState, type CSSProperties, type ReactElement } from 'react';
 import { Check, X } from 'lucide-react';
 import { useEscapeLayer } from './components/modalLayer';
+import { ProductTagCombobox } from './ProductTagCombobox';
 
 /**
  * Promise 风格的模态对话框，替代 window.prompt / window.confirm。
@@ -303,6 +304,104 @@ function InputDialogEx({ options, onSubmit }: InputDialogExProps) {
       </div>
     </div>
   );
+}
+
+/** T06407：产品标签弹窗——候选来自项目现有 product_key，无匹配时可直接创建 */
+export interface AskProductTagOptions {
+  title: string;
+  options: readonly string[];
+  defaultValue?: string;
+  placeholder?: string;
+  hint?: string;
+  /** 弹窗内选择/创建/确定时真正保存；返回 false 时保留弹窗与输入并提示。 */
+  onSave?: (value: string) => Promise<boolean>;
+}
+
+interface ProductTagDialogProps {
+  readonly options: AskProductTagOptions;
+  readonly onSubmit: (value: string | null) => void;
+}
+
+function ProductTagDialog({ options, onSubmit }: ProductTagDialogProps) {
+  const [value, setValue] = useState(options.defaultValue ?? '');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const panelRef = useRef<HTMLDivElement>(null);
+  const cancel = () => onSubmit(null);
+
+  useEscapeLayer(true, true, cancel);
+
+  /** 手动确定/选择已有标签：先保存，成功后才关闭；失败保留当前输入。 */
+  const commit = async (next: string) => {
+    if (saving) return;
+    if (!options.onSave) { onSubmit(next); return; }
+    setSaving(true);
+    setError('');
+    try {
+      const saved = await options.onSave(next);
+      if (!saved) {
+        setError('保存失败，请重试；当前输入已保留');
+        return;
+      }
+      setSaving(false);
+      onSubmit(next);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={overlayStyle}>
+      <div ref={panelRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label={options.title}
+        style={{ ...panelStyle, minWidth: 360 }}>
+        <div style={{ fontSize: 'var(--fs-l)', fontWeight: 600, marginBottom: 8 }}>{options.title}</div>
+        <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 10 }}>
+          {options.hint ?? '选择已有标签，或直接输入新名称创建；留空并确定＝清空绑定。'}
+        </div>
+        <ProductTagCombobox
+          value={value}
+          options={options.options}
+          onChange={setValue}
+          onSelect={(next, source) => {
+            // 快速创建已由 onCreate 落库；已有标签/手动确定才需要在这里保存。
+            if (source === 'create') onSubmit(next);
+            else void commit(next);
+          }}
+          onCreate={options.onSave ? options.onSave : async () => true}
+          placeholder={options.placeholder}
+          ariaLabel="产品标签"
+          autoFocus
+        />
+        {error && (
+          <div role="alert" style={{ marginTop: 8, fontSize: 'var(--fs-s)', color: 'var(--danger)' }}>{error}</div>
+        )}
+        <div style={{ marginTop: 14, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button onClick={cancel} aria-label="取消产品标签设置"
+            style={{ padding: '6px 14px', cursor: 'pointer', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text-secondary)' }}>
+            取消
+          </button>
+          <button onClick={() => void commit(value.trim())} disabled={saving} aria-label="确定产品标签"
+            style={{ padding: '6px 14px', background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 6, cursor: saving ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <Check size={14} style={{ verticalAlign: '-2px' }} />{saving ? '保存中…' : '确定'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 打开产品标签选择/创建弹窗；取消返回 null，确定（含快速创建）返回归一化后的标签 */
+export function askProductTag(options: AskProductTagOptions): Promise<string | null> {
+  return new Promise((resolve) => {
+    mountDialog((close) => (
+      <ProductTagDialog
+        options={options}
+        onSubmit={(value) => { close(); resolve(value); }}
+      />
+    ));
+  });
 }
 
 /** 扩展输入对话框：返回 { 文本, 下拉值, 数字值 }，取消返回 null（标题为空视为取消） */
