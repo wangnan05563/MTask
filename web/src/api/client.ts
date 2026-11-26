@@ -30,7 +30,23 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     ...options,
   });
   if (res.status === 204) return undefined as T;
-  const body = await res.json().catch(() => ({}));
+  // 任务页全局异常回归修复：成功响应如果是空体/截断体，res.json() 会 reject；此前 `.catch(() => ({}))`
+  // 把解析失败静默当成 `{}` 返回，调用方随后在 `body.items.filter(...)` 处收到
+  // "Cannot read properties of undefined (reading 'filter')" 的全局异步异常。
+  // 这里对 2xx 的空响应/非法 JSON 直接抛错，让各调用方既有的 catch/错误态接管。
+  const text = await res.text();
+  let body: unknown = {};
+  if (!text.trim()) {
+    if (res.ok) throw new Error(`响应为空（HTTP ${res.status}）`);
+  } else {
+    try {
+      body = JSON.parse(text) as unknown;
+    } catch (e) {
+      if (res.ok) {
+        throw new Error(`响应不是合法 JSON（HTTP ${res.status}，${text.length} 字节）：${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+  }
   if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
   return body as T;
 }
