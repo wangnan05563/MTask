@@ -1162,12 +1162,23 @@ export function ReportPage() {
   // 顶栏项目只在首次进入时作为默认值；用户后续改选或清空为“全部项目”后，
   // 不再被顶栏切换覆盖，保留跨项目聚合报表能力。
   const [globalProject] = useActiveProject();
+  // 进入页面渲染时就判定「本会话是否已有报表范围」：useSessionState 会在挂载 effect 里立刻写入当前值，
+  // 若放到 effect 里再看 storage，空数组也会被当成“已有值”，分不清首次进入与用户主动清空。
+  const scopeWasStored = useMemo(() => {
+    try {
+      return sessionStorage.getItem('report.projects') !== null || sessionStorage.getItem('report.project') !== null;
+    } catch {
+      return false;
+    }
+  }, []);
   const scopeInitialized = useRef(false);
   useEffect(() => {
-    if (scopeInitialized.current) return;
+    // 只在“本会话第一次进入报表页、且此前没有任何范围记录”时用顶栏项目兜底。
+    // 用户改选或清空为全部项目后，report.projects 已落库（含 []），页面重挂载也不会再被顶栏覆盖。
+    if (scopeInitialized.current || scopeWasStored) return;
     scopeInitialized.current = true;
     if (globalProject && projectIds.length === 0) setProjectIds([globalProject]);
-  }, [globalProject, projectIds.length, setProjectIds]);
+  }, [globalProject, projectIds.length, scopeWasStored, setProjectIds]);
   // 单项目产物的消费方（启动会 PPT / PRD 导入目标 / 已上传 PRD 弹层 / 就绪任务推荐）仍按项目级口径，取首个勾选项目
   const projectId = projectIds[0] ?? '';
   // T01058-FR1.3：就绪任务推荐——deps 前置均完成的执行行（跟随工作台项目选择刷新）
