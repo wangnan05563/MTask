@@ -35,9 +35,9 @@ import { isValidIanaTz, tzOptions } from '../utils/timezone'; // T03268（PRD 4.
 import { buildImportFailureReceipt, buildImportReceipt } from '../utils/importReceipt'; // T03214（UX-02 ④）：导入结果分列成功/跳过/失败
 import { arrangeTaskTree, makeTaskMatcher, matchVerified, sortOptions, sortTasks, type SortKey } from '../utils/taskListQuery'; // T03215（PM-304）：列表派生计算提为模块级纯函数，供 useMemo 稳定缓存
 import { useTaskListWindow } from '../utils/taskListWindow'; // T03215（PM-304）：文档滚动 + 变高行的窗口化
-import { PROJ_SORT_OPTIONS, PROJ_SORT_LABEL, isProjectPinned, sortProjects, toggleProjectPin as togglePinShared, type ProjectSortMode } from '../ui/projectOrder'; // T00663：排序/置顶共享模块
+import { isProjectPinned, toggleProjectPin as togglePinShared } from '../ui/projectOrder'; // T00663：置顶逻辑复用共享模块；T06408：排序入口迁至框架顶栏
 import { useBusy, setBusy } from '../ui/busy';
-import { AlertTriangle, AlignLeft, Archive, ArrowUpDown, CalendarDays, Check, CheckCheck, ChevronDown, ChevronUp, Circle, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, Download, FolderPlus, GitBranch, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, MoreHorizontal, Palette, PanelRightOpen, Pin, Plus, Save, ScanSearch, MessageSquareText, Sparkle, Sparkles, SquarePen, Table2, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
+import { AlertTriangle, AlignLeft, Archive, CalendarDays, Check, CheckCheck, ChevronDown, ChevronUp, Circle, CirclePause, ClipboardEdit, ClipboardList, Copy, CopyPlus, Download, FolderPlus, GitBranch, ImagePlus, LayoutGrid, ListChecks, ListTodo, Loader2, Minimize2, MoreHorizontal, Palette, PanelRightOpen, Pin, Plus, Save, ScanSearch, MessageSquareText, Sparkle, Sparkles, SquarePen, Table2, Tags, Trash2, Wand2, X, UnfoldVertical, FoldVertical, RotateCcw } from 'lucide-react';
 import { FontColorButton } from '../ui/FontColorButton';
 import { TaskMoreMenu, type TaskMoreMenuItem } from '../ui/TaskMoreMenu'; // T05712：低频功能「...」下拉
 import { CopyButton } from '../ui/CopyButton'; // T04544：项目下拉条右缘的项目名复制按钮（复用全站统一按钮，动画/交互一致）
@@ -400,6 +400,26 @@ const TOGGLE_STYLE_IDLE: CSSProperties = { background: 'transparent', color: 'va
 const GIT_TOGGLE_ACTIVE: CSSProperties = { background: 'var(--accent-soft)', color: 'var(--accent-ink)' };
 /** Git 徽标开关：隐藏态用卡片底，与首排常驻按钮一致 */
 const GIT_TOGGLE_IDLE: CSSProperties = { background: 'var(--card-bg)', color: 'var(--text-muted)' };
+
+/** T06408：「更多」内部分类行——每类独占换行，组间用细分隔线区隔 */
+const MORE_GROUP_STYLE: CSSProperties = {
+  width: '100%',
+  display: 'flex',
+  flexWrap: 'wrap',
+  alignItems: 'center',
+  gap: 8,
+  paddingBottom: 8,
+  borderBottom: '1px solid var(--border)',
+};
+/** T06408：「更多」分类行末组取消分隔线，避免面板底部多一条线 */
+const MORE_GROUP_LAST_STYLE: CSSProperties = { ...MORE_GROUP_STYLE, paddingBottom: 0, borderBottom: 'none' };
+/** T06408：「更多」分类标题固定宽度，让四行按钮左缘对齐 */
+const MORE_GROUP_LABEL_STYLE: CSSProperties = {
+  flex: '0 0 44px',
+  fontSize: 'var(--fs-xs)',
+  color: 'var(--text-muted)',
+  whiteSpace: 'nowrap',
+};
 
 /** 项目下拉行：选中底色 */
 const ROW_BG_SELECTED = 'var(--accent-soft)';
@@ -1195,18 +1215,11 @@ export function TasksPage() {
   const [refreshFlash, setRefreshFlash] = useState(0);
   // T00489：按住行 200ms 才触发缩放（快速点击不缩放，点行内按钮不触发——消除按钮点击漂移感）
   const [pressId, setPressId] = useState('');
-  // T00496：项目自绘下拉展开态（项目名后动态徽标：橙=待办数、黄=未验证数）
-  const [projOpen, setProjOpen] = useState(false);
-
-  // T00655：项目排序与置顶——排序方式会话级持久（下次进入恢复）；置顶经项目 sort_weight 持久到后端
-  const [projSortMode, setProjSortMode] = usePersistentState<ProjectSortMode>('tasks.projectSort', 'default'); // T01697
-  const [projSortOpen, setProjSortOpen] = useState(false);
-  const projSortRef = useRef<HTMLSpanElement | null>(null); // T00655：排序菜单外部点击收起
+  // T06408：项目排序入口已迁至框架顶栏，任务页不再持有排序菜单状态
   // T03623：工具栏「更多」折叠——导出项目 / 分类筛选 / 优先级筛选 / 自定义字段筛选与排序默认收起，点开为第二排
   const [moreOpen, setMoreOpen] = useState(false);
   const moreBtnRef = useRef<HTMLButtonElement | null>(null);
   const morePanelRef = useRef<HTMLFieldSetElement | null>(null);
-  const sortedProjects = useMemo(() => sortProjects(projects, projSortMode), [projects, projSortMode]); // T00663：排序逻辑复用共享模块
   // T06301：表格视图按 id 取项目/分类名称，避免每行重复线性查找
   const projectNameById = useMemo(() => new Map(projects.map((p) => [p.id, p.name])), [projects]);
   const categoryNameById = useMemo(() => new Map(taskCats.map((c) => [c.id, c.name])), [taskCats]);
@@ -1221,7 +1234,6 @@ export function TasksPage() {
       flash(e instanceof Error ? e.message : String(e), 'error');
     }
   }
-  const projDropRef = useRef<HTMLDivElement | null>(null);
   // T01584：上次「点击刷新项目计数」的时间戳——连点只按节流窗口拉一次，不打爆后端
   const projCountsAtRef = useRef(0);
   const pressTimer = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
@@ -1634,18 +1646,6 @@ export function TasksPage() {
     // 换目标即解除「已强制入窗过一次」的锁，否则回到同一任务时不再滚动定位
     if (!focusTaskId && revealedForRef.current) revealedForRef.current = '';
   }, [focusTaskId]);
-
-  // T00496：项目下拉点击外部关闭
-  useEffect(() => {
-    if (!projOpen) return;
-    const onDoc = (e: MouseEvent) => {
-      if (projDropRef.current && !projDropRef.current.contains(e.target as Node)) setProjOpen(false);
-      // T00655：排序菜单与项目下拉共用外部点击收起（保守：点击非排序区即收起）
-      if (projSortRef.current && !projSortRef.current.contains(e.target as Node)) setProjSortOpen(false);
-    };
-    document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
-  }, [projOpen]);
 
   // T03623：「更多」第二排——点击外部或按 Esc 收起；触发按钮与面板本身不算外部
   useEffect(() => {
@@ -4844,6 +4844,68 @@ export function TasksPage() {
     );
   }
 
+  /** T06408：工作空间检索入口——迁入主按钮栏，位于日历视图之后、AI 批量分类之前 */
+  function renderWorkspaceSearchButton() {
+    return (
+      <button
+        onClick={() => {
+          if (!hasConcreteProject) { flash('全部项目视图下请先选择具体项目再检索工作空间'); return; }
+          setWsSearchOpen(true);
+        }}
+        className="tbtn-anim"
+        disabled={!hasConcreteProject}
+        data-t06408="workspace-search"
+        title={hasConcreteProject ? wsSearchTitle(activeProject) : '全部项目视图下请先选择具体项目再检索工作空间'}
+        aria-label="工作空间全文检索"
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', color: hasConcreteProject ? 'var(--text)' : 'var(--text-muted)', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: hasConcreteProject ? 'pointer' : 'not-allowed', opacity: hasConcreteProject ? 1 : 0.55 }}
+      >
+        <ScanSearch size={13} style={{ flexShrink: 0 }} />
+        <span>工作空间检索</span>
+      </button>
+    );
+  }
+
+  /** T06408：数据导入按钮——从主按钮栏迁入「更多」的数据分类行，位于导出项目之后 */
+  function renderImportButton() {
+    return (
+      <label className="task-op" data-t06408="import"
+        title={batchOpBusy ? IMPORT_TITLE_BUSY : IMPORT_TITLE_READY}
+        aria-disabled={batchOpBusy || undefined}
+        style={{ fontSize: 'var(--fs-s)', padding: '5px 8px', borderRadius: 6, cursor: batchOpBusy ? 'not-allowed' : 'pointer', border: '1px solid var(--border-strong)', display: 'inline-flex', alignItems: 'center', gap: 4, opacity: batchOpBusy ? 0.55 : 1 }}>
+        <Download size={13} />
+        <span>导入数据</span>
+        {/* T00556：扩展为 CSV/JSON 双格式导入（Trello 导出 / JSON 数组） */}
+        {/* T03214（UX-02 ⑤）：预览/写库在途时禁用文件框——键盘 Tab + Enter 也走不到重复选文件 */}
+        <input type="file" accept=".csv,.json" style={FILE_INPUT_SR_ONLY} data-t03214="import-file-input" disabled={batchOpBusy}
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) { void onCsvFile(f); } e.target.value = ''; }} />
+      </label>
+    );
+  }
+
+  /** T06408：项目导出下拉——保留在「更多」的数据分类行，并让导入紧随其后 */
+  function renderProjectExportSelect() {
+    return (
+      <select value="" disabled={exportDisabled(exportBusy, activeProject)}
+        data-t03267="project-export" aria-label="导出项目任务或计划"
+        title={exportProjectTitle(activeProject)}
+        onChange={(e) => {
+          const v = e.target.value;
+          if (v === 'tasks:md') void exportProject('tasks', 'md');
+          else if (v === 'tasks:json') void exportProject('tasks', 'json');
+          else if (v === 'plans:md') void exportProject('plans', 'md');
+          else if (v === 'plans:json') void exportProject('plans', 'json');
+          e.target.value = '';
+        }}
+        style={{ fontSize: 'var(--fs-s)', padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', opacity: exportDisabled(exportBusy, activeProject) ? 0.55 : 1 }}>
+        <option value="">{exportBusy ? '导出中…' : '导出项目…'}</option>
+        <option value="tasks:md">任务 Markdown</option>
+        <option value="tasks:json">任务 JSON</option>
+        <option value="plans:md">计划 Markdown</option>
+        <option value="plans:json">计划 JSON</option>
+      </select>
+    );
+  }
+
   /** 项目操作按钮组：新建/改名/删除当前项目（提取以降低工具条函数复杂度，渲染不变） */
   function renderProjectActionButtons() {
     return (
@@ -4903,13 +4965,15 @@ export function TasksPage() {
       <button
         onClick={() => void batchClassify()}
         disabled={classifyBusy || aiDown || (todo.length === 0 && done.length === 0)}
-        className={`tbtn-anim op-hidden${classifyBusy ? ' task-breathe' : ''}`} // T00759：默认隐藏悬浮显示；批量进行中保持可见
+        className={`tbtn-anim${classifyBusy ? ' task-breathe' : ''}`}
+        data-t06408="ai-classify"
         title={titleAttr}
         aria-label={classifyBusy ? '批量分类进行中' : 'AI 批量分类：对未分类任务（含已完成）自动分类'}
-        style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, background: classifyBusy ? 'var(--accent)' : 'transparent', color: classifyBusy ? 'var(--accent-text)' : 'var(--text)' }}
+        style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, border: classifyBusy ? '1px solid var(--accent)' : '1px solid var(--border-strong)', background: classifyBusy ? 'var(--accent)' : 'transparent', color: classifyBusy ? 'var(--accent-text)' : 'var(--text)', opacity: classifyBusy || aiDown || (todo.length === 0 && done.length === 0) ? 0.55 : 1 }}
       >
         {classifyBusy ? <Loader2 size={13} className="aispin" /> : <Tags size={13} />}
-        {!classifyBusy && unclassified > 0 ? unclassified : ''}
+        <span>AI 批量分类</span>
+        {!classifyBusy && unclassified > 0 ? <span style={{ color: 'var(--text-muted)' }}>{unclassified}</span> : ''}
       </button>
     );
   }
@@ -5004,230 +5068,171 @@ export function TasksPage() {
   /** 「更多」面板：低频操作与筛选（折叠入口在工具条尾部，展开时独占一行；关闭时保留 DOM 但不占位） */
   function renderMorePanel() {
     return (
-<fieldset ref={morePanelRef} data-t03623="more-panel" data-t06343="more-panel" aria-label="更多功能：低频操作与筛选"
-        /* order:9 + flexBasis:100%：仍排在 DOM 中「更多」按钮之后（键盘顺序不变），视觉上独占工具条最后一行。
-           常驻挂载、关闭时 display:none：既保证低频控件不占首排空间，也保留既有测试/脚本的 DOM 定位。 */
-        style={{ order: 9, flexBasis: '100%', display: moreOpen ? 'flex' : 'none', gap: 8, alignItems: 'center', flexWrap: 'wrap', margin: 0, minWidth: 0, padding: '8px 10px', border: '1px solid var(--border-strong)', borderRadius: 8, background: 'var(--surface)' }}>
-        {/* T06343：低频操作统一收口——保存视图、工作空间问答、AI 美化、行密度、Git 徽标 */}
-        <span data-t06343="saved-view" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>视图</span>
-          <SavedViewMenu
-            views={savedViews}
-            activeId={savedViewId}
-            busy={savedViewBusy}
-            disabled={!activeProject || activeProject === ALL_PROJECTS}
-            onSelect={applySavedView}
-            onSave={() => void saveCurrentView()}
-            onCopy={() => void copySavedView()}
-            onDelete={() => void deleteSavedView()}
-          />
-        </span>
-        {renderWsAskButton()}
-        {renderBeautifyToolbarButton()}
-        <span data-t06343="density" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>行密度</span>
-          <select
-            data-t06322="density"
-            value={density}
-            onChange={(e) => setDensityRaw(e.target.value)}
-            disabled={viewMode !== 'list'}
-            title={viewMode === 'list'
-              ? '列表行密度 — 紧凑 32px / 舒适 40px / 宽松 48px；只调整行高与标题字号，不改变列结构'
-              : '列表行密度仅作用于列表视图，切回列表后可调'}
-            aria-label="列表行密度调节"
-            style={{ fontSize: 'var(--fs-s)', padding: '5px 6px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', cursor: viewMode === 'list' ? 'pointer' : 'not-allowed', opacity: viewMode === 'list' ? 1 : 0.55 }}
-          >
-            {TASK_DENSITY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{`${o.label} · ${o.hint}`}</option>)}
-          </select>
-        </span>
-        <button type="button" data-t03343="git-toggle" aria-pressed={gitOn} aria-label="显示 Git 提交徽标"
-          title={gitOn ? GIT_TOGGLE_TITLE_ON : GIT_TOGGLE_TITLE_OFF}
-          onClick={() => setGitOn((v) => !v)} className="tbtn-anim"
-          style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', fontSize: 'var(--fs-s)', ...(gitOn ? GIT_TOGGLE_ACTIVE : GIT_TOGGLE_IDLE) }}>
-          <GitBranch size={13} />Git 徽标
-        </button>
-        {/* T06343：项目管理动作属于低频操作，收进「更多」以释放首排水平空间。
-            L-3：入口仍在 More 内，但项目分组用 title 明示危险动作与二次确认，避免只剩图标。 */}
-        <span data-t06343="project-actions" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-          <span title="项目操作 — 新建/改名/产品标签/删除当前项目；删除需二次确认且不可恢复"
-            style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>项目</span>
-          {renderProjectActionButtons()}
-        </span>
-        {/* T03176：AI 不可用时给原因 + 「去模型管理」；T06343 收进「更多」，避免状态条独占首排 */}
-        {aiDown && readiness && <AiUnavailableHint r={readiness} compact />}
-        <span aria-hidden="true" style={{ width: 1, height: 20, background: 'var(--border)', flexShrink: 0 }} />
-        {/* T03267（PM-402）：项目级导出——任务/计划 × Markdown/JSON；全部项目视图下不可用（导出必须落到具体项目） */}
-        <select value="" disabled={exportDisabled(exportBusy, activeProject)}
-          data-t03267="project-export" aria-label="导出项目任务或计划"
-          title={exportProjectTitle(activeProject)}
-          onChange={(e) => {
-            const v = e.target.value;
-            if (v === 'tasks:md') void exportProject('tasks', 'md');
-            else if (v === 'tasks:json') void exportProject('tasks', 'json');
-            else if (v === 'plans:md') void exportProject('plans', 'md');
-            else if (v === 'plans:json') void exportProject('plans', 'json');
-            e.target.value = '';
-          }}
-          style={{ fontSize: 'var(--fs-s)', padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)', opacity: exportDisabled(exportBusy, activeProject) ? 0.55 : 1 }}>
-          <option value="">{exportBusy ? '导出中…' : '导出项目…'}</option>
-          <option value="tasks:md">任务 Markdown</option>
-          <option value="tasks:json">任务 JSON</option>
-          <option value="plans:md">计划 Markdown</option>
-          <option value="plans:json">计划 JSON</option>
-        </select>
-        <select
-          value={catFilter}
-          onChange={(e) => setCatFilter(e.target.value)}
-          title="分类筛选 — 按任务分类筛选列表"
-          aria-label="分类筛选：按任务分类筛选列表"
-          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6 }}
-        >
-          <option value="">全部分类</option>
-          <option value="none">未分类</option>
-          {taskCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
-        <select
-          value={priorityFilter}
-          onChange={(e) => setPriorityFilter(e.target.value)}
-          title="优先级筛选 — 按任务优先级筛选列表"
-          aria-label="优先级筛选：按任务优先级筛选列表"
-          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6 }}
-        >
-          <option value="">全部优先级</option>
-          <option value="urgent">极高</option>
-          <option value="high">高</option>
-          <option value="normal">普通</option>
-          <option value="low">低</option>
-        </select>
-        {/* T03232（PM-203③）：自定义字段筛选/排序——由服务端在整表上执行（EXISTS / ORDER BY），
-            不是「先取一页再本地筛」，所以翻页后的结果集与顺序都与第一页一致。
-            字段挂项目：全部项目视图或项目尚无字段时禁用，并把原因写进 title。 */}
-        <select
-          value={fieldFilterField}
-          onChange={(e) => onFieldFilterField(e.target.value)}
-          disabled={fieldsDisabled}
-          data-t03232="field-filter"
-          title={fieldsDisabled ? fieldPickerDisabledTitle(projectFields.length, activeProject) : FIELD_FILTER_TITLE_READY}
-          aria-label="自定义字段筛选：选择要筛选的自定义字段"
-          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, opacity: fieldsDisabled ? 0.55 : 1, cursor: fieldsDisabled ? 'not-allowed' : 'pointer' }}
-        >
-          <option value="">自定义字段筛选</option>
-          {projectFields.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
-        </select>
-        {activeField && (
-          <>
+<fieldset ref={morePanelRef} data-t03623="more-panel" data-t06343="more-panel" data-t06408="more-panel" aria-label="更多功能：低频操作与筛选"
+        /* T06408：面板内改为按分类分行的纵向布局；仍常驻挂载、关闭时 display:none，保留既有测试/脚本的 DOM 定位。 */
+        style={{ order: 9, flexBasis: '100%', display: moreOpen ? 'flex' : 'none', flexDirection: 'column', gap: 8, alignItems: 'stretch', margin: 0, minWidth: 0, padding: '10px 12px', border: '1px solid var(--border-strong)', borderRadius: 8, background: 'var(--surface)' }}>
+        {/* T06408 分类一：视图与显示 */}
+        <div role="group" aria-label="视图与显示" data-t06408="more-group" data-t06408-group="view" style={MORE_GROUP_STYLE}>
+          <span style={MORE_GROUP_LABEL_STYLE}>视图</span>
+          <span data-t06343="saved-view" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <SavedViewMenu
+              views={savedViews}
+              activeId={savedViewId}
+              busy={savedViewBusy}
+              disabled={!activeProject || activeProject === ALL_PROJECTS}
+              onSelect={applySavedView}
+              onSave={() => void saveCurrentView()}
+              onCopy={() => void copySavedView()}
+              onDelete={() => void deleteSavedView()}
+            />
+          </span>
+          {renderWsAskButton()}
+          {renderBeautifyToolbarButton()}
+          <span data-t06343="density" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>行密度</span>
             <select
-              value={fieldFilterOp}
-              onChange={(e) => setFieldFilterOp(e.target.value)}
-              data-t03232="field-op"
-              title="筛选条件 — 按字段类型可选的比较方式"
-              aria-label="自定义字段筛选条件：选择比较方式"
-              style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6 }}
+              data-t06322="density"
+              value={density}
+              onChange={(e) => setDensityRaw(e.target.value)}
+              disabled={viewMode !== 'list'}
+              title={viewMode === 'list'
+                ? '列表行密度 — 紧凑 32px / 舒适 40px / 宽松 48px；只调整行高与标题字号，不改变列结构'
+                : '列表行密度仅作用于列表视图，切回列表后可调'}
+              aria-label="列表行密度调节"
+              style={{ fontSize: 'var(--fs-s)', padding: '5px 6px', borderRadius: 6, border: '1px solid var(--border-strong)', background: 'var(--card-bg)', color: 'var(--text)', cursor: viewMode === 'list' ? 'pointer' : 'not-allowed', opacity: viewMode === 'list' ? 1 : 0.55 }}
             >
-              {FIELD_FILTER_OPS[activeField.type].map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              {TASK_DENSITY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{`${o.label} · ${o.hint}`}</option>)}
             </select>
-            {fieldFilterNeedsValue && <FieldValueEditor field={activeField} value={fieldFilterValue} onChange={setFieldFilterValue} />}
-            <button
-              type="button"
-              onClick={clearFieldFilter}
-              data-t03232="field-clear"
-              title="清除自定义字段筛选 — 回到未按字段筛选的列表"
-              aria-label="清除自定义字段筛选"
-              style={{ fontSize: 'var(--fs-s)', padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)' }}
-            >
-              <X size={12} /><span>清除字段筛选</span>
-            </button>
-          </>
-        )}
-        <select
-          value={fieldSort}
-          onChange={(e) => setFieldSort(e.target.value)}
-          disabled={fieldsDisabled}
-          data-t03232="field-sort"
-          title={fieldsDisabled ? fieldPickerDisabledTitle(projectFields.length, activeProject) : FIELD_SORT_TITLE_READY}
-          aria-label="自定义字段排序：按自定义字段排序列表"
-          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, opacity: fieldsDisabled ? 0.55 : 1, cursor: fieldsDisabled ? 'not-allowed' : 'pointer' }}
-        >
-          <option value="">自定义字段排序</option>
-          {projectFields.map((f) => (
-            <Fragment key={f.id}>
-              <option value={`${f.id}|asc`}>{`按「${f.name}」升序`}</option>
-              <option value={`${f.id}|desc`}>{`按「${f.name}」降序`}</option>
-            </Fragment>
-          ))}
-        </select>
+          </span>
+          <button type="button" data-t03343="git-toggle" aria-pressed={gitOn} aria-label="显示 Git 提交徽标"
+            title={gitOn ? GIT_TOGGLE_TITLE_ON : GIT_TOGGLE_TITLE_OFF}
+            onClick={() => setGitOn((v) => !v)} className="tbtn-anim"
+            style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border-strong)', fontSize: 'var(--fs-s)', ...(gitOn ? GIT_TOGGLE_ACTIVE : GIT_TOGGLE_IDLE) }}>
+            <GitBranch size={13} />Git 徽标
+          </button>
+        </div>
+        {/* T06408 分类二：项目——工作空间下拉条位于「新项目」之前 */}
+        <div role="group" aria-label="项目与工作空间" data-t06408="more-group" data-t06408-group="project" style={MORE_GROUP_STYLE}>
+          <span style={MORE_GROUP_LABEL_STYLE}>项目</span>
+          <WorkspaceSelect
+            project={projects.find((p) => p.id === activeProject) ?? null}
+            onBind={(path) => {
+              if (!hasConcreteProject) { flash('全部项目视图下请先选择具体项目再绑定工作空间'); return Promise.resolve(); }
+              return bindWorkspace(activeProject, path);
+            }}
+            flash={flash}
+          />
+          <span data-t06343="project-actions" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            {renderProjectActionButtons()}
+          </span>
+        </div>
+        {/* T06408 分类三：数据——导入数据位于导出项目之后 */}
+        <div role="group" aria-label="数据导入与导出" data-t06408="more-group" data-t06408-group="data" style={MORE_GROUP_STYLE}>
+          <span style={MORE_GROUP_LABEL_STYLE}>数据</span>
+          {renderProjectExportSelect()}
+          {renderImportButton()}
+        </div>
+        {/* T06408 分类四：筛选与字段 */}
+        <div role="group" aria-label="筛选与字段" data-t06408="more-group" data-t06408-group="filters" style={MORE_GROUP_LAST_STYLE}>
+          <span style={MORE_GROUP_LABEL_STYLE}>筛选</span>
+          <select
+            value={catFilter}
+            onChange={(e) => setCatFilter(e.target.value)}
+            title="分类筛选 — 按任务分类筛选列表"
+            aria-label="分类筛选：按任务分类筛选列表"
+            style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6 }}
+          >
+            <option value="">全部分类</option>
+            <option value="none">未分类</option>
+            {taskCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          <select
+            value={priorityFilter}
+            onChange={(e) => setPriorityFilter(e.target.value)}
+            title="优先级筛选 — 按任务优先级筛选列表"
+            aria-label="优先级筛选：按任务优先级筛选列表"
+            style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6 }}
+          >
+            <option value="">全部优先级</option>
+            <option value="urgent">极高</option>
+            <option value="high">高</option>
+            <option value="normal">普通</option>
+            <option value="low">低</option>
+          </select>
+          {/* T03232（PM-203③）：自定义字段筛选/排序——由服务端在整表上执行（EXISTS / ORDER BY），
+              不是「先取一页再本地筛」，所以翻页后的结果集与顺序都与第一页一致。
+              字段挂项目：全部项目视图或项目尚无字段时禁用，并把原因写进 title。 */}
+          <select
+            value={fieldFilterField}
+            onChange={(e) => onFieldFilterField(e.target.value)}
+            disabled={fieldsDisabled}
+            data-t03232="field-filter"
+            title={fieldsDisabled ? fieldPickerDisabledTitle(projectFields.length, activeProject) : FIELD_FILTER_TITLE_READY}
+            aria-label="自定义字段筛选：选择要筛选的自定义字段"
+            style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, opacity: fieldsDisabled ? 0.55 : 1, cursor: fieldsDisabled ? 'not-allowed' : 'pointer' }}
+          >
+            <option value="">自定义字段筛选</option>
+            {projectFields.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+          </select>
+          {activeField && (
+            <>
+              <select
+                value={fieldFilterOp}
+                onChange={(e) => setFieldFilterOp(e.target.value)}
+                data-t03232="field-op"
+                title="筛选条件 — 按字段类型可选的比较方式"
+                aria-label="自定义字段筛选条件：选择比较方式"
+                style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6 }}
+              >
+                {FIELD_FILTER_OPS[activeField.type].map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+              {fieldFilterNeedsValue && <FieldValueEditor field={activeField} value={fieldFilterValue} onChange={setFieldFilterValue} />}
+              <button
+                type="button"
+                onClick={clearFieldFilter}
+                data-t03232="field-clear"
+                title="清除自定义字段筛选 — 回到未按字段筛选的列表"
+                aria-label="清除自定义字段筛选"
+                style={{ fontSize: 'var(--fs-s)', padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, border: '1px solid var(--border-strong)', background: 'transparent', color: 'var(--text)' }}
+              >
+                <X size={12} /><span>清除字段筛选</span>
+              </button>
+            </>
+          )}
+          <select
+            value={fieldSort}
+            onChange={(e) => setFieldSort(e.target.value)}
+            disabled={fieldsDisabled}
+            data-t03232="field-sort"
+            title={fieldsDisabled ? fieldPickerDisabledTitle(projectFields.length, activeProject) : FIELD_SORT_TITLE_READY}
+            aria-label="自定义字段排序：按自定义字段排序列表"
+            style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, opacity: fieldsDisabled ? 0.55 : 1, cursor: fieldsDisabled ? 'not-allowed' : 'pointer' }}
+          >
+            <option value="">自定义字段排序</option>
+            {projectFields.map((f) => (
+              <Fragment key={f.id}>
+                <option value={`${f.id}|asc`}>{`按「${f.name}」升序`}</option>
+                <option value={`${f.id}|desc`}>{`按「${f.name}」降序`}</option>
+              </Fragment>
+            ))}
+          </select>
+        </div>
+        {/* T03176：AI 不可用时给原因 + 「去模型管理」；T06408 保留在面板底部，不占用任何分类行 */}
+        {aiDown && readiness && <AiUnavailableHint r={readiness} compact />}
       </fieldset>
     );
   }
 
-  /** 顶部工具条：项目切换、工具选择、批量美化、分类筛选、搜索（T00522 修正：顶层补 op-host 宿主，筛选/搜索默认隐藏悬浮显示才生效） */
+  /** 顶部工具条：视图优先，检索/分类/多选居中，搜索与「更多」固定在行尾（T06408：按钮迁移与分类收口） */
   function renderToolbar() {
-    // T03211：全部项目视图的合计徽标（各项目计数之和）；具体项目视图仍用单项目计数
-    const allTodo = projects.reduce((s, p) => s + (p.todo_count ?? 0), 0);
-    const allUnv = projects.reduce((s, p) => s + (p.unverified_count ?? 0), 0);
-    const curProj = projects.find((p) => p.id === activeProject);
     // T03623：第二排收起后筛选态不可见——按钮上用计数徽标提示「当前有几项筛选在生效」
     const moreActiveCount = [catFilter !== '', priorityFilter !== '', fieldFilterField !== '', fieldSort !== ''].filter(Boolean).length;
     return (
-      <div className="op-host" style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-        {/* T02167 二轮：宿主组改可换行——窄窗（≤430px）时行内容纳不下整组（项目条+工作空间+图标钮），
-            原 nowrap 会把压缩全部转嫁给 minWidth:0 的项目条（它当时是唯一可压缩项），实测 380px 宽
-            按钮被压到 40px、两枚统计徽标越出按钮边框 29px。改换行后由换行让位，项目条保住 min-content。 */}
-        <span className="op-host" style={{ display: 'inline-flex', gap: 8, alignItems: 'center', minWidth: 0, flexWrap: 'wrap' }}>
-                {/* T00771：工作空间下拉条——紧接「项目」下拉条之后（无框样式）；绑定项目上下文根路径，切换项目自动联动回显 */}
-        <WorkspaceSelect
-          project={projects.find((p) => p.id === activeProject) ?? null}
-          onBind={(path) => {
-            if (!hasConcreteProject) { flash('全部项目视图下请先选择具体项目再绑定工作空间'); return Promise.resolve(); }
-            return bindWorkspace(activeProject, path);
-          }}
-          flash={flash}
-        />
-        {/* T00786：工作空间全文检索入口——语义紧跟工作空间，键入关键词全文检索并展示 partial 提示 */}
-        <button
-          onClick={() => {
-            if (!hasConcreteProject) { flash('全部项目视图下请先选择具体项目再检索工作空间'); return; }
-            setWsSearchOpen(true);
-          }}
-          className="op-hidden tbtn-anim"
-          disabled={!hasConcreteProject}
-          title={hasConcreteProject ? wsSearchTitle(activeProject) : '全部项目视图下请先选择具体项目再检索工作空间'}
-          aria-label="工作空间全文检索"
-          style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', background: 'transparent', color: 'var(--text-muted)', border: 'none', borderRadius: 6, cursor: hasConcreteProject ? 'pointer' : 'not-allowed' }}
-        >
-          <ScanSearch size={13} style={{ flexShrink: 0 }} />
-        </button>
-        {/* T00655：项目排序图标——位于项目选择框之后、新建项目图标之前（悬浮/点击交互动画由 tbtn-anim 提供） */}
-        <span ref={projSortRef} style={{ position: 'relative', display: 'inline-flex' }}>
-          <button
-            onClick={() => setProjSortOpen((v) => !v)}
-            className="op-hidden tbtn-anim"
-            title={`项目排序 — 当前：${PROJ_SORT_LABEL(projSortMode)}（默认隐藏，悬浮工具栏显示）`}
-            aria-label="项目排序" aria-haspopup="menu" aria-expanded={projSortOpen}
-            style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 8px', fontSize: 'var(--fs-s)', ...(projSortOpen ? TOGGLE_STYLE_ACTIVE : TOGGLE_STYLE_IDLE), border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer' }}
-          >
-            <ArrowUpDown size={13} />
-          </button>
-          {projSortOpen && (
-            <div role="menu" aria-label="项目排序方式"
-              style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', zIndex: 40, minWidth: 200, padding: 4 }}>
-              {PROJ_SORT_OPTIONS.map((o) => (
-                <button key={o.key} role="menuitemradio" aria-checked={projSortMode === o.key}
-                  onClick={() => { setProjSortMode(o.key); setProjSortOpen(false); }}
-                  title={o.hint}
-                  style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 6, padding: '6px 8px', fontSize: 'var(--fs-s)', textAlign: 'left', border: 'none', borderRadius: 4, cursor: 'pointer', background: projSortMode === o.key ? 'var(--accent-soft)' : 'transparent', color: 'var(--text)' }}>
-                  <span style={{ width: 14, display: 'inline-flex', flexShrink: 0 }}>{projSortMode === o.key ? <Check size={12} style={{ color: 'var(--accent)' }} /> : null}</span>
-                  {o.label}
-                </button>
-              ))}
-            </div>
-          )}
-        </span>
-        </span>
-        {renderClassifyButton()}
-        {/* T02257：AI 工具列表取数失败时在工具条给出可见失败态与重试入口（此前静默为空） */}
-        <ResourceHint view={toolsRes} label="AI 工具列表" />
+      <div className="op-host" data-t06408="toolbar" style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        {/* T06408：主按钮栏按「日历视图 → 工作空间检索 → AI 批量分类 → 多选模式」排列 */}
         {renderViewToggle()}
+        {renderWorkspaceSearchButton()}
+        {renderClassifyButton()}
         {renderMultiSelectButton()}
         {/* T00481/T00720/T00728：全部收起/展开——描述、AI 摘要、处理结果三组折叠状态联动，覆盖待办+已完成全部列表；
             T00728：收起为高频操作优先——有展开内容时点击一律收起，全部收起后点击才展开；
@@ -5252,61 +5257,57 @@ export function TasksPage() {
           {/* 图标指示下一步动作：有展开内容 → 将收起（折叠图标）；全部收起 → 将展开（展开图标） */}
           {anyFoldOpen() ? <FoldVertical size={13} /> : <UnfoldVertical size={13} />}
         </button>
+        {/* T02257：AI 工具列表取数失败时在工具条给出可见失败态与重试入口（此前静默为空） */}
+        <ResourceHint view={toolsRes} label="AI 工具列表" />
         {/* T02283：主列表断供时给出原因与重试入口；失败态下不再渲染「暂无待办任务」空态。
             T03203（U01 回归）：资源提示含「重试」按钮，必须与折叠按钮同级——放进按钮内会形成 button 嵌套（validateDOMNesting）。 */}
         <ResourceHint
           view={{ phase: tasksPhase, error: tasksError, stale: tasksAreStale(tasksPhase, todo.length, done.length), reload: () => void loadTasks(activeProject) }}
           label="任务列表"
         />
-        <label className="task-op" title={batchOpBusy ? IMPORT_TITLE_BUSY : IMPORT_TITLE_READY}
-          aria-disabled={batchOpBusy || undefined}
-          style={{ fontSize: 'var(--fs-s)', padding: '5px 8px', borderRadius: 6, cursor: batchOpBusy ? 'not-allowed' : 'pointer', border: '1px solid var(--border-strong)', display: 'inline-block', opacity: batchOpBusy ? 0.55 : 1 }}>
-          <span>导入数据</span>
-          {/* T00556：扩展为 CSV/JSON 双格式导入（Trello 导出 / JSON 数组） */}
-          {/* T03214（UX-02 ⑤）：预览/写库在途时禁用文件框——键盘 Tab + Enter 也走不到重复选文件 */}
-          <input type="file" accept=".csv,.json" style={FILE_INPUT_SR_ONLY} data-t03214="import-file-input" disabled={batchOpBusy}
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) { void onCsvFile(f); } e.target.value = ''; }} />
-        </label>
-        {/* T02952：搜索框 + 框内左侧清空按钮（有内容才显示；悬浮倾斜 5°~10° 由 .ws-clear-btn 提供；点击清空且光标留框内）
-            T06343：工具条首排只留高频操作，搜索框从 220px 收缩到 160px，给模板/添加任务与常用按钮让位；
-            窄窗仍保留 120px 基准与换行兜底，不制造横向溢出。 */}
-        <span style={{ position: 'relative', display: 'inline-flex', flex: '1 1 120px', minWidth: 0, maxWidth: 160 }}>
-          <input
-            ref={searchInputRef}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="搜索标题/描述/编号…" data-page-search
-            aria-label="搜索任务（标题/描述/编号）"
-            style={{ width: '100%', minWidth: 0, padding: '6px 8px 6px 26px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)' }}
-          />
-          {search && (
-            <button
-              type="button"
-              className="op-hidden tbtn-anim ws-clear-btn"
-              onClick={() => { setSearch(''); searchInputRef.current?.focus(); }}
-              title="清空搜索内容 — 点击清空搜索框，光标保留在框内"
-              aria-label="清空搜索内容"
-              style={{ position: 'absolute', left: 4, top: '50%', transform: 'translateY(-50%)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0, border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}
-            >
-              <X size={12} />
-            </button>
-          )}
+        {/* T06408：行尾自适应组——搜索框与「更多」始终贴右；窄窗随整组换行，不把主按钮栏挤出横向滚动 */}
+        <span data-t06408="toolbar-tail" style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0, flexShrink: 0 }}>
+          {/* T02952：搜索框 + 框内左侧清空按钮（有内容才显示；悬浮倾斜 5°~10° 由 .ws-clear-btn 提供；点击清空且光标留框内）
+              T06343：工具条首排只留高频操作，搜索框从 220px 收缩到 160px，给模板/添加任务与常用按钮让位；
+              窄窗仍保留 120px 基准与换行兜底，不制造横向溢出。 */}
+          <span style={{ position: 'relative', display: 'inline-flex', flex: '0 1 160px', width: 160, minWidth: 100, maxWidth: 160 }}>
+            <input
+              ref={searchInputRef}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="搜索标题/描述/编号…" data-page-search
+              aria-label="搜索任务（标题/描述/编号）"
+              style={{ width: '100%', minWidth: 0, padding: '6px 8px 6px 26px', border: '1px solid var(--border-strong)', borderRadius: 6, fontSize: 'var(--fs-s)' }}
+            />
+            {search && (
+              <button
+                type="button"
+                className="op-hidden tbtn-anim ws-clear-btn"
+                onClick={() => { setSearch(''); searchInputRef.current?.focus(); }}
+                title="清空搜索内容 — 点击清空搜索框，光标保留在框内"
+                aria-label="清空搜索内容"
+                style={{ position: 'absolute', left: 4, top: '50%', transform: 'translateY(-50%)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0, border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}
+              >
+                <X size={12} />
+              </button>
+            )}
+          </span>
+          {renderBeautifyStatus()}
+          {/* T03623 / T06343：低频功能收进「更多」——保存视图、工作空间问答、AI 美化、行密度、Git 徽标与导出/筛选；
+              按钮常驻可见（折叠入口不能只靠悬浮发现），展开态高亮，生效筛选数以徽标提示。 */}
+          <button type="button" ref={moreBtnRef} onClick={() => setMoreOpen((v) => !v)}
+            className="tbtn-anim" data-t03623="more-trigger"
+            aria-haspopup="true" aria-expanded={moreOpen} aria-label="更多：低频操作与筛选"
+            title={moreOpen ? MORE_TITLE_OPEN : moreTitleCollapsed(moreActiveCount)}
+            style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', padding: '5px 7px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', fontSize: 'var(--fs-s)', ...(moreOpen ? TOGGLE_STYLE_ACTIVE : TOGGLE_STYLE_IDLE) }}>
+            <MoreHorizontal size={14} />
+            {moreActiveCount > 0 && (
+              <span data-t03623="more-badge" title={`${moreActiveCount} 项筛选生效`}
+                style={{ position: 'absolute', top: -2, right: -2, minWidth: 12, height: 12, padding: '0 2px', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-2xs)', lineHeight: '12px', textAlign: 'center' }}>{moreActiveCount}</span>
+            )}
+          </button>
         </span>
-        {renderBeautifyStatus()}
-        {/* T03623 / T06343：低频功能收进「更多」——保存视图、工作空间问答、AI 美化、行密度、Git 徽标与导出/筛选；
-            按钮常驻可见（折叠入口不能只靠悬浮发现），展开态高亮，生效筛选数以徽标提示。 */}
-        <button type="button" ref={moreBtnRef} onClick={() => setMoreOpen((v) => !v)}
-          className="tbtn-anim" data-t03623="more-trigger"
-          aria-haspopup="true" aria-expanded={moreOpen} aria-label="更多：低频操作与筛选"
-          title={moreOpen ? MORE_TITLE_OPEN : moreTitleCollapsed(moreActiveCount)}
-          style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', padding: '5px 7px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-strong)', fontSize: 'var(--fs-s)', ...(moreOpen ? TOGGLE_STYLE_ACTIVE : TOGGLE_STYLE_IDLE) }}>
-          <MoreHorizontal size={14} />
-          {moreActiveCount > 0 && (
-            <span data-t03623="more-badge" title={`${moreActiveCount} 项筛选生效`}
-              style={{ position: 'absolute', top: -2, right: -2, minWidth: 12, height: 12, padding: '0 2px', borderRadius: 6, background: 'var(--accent)', color: 'var(--accent-text)', fontSize: 'var(--fs-2xs)', lineHeight: '12px', textAlign: 'center' }}>{moreActiveCount}</span>
-          )}
-        </button>
-                {renderMorePanel()}
+        {renderMorePanel()}
         <NoticeToast notice={notice} onDismiss={dismissNotice} />
       </div>
     );

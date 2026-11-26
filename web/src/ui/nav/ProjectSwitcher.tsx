@@ -3,6 +3,8 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { refreshProjectList, useProjectList } from '../projectList';
+import { sortProjects } from '../projectOrder';
+import { useTasksProjectSort } from '../tasksProjectSort';
 import { CopyButton } from '../CopyButton';
 import { activeProjectLabel, useActiveProject } from '../activeProject';
 
@@ -47,13 +49,18 @@ function ProjectBadges({ todo, unverified, scopeName }: {
 export function ProjectSwitcher() {
   const { projects, phase, error, retry } = useProjectList({ excludeInbox: true });
   const [projectId, setProjectId] = useActiveProject();
+  const [sortMode] = useTasksProjectSort(); // T06408：顶栏项目排序与切换器列表共用同一偏好
   const [open, setOpen] = useState(false);
   const [cursor, setCursor] = useState(0);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
-  const options = [{ id: '', name: '全部项目' }, ...projects.map((p) => ({ id: p.id, name: p.name }))];
+  const sortedProjects = useMemo(() => sortProjects(projects, sortMode), [projects, sortMode]);
+  const options = useMemo(
+    () => [{ id: '', name: '全部项目' }, ...sortedProjects.map((p) => ({ id: p.id, name: p.name }))],
+    [sortedProjects],
+  );
   // 首屏项目列表未返回时不要把仍未解析的 ID 误报为“项目已删除”。
   const label = projectId && projects.length === 0
     ? (phase === 'loading' ? '项目列表加载中…' : phase === 'error' ? '项目列表加载失败' : activeProjectLabel(projectId, projects))

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type Dispatch, type SetStateAction } from 'react';
+import { ProjectSortButton } from './ui/nav/ProjectSortButton'; // T06408：项目排序入口迁到框架顶栏
 import { TasksPage } from './pages/TasksPage';
 import { DashboardPage } from './pages/DashboardPage'; // T06289：Dashboard 从设置页提升为「首页」入口
 import { InboxPage } from './pages/InboxPage'; // T06295（REQ-032）：可操作收件箱
@@ -466,6 +467,7 @@ function Shell() {
           <header className="mt-top-switcher" aria-label="页面切换">
             <span className="mt-top-group">{activeGroup.label}</span>
             <ProjectSwitcher />
+            <ProjectSortButton />{/* T06408：项目排序紧随当前项目/工作区切换器 */}
             {activeGroup.tabs.length > 1 && (
               <div className="mt-top-tabs" role="tablist" aria-label={`${activeGroup.label}子页面`}>
                 {activeGroup.tabs.map((item) => (

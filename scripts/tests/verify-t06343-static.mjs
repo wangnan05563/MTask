@@ -22,6 +22,7 @@ const between = (startMarker, endMarker) => {
 };
 
 const morePanel = between('function renderMorePanel()', 'function renderToolbar()');
+const exportHelper = between('function renderProjectExportSelect()', 'function renderProjectActionButtons()');
 const toolbar = between('function renderToolbar()', 'function renderSuggestionStrip(');
 const newTaskForm = between('function renderNewTaskForm()', 'function renderTaskLists(');
 
@@ -35,10 +36,11 @@ for (const marker of [
   'data-t03343="git-toggle"',
   'data-t06343="project-actions"',
   'renderProjectActionButtons()',
-  'data-t03267="project-export"',
+  'renderProjectExportSelect()',
 ]) {
   if (!morePanel.includes(marker)) failures.push(`「更多」面板缺少 ${marker}`);
 }
+if (!exportHelper.includes('data-t03267="project-export"')) failures.push('导出项目控件缺少 data-t03267 标识');
 
 for (const marker of [
   'SavedViewMenu',

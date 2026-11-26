@@ -344,6 +344,79 @@
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
+/* T06408：项目排序入口迁到顶栏后，与项目/工作区切换器组成同一组上下文操作。 */
+.mt-project-sort {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.mt-project-sort-button {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--card-bg);
+  color: var(--text-secondary);
+}
+
+.mt-project-sort-button:hover,
+.mt-project-sort-button[aria-expanded="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.mt-project-sort-button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.mt-project-sort-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 50;
+  min-width: 220px;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--card-bg);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .16);
+}
+
+.mt-project-sort-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-s);
+  text-align: left;
+}
+
+.mt-project-sort-item:hover {
+  background: var(--surface-2);
+}
+
+.mt-project-sort-item[aria-checked="true"] {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.mt-project-sort-check {
+  width: 14px;
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
 .mt-project-switcher-button {
   display: inline-flex;
   align-items: center;
