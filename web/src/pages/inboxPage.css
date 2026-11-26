@@ -336,6 +336,11 @@ button.mt-inbox-row-title:hover {
   color: var(--accent);
 }
 
+.mt-inbox-claim-time {
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+}
+
 .mt-inbox-row-actions {
   display: flex;
   align-items: center;

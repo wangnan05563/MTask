@@ -11,6 +11,11 @@ import { getDb } from './connection';
  * - status=ignored / resolved：终态，分别由用户忽略或转任务/源事件消失收敛；
  * - unread 只影响角标，页面打开后统一置 0，不改变 open。
  *
+ * 团队准备：
+ * - assignee 是操作者字段（当前单机默认「我」，团队模式由服务端身份解析）；
+ * - event_version 记录本次源事件实例（失败/裁决/完成/停滞时间），同一 event_key 的新实例会重开终态条目；
+ * - inbox_audit 记录认领/取消认领/忽略/转任务，便于多人环境追责。
+ *
  * 首版 CREATE TABLE IF NOT EXISTS 幂等建表；后续枚举演进需整表重建迁移。
  */
 export const INBOX_SCHEMA_SQL = `
@@ -31,6 +36,7 @@ CREATE TABLE IF NOT EXISTS inbox_items (
                  CHECK(status IN ('open','ignored','resolved')),
   assignee     TEXT NOT NULL DEFAULT '',
   event_key    TEXT NOT NULL,
+  event_version TEXT NOT NULL DEFAULT '',
   unread       INTEGER NOT NULL DEFAULT 1 CHECK(unread IN (0,1)),
   resolution   TEXT NOT NULL DEFAULT '',
   created_at   TEXT NOT NULL,
@@ -52,9 +58,76 @@ CREATE INDEX IF NOT EXISTS idx_inbox_items_unread
   ON inbox_items(unread, status);
 CREATE INDEX IF NOT EXISTS idx_inbox_items_project
   ON inbox_items(project_id, status);
+-- 团队/认领筛选：status + assignee。
+CREATE INDEX IF NOT EXISTS idx_inbox_items_assignee
+  ON inbox_items(status, assignee, updated_at DESC);
+
+-- 操作审计：认领/取消认领/忽略/转任务。当前无账号体系，actor 由调用方传入（默认「我」）。
+CREATE TABLE IF NOT EXISTS inbox_audit (
+  id            TEXT PRIMARY KEY,
+  inbox_id      TEXT NOT NULL REFERENCES inbox_items(id) ON DELETE CASCADE,
+  action        TEXT NOT NULL
+                  CHECK(action IN ('claim','unclaim','ignore','convert','source_cleared','reopen')),
+  actor         TEXT NOT NULL DEFAULT '',
+  from_assignee TEXT NOT NULL DEFAULT '',
+  to_assignee   TEXT NOT NULL DEFAULT '',
+  detail        TEXT NOT NULL DEFAULT '',
+  created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_inbox_audit_item
+  ON inbox_audit(inbox_id, created_at DESC);
 `;
+
+/** 老库补列：CREATE TABLE IF NOT EXISTS 不会给已存在的表加列。 */
+function ensureInboxColumns(): void {
+  const db = getDb();
+  const cols = db.prepare('PRAGMA table_info(inbox_items)').all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === 'event_version')) {
+    db.exec("ALTER TABLE inbox_items ADD COLUMN event_version TEXT NOT NULL DEFAULT ''");
+  }
+}
+
+/**
+ * 老库一次性补齐事件实例键：否则事件版本为空的历史条目会被当成「首次兼容」，
+ * 之后第一次真正的新事件仍可能被吞掉。只补空值，已有值不动。
+ */
+function backfillInboxEventVersions(): void {
+  getDb().prepare(`
+    UPDATE inbox_items
+       SET event_version = CASE
+         WHEN type = 'ai_failed' THEN COALESCE(
+           NULLIF((SELECT t.ai_state_at FROM tasks t WHERE t.id = inbox_items.task_id), ''), 'legacy')
+         WHEN type = 'decision' THEN COALESCE(
+           NULLIF((SELECT t.ruling_at FROM tasks t WHERE t.id = inbox_items.task_id), ''), 'legacy')
+         WHEN type = 'verify_pending' THEN COALESCE(
+           (SELECT MAX(e.created_at) FROM task_events e
+             WHERE e.task_id = inbox_items.task_id
+               AND e.kind = 'status' AND e.detail = 'todo → done'),
+           'legacy')
+         WHEN source = 'exec_session' THEN COALESCE(
+           NULLIF((SELECT s.last_heartbeat FROM exec_sessions s
+                    WHERE s.id = COALESCE(
+                      inbox_items.run_id,
+                      CASE WHEN inbox_items.event_key LIKE 'session_stalled:%'
+                           THEN substr(inbox_items.event_key, 17) ELSE '' END
+                    )), ''),
+           NULLIF((SELECT s.started_at FROM exec_sessions s
+                    WHERE s.id = COALESCE(
+                      inbox_items.run_id,
+                      CASE WHEN inbox_items.event_key LIKE 'session_stalled:%'
+                           THEN substr(inbox_items.event_key, 17) ELSE '' END
+                    )), ''),
+           'legacy')
+         ELSE 'legacy'
+       END
+     WHERE event_version = ''
+  `).run();
+}
 
 /** 启动时幂等建表；独立导出便于门禁脚本在内存库执行同一份 DDL。 */
 export function ensureInboxSchema(): void {
-  getDb().exec(INBOX_SCHEMA_SQL);
+  const db = getDb();
+  db.exec(INBOX_SCHEMA_SQL);
+  ensureInboxColumns();
+  backfillInboxEventVersions();
 }

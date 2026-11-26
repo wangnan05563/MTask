@@ -7,8 +7,9 @@
  * - 任务侧 AI 失败、待裁决、待验证三类事件入库，90 天外、归档、搁置、已转历史的任务不进入；
  * - 停滞执行会话进系统分类，重复同步不重复出现；
  * - 分类/状态/项目筛选与 open/unread 计数口径；
- * - read 清零、claim 不改变 open、ignore 变终态、convert 生成任务并解决条目；
- * - 源事件消失后 open 条目自动 resolved（source_cleared）；
+ * - read 清零、claim 排他且可取消、ignore 变终态、convert 生成任务并解决条目；
+ * - 同一来源再次发生（新 ai_state_at / 新 todo→done 事件）时终态条目可重开；
+ * - 源事件消失后 open 条目自动 resolved（source_cleared），旧条目不被 1k 截断误收敛；
  * - 1k 背景任务下首次同步 < 1.5s。
  */
 import assert from 'node:assert/strict';
@@ -33,6 +34,7 @@ db.exec(`
     ai_state TEXT NOT NULL DEFAULT '', ai_state_at TEXT NOT NULL DEFAULT '',
     verified INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0,
     shelved INTEGER NOT NULL DEFAULT 0, ruling_state TEXT NOT NULL DEFAULT '',
+    ruling_at TEXT,
     pinned INTEGER NOT NULL DEFAULT 0, progress INTEGER NOT NULL DEFAULT 0,
     history_at TEXT, updated_at TEXT NOT NULL
   );
@@ -41,6 +43,10 @@ db.exec(`
     progress REAL NOT NULL DEFAULT 0, progress_reported INTEGER NOT NULL DEFAULT 0,
     phase TEXT NOT NULL DEFAULT '', started_at TEXT NOT NULL, last_heartbeat TEXT NOT NULL,
     task_ids TEXT NOT NULL DEFAULT '[]'
+  );
+  CREATE TABLE task_events (
+    id TEXT PRIMARY KEY, task_id TEXT NOT NULL, task_no TEXT, project_id TEXT NOT NULL,
+    kind TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
   );
   INSERT INTO projects (id, name) VALUES ('p1', '十期项目'), ('p2', '其它项目'), ('sys-inbox', '收件箱');
 `);
@@ -105,7 +111,7 @@ const service = new InboxService(db as unknown as Database.Database, createTask)
 // 1) DDL 与索引
 const cols = (db.prepare('PRAGMA table_info(inbox_items)').all() as Array<{ name: string }>).map((r) => r.name);
 for (const col of ['id', 'type', 'source', 'task_id', 'run_id', 'project_id', 'title', 'body', 'severity',
-  'status', 'assignee', 'event_key', 'unread', 'resolution', 'created_at', 'updated_at', 'claimed_at',
+  'status', 'assignee', 'event_key', 'event_version', 'unread', 'resolution', 'created_at', 'updated_at', 'claimed_at',
   'resolved_at', 'last_seen_at']) {
   assert.ok(cols.includes(col), `inbox_items 缺列 ${col}`);
 }
@@ -113,6 +119,8 @@ const indexes = (db.prepare("SELECT name FROM sqlite_master WHERE type='index' A
   .map((r) => r.name);
 assert.ok(indexes.includes('idx_inbox_items_event_key'), '缺 event_key 唯一索引');
 assert.ok(indexes.includes('idx_inbox_items_open_type'), '缺 open+type 查询索引');
+assert.ok(indexes.includes('idx_inbox_items_assignee'), '缺 assignee 查询索引');
+assert.equal((db.prepare("SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name='inbox_audit'").get() as { c: number }).c, 1, '缺 inbox_audit 审计表');
 
 // 2) 首次同步：3 条任务 + 2 条停滞会话；重复同步不新增
 const start = performance.now();
@@ -150,14 +158,25 @@ assert.equal(service.markRead(), 0, 'read 必须幂等');
 assert.equal(service.summary().counts.unread, 0);
 assert.equal(service.summary().counts.open, 5, 'read 不改变 open');
 
-// 5) claim：assignee=我、claimed_at 写入，但 status 仍 open
+// 5) claim：排他、认领后可取消；status 仍 open
 const claimed = service.claim(first.id);
 assert.equal(claimed.assignee, '我');
 assert.equal(claimed.status, 'open');
 assert.ok(claimed.claimed_at, 'claim 应写 claimed_at');
-const claimedAgain = service.claim(first.id);
-assert.equal(claimedAgain.claimed_at, claimed.claimed_at, '重复 claim 不应改 claimed_at');
-assert.equal(service.summary().counts.open, 5, 'claim 后 open 仍为 5');
+assert.throws(() => service.claim(first.id), (e) => e instanceof InboxError && e.statusCode === 409, '重复 claim 应 409');
+assert.throws(() => service.claim(first.id, '同事'), (e) => e instanceof InboxError && e.statusCode === 409, '他人 claim 应 409');
+assert.throws(() => service.ignore(first.id, '同事'), (e) => e instanceof InboxError && e.statusCode === 403, '非认领人 ignore 应 403');
+assert.throws(() => service.unclaim(first.id, '同事'), (e) => e instanceof InboxError && e.statusCode === 403, '非认领人 unclaim 应 403');
+const released = service.unclaim(first.id);
+assert.equal(released.assignee, '');
+assert.equal(released.claimed_at, null);
+const reclaimed = service.claim(first.id);
+assert.equal(reclaimed.assignee, '我');
+assert.equal(reclaimed.status, 'open');
+assert.equal(service.summary().counts.open, 5, 'claim/unclaim 后 open 仍为 5');
+assert.equal(service.list({ assignee: '我' }).total, 1, '按 assignee 筛选应只到 1 条');
+assert.equal(service.list({ claimed: 'no' }).total, 4, '未认领筛选应剩 4 条');
+assert.equal(service.audit(first.id).map((a) => a.action).sort().join(','), 'claim,claim,unclaim', 'claim/unclaim 应留审计');
 
 // 6) ignore：终态、open 减一
 const decision = service.list({ type: 'decision' }).items[0];
@@ -197,7 +216,59 @@ assert.ok(gone, '消失事件应被自动收敛为 resolved');
 assert.equal(gone.resolution, 'source_cleared');
 assert.equal(service.summary().counts.open, 3, '自动收敛后 open 应剩 3（转任务后 3 条 + 手工塞入的 1 条再收敛）');
 
-// 9) 项目不属于收件箱的条目不存在
+// 9) 同一来源再次发生：新 ai_state_at / 新 todo→done 事件应重开终态条目
+const aiItem = service.list({ type: 'ai_failed' }).items.find((i) => i.task_id === 't1')!;
+assert.equal(service.ignore(aiItem.id, '我').status, 'ignored');
+const newAiAt = new Date().toISOString();
+db.prepare('UPDATE tasks SET ai_state_at = ?, updated_at = ? WHERE id = ?').run(newAiAt, newAiAt, 't1');
+service.sync();
+const reopenedAi = service.list({ type: 'ai_failed' }).items.find((i) => i.id === aiItem.id)!;
+assert.equal(reopenedAi.status, 'open', '新 ai_state_at 应重开被忽略的 AI 失败条目');
+assert.equal(reopenedAi.assignee, '', '新事件实例应释放旧认领');
+// 同一事件实例再次忽略后保持 ignored，不被每轮同步重新打开
+assert.equal(service.ignore(reopenedAi.id, '我').status, 'ignored');
+service.sync();
+assert.equal(service.list({ status: 'ignored' }).items.find((i) => i.id === aiItem.id)?.status, 'ignored');
+
+const verifyItem = service.list({ type: 'verify_pending' }).items[0];
+assert.equal(service.ignore(verifyItem.id).status, 'ignored');
+service.sync();
+assert.equal(service.list({ status: 'ignored' }).items.find((i) => i.id === verifyItem.id)?.status, 'ignored', '同一完成实例重复同步不应重开');
+const doneAt = new Date().toISOString();
+db.prepare(`
+  INSERT INTO task_events (id, task_id, task_no, project_id, kind, detail, created_at)
+  VALUES (?, ?, ?, ?, 'status', 'todo → done', ?)
+`).run('ev-t3-done', 't3', 'T-t3', 'p1', doneAt);
+db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ?').run(doneAt, 't3');
+service.sync();
+const reopenedVerify = service.list({ type: 'verify_pending' }).items.find((i) => i.id === verifyItem.id)!;
+assert.equal(reopenedVerify.status, 'open', '新的 todo→done 事件应重开待验证条目');
+assert.equal(reopenedVerify.assignee, '');
+// task_events 默认只保留 90 天：事件被裁剪后不能把已忽略条目又重开
+assert.equal(service.ignore(reopenedVerify.id, '我').status, 'ignored');
+db.prepare('DELETE FROM task_events WHERE id = ?').run('ev-t3-done');
+service.sync();
+assert.equal(service.list({ status: 'ignored' }).items.find((i) => i.id === verifyItem.id)?.status, 'ignored', '完成事件被裁剪后不应误重开');
+
+// 10) 90 天窗口/LIMIT 之外的存量 open 条目：来源仍活跃时不能被误判 source_cleared
+task('t9', '90 天外但仍失败的存量任务', 'p1', { ai: 'failed', updated: old });
+db.prepare(`
+  INSERT INTO inbox_items
+    (id, type, source, task_id, project_id, title, body, severity, status, assignee, event_key,
+     event_version, unread, resolution, created_at, updated_at, last_seen_at)
+  VALUES (?, 'ai_failed', 'task', 't9', 'p1', '存量失败事件', '', 'danger', 'open', '',
+          'task_ai_failed:t9', 'legacy', 0, '', ?, ?, ?)
+`).run('old-active-item', recent, stale, stale);
+service.sync();
+const oldActive = service.list({ type: 'ai_failed' }).items.find((i) => i.id === 'old-active-item')!;
+assert.equal(oldActive.status, 'open', '90 天窗口外的存量条目，来源仍活跃时不能自动收敛');
+db.prepare('UPDATE tasks SET ai_state = ? WHERE id = ?').run('', 't9');
+db.prepare('UPDATE inbox_items SET last_seen_at = ? WHERE id = ?').run(stale, 'old-active-item');
+service.sync();
+const oldGone = service.list({ status: 'resolved' }).items.find((i) => i.id === 'old-active-item')!;
+assert.equal(oldGone.resolution, 'source_cleared', '来源消失后才应收敛');
+
+// 11) 项目不属于收件箱的条目不存在
 assert.equal(service.list({ projectId: 'sys-inbox' }).total, 0);
 
 console.log(JSON.stringify({

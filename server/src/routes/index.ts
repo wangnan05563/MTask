@@ -562,6 +562,12 @@ function sendInboxError(res: import('express').Response, e: unknown): void {
   res.status(500).json({ error: e instanceof Error ? e.message : '收件箱操作失败' });
 }
 
+/** 当前单机默认「我」；团队模式接入账号后改由服务端会话解析，不再信任请求体。 */
+function inboxActor(req: import('express').Request): string | undefined {
+  const raw = req.body?.actor ?? req.body?.assignee;
+  return typeof raw === 'string' ? raw : undefined;
+}
+
 api.get('/inbox/summary', (req, res) => {
   try {
     const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
@@ -575,10 +581,14 @@ api.get('/inbox', (req, res) => {
     const type = typeof req.query.type === 'string' ? req.query.type as InboxType : '';
     const status = typeof req.query.status === 'string' ? req.query.status as InboxStatus : 'open';
     const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+    const assignee = typeof req.query.assignee === 'string' ? req.query.assignee : '';
+    const claimed = typeof req.query.claimed === 'string' ? req.query.claimed as 'yes' | 'no' | '' : '';
     const result = inboxService.list({
       type,
       status,
       projectId,
+      assignee,
+      claimed,
       limit: Number(req.query.limit) || undefined,
       offset: Number(req.query.offset) || undefined,
     });
@@ -599,17 +609,29 @@ api.post('/inbox/read', (req, res) => {
 });
 
 api.post('/inbox/:id/claim', (req, res) => {
-  try { res.json({ item: inboxService.claim(req.params.id) }); } catch (e) { sendInboxError(res, e); }
+  try { res.json({ item: inboxService.claim(req.params.id, inboxActor(req)) }); } catch (e) { sendInboxError(res, e); }
+});
+
+api.post('/inbox/:id/unclaim', (req, res) => {
+  try { res.json({ item: inboxService.unclaim(req.params.id, inboxActor(req)) }); } catch (e) { sendInboxError(res, e); }
 });
 
 api.post('/inbox/:id/ignore', (req, res) => {
-  try { res.json({ item: inboxService.ignore(req.params.id) }); } catch (e) { sendInboxError(res, e); }
+  try { res.json({ item: inboxService.ignore(req.params.id, inboxActor(req)) }); } catch (e) { sendInboxError(res, e); }
 });
 
 api.post('/inbox/:id/convert', (req, res) => {
   try {
     const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : '';
-    res.json(inboxService.convert(req.params.id, projectId));
+    res.json(inboxService.convert(req.params.id, projectId, inboxActor(req)));
+  } catch (e) { sendInboxError(res, e); }
+});
+
+api.get('/inbox/:id/audit', (req, res) => {
+  try {
+    const limit = Number(req.query.limit) || 20;
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ items: inboxService.audit(req.params.id, limit) });
   } catch (e) { sendInboxError(res, e); }
 });
 

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle, ArrowRight, CheckCircle2, ChevronDown, ClipboardCheck, FolderInput, Gavel, Inbox,
-  RefreshCw, ShieldCheck, UserRound,
+  RefreshCw, ShieldCheck, UserMinus, UserRound,
 } from 'lucide-react';
 import type { InboxCounts, InboxItem, InboxListResult, InboxStatus, InboxType } from '../api/client';
 import { api } from '../api/client';
@@ -31,6 +31,9 @@ const STATUS_LABEL: Record<InboxStatus, string> = { open: '待处理', ignored: 
 const RESOLUTION_LABEL: Record<string, string> = {
   ignored_by_user: '已忽略', converted_to_task: '已转为任务', source_cleared: '来源已清除',
 };
+/** 当前单机本地身份；接入团队账号后只改这一处（服务端仍需按会话身份校验）。 */
+const INBOX_ACTOR = '我';
+type ClaimFilter = '' | 'mine' | 'unclaimed';
 
 function relTime(iso: string): string {
   if (!iso) return '';
@@ -56,6 +59,7 @@ export function InboxPage() {
   const [typeFilter, setTypeFilter] = useState<InboxType | ''>('');
   const [status, setStatus] = useState<InboxStatus>('open');
   const [projectFilter, setProjectFilter] = useState('');
+  const [claimFilter, setClaimFilter] = useState<ClaimFilter>('');
   const [targetProjectId, setTargetProjectId] = useState('');
   const [data, setData] = useState<InboxListResult | null>(null);
   const [loading, setLoading] = useState(true);
@@ -78,6 +82,8 @@ export function InboxPage() {
       const params = new URLSearchParams({ status, limit: '50', offset: String(offset) });
       if (typeFilter) params.set('type', typeFilter);
       if (projectFilter) params.set('projectId', projectFilter);
+      if (claimFilter === 'mine') params.set('assignee', INBOX_ACTOR);
+      else if (claimFilter === 'unclaimed') params.set('claimed', 'no');
       const result = await api.get<InboxListResult>(`/inbox?${params.toString()}`);
       if (seq !== seqRef.current) return;
       setData((prev) => append && prev
@@ -98,7 +104,7 @@ export function InboxPage() {
     void fetchPage(0, false);
     // 筛选变化即重新取第一页；fetchPage 内部用 seq 丢弃过期响应。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [typeFilter, status, projectFilter]);
+  }, [typeFilter, status, projectFilter, claimFilter]);
 
   // 页面打开并成功取到数据后清一次未读：未读只影响角标，不改变 open 口径。
   useEffect(() => {
@@ -119,7 +125,7 @@ export function InboxPage() {
     globalThis.setTimeout(() => setFlash(''), 2600);
   }
 
-  async function act(item: InboxItem, action: 'claim' | 'ignore' | 'convert'): Promise<void> {
+  async function act(item: InboxItem, action: 'claim' | 'unclaim' | 'ignore' | 'convert'): Promise<void> {
     if (action === 'convert' && !targetProjectId) {
       setError('请先选择「转入项目」');
       return;
@@ -128,13 +134,19 @@ export function InboxPage() {
     setError('');
     try {
       if (action === 'claim') {
-        await api.post(`/inbox/${item.id}/claim`);
-        showFlash('已认领，仍留在待处理');
+        await api.post(`/inbox/${item.id}/claim`, { actor: INBOX_ACTOR });
+        showFlash('已认领，可打开任务处理或取消认领');
+      } else if (action === 'unclaim') {
+        await api.post(`/inbox/${item.id}/unclaim`, { actor: INBOX_ACTOR });
+        showFlash('已取消认领，条目回到未认领');
       } else if (action === 'ignore') {
-        await api.post(`/inbox/${item.id}/ignore`);
+        await api.post(`/inbox/${item.id}/ignore`, { actor: INBOX_ACTOR });
         showFlash('已忽略');
       } else {
-        const created = await api.post<{ task: { task_no: string | null } }>(`/inbox/${item.id}/convert`, { projectId: targetProjectId });
+        const created = await api.post<{ task: { task_no: string | null } }>(
+          `/inbox/${item.id}/convert`,
+          { projectId: targetProjectId, actor: INBOX_ACTOR },
+        );
         showFlash(`已转为任务 ${created.task.task_no ?? ''}`);
       }
       await fetchPage(0, false);
@@ -154,7 +166,7 @@ export function InboxPage() {
       <PageHeader
         title="收件箱"
         minimal
-        description="统一处理 AI 失败、待决策、待验证与系统停滞；认领不改变 open 状态，转任务生成普通任务。本页不接邮件。"
+        description="认领是排他标记，不改变 open；可随时取消认领。打开源任务处理或转任务后，来源恢复会自动从待处理消失。本页不接邮件。"
       />
 
       <FilterBar ariaLabel="收件箱筛选">
@@ -192,6 +204,15 @@ export function InboxPage() {
             <option value="open">待处理</option>
             <option value="ignored">已忽略</option>
             <option value="resolved">已解决</option>
+          </select>
+        </label>
+
+        <label className="mt-inbox-field">
+          <span>认领</span>
+          <select value={claimFilter} onChange={(e) => setClaimFilter(e.target.value as ClaimFilter)}>
+            <option value="">全部</option>
+            <option value="mine">我认领的</option>
+            <option value="unclaimed">未认领</option>
           </select>
         </label>
 
@@ -266,7 +287,7 @@ export function InboxPage() {
               <span className="mt-inbox-total">共 {data.total} 条{status === 'open' && counts.unread > 0 ? ` · ${counts.unread} 条未读` : ''}</span>
             </span>
           )}
-          extra={status === 'open' && <span className="mt-inbox-hint">每条都提供认领 / 忽略 / 转任务或打开任务</span>}
+          extra={status === 'open' && <span className="mt-inbox-hint">认领后可「去处理」，也可取消认领；处理源事件后自动消失</span>}
         >
           {loading && <div className="mt-inbox-loading-line">正在刷新…</div>}
           {data.items.length === 0 ? (
@@ -282,7 +303,9 @@ export function InboxPage() {
                 const Icon = meta.icon;
                 const isOpen = item.status === 'open';
                 const busy = actionId === item.id;
-                const canConvert = isOpen && !item.task_id;
+                const claimedByMe = isOpen && item.assignee === INBOX_ACTOR;
+                const canAct = !item.assignee || claimedByMe;
+                const canConvert = isOpen && !item.task_id && canAct;
                 return (
                   <article key={item.id} className="mt-inbox-row" data-type={item.type} data-unread={item.unread || undefined}>
                     <span className="mt-inbox-row-icon" data-tone={meta.tone} aria-hidden="true"><Icon size={16} /></span>
@@ -307,25 +330,33 @@ export function InboxPage() {
                         <Badge tone={meta.tone}>{meta.label}</Badge>
                         {item.project_name && <span>{item.project_name}</span>}
                         {item.task_no && <span className="mt-inbox-mono">{item.task_no}</span>}
-                        {item.assignee && <span className="mt-inbox-assignee"><UserRound size={11} />{item.assignee}</span>}
+                        {item.assignee && (
+                          <span
+                            className="mt-inbox-assignee"
+                            title={item.claimed_at ? `${item.assignee} 于 ${item.claimed_at} 认领` : `${item.assignee} 认领`}
+                          >
+                            <UserRound size={11} />{item.assignee}
+                            {item.claimed_at && <span className="mt-inbox-claim-time">· {relTime(item.claimed_at)}认领</span>}
+                          </span>
+                        )}
                         <span>{relTime(item.created_at)}</span>
                       </div>
                     </div>
                     <div className="mt-inbox-row-actions">
                       {item.task_no && item.task_id && (
-                        <Button size="sm" variant="secondary" rightIcon={<ArrowRight size={12} />}
+                        <Button size="sm" variant={claimedByMe ? 'primary' : 'secondary'} rightIcon={<ArrowRight size={12} />}
                           onClick={() => { void focusTaskByNo(item.task_no, 'notice'); }}>
-                          打开任务
+                          {claimedByMe ? '去处理' : '打开任务'}
                         </Button>
                       )}
                       {isOpen && item.type === 'system' && (
-                        <Button size="sm" variant="secondary" rightIcon={<ArrowRight size={12} />}
+                        <Button size="sm" variant={claimedByMe ? 'primary' : 'secondary'} rightIcon={<ArrowRight size={12} />}
                           onClick={() => navigate('exec-sessions')}>
-                          AI 控制台
+                          {claimedByMe ? '去处理' : 'AI 控制台'}
                         </Button>
                       )}
                       {canConvert && (
-                        <Button size="sm" variant="primary" loading={busy}
+                        <Button size="sm" variant={claimedByMe ? 'secondary' : 'primary'} loading={busy}
                           leftIcon={<FolderInput size={12} />}
                           onClick={() => { void act(item, 'convert'); }}>
                           转任务
@@ -338,7 +369,14 @@ export function InboxPage() {
                           认领
                         </Button>
                       )}
-                      {isOpen && (
+                      {isOpen && claimedByMe && (
+                        <Button size="sm" variant="ghost" loading={busy}
+                          leftIcon={<UserMinus size={12} />}
+                          onClick={() => { void act(item, 'unclaim'); }}>
+                          取消认领
+                        </Button>
+                      )}
+                      {isOpen && canAct && (
                         <Button size="sm" variant="ghost" loading={busy}
                           onClick={() => { void act(item, 'ignore'); }}>
                           忽略
