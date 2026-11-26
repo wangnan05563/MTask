@@ -1,5 +1,7 @@
 # 依赖 / 构建产物
 node_modules/
+# npm workspace 在 Windows 上生成的临时 Junction（目标可能已删除；保留本地但 Git 不应遍历）
+**/.node_modules-*/
 dist/
 server/dist/
 web/dist/
