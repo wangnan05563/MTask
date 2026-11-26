@@ -5,7 +5,7 @@ import {
 import type { TodayAlert, TodayRunningItem, TodayTaskItem, TodayView, TodayWaitReason } from '../api/client';
 import { Badge, Button, Card, EmptyState, Skeleton } from '../ui/components';
 import { focusTaskByNo } from '../ui/focusTask';
-import { platformLabel } from '../ui/platformLabel';
+import { PlatformLogo } from '../ui/PlatformLogo'; // T06396：首页运行态平台标识复用执行会话的真实 Logo，不再显示工具名文字
 import { priorityBadgeLabel, priorityColor, priorityTone } from '../ui/priority';
 import './todayBoard.css';
 
@@ -116,7 +116,7 @@ function RunningRow({ item }: { readonly item: TodayRunningItem }) {
           {item.title}
         </button>
         {item.kind === 'session'
-          ? <Badge tone="accent" size="sm" dot>{platformLabel(item.platform)}</Badge>
+          ? <PlatformLogo platform={item.platform} size={20} />
           : <Badge tone="warning" size="sm" dot>无会话</Badge>}
       </div>
       <div className="mt-today-run-meta">
