@@ -464,8 +464,8 @@
 }
 
 .mt-badge[data-tone='accent'] {
-  background: var(--mt-semantic-accent-soft);
-  color: var(--mt-semantic-accent-primary);
+  background: var(--mt-component-tag-bg);
+  color: var(--mt-component-tag-fg);
 }
 
 .mt-badge[data-tone='success'] {

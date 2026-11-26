@@ -49,6 +49,12 @@ async function main() {
   must('设计令牌接入 card radius', BRAND_LIGHT_CSS.includes('--mt-component-card-radius: 8px;'));
   must('组件 token 全部解析', Object.values(resolved.component).every((v) => !/^(raw|semantic|component)\./.test(v)));
 
+  const componentsCss = fs.readFileSync(path.join(root, 'web/src/ui/components.css'), 'utf8');
+  must(
+    'Badge accent 消费品牌 tag 令牌',
+    /\.mt-badge\[data-tone='accent'\]\s*\{\s*background:\s*var\(--mt-component-tag-bg\);\s*color:\s*var\(--mt-component-tag-fg\);\s*\}/.test(componentsCss),
+  );
+
   const pairs: Array<[string, string, string]> = [
     ['brand 对白底', resolved.semantic.brand, resolved.raw.neutral0],
     ['品牌文字对品牌浅底', resolved.semantic['brand-ink'], resolved.semantic['brand-soft']],
