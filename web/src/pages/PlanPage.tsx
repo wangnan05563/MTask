@@ -23,6 +23,7 @@ import { FontColorButton } from '../ui/FontColorButton';
 import { saveBlob } from '../utils/download'; // T03197：分享快照下载（文件名取自服务端 Content-Disposition）
 import { api, type AITool } from '../api/client';
 import { PageHeader, PageShell } from '../ui/layout'; // T06327：核心页统一页面壳与页头
+import { TaskMoreMenu, type TaskMoreMenuItem } from '../ui/TaskMoreMenu'; // T06394：计划页低频操作收口到「更多」下拉，复用任务页同款交互
 import { useActiveProject } from '../ui/activeProject'; // T06329：计划项目跟随顶栏全局上下文
 import { askConfirm, askInput, askInputEx, showReport } from '../ui/dialogs';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
@@ -390,58 +391,97 @@ function PlanBatchBar({ planSelIds, plans, selectAllPlans, planBatchStatus, plan
   );
 }
 
-/** 工具栏：新建 / 导入 / 导出 / 模板（S3776 抽取） */
-function PlanCreateImportButtons({ busy, createPlan, importExcel, exportExcel, exportMarkdown, downloadTemplate }: {
-  readonly busy: boolean; readonly createPlan: () => Promise<void>;
+/** 工具栏：低频操作收口到「更多」菜单（T06394）
+ *  新建/导入/导出/模板/分享快照不再各占一个图标按钮，统一复用任务页 TaskMoreMenu 的
+ *  触发图标、Portal 定位、外点/Esc 收起与键盘焦点行为；每个回调保持原实现不变。 */
+function PlanMoreMenu({ busy, projectId, projectName, createPlan, importExcel, exportExcel, exportMarkdown, downloadTemplate }: {
+  readonly busy: boolean; readonly projectId: string; readonly projectName: string;
+  readonly createPlan: () => Promise<void>;
   readonly importExcel: (f: File) => Promise<void>; readonly exportExcel: () => Promise<void>;
   readonly exportMarkdown: () => Promise<void>;
   readonly downloadTemplate: () => Promise<void>;
 }) {
+  const importRef = useRef<HTMLInputElement | null>(null);
+  const [shareOpen, setShareOpen] = useState(false);
+  const items: TaskMoreMenuItem[] = [
+    {
+      key: 'create-plan', label: '新建计划任务', ariaLabel: '新建计划任务',
+      title: '新建计划任务 — 弹窗中选择任务类型（普通/里程碑/日常）',
+      icon: <CalendarPlus size={14} />, disabled: busy, onClick: () => { void createPlan(); },
+    },
+    {
+      key: 'import-excel', label: '导入 Excel', ariaLabel: '导入 Excel',
+      title: '导入 Excel — 批量导入计划任务（任一行校验失败则整体不入库）',
+      icon: <Upload size={14} />, onClick: () => importRef.current?.click(),
+    },
+    {
+      key: 'export-excel', label: '导出 Excel', ariaLabel: '导出 Excel',
+      title: '导出 Excel — 导出当前项目全部计划',
+      icon: <Download size={14} />, onClick: () => { void exportExcel(); },
+    },
+    {
+      key: 'export-markdown', label: '导出 Markdown', ariaLabel: '导出 Markdown',
+      title: '导出 Markdown — 任务清单 + 计划 + 需求矩阵单文档',
+      icon: <FileText size={14} />, onClick: () => { void exportMarkdown(); },
+    },
+    {
+      key: 'download-template', label: '下载模板', ariaLabel: '下载导入模板',
+      title: '下载模板 — 获取导入用 Excel 模板',
+      icon: <FileSpreadsheet size={14} />, onClick: () => { void downloadTemplate(); },
+    },
+    {
+      key: 'share-snapshot', label: '分享快照', ariaLabel: '分享快照',
+      title: '分享快照 — 导出脱敏 PDF（项目统计 + 里程碑 + 逾期计划摘要），默认不含计划标题',
+      icon: <Share2 size={14} />, disabled: !projectId, onClick: () => setShareOpen(true),
+    },
+  ];
   return (
     <>
-      {/* T01619：工具栏七个操作按钮默认隐藏、悬浮整条工具栏（.op-host）时淡入——
-          沿用 .op-hidden 口径（opacity + visibility，保留占位不跳版，且不做灰显禁用） */}
-      <button className="tbtn-anim op-hidden" onClick={() => void createPlan()} disabled={busy} title="新建计划任务 — 弹窗中选择任务类型（普通/里程碑/日常）" aria-label="新建计划任务" style={{ ...btnStyle, padding: '6px 8px' }}><CalendarPlus size={13} /></button>
-      <label className="tbtn-anim op-hidden" style={{ ...btnStyle, cursor: busy ? 'default' : 'pointer', padding: '6px 8px' }} title="导入 Excel — 批量导入计划任务（任一行校验失败则整体不入库）" aria-label="导入 Excel">
-        <Upload size={13} />
-        <input type="file" accept=".xlsx" style={FILE_INPUT_SR_ONLY}
-          onChange={(e) => { const f = e.target.files?.[0]; if (f) { void importExcel(f); e.target.value = ''; } }} />
-      </label>
-      <button className="tbtn-anim op-hidden" onClick={() => void exportExcel()} title="导出 Excel — 导出当前项目全部计划" aria-label="导出 Excel" style={{ ...btnStyle, padding: '6px 8px' }}><Download size={13} /></button>
-      {/* T01071-FR5.3：项目全量 Markdown 导出（任务清单 + WBS + 需求矩阵单文档） */}
-      <button className="tbtn-anim op-hidden" onClick={() => void exportMarkdown()} title="导出 Markdown — 任务清单 + 计划 + 需求矩阵单文档" aria-label="导出 Markdown" style={{ ...btnStyle, padding: '6px 8px' }}><FileText size={13} /></button>
-      <button className="tbtn-anim op-hidden" onClick={() => void downloadTemplate()} title="下载模板 — 获取导入用 Excel 模板" aria-label="下载导入模板" style={{ ...btnStyle, padding: '6px 8px' }}><FileSpreadsheet size={13} /></button>
-      {/* T00569：AI 导入入口已迁移至 AI 工作台「AI 项目计划导入」卡片（本页经跨页信号自动打开弹窗） */}
+      <TaskMoreMenu items={items} triggerTitle="更多 — 新建计划、导入导出、模板与分享快照" />
+      {/* 文件选择器不放进菜单按钮内，避免 button 嵌套 input / label 的非法结构 */}
+      <input ref={importRef} type="file" accept=".xlsx" style={FILE_INPUT_SR_ONLY}
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) { void importExcel(f); e.target.value = ''; } }} />
+      <ShareSnapshotDialog open={shareOpen} onClose={() => setShareOpen(false)} projectId={projectId} projectName={projectName} />
     </>
   );
 }
 
 /**
- * T03197（PRD PM-404）：脱敏分享快照入口。
+ * T03197（PRD PM-404）：脱敏分享快照弹窗。
  * 默认「不包含计划标题」；勾选后必须在当前对话框看到明确提示才允许下载，
  * 避免标题在用户不知情的情况下随 PDF 外发。快照本身不含描述、处理结果与密钥（服务端白名单取数）。
+ * T06394：由独立工具条按钮改为「更多」菜单项，弹窗状态由 PlanMoreMenu 持有。
  */
-function ShareSnapshotButton({ projectId, projectName }: {
+function ShareSnapshotDialog({ open, onClose, projectId, projectName }: {
+  readonly open: boolean; readonly onClose: () => void;
   readonly projectId: string; readonly projectName: string;
 }) {
-  const [open, setOpen] = useState(false);
   const [includeTitles, setIncludeTitles] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
   function close() {
     if (busy) return;
-    setOpen(false);
+    onClose();
     setError('');
   }
+
+  // 每次从「更多」重新进入都回到默认脱敏口径，不复用上一次的「包含标题」勾选
+  useEffect(() => {
+    if (!open) return;
+    setIncludeTitles(false);
+    setError('');
+  }, [open]);
 
   // 键盘可达：Esc 与「取消」同效，遮罩点击只是鼠标侧的冗余入口
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !busy) { setOpen(false); setError(''); } };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !busy) { onClose(); setError(''); }
+    };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [open, busy]);
+  }, [open, busy, onClose]);
 
   async function download() {
     setBusy(true);
@@ -451,7 +491,7 @@ function ShareSnapshotButton({ projectId, projectName }: {
         `/plans/share-snapshot?projectId=${encodeURIComponent(projectId)}&includeTitles=${includeTitles ? 1 : 0}`,
       );
       saveBlob(blob, filename);
-      setOpen(false);
+      onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -459,56 +499,48 @@ function ShareSnapshotButton({ projectId, projectName }: {
     }
   }
 
+  if (!open) return null;
+
   const idleLabel = includeTitles ? '包含标题并下载' : '下载 PDF';
   const downloadLabel = busy ? '生成中…' : idleLabel;
 
   return (
-    <>
-      <button className="tbtn-anim op-hidden" onClick={() => { setIncludeTitles(false); setError(''); setOpen(true); }} disabled={!projectId}
-        title="分享快照 — 导出脱敏 PDF（项目统计 + 里程碑 + 逾期计划摘要），默认不含计划标题"
-        aria-label="分享快照" aria-haspopup="dialog" aria-expanded={open} data-t03197="toggle"
-        style={{ ...btnStyle, padding: '6px 8px', opacity: projectId ? 1 : 0.45, cursor: projectId ? 'pointer' : 'not-allowed' }}>
-        <Share2 size={13} />
-      </button>
-      {open && (
-        <dialog open aria-modal="true" aria-label="脱敏分享快照" data-t03197="dialog"
-          style={{ position: 'fixed', inset: 0, margin: 0, padding: 0, border: 'none', background: 'transparent', width: '100vw', height: '100vh', maxWidth: 'none', maxHeight: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }}>
-          {/* 遮罩改用原生 button：点空白处关闭仍是鼠标侧便捷通路，Esc 与「取消」提供键盘通路 */}
-          <button type="button" onClick={close} disabled={busy} tabIndex={-1} aria-label="关闭脱敏分享快照"
-            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', padding: 0, border: 'none', background: 'rgba(0,0,0,.32)', cursor: busy ? 'default' : 'pointer' }} />
-          <div style={{ position: 'relative', width: 'min(460px, calc(100vw - 32px))', padding: 18, borderRadius: 10, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', boxShadow: '0 16px 48px rgba(0,0,0,.24)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-              <Share2 size={15} style={{ color: 'var(--accent)' }} />
-              <strong style={{ fontSize: 'var(--fs-m)' }}>脱敏分享快照</strong>
-            </div>
-            <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 10 }}>
-              将生成「{projectName || '当前项目'}」的 PDF：项目统计、里程碑与逾期计划摘要。
-              快照不含任务描述、处理结果与任何密钥。
-            </div>
-            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 'var(--fs-s)', cursor: 'pointer' }}>
-              <input type="checkbox" checked={includeTitles} onChange={(e) => setIncludeTitles(e.target.checked)} data-t03197="include-titles" />
-              <span>包含计划标题（默认关闭）</span>
-            </label>
-            {includeTitles && (
-              <div data-t03197="warning" role="alert"
-                style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, fontSize: 'var(--fs-xs)',
-                  background: 'color-mix(in srgb, var(--danger) 10%, transparent)', color: 'var(--danger)', lineHeight: 1.55 }}>
-                ⚠ 已选择包含计划标题：标题会以明文随 PDF 外发，请先确认接收方与披露范围。
-              </div>
-            )}
-            {error && <div data-t03197="error" style={{ marginTop: 10, fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>{error}</div>}
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
-              <button onClick={close} disabled={busy} style={{ ...btnStyle, padding: '5px 12px' }} data-t03197="cancel">取消</button>
-              <button onClick={() => void download()} disabled={busy} data-t03197="download"
-                style={{ ...btnStyle, padding: '5px 12px', background: 'var(--accent)', color: 'var(--accent-text)', borderColor: 'var(--accent)' }}>
-                {busy ? <Loader2 size={13} className="aispin" /> : <Download size={13} />}
-                {downloadLabel}
-              </button>
-            </div>
+    <dialog open aria-modal="true" aria-label="脱敏分享快照" data-t03197="dialog"
+      style={{ position: 'fixed', inset: 0, margin: 0, padding: 0, border: 'none', background: 'transparent', width: '100vw', height: '100vh', maxWidth: 'none', maxHeight: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }}>
+      {/* 遮罩改用原生 button：点空白处关闭仍是鼠标侧便捷通路，Esc 与「取消」提供键盘通路 */}
+      <button type="button" onClick={close} disabled={busy} tabIndex={-1} aria-label="关闭脱敏分享快照"
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', padding: 0, border: 'none', background: 'rgba(0,0,0,.32)', cursor: busy ? 'default' : 'pointer' }} />
+      <div style={{ position: 'relative', width: 'min(460px, calc(100vw - 32px))', padding: 18, borderRadius: 10, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', boxShadow: '0 16px 48px rgba(0,0,0,.24)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+          <Share2 size={15} style={{ color: 'var(--accent)' }} />
+          <strong style={{ fontSize: 'var(--fs-m)' }}>脱敏分享快照</strong>
+        </div>
+        <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 10 }}>
+          将生成「{projectName || '当前项目'}」的 PDF：项目统计、里程碑与逾期计划摘要。
+          快照不含任务描述、处理结果与任何密钥。
+        </div>
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 'var(--fs-s)', cursor: 'pointer' }}>
+          <input type="checkbox" checked={includeTitles} onChange={(e) => setIncludeTitles(e.target.checked)} data-t03197="include-titles" />
+          <span>包含计划标题（默认关闭）</span>
+        </label>
+        {includeTitles && (
+          <div data-t03197="warning" role="alert"
+            style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, fontSize: 'var(--fs-xs)',
+              background: 'color-mix(in srgb, var(--danger) 10%, transparent)', color: 'var(--danger)', lineHeight: 1.55 }}>
+            ⚠ 已选择包含计划标题：标题会以明文随 PDF 外发，请先确认接收方与披露范围。
           </div>
-        </dialog>
-      )}
-    </>
+        )}
+        {error && <div data-t03197="error" style={{ marginTop: 10, fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>{error}</div>}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+          <button onClick={close} disabled={busy} style={{ ...btnStyle, padding: '5px 12px' }} data-t03197="cancel">取消</button>
+          <button onClick={() => void download()} disabled={busy} data-t03197="download"
+            style={{ ...btnStyle, padding: '5px 12px', background: 'var(--accent)', color: 'var(--accent-text)', borderColor: 'var(--accent)' }}>
+            {busy ? <Loader2 size={13} className="aispin" /> : <Download size={13} />}
+            {downloadLabel}
+          </button>
+        </div>
+      </div>
+    </dialog>
   );
 }
 
@@ -2974,7 +3006,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
 
   return (
     <PageShell className="mt-plan-page">
-    <div ref={scrollRef} onScroll={onScrollSave} style={{ padding: 16, color: 'var(--text)', maxHeight: 'calc(100vh - 60px)', overflowY: 'auto' }}>
+    <div ref={scrollRef} onScroll={onScrollSave} style={{ padding: '8px 16px 16px', color: 'var(--text)', maxHeight: 'calc(100vh - 60px)', overflowY: 'auto' }}>
       <style>{`
         .plan-dragging { opacity: .55; transform: scale(1.01) rotate(.4deg); box-shadow: 0 6px 18px rgba(0,0,0,.22); background: var(--surface-2); }
         .plan-over { box-shadow: inset 0 3px 0 var(--accent); background: var(--accent-soft, rgba(9,105,218,.08)); }
@@ -2990,7 +3022,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         description="按项目编排串行/并行计划、里程碑与依赖；工期、估算、需求矩阵和测试用例在同一时间线上对齐。"
       />
       {/* 工具条：项目选择 + 增删导入导出（T00491：操作控件/下拉默认隐藏，悬浮工具条显示） */}
-      <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+      <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
         <PlanProjectPicker projects={projects} sortedProjects={sortedProjects} projectId={projectId} setProjectId={setProjectId}
           onExpand={refreshProjCounts}
           projDropRef={projDropRef} sortDropRef={sortDropRef} projOpen={projOpen} setProjOpen={setProjOpen} projDropPos={projDropPos} setProjDropPos={setProjDropPos}
@@ -3000,9 +3032,8 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         {/* T02201：项目取数失败/加载中在工具条显式给出原因与重试入口（此前空下拉与真无项目同形） */}
         <ProjectListHint view={projectList} />
         {/* T00506 调整：任务类型选择移入「新建计划任务」弹窗（默认普通任务），工具栏不再展示 */}
-        <PlanCreateImportButtons busy={busy} createPlan={createPlan} importExcel={importExcel} exportExcel={exportExcel} exportMarkdown={exportMarkdown} downloadTemplate={downloadTemplate} />
-        {/* T03197（PRD PM-404）：脱敏分享快照——紧跟导出族（同一动线：导出/外发） */}
-        <ShareSnapshotButton projectId={projectId} projectName={projects.find((p) => p.id === projectId)?.name ?? ''} />
+        <PlanMoreMenu busy={busy} projectId={projectId} projectName={projects.find((p) => p.id === projectId)?.name ?? ''}
+          createPlan={createPlan} importExcel={importExcel} exportExcel={exportExcel} exportMarkdown={exportMarkdown} downloadTemplate={downloadTemplate} />
         <PlanEvalButton batchEvaluatePlans={batchEvaluatePlans} evalBusy={evalBusy} busy={busy} evalLabel={evalLabel} plans={plans}
           blocked={aiDown} blockedTitle={aiBlockedTitle(readiness, 'AI 评估 — 对全部计划条目评估工期合理性/风险与建议，结果自动录入各条描述（确认后执行）')} />
         <PlanComplexityButton backfill={backfillComplexity} evalBusy={evalBusy} busy={busy}
@@ -3047,7 +3078,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         const doingCount = plans.filter((p) => p.status === 'doing').length;
         const milestoneCount = plans.filter((p) => (p as PlanTask & { kind?: string }).kind === 'milestone').length;
         return (
-          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 8, display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 6, display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center' }}>
             <span title={`起 ${starts[0] ?? '—'} · 止 ${ends.at(-1) ?? '—'}`}>项目周期：{starts[0] ?? '—'} ~ {ends.at(-1) ?? '—'}</span>
             <span title="全部任务工期（工作日）合计">工作量：{totalDays} 人天</span>
             <span title={`共 ${plans.length} 条计划任务`}>任务：{plans.length} 条</span>
