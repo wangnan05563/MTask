@@ -6,6 +6,7 @@
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { accentSoftHex, contrastSafeText, onSolidText } from './ui/contrast';
+import { BRAND_LIGHT_CSS } from './theme/brand';
 
 export type Theme = 'light' | 'dark' | 'auto'; // T01060-FR4.2：auto=跟随系统（matchMedia 动态解析）
 export type FontKey = 'default' | 'mono' | 'kai' | 'song';
@@ -448,8 +449,8 @@ export function SettingsProvider({ children }: { readonly children: ReactNode })
 
   return (
     <Ctx.Provider value={value}>
-      {/* 主题变量在应用根统一注入一次；Markdown 样式另由 MarkdownStyles 注入 */}
-      <style>{themeCss}</style>
+      {/* T06352：品牌包以浅色主题覆盖层注入；放在 themeCss 之后，保留深色/高对比主题与自定义强调色的既有优先级 */}
+      <style>{themeCss}{BRAND_LIGHT_CSS}</style>
       {children}
     </Ctx.Provider>
   );
