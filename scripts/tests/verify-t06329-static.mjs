@@ -127,8 +127,10 @@ mustNot('需求页', req, "usePersistentState('tasks.activeProject'");
 must('队列页', queue, "from '../ui/activeProject'");
 must('队列页', queue, 'const projectId = globalProject');
 must('报表页', report, "from '../ui/activeProject'");
-must('报表页', report, 'setProjectIds(globalProject ? [globalProject] : [])');
-must('报表页', report, 'scopeInitialized');
+must('报表页', report, 'if (scopeInitialized.current) return;');
+must('报表页', report, 'if (globalProject && projectIds.length === 0)');
+mustNot('报表页', report, 'setProjectIds(globalProject ? [globalProject] : [])');
+mustNot('报表页', report, 'lastGlobalProject');
 mustNot('报表页', report, 'mountedWithGlobalScope');
 
 const out = {

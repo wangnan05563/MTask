@@ -1158,21 +1158,15 @@ export function ReportPage() {
   // T02165：项目范围由单选升级为多选（sessionStorage 键 report.projects）；旧 report.project 单值自动迁移。
   // 空数组 = 全部项目（与原单选「全部项目」口径一致），勾选顺序即报表与 AI 里的项目分块顺序。
   const [projectIds, setProjectIds] = useSessionState<string[]>('report.projects', useMemo(legacyProjectScope, []));
-  // T06329：顶栏切换项目时把报表范围同步过去；顶栏「全部项目」清空多选，回到全量聚合。
+  // T06329 / M-4：报表范围独立于顶栏项目。
+  // 顶栏项目只在首次进入时作为默认值；用户后续改选或清空为“全部项目”后，
+  // 不再被顶栏切换覆盖，保留跨项目聚合报表能力。
   const [globalProject] = useActiveProject();
-  const lastGlobalProject = useRef(globalProject);
   const scopeInitialized = useRef(false);
   useEffect(() => {
-    // 首次进入只做默认范围填充；之后仅响应 globalProject 的真实变化。
-    // 不能用 projectIds.length===0 作为“挂载时”判据，否则用户主动清空范围会被立即回写成具体项目。
-    if (!scopeInitialized.current) {
-      scopeInitialized.current = true;
-      if (globalProject && projectIds.length === 0) setProjectIds([globalProject]);
-      return;
-    }
-    if (lastGlobalProject.current === globalProject) return;
-    lastGlobalProject.current = globalProject;
-    setProjectIds(globalProject ? [globalProject] : []);
+    if (scopeInitialized.current) return;
+    scopeInitialized.current = true;
+    if (globalProject && projectIds.length === 0) setProjectIds([globalProject]);
   }, [globalProject, projectIds.length, setProjectIds]);
   // 单项目产物的消费方（启动会 PPT / PRD 导入目标 / 已上传 PRD 弹层 / 就绪任务推荐）仍按项目级口径，取首个勾选项目
   const projectId = projectIds[0] ?? '';
@@ -1881,6 +1875,9 @@ export function ReportPage() {
           <div style={labelStyle}>项目范围（可多选）</div>
           <div style={{ width: 240, maxWidth: '100%' }}>
             <ProjectScopePicker projects={projects} value={projectIds} onChange={setProjectIds} />
+          </div>
+          <div style={{ marginTop: 4, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+            报表范围独立于顶栏；顶栏项目仅首次进入时作为默认值
           </div>
           {/* T02201：取数失败/加载中显式化（此前一次失败即整页项目选择器空到下次进页，且无提示） */}
           <ProjectListHint view={projectList} />
