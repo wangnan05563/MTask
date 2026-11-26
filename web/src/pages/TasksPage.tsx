@@ -1367,9 +1367,12 @@ export function TasksPage() {
       // T02284 通道在旧安装包后端上不存在（实测装机 39877 带 total=1 仍回裸数组），
       // 故按可空信封解析：拿不到 total 时页脚不显示总数，主列表不受影响。
       const res = await api.get<Paged<Task> | Task[]>(`/tasks?${pTotal.toString()}`);
-      const page = Array.isArray(res) ? { items: res, total: null as number | null } : { items: res.items, total: res.total };
-      list = page.items;
-      fetchedTotal = page.total;
+      // 生产包曾出现 2xx 但空体/被截断的响应：这里必须做形态守卫，不能让 undefined 流到下面的 filter。
+      const items = Array.isArray(res) ? res : res?.items;
+      const total = Array.isArray(res) ? null as number | null : res?.total ?? null;
+      if (!Array.isArray(items)) throw new Error('任务列表响应格式异常：items 不是数组');
+      list = items;
+      fetchedTotal = total;
     } catch (e) {
       if (seq !== fetchSeqRef.current) return seq;
       setTasksPhase('error');
@@ -1404,6 +1407,7 @@ export function TasksPage() {
       ps.set('shelved', '1');
       ps.delete('offset');
       const nextShelved = await api.get<Task[]>(`/tasks?${ps.toString()}`);
+      if (!Array.isArray(nextShelved)) throw new Error('搁置任务响应格式异常：不是数组');
       if (seq !== fetchSeqRef.current) return seq;
       setShelvedTasks(nextShelved);
       setShelvedPhase('ready');
@@ -5164,75 +5168,7 @@ export function TasksPage() {
             原 nowrap 会把压缩全部转嫁给 minWidth:0 的项目条（它当时是唯一可压缩项），实测 380px 宽
             按钮被压到 40px、两枚统计徽标越出按钮边框 29px。改换行后由换行让位，项目条保住 min-content。 */}
         <span className="op-host" style={{ display: 'inline-flex', gap: 8, alignItems: 'center', minWidth: 0, flexWrap: 'wrap' }}>
-        <div ref={projDropRef} style={{ position: 'relative', display: 'inline-flex' }}>
-          <button onClick={() => { setProjOpen((o) => { if (!o) { refreshProjCounts(); } return !o; }); }} aria-haspopup="listbox" aria-expanded={projOpen}
-            title="切换项目 — 项目名后徽标：红=待办数、黄=未验证数（悬浮查看详情）"
-            aria-label="切换项目"
-            /* T04544：右内边距 8→30——为叠加在控件右缘的复制按钮让位（按钮绝对定位，不参与 flex 压缩，
-               故只需让开箭头，T02167 的「名称省略、徽标不越界」min-content 口径不变） */
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 30px 6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)', cursor: 'pointer', maxWidth: 220 }}>
-            {/* T02167：项目名改为可收缩的单行省略项（与 WorkspaceSelect 同口径）。
-                原来是裸文本节点——CJK 无空格可断，min-content 只有 1 字宽，工具条变窄时按钮被压到
-                比内容还小，右侧统计徽标溢出边框。徽标与箭头一律 flexShrink:0，只让名称让步。
-                二轮：按钮/容器不再 minWidth:0——它会让弹性压缩把按钮压到低于「徽标+箭头」的
-                min-content（约 88px），徽标照样越出边框；去掉后 min-width:auto 以 min-content 兜底。 */}
-            <span style={{ flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {activeProjectLabel(activeProject, projects)}
-            </span>
-            <ProjectButtonBadges activeProject={activeProject} curProj={curProj} allTodo={allTodo} allUnv={allUnv} />
-            <ChevronDown size={12} style={{ flexShrink: 0 }} />
-          </button>
-          {/* T04544：项目名复制按钮——HTML 不允许按钮套按钮（同 T02146 口径），故作为触发按钮的兄弟节点
-              绝对定位叠在控件右缘，视觉上仍在「下拉条内部右侧」；点击只复制，不会顺带展开下拉。
-              复制内容取当前显示的标签，与框内所见一致。 */}
-          <CopyButton getText={() => activeProjectLabel(activeProject, projects)} title="复制项目名称" ariaLabel="复制项目名称" size={12}
-            style={{ position: 'absolute', right: 4, top: '50%', transform: 'translateY(-50%)', background: 'transparent', border: 'none', color: 'var(--text-muted)' }} />
-          {projOpen && (
-            // T02167 二轮：右缘预算 24px→48px——面板左缩进约 26px，原「100vw−24px」公式按 0 缩进
-            // 推算，380px 窗口下面板右缘越出窗口 2px；预留 48px 后右缘恒留 ~22px 余量
-            <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: 'var(--card-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,.14)', zIndex: 30, minWidth: 220, maxWidth: 'min(360px, calc(100vw - 48px))', overflowX: 'hidden' }}>
-              {/* T02201：面板顶部显式承载加载/失败态——取数失败时点开项目切换不再是一片空白，且带重试入口 */}
-              {projectList.phase !== 'ready' && (
-                <div style={{ padding: '6px 10px', borderBottom: '1px solid var(--border)' }}><ProjectListHint view={projectList} /></div>
-              )}
-              {/* T03211（PM-105）：全部项目混合视图——跨项目任务集，可在同一多选集内跨项目勾选后批量操作 */}
-              <button type="button" className="card-btn" aria-pressed={activeProject === ALL_PROJECTS} aria-label="全部项目"
-                onClick={() => { setActiveProject(ALL_PROJECTS); setProjOpen(false); }}
-                title={`全部项目 — 跨项目混合视图（待办合计 ${allTodo} 条，未验证合计 ${allUnv} 条）；可跨项目多选后批量操作`}
-                style={{ display: 'flex', width: '100%', boxSizing: 'border-box', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 'var(--fs-s)', background: activeProject === ALL_PROJECTS ? ROW_BG_SELECTED : ROW_BG_IDLE, color: 'var(--text)', border: 'none', cursor: 'pointer', borderBottom: '1px solid var(--border)' }}>
-                <span style={{ flex: 1, minWidth: 0, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>全部项目</span>
-                <ProjectBadges todo={allTodo} unverified={allUnv} allScope />
-              </button>
-              {sortedProjects.map((p) => (
-                // T02146：行容器拆成「置顶按钮 + 行按钮」两个原生 button 兄弟——HTML 不允许按钮套按钮；
-                // 拆开后行按钮是原生控件（键盘 Enter/Space 由浏览器提供），置顶按钮也无需 stopPropagation 阻断冒泡。
-                <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', background: p.id === activeProject ? ROW_BG_SELECTED : ROW_BG_IDLE }}>
-                  {/* T00655：置顶图标——位于项目名称之前，点击切换置顶（已置顶=实心 accent + 弹入动画） */}
-                  <button
-                    type="button"
-                    onClick={() => void toggleProjectPin(p)}
-                    title={isProjectPinned(p) ? `已置顶「${p.name}」— 点击取消置顶` : `置顶「${p.name}」— 点击后在默认排序下排最前`}
-                    aria-label={isProjectPinned(p) ? `取消置顶 ${p.name}` : `置顶 ${p.name}`}
-                    className={isProjectPinned(p) ? 'pin-pop tbtn-anim' : 'tbtn-anim'}
-                    style={{ display: 'inline-flex', alignItems: 'center', flexShrink: 0, color: isProjectPinned(p) ? 'var(--accent)' : 'var(--text-muted)', cursor: 'pointer', border: 'none', background: 'transparent', padding: 0 }}
-                  >
-                    <Pin size={12} style={{ transform: isProjectPinned(p) ? 'rotate(-45deg)' : 'none', transition: 'transform .18s ease, color .18s ease', fill: isProjectPinned(p) ? 'currentColor' : 'none' }} />
-                  </button>
-                  {/* T02167：flex:1 不足以收缩——裸 flex 项 min-width:auto 会卡在 nowrap 文本的
-                      min-content（整行名称宽）上，长名把右侧徽标顶出面板边框；minWidth:0 才真正让名称省略 */}
-                  <button type="button" className="card-btn" aria-pressed={p.id === activeProject} aria-label={`切换到项目 ${p.name}`}
-                    onClick={() => { setActiveProject(p.id); setProjOpen(false); }}
-                    title={`${p.name}：待办 ${p.todo_count ?? 0} 条，未验证 ${p.unverified_count ?? 0} 条`}
-                    style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-s)', background: 'transparent', color: 'var(--text)', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left' }}>
-                    <span style={{ flex: 1, minWidth: 0, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
-                    <ProjectBadges todo={p.todo_count ?? 0} unverified={p.unverified_count ?? 0} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-        {/* T00771：工作空间下拉条——紧接「项目」下拉条之后（无框样式）；绑定项目上下文根路径，切换项目自动联动回显 */}
+                {/* T00771：工作空间下拉条——紧接「项目」下拉条之后（无框样式）；绑定项目上下文根路径，切换项目自动联动回显 */}
         <WorkspaceSelect
           project={projects.find((p) => p.id === activeProject) ?? null}
           onBind={(path) => {
@@ -6250,10 +6186,13 @@ export function TasksPage() {
         /* T01562：抽屉打开时保持该行操作区显形——关闭抽屉后焦点要归还给触发按钮，
            而 visibility:hidden 的元素无法接收 focus()，否则键盘用户关闭后焦点掉回 body */
         .task-item:hover .title-op, .task-item:focus-within .title-op, .task-item.task-drawer-open .title-op { opacity: 1; visibility: visible; transition: opacity .15s ease, visibility 0s; }
-        .task-op {
+        /* T06334/L-7：行内操作默认透明但保持 visibility:visible，确保按钮仍在 Tab 序且可接收 focus()；
+           仅用 pointer-events:none 防止未显形时误点。悬浮/行内聚焦/抽屉/编辑态再显形并恢复点击。 */
+        .task-item .task-op {
           opacity: 0;
-          visibility: hidden;
-          transition: opacity 0.15s ease, visibility 0s linear 0.15s;
+          visibility: visible;
+          pointer-events: none;
+          transition: opacity 0.15s ease;
         }
         .task-item:hover .task-op,
         .task-item:focus-within .task-op,
@@ -6261,7 +6200,12 @@ export function TasksPage() {
         .task-item.task-editing .task-op {
           opacity: 1;
           visibility: visible;
-          transition: opacity 0.15s ease, visibility 0s;
+          pointer-events: auto;
+          transition: opacity 0.15s ease;
+        }
+        .task-op:focus-visible {
+          outline: 2px solid var(--accent);
+          outline-offset: 2px;
         }
         /* T00591：任务标题下方工具栏默认自动收起（高度折叠使标题更紧凑），鼠标悬浮任务标题/行后平滑展开 */
         .task-toolbar {

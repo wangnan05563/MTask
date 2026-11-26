@@ -3,8 +3,8 @@ import { Activity, CheckCircle2, Clock3, ListTodo, ShieldCheck } from 'lucide-re
 import { api, type TodayView } from '../api/client';
 import { Button } from '../ui/components';
 import { FlowProgress } from '../ui/FlowProgress'; // T01068-FR4.4：流光进度条
-import { FilterBar, PageHeader, PageShell } from '../ui/layout';
-import { ProjectListHint, useProjectList } from '../ui/projectList';
+import { PageHeader, PageShell } from '../ui/layout';
+import { useActiveProject } from '../ui/activeProject'; // T06395：项目范围统一由顶栏切换器驱动，页面不再保留独立下拉
 import { priorityBadgeLabel, priorityColor } from '../ui/priority'; // T05777：优先级分布沿用单源文案/颜色
 import { TODAY_REFRESH_ICON, TodayBoard } from './TodayBoard';
 
@@ -244,10 +244,8 @@ function StatsSection({ projectId }: { readonly projectId: string }) {
 }
 
 export function DashboardPage() {
-  // T02201：项目筛选列表走统一容错层（收件箱不作为统计对象，沿用原过滤口径）
-  const projectList = useProjectList({ excludeInbox: true });
-  const { projects } = projectList;
-  const [projectId, setProjectId] = useState('');
+  // T06395：首页不再维护独立的项目筛选状态——与顶栏切换器、任务、计划共用同一份全局上下文。
+  const [projectId] = useActiveProject();
   const [view, setView] = useState<TodayView | null>(null);
   const [todayLoading, setTodayLoading] = useState(true);
   const [todayError, setTodayError] = useState('');
@@ -296,21 +294,6 @@ export function DashboardPage() {
           </>
         )}
       />
-
-      <FilterBar ariaLabel="今日看板筛选" sticky={false}>
-        <select
-          value={projectId}
-          onChange={(e) => setProjectId(e.target.value)}
-          aria-label="今日看板项目筛选"
-          style={{ fontSize: 'var(--fs-s)', padding: '5px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}
-        >
-          <option value="">全部项目</option>
-          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
-        {/* T02201：「全部项目」在列表取数失败时仍是有效范围，故不禁用下拉，只把失败与重试入口显式化 */}
-        <ProjectListHint view={projectList} />
-        <span className="mt-today-filter-note">只读当前工作集，不统计历史资产</span>
-      </FilterBar>
 
       <TodayBoard
         data={view}

@@ -3021,15 +3021,9 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         minimal
         description="按项目编排串行/并行计划、里程碑与依赖；工期、估算、需求矩阵和测试用例在同一时间线上对齐。"
       />
-      {/* 工具条：项目选择 + 增删导入导出（T00491：操作控件/下拉默认隐藏，悬浮工具条显示） */}
+      {/* 工具条：项目范围由顶栏统一切换（T06395），本页不再保留独立项目下拉 */}
       <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
-        <PlanProjectPicker projects={projects} sortedProjects={sortedProjects} projectId={projectId} setProjectId={setProjectId}
-          onExpand={refreshProjCounts}
-          projDropRef={projDropRef} sortDropRef={sortDropRef} projOpen={projOpen} setProjOpen={setProjOpen} projDropPos={projDropPos} setProjDropPos={setProjDropPos}
-          projSortOpen={projSortOpen} setProjSortOpen={setProjSortOpen} projSortMode={projSortMode} setProjSortMode={setProjSortMode}
-          dragProjId={dragProjId} setDragProjId={setDragProjId} overProjId={overProjId} setOverProjId={setOverProjId}
-          dropReorder={dropReorder} togglePin={togglePin} isProjectPinned={isProjectPinned} />
-        {/* T02201：项目取数失败/加载中在工具条显式给出原因与重试入口（此前空下拉与真无项目同形） */}
+        {/* T02201：项目取数失败/加载中在工具条显式给出原因与重试入口 */}
         <ProjectListHint view={projectList} />
         {/* T00506 调整：任务类型选择移入「新建计划任务」弹窗（默认普通任务），工具栏不再展示 */}
         <PlanMoreMenu busy={busy} projectId={projectId} projectName={projects.find((p) => p.id === projectId)?.name ?? ''}
@@ -3229,7 +3223,7 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
                   ? '正在从服务端读取当前项目的计划数据，请稍候。'
                   : projectId
                     ? '可「新建计划任务」逐条创建，或「导入 Excel」批量导入；也可在 AI 工作台用「AI 项目计划导入」从 PRD 自动拆解。'
-                    : '顶栏当前为「全部项目」；请在工具条的项目选择器中选择具体项目后查看或编排计划。'}
+                    : '顶栏当前为「全部项目」；请先在顶栏切换器中选中具体项目后查看或编排计划。'}
                 action={!plansLoading && projectId ? { label: '新建计划任务', onClick: () => void createPlan() } : undefined}
               />
             </td></tr>
