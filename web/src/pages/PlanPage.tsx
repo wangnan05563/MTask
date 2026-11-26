@@ -23,7 +23,7 @@ import { FontColorButton } from '../ui/FontColorButton';
 import { saveBlob } from '../utils/download'; // T03197：分享快照下载（文件名取自服务端 Content-Disposition）
 import { api, type AITool } from '../api/client';
 import { PageHeader, PageShell } from '../ui/layout'; // T06327：核心页统一页面壳与页头
-import { TaskMoreMenu, type TaskMoreMenuItem } from '../ui/TaskMoreMenu'; // T06394：计划页低频操作收口到「更多」下拉，复用任务页同款交互
+// T06410：计划页低频操作改为行尾「更多」+ 行内展开面板，不再使用下拉菜单
 import { useActiveProject } from '../ui/activeProject'; // T06329：计划项目跟随顶栏全局上下文
 import { askConfirm, askInput, askInputEx, showReport } from '../ui/dialogs';
 import { clearSessionState, usePersistentState, useSessionState } from '../ui/session';
@@ -391,9 +391,50 @@ function PlanBatchBar({ planSelIds, plans, selectAllPlans, planBatchStatus, plan
   );
 }
 
-/** 工具栏：低频操作收口到「更多」菜单（T06394）
- *  新建/导入/导出/模板/分享快照不再各占一个图标按钮，统一复用任务页 TaskMoreMenu 的
- *  触发图标、Portal 定位、外点/Esc 收起与键盘焦点行为；每个回调保持原实现不变。 */
+type PlanMoreGroupKey = 'plan' | 'data' | 'share';
+
+interface PlanMoreAction {
+  readonly key: string;
+  readonly label: string;
+  readonly ariaLabel: string;
+  readonly title: string;
+  readonly icon: React.ReactNode;
+  readonly disabled?: boolean;
+  readonly group: PlanMoreGroupKey;
+  readonly onClick: () => void;
+}
+
+const PLAN_MORE_GROUPS: ReadonlyArray<{ key: PlanMoreGroupKey; label: string }> = [
+  { key: 'plan', label: '计划' },
+  { key: 'data', label: '数据' },
+  { key: 'share', label: '分享' },
+];
+
+const PLAN_MORE_PANEL_STYLE: React.CSSProperties = {
+  order: 9, flexBasis: '100%', width: '100%', minWidth: 0,
+  display: 'flex', flexDirection: 'column', gap: 6,
+  padding: '8px 10px', border: '1px solid var(--border-strong)', borderRadius: 8,
+  background: 'var(--card-bg)', boxShadow: '0 2px 8px rgba(0,0,0,.06)',
+};
+const PLAN_MORE_GROUP_STYLE: React.CSSProperties = {
+  display: 'flex', alignItems: 'flex-start', gap: 8, width: '100%', minWidth: 0,
+};
+const PLAN_MORE_GROUP_LABEL_STYLE: React.CSSProperties = {
+  width: 44, flex: '0 0 44px', paddingTop: 5, fontSize: 'var(--fs-xs)',
+  color: 'var(--text-muted)', textAlign: 'left',
+};
+const PLAN_MORE_GROUP_ROW_STYLE: React.CSSProperties = {
+  display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', flex: 1, minWidth: 0,
+};
+const PLAN_MORE_ITEM_STYLE: React.CSSProperties = {
+  ...btnStyle, display: 'inline-flex', alignItems: 'center', gap: 6,
+  fontSize: 'var(--fs-s)', padding: '5px 8px', whiteSpace: 'nowrap',
+};
+
+/** 工具栏：行尾「更多」按钮 + 行内展开面板（T06410）
+ *  把 T06394 的下拉菜单改成任务页同款展开式布局：触发按钮固定在工具条行尾，
+ *  点击后整行展开低频操作；面板按「计划 / 数据 / 分享」分类，窄屏组内换行。
+ *  原六个入口的回调、禁用条件与分享快照弹窗状态保持不变。 */
 function PlanMoreMenu({ busy, projectId, projectName, createPlan, importExcel, exportExcel, exportMarkdown, downloadTemplate }: {
   readonly busy: boolean; readonly projectId: string; readonly projectName: string;
   readonly createPlan: () => Promise<void>;
@@ -402,43 +443,109 @@ function PlanMoreMenu({ busy, projectId, projectName, createPlan, importExcel, e
   readonly downloadTemplate: () => Promise<void>;
 }) {
   const importRef = useRef<HTMLInputElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const btnRef = useRef<HTMLButtonElement | null>(null);
+  const [open, setOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
-  const items: TaskMoreMenuItem[] = [
+  const items: PlanMoreAction[] = [
     {
       key: 'create-plan', label: '新建计划任务', ariaLabel: '新建计划任务',
       title: '新建计划任务 — 弹窗中选择任务类型（普通/里程碑/日常）',
-      icon: <CalendarPlus size={14} />, disabled: busy, onClick: () => { void createPlan(); },
+      icon: <CalendarPlus size={14} />, disabled: busy, group: 'plan', onClick: () => { void createPlan(); },
     },
     {
       key: 'import-excel', label: '导入 Excel', ariaLabel: '导入 Excel',
       title: '导入 Excel — 批量导入计划任务（任一行校验失败则整体不入库）',
-      icon: <Upload size={14} />, onClick: () => importRef.current?.click(),
+      icon: <Upload size={14} />, group: 'data', onClick: () => importRef.current?.click(),
     },
     {
       key: 'export-excel', label: '导出 Excel', ariaLabel: '导出 Excel',
       title: '导出 Excel — 导出当前项目全部计划',
-      icon: <Download size={14} />, onClick: () => { void exportExcel(); },
+      icon: <Download size={14} />, group: 'data', onClick: () => { void exportExcel(); },
     },
     {
       key: 'export-markdown', label: '导出 Markdown', ariaLabel: '导出 Markdown',
       title: '导出 Markdown — 任务清单 + 计划 + 需求矩阵单文档',
-      icon: <FileText size={14} />, onClick: () => { void exportMarkdown(); },
+      icon: <FileText size={14} />, group: 'data', onClick: () => { void exportMarkdown(); },
     },
     {
       key: 'download-template', label: '下载模板', ariaLabel: '下载导入模板',
       title: '下载模板 — 获取导入用 Excel 模板',
-      icon: <FileSpreadsheet size={14} />, onClick: () => { void downloadTemplate(); },
+      icon: <FileSpreadsheet size={14} />, group: 'data', onClick: () => { void downloadTemplate(); },
     },
     {
       key: 'share-snapshot', label: '分享快照', ariaLabel: '分享快照',
       title: '分享快照 — 导出脱敏 PDF（项目统计 + 里程碑 + 逾期计划摘要），默认不含计划标题',
-      icon: <Share2 size={14} />, disabled: !projectId, onClick: () => setShareOpen(true),
+      icon: <Share2 size={14} />, disabled: !projectId, group: 'share', onClick: () => setShareOpen(true),
     },
   ];
+  const groups = PLAN_MORE_GROUPS.map((g) => ({ ...g, items: items.filter((it) => it.group === g.key) }))
+    .filter((g) => g.items.length > 0);
+
+  // 外点 / Esc 收起；Esc 把焦点还给触发按钮，保持与任务页「更多」一致的键盘回位
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (btnRef.current?.contains(target) || panelRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setOpen(false);
+      btnRef.current?.focus();
+    };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const run = (it: PlanMoreAction) => {
+    if (it.disabled) return;
+    setOpen(false);
+    it.onClick();
+  };
+
   return (
     <>
-      <TaskMoreMenu items={items} triggerTitle="更多 — 新建计划、导入导出、模板与分享快照" />
-      {/* 文件选择器不放进菜单按钮内，避免 button 嵌套 input / label 的非法结构 */}
+      <button
+        ref={btnRef}
+        type="button"
+        data-t06410="more-trigger"
+        className="tbtn-anim"
+        onClick={() => setOpen((v) => !v)}
+        title="更多 — 新建计划、导入导出、模板与分享快照"
+        aria-label="更多：计划工具与数据操作"
+        aria-expanded={open}
+        style={{ ...btnStyle, marginLeft: 'auto', padding: '6px 8px', color: open ? 'var(--accent)' : 'var(--text-muted)', borderColor: open ? 'var(--accent)' : undefined }}
+      >
+        <MoreHorizontal size={13} />
+      </button>
+      {open && (
+        <div ref={panelRef} role="group" aria-label="更多操作：计划" data-t06410="more-panel" style={PLAN_MORE_PANEL_STYLE}>
+          {groups.map((g, gi) => (
+            <div key={g.key} data-t06410-group={g.key}
+              style={{ ...PLAN_MORE_GROUP_STYLE, paddingBottom: gi === groups.length - 1 ? 0 : 6, borderBottom: gi === groups.length - 1 ? 'none' : '1px solid var(--border)' }}>
+              <span style={PLAN_MORE_GROUP_LABEL_STYLE}>{g.label}</span>
+              <div style={PLAN_MORE_GROUP_ROW_STYLE}>
+                {g.items.map((it) => (
+                  <button key={it.key} type="button" data-t06410-item={it.key}
+                    onClick={() => run(it)} disabled={it.disabled}
+                    aria-label={it.ariaLabel} title={it.title}
+                    style={{ ...PLAN_MORE_ITEM_STYLE, opacity: it.disabled ? .55 : 1, cursor: it.disabled ? 'not-allowed' : 'pointer' }}>
+                    {it.icon}
+                    <span>{it.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {/* 文件选择器不放进面板按钮内，避免 button 嵌套 input / label 的非法结构 */}
       <input ref={importRef} type="file" accept=".xlsx" style={FILE_INPUT_SR_ONLY}
         onChange={(e) => { const f = e.target.files?.[0]; if (f) { void importExcel(f); e.target.value = ''; } }} />
       <ShareSnapshotDialog open={shareOpen} onClose={() => setShareOpen(false)} projectId={projectId} projectName={projectName} />
@@ -450,7 +557,7 @@ function PlanMoreMenu({ busy, projectId, projectName, createPlan, importExcel, e
  * T03197（PRD PM-404）：脱敏分享快照弹窗。
  * 默认「不包含计划标题」；勾选后必须在当前对话框看到明确提示才允许下载，
  * 避免标题在用户不知情的情况下随 PDF 外发。快照本身不含描述、处理结果与密钥（服务端白名单取数）。
- * T06394：由独立工具条按钮改为「更多」菜单项，弹窗状态由 PlanMoreMenu 持有。
+ * T06410：由独立工具条按钮改为「更多」行内展开面板项，弹窗状态由 PlanMoreMenu 持有。
  */
 function ShareSnapshotDialog({ open, onClose, projectId, projectName }: {
   readonly open: boolean; readonly onClose: () => void;
@@ -556,7 +663,7 @@ function ShareSnapshotDialog({ open, onClose, projectId, projectName }: {
   return (
     <button onClick={() => runAsync(batchEvaluatePlans())} disabled={evalBusy || busy || blocked}
       title={blocked ? (blockedTitle ?? baseTitle) : `AI 评估（${plans.length} 条待评估）— 对全部计划条目评估工期合理性/风险与建议，结果自动录入各条描述（确认后执行）`}
-      aria-label={`批量 AI 评估：${plans.length} 条待评估`} data-t03622="eval"
+      aria-label={`批量 AI 评估：${plans.length} 条待评估`} data-t03622="eval" data-t06410="eval"
       className={'op-hidden' + (evalBusy ? ' task-breathe' : '')}
       style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)', padding: '6px 8px' }}>
       {evalBusy ? <Loader2 size={13} className="aispin" /> : <Zap size={13} />}
@@ -583,8 +690,8 @@ function PlanComplexityButton({ backfill, evalBusy, busy, missing }: {
       disabled={evalBusy || busy}
       title={title}
       aria-label={missing > 0 ? `批量补算复杂度（${missing} 行待评估）` : '批量补算复杂度'}
-      data-t03622="complexity" data-complexity-missing={missing}
-      className={evalBusy ? 'task-breathe' : undefined}
+      data-t03622="complexity" data-t06410="complexity" data-complexity-missing={missing}
+      className={'op-hidden' + (evalBusy ? ' task-breathe' : '')}
       style={{ ...btnStyle, color: missing > 0 ? 'var(--warning)' : 'var(--text-secondary)', padding: '6px 8px', gap: 4 }}
     >
       {evalBusy ? <Loader2 size={13} className="aispin" /> : <Gauge size={13} />}
@@ -602,7 +709,7 @@ function PlanMultiToggle({ planMulti, setPlanMulti, setPlanSelIds }: {
 }) {
   return (
     <button onClick={() => { setPlanMulti((m) => !m); setPlanSelIds([]); }} title={planMulti ? '退出多选模式' : '多选模式 — 勾选计划后批量改状态/挂接/归档/评估'} aria-label={planMulti ? '退出多选模式' : '进入多选模式'}
-      className="tbtn-anim op-hidden"
+      className={'tbtn-anim' + (planMulti ? '' : ' op-hidden')} data-t06410="multi"
       style={{ fontSize: 'var(--fs-s)', padding: '5px 7px', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', border: '1px solid var(--border-strong)', background: planMulti ? 'var(--accent)' : 'transparent', color: planMulti ? 'var(--accent-text)' : 'var(--text)' }}>
       {planMulti ? <Check size={13} /> : <ListChecks size={13} />}
     </button>
@@ -3022,24 +3129,9 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         description="按项目编排串行/并行计划、里程碑与依赖；工期、估算、需求矩阵和测试用例在同一时间线上对齐。"
       />
       {/* 工具条：项目范围由顶栏统一切换（T06395），本页不再保留独立项目下拉 */}
-      <div className="op-host" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+      <div className="op-host" data-t06410="toolbar" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
         {/* T02201：项目取数失败/加载中在工具条显式给出原因与重试入口 */}
         <ProjectListHint view={projectList} />
-        {/* T00506 调整：任务类型选择移入「新建计划任务」弹窗（默认普通任务），工具栏不再展示 */}
-        <PlanMoreMenu busy={busy} projectId={projectId} projectName={projects.find((p) => p.id === projectId)?.name ?? ''}
-          createPlan={createPlan} importExcel={importExcel} exportExcel={exportExcel} exportMarkdown={exportMarkdown} downloadTemplate={downloadTemplate} />
-        <PlanEvalButton batchEvaluatePlans={batchEvaluatePlans} evalBusy={evalBusy} busy={busy} evalLabel={evalLabel} plans={plans}
-          blocked={aiDown} blockedTitle={aiBlockedTitle(readiness, 'AI 评估 — 对全部计划条目评估工期合理性/风险与建议，结果自动录入各条描述（确认后执行）')} />
-        <PlanComplexityButton backfill={backfillComplexity} evalBusy={evalBusy} busy={busy}
-          missing={plans.filter((p) => p.complexity == null).length} />
-        <PlanMultiToggle planMulti={planMulti} setPlanMulti={setPlanMulti} setPlanSelIds={setPlanSelIds} />
-        {planMulti && planSelIds.length > 0 && (
-          <PlanBatchBar planSelIds={planSelIds} plans={plans} selectAllPlans={selectAllPlans}
-            planBatchStatus={planBatchStatus} planBatchAttach={planBatchAttach} batchSetStatus={batchSetStatus} batchEvaluateSelected={batchEvaluateSelected}
-            batchArchivePlans={batchArchivePlans} batchAttach={batchAttach} batchCreateLinkedTodos={batchCreateLinkedTodos}
-            batchApplyColor={batchApplyColor} evalBusy={evalBusy} busy={busy} />
-        )}
-        {evalBusy && <output className="flash-toast"><span className="task-breathe" style={{ color: 'var(--accent)' }}>AI 评估中{evalLabel ? `（${evalLabel}）` : ''}…</span></output>}
         <PlanViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
         <PlanPanelToggles showPrd={showPrd} setShowPrd={setShowPrd} showMatrix={showMatrix} setShowMatrix={setShowMatrix}
           showTestCases={showTestCases} setShowTestCases={setShowTestCases} showSprint={showSprint} setShowSprint={setShowSprint}
@@ -3057,7 +3149,23 @@ ${p.start_date} ~ ${p.end_date}（${p.duration_days} 工作日）· 进度 ${p.p
         {holidaysView.phase === 'error' && holidays.length === 0 && (
           <span data-t02213="holidays-math-warning" style={{ fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>当前工期按「无节假日」口径计算</span>
         )}
-        <button onClick={reload} style={btnStyle} title="刷新" aria-label="刷新计划数据"><RefreshCw size={13} /></button>
+        {/* T06410：AI 评估 / 补算复杂度 / 多选迁到刷新前，默认随 op-hidden 隐身，悬浮或键盘聚焦时显现 */}
+        <PlanEvalButton batchEvaluatePlans={batchEvaluatePlans} evalBusy={evalBusy} busy={busy} evalLabel={evalLabel} plans={plans}
+          blocked={aiDown} blockedTitle={aiBlockedTitle(readiness, 'AI 评估 — 对全部计划条目评估工期合理性/风险与建议，结果自动录入各条描述（确认后执行）')} />
+        <PlanComplexityButton backfill={backfillComplexity} evalBusy={evalBusy} busy={busy}
+          missing={plans.filter((p) => p.complexity == null).length} />
+        <PlanMultiToggle planMulti={planMulti} setPlanMulti={setPlanMulti} setPlanSelIds={setPlanSelIds} />
+        {planMulti && planSelIds.length > 0 && (
+          <PlanBatchBar planSelIds={planSelIds} plans={plans} selectAllPlans={selectAllPlans}
+            planBatchStatus={planBatchStatus} planBatchAttach={planBatchAttach} batchSetStatus={batchSetStatus} batchEvaluateSelected={batchEvaluateSelected}
+            batchArchivePlans={batchArchivePlans} batchAttach={batchAttach} batchCreateLinkedTodos={batchCreateLinkedTodos}
+            batchApplyColor={batchApplyColor} evalBusy={evalBusy} busy={busy} />
+        )}
+        {evalBusy && <output className="flash-toast"><span className="task-breathe" style={{ color: 'var(--accent)' }}>AI 评估中{evalLabel ? `（${evalLabel}）` : ''}…</span></output>}
+        <button onClick={reload} data-t06410="refresh" style={btnStyle} title="刷新" aria-label="刷新计划数据"><RefreshCw size={13} /></button>
+        {/* T06410：低频操作收口为行尾「更多」+ 行内展开面板；新建计划任务仍在该面板内（T00506 不回到主排） */}
+        <PlanMoreMenu busy={busy} projectId={projectId} projectName={projects.find((p) => p.id === projectId)?.name ?? ''}
+          createPlan={createPlan} importExcel={importExcel} exportExcel={exportExcel} exportMarkdown={exportMarkdown} downloadTemplate={downloadTemplate} />
         {/* T00735：移除本页原有的「向导」按钮——与全局导航右上角常驻按钮重复（两者打开同一份项目管理向导内容），
             统一保留全局那个（已改为静态图标、无呼吸动画） */}
         {notice && <output className="flash-toast">{notice}</output>}

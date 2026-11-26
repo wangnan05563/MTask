@@ -1,0 +1,451 @@
+{
+  "task": "T06410",
+  "generatedAt": "2026-11-26T12:01:28.616Z",
+  "checks": [
+    {
+      "name": "T06410-00 探针项目与计划数据就绪",
+      "ok": true,
+      "extra": {
+        "project": "T06410 计划工具栏验收",
+        "projectId": "58c3d20b-707e-4366-9926-685357792087",
+        "plans": 3
+      }
+    },
+    {
+      "name": "T06410-01 计划页工具栏与计划行就绪",
+      "ok": true,
+      "extra": {
+        "toolbar": {
+          "left": 288,
+          "right": 1392,
+          "top": 84,
+          "bottom": 111,
+          "width": 1104,
+          "height": 27
+        },
+        "trigger": {
+          "left": 1361,
+          "right": 1392,
+          "top": 84,
+          "bottom": 111,
+          "width": 31,
+          "height": 27
+        },
+        "panel": null,
+        "refresh": {
+          "left": 862,
+          "right": 893,
+          "top": 87,
+          "bottom": 108,
+          "width": 31,
+          "height": 21
+        },
+        "view": {
+          "left": 288,
+          "right": 436,
+          "top": 84,
+          "bottom": 111,
+          "width": 148,
+          "height": 27
+        },
+        "prd": {
+          "left": 444,
+          "right": 475,
+          "top": 87,
+          "bottom": 108,
+          "width": 31,
+          "height": 21
+        },
+        "eval": {
+          "left": 727,
+          "right": 768,
+          "top": 84,
+          "bottom": 111,
+          "width": 41,
+          "height": 27
+        },
+        "complexity": {
+          "left": 776,
+          "right": 817,
+          "top": 84,
+          "bottom": 111,
+          "width": 41,
+          "height": 27
+        },
+        "multi": {
+          "left": 825,
+          "right": 854,
+          "top": 85,
+          "bottom": 110,
+          "width": 29,
+          "height": 25
+        },
+        "seqOk": true,
+        "triggerLast": true,
+        "triggerAfterRefresh": true,
+        "triggerRightGap": 0,
+        "triggerExpanded": "false",
+        "panelDisplay": "none",
+        "opacities": {
+          "eval": "0",
+          "complexity": "0",
+          "multi": "0"
+        },
+        "viewport": [
+          1440,
+          1000
+        ],
+        "scrollWidth": 1440
+      }
+    },
+    {
+      "name": "T06410-02 主排顺序：视图→PRD→AI评估→补算→多选→刷新→更多",
+      "ok": true,
+      "extra": {
+        "rects": {
+          "view": {
+            "left": 288,
+            "right": 436,
+            "top": 84,
+            "bottom": 111,
+            "width": 148,
+            "height": 27
+          },
+          "prd": {
+            "left": 444,
+            "right": 475,
+            "top": 87,
+            "bottom": 108,
+            "width": 31,
+            "height": 21
+          },
+          "eval": {
+            "left": 727,
+            "right": 768,
+            "top": 84,
+            "bottom": 111,
+            "width": 41,
+            "height": 27
+          },
+          "complexity": {
+            "left": 776,
+            "right": 817,
+            "top": 84,
+            "bottom": 111,
+            "width": 41,
+            "height": 27
+          },
+          "multi": {
+            "left": 825,
+            "right": 854,
+            "top": 85,
+            "bottom": 110,
+            "width": 29,
+            "height": 25
+          },
+          "refresh": {
+            "left": 862,
+            "right": 893,
+            "top": 87,
+            "bottom": 108,
+            "width": 31,
+            "height": 21
+          },
+          "trigger": {
+            "left": 1361,
+            "right": 1392,
+            "top": 84,
+            "bottom": 111,
+            "width": 31,
+            "height": 27
+          }
+        }
+      }
+    },
+    {
+      "name": "T06410-03 三按钮默认 op-hidden 隐身",
+      "ok": true,
+      "extra": {
+        "eval": "0",
+        "complexity": "0",
+        "multi": "0"
+      }
+    },
+    {
+      "name": "T06410-04 「更多」固定在刷新后的行尾",
+      "ok": true,
+      "extra": {
+        "triggerLast": true,
+        "afterRefresh": true,
+        "rightGap": 0,
+        "expanded": "false"
+      }
+    },
+    {
+      "name": "T06410-05 收起态 1440 无横向溢出",
+      "ok": true,
+      "extra": {
+        "viewport": [
+          1440,
+          1000
+        ],
+        "scrollWidth": 1440
+      }
+    },
+    {
+      "name": "T06410-06 悬浮工具栏时三按钮平滑显现",
+      "ok": true,
+      "extra": {
+        "eval": "1",
+        "complexity": "1",
+        "multi": "1"
+      }
+    },
+    {
+      "name": "T06410-07 移出工具栏后三按钮恢复隐身",
+      "ok": true,
+      "extra": {
+        "eval": "0",
+        "complexity": "0",
+        "multi": "0"
+      }
+    },
+    {
+      "name": "T06410-08 「更多」展开为计划/数据/分享三组",
+      "ok": true,
+      "extra": [
+        {
+          "name": "plan",
+          "label": "计划",
+          "rect": {
+            "left": 299,
+            "right": 1381,
+            "top": 128,
+            "bottom": 164,
+            "width": 1082,
+            "height": 36
+          },
+          "count": 1,
+          "text": "计划\n新建计划任务"
+        },
+        {
+          "name": "data",
+          "label": "数据",
+          "rect": {
+            "left": 299,
+            "right": 1381,
+            "top": 170,
+            "bottom": 206,
+            "width": 1082,
+            "height": 36
+          },
+          "count": 4,
+          "text": "数据\n导入 Excel\n导出 Excel\n导出 Markdown\n下载模板"
+        },
+        {
+          "name": "share",
+          "label": "分享",
+          "rect": {
+            "left": 299,
+            "right": 1381,
+            "top": 212,
+            "bottom": 241,
+            "width": 1082,
+            "height": 29
+          },
+          "count": 1,
+          "text": "分享\n分享快照"
+        }
+      ]
+    },
+    {
+      "name": "T06410-09 「更多」面板独占新行并纵向分类",
+      "ok": true,
+      "extra": {
+        "panelFullRow": true,
+        "newLine": true,
+        "order": "9",
+        "groupsVertical": true,
+        "panel": {
+          "left": 288,
+          "right": 1392,
+          "top": 119,
+          "bottom": 250,
+          "width": 1104,
+          "height": 131
+        },
+        "toolbar": {
+          "left": 288,
+          "right": 1392,
+          "top": 84,
+          "bottom": 250,
+          "width": 1104,
+          "height": 166
+        }
+      }
+    },
+    {
+      "name": "T06410-10 原六个入口与导入 input 保留",
+      "ok": true,
+      "extra": {
+        "itemKeys": [
+          "create-plan",
+          "import-excel",
+          "export-excel",
+          "export-markdown",
+          "download-template",
+          "share-snapshot"
+        ],
+        "hasInput": true,
+        "role": "group"
+      }
+    },
+    {
+      "name": "T06410-11 「更多」展开后 1440 无横向溢出",
+      "ok": true,
+      "extra": {
+        "panelOverflow": {
+          "scrollWidth": 1102,
+          "clientWidth": 1102
+        },
+        "pageScrollWidth": 1440,
+        "viewport": [
+          1440,
+          1000
+        ]
+      }
+    },
+    {
+      "name": "T06410-12 「分享快照」入口打开脱敏分享弹窗",
+      "ok": true,
+      "extra": {
+        "open": true,
+        "label": "脱敏分享快照",
+        "projectText": true
+      }
+    },
+    {
+      "name": "T06410-13 Esc 关闭分享弹窗",
+      "ok": true
+    },
+    {
+      "name": "T06410-14 点击外部收起「更多」",
+      "ok": true
+    },
+    {
+      "name": "T06410-15 Esc 收起「更多」并把焦点还给触发按钮",
+      "ok": true,
+      "extra": {
+        "closed": true,
+        "focused": true
+      }
+    },
+    {
+      "name": "T06410-16 1024 收起态无横向溢出",
+      "ok": true,
+      "extra": {
+        "viewport": [
+          1024,
+          900
+        ],
+        "scrollWidth": 1024
+      }
+    },
+    {
+      "name": "T06410-17 1024 「更多」面板自适应无溢出",
+      "ok": true,
+      "extra": {
+        "panel": {
+          "left": 288,
+          "right": 976,
+          "top": 119,
+          "bottom": 250,
+          "width": 688,
+          "height": 131
+        },
+        "panelOverflow": {
+          "scrollWidth": 686,
+          "clientWidth": 686
+        },
+        "pageScrollWidth": 1024,
+        "viewport": [
+          1024,
+          900
+        ]
+      }
+    },
+    {
+      "name": "T06410-18 760 收起态无横向溢出",
+      "ok": true,
+      "extra": {
+        "viewport": [
+          760,
+          900
+        ],
+        "scrollWidth": 760
+      }
+    },
+    {
+      "name": "T06410-19 760 「更多」面板换行且无溢出",
+      "ok": true,
+      "extra": {
+        "panel": {
+          "left": 288,
+          "right": 712,
+          "top": 154,
+          "bottom": 320,
+          "width": 424,
+          "height": 166
+        },
+        "panelOverflow": {
+          "scrollWidth": 422,
+          "clientWidth": 422
+        },
+        "pageScrollWidth": 760,
+        "viewport": [
+          760,
+          900
+        ],
+        "groups": [
+          {
+            "name": "plan",
+            "rect": {
+              "left": 299,
+              "right": 701,
+              "top": 163,
+              "bottom": 199,
+              "width": 402,
+              "height": 36
+            },
+            "count": 1
+          },
+          {
+            "name": "data",
+            "rect": {
+              "left": 299,
+              "right": 701,
+              "top": 205,
+              "bottom": 276,
+              "width": 402,
+              "height": 71
+            },
+            "count": 4
+          },
+          {
+            "name": "share",
+            "rect": {
+              "left": 299,
+              "right": 701,
+              "top": 282,
+              "bottom": 311,
+              "width": 402,
+              "height": 29
+            },
+            "count": 1
+          }
+        ]
+      }
+    }
+  ],
+  "failed": 0
+}
