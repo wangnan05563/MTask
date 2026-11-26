@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { performance } from 'node:perf_hooks';
 import type Database from 'better-sqlite3';
-import { INBOX_SCHEMA_SQL } from '../src/db/inboxSchema.ts';
+import { INBOX_SCHEMA_SQL, ensureInboxSchema } from '../src/db/inboxSchema.ts';
 import { InboxError, InboxService } from '../src/services/InboxService.ts';
 import type { TaskInput, TaskView } from '../src/services/TaskService.ts';
 
@@ -112,7 +112,7 @@ const service = new InboxService(db as unknown as Database.Database, createTask)
 const cols = (db.prepare('PRAGMA table_info(inbox_items)').all() as Array<{ name: string }>).map((r) => r.name);
 for (const col of ['id', 'type', 'source', 'task_id', 'run_id', 'project_id', 'title', 'body', 'severity',
   'status', 'assignee', 'event_key', 'event_version', 'unread', 'resolution', 'created_at', 'updated_at', 'claimed_at',
-  'resolved_at', 'last_seen_at']) {
+  'claim_expires_at', 'resolved_at', 'last_seen_at']) {
   assert.ok(cols.includes(col), `inbox_items 缺列 ${col}`);
 }
 const indexes = (db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='inbox_items'").all() as Array<{ name: string }>)
@@ -175,25 +175,56 @@ assert.equal(reclaimed.assignee, '我');
 assert.equal(reclaimed.status, 'open');
 assert.equal(service.summary().counts.open, 5, 'claim/unclaim 后 open 仍为 5');
 assert.equal(service.list({ assignee: '我' }).total, 1, '按 assignee 筛选应只到 1 条');
+assert.equal(service.list({ claimed: 'mine' }).total, 1, 'claimed=mine 应由服务端身份解析为 1 条');
 assert.equal(service.list({ claimed: 'no' }).total, 4, '未认领筛选应剩 4 条');
 assert.equal(service.audit(first.id).map((a) => a.action).sort().join(','), 'claim,claim,unclaim', 'claim/unclaim 应留审计');
 
-// 6) ignore：终态、open 减一
+// 5.1) 认领租约到期：不依赖人工取消，sync 自动释放并写审计
+db.prepare('UPDATE inbox_items SET claim_expires_at = ? WHERE id = ?').run(stale, first.id);
+service.sync();
+const expired = service.list({ type: 'ai_failed' }).items.find((i) => i.id === first.id)!;
+assert.equal(expired.assignee, '', '过期认领应自动释放');
+assert.equal(expired.claim_expires_at, null, '释放后应清空租约时间');
+assert.equal(service.list({ claimed: 'mine' }).total, 0, '过期后不应再算我认领');
+assert.equal(service.audit(first.id)[0]?.detail, 'claim_expired', '自动释放应写审计');
+// 5.2) 管理员强制释放：不等租约到期也能解锁
+const forceClaimed = service.claim(first.id);
+assert.equal(forceClaimed.assignee, '我');
+const forced = service.forceUnclaim(first.id, '管理员');
+assert.equal(forced.assignee, '', '强制释放应清空 assignee');
+assert.equal(forced.claim_expires_at, null, '强制释放应清空租约');
+assert.equal(service.audit(first.id)[0]?.detail, 'force_release', '强制释放应写审计');
+assert.equal(service.list({ claimed: 'mine' }).total, 0, '强制释放后不应再算我认领');
+
+// 6) ignore：终态、open 减一；终态必须清空认领信息，避免 UI 显示「我 · 已解决」
 const decision = service.list({ type: 'decision' }).items[0];
+const claimedDecision = service.claim(decision.id);
+assert.equal(claimedDecision.assignee, '我');
 const ignored = service.ignore(decision.id);
 assert.equal(ignored.status, 'ignored');
 assert.equal(ignored.resolution, 'ignored_by_user');
+assert.equal(ignored.assignee, '', '终态应清空 assignee');
+assert.equal(ignored.claimed_at, null, '终态应清空 claimed_at');
+assert.equal(ignored.claim_expires_at, null, '终态应清空 claim_expires_at');
+const reopenedManual = service.reopen(decision.id, '我');
+assert.equal(reopenedManual.status, 'open');
+assert.equal(reopenedManual.unread, true);
+assert.equal(service.audit(decision.id)[0]?.action, 'reopen', '手动恢复应写审计');
+assert.equal(service.ignore(decision.id, '我').status, 'ignored');
 assert.equal(service.summary().counts.open, 4);
 assert.equal(service.list({ status: 'ignored' }).total, 1);
 
 // 7) convert：无 task_id 的系统条目转任务，条目变 resolved 并写 task_id
 const system = service.list({ type: 'system' }).items[0];
+assert.equal(service.claim(system.id).assignee, '我');
 const converted = service.convert(system.id, 'p1');
 assert.equal(converted.task.id, createdRows[0].id);
 assert.equal(converted.task.project_id, 'p1');
 assert.equal(converted.item.status, 'resolved');
 assert.equal(converted.item.resolution, 'converted_to_task');
 assert.equal(converted.item.task_id, converted.task.id);
+assert.equal(converted.item.assignee, '', '转任务终态应清空 assignee');
+assert.equal(converted.item.claim_expires_at, null, '转任务终态应清空租约');
 assert.equal(service.summary().counts.open, 3, '转任务后 open 再减一');
 assert.equal(service.list({ status: 'resolved' }).total, 1);
 
@@ -214,6 +245,8 @@ service.sync();
 const gone = service.list({ status: 'resolved' }).items.find((i) => i.id === goneId);
 assert.ok(gone, '消失事件应被自动收敛为 resolved');
 assert.equal(gone.resolution, 'source_cleared');
+assert.equal(gone.assignee, '', '自动收敛应清空 assignee');
+assert.equal(service.audit(goneId)[0]?.action, 'source_cleared', '自动收敛应写审计');
 assert.equal(service.summary().counts.open, 3, '自动收敛后 open 应剩 3（转任务后 3 条 + 手工塞入的 1 条再收敛）');
 
 // 9) 同一来源再次发生：新 ai_state_at / 新 todo→done 事件应重开终态条目
@@ -225,6 +258,7 @@ service.sync();
 const reopenedAi = service.list({ type: 'ai_failed' }).items.find((i) => i.id === aiItem.id)!;
 assert.equal(reopenedAi.status, 'open', '新 ai_state_at 应重开被忽略的 AI 失败条目');
 assert.equal(reopenedAi.assignee, '', '新事件实例应释放旧认领');
+assert.equal(service.audit(aiItem.id)[0]?.action, 'reopen', '新事件实例应写 reopen 审计');
 // 同一事件实例再次忽略后保持 ignored，不被每轮同步重新打开
 assert.equal(service.ignore(reopenedAi.id, '我').status, 'ignored');
 service.sync();
@@ -270,6 +304,85 @@ assert.equal(oldGone.resolution, 'source_cleared', '来源消失后才应收敛'
 
 // 11) 项目不属于收件箱的条目不存在
 assert.equal(service.list({ projectId: 'sys-inbox' }).total, 0);
+
+// 12) convert 原子性：建任务抛错时，条目不落到 resolved / task_id
+db.prepare(`
+  INSERT INTO inbox_items
+    (id, type, source, task_id, project_id, title, body, severity, status, assignee, event_key, unread,
+     resolution, created_at, updated_at, last_seen_at)
+  VALUES (?, 'ai_failed', 'manual', NULL, 'p1', '原子回滚测试', '', 'danger', 'open', '', ?, 1, '', ?, ?, ?)
+`).run('atomic-item', 'manual:atomic', recent, recent, recent);
+const failingConvert = new InboxService(db as unknown as Database.Database, () => {
+  throw new Error('create failed for atomic test');
+});
+assert.throws(() => failingConvert.convert('atomic-item', 'p1'), /create failed/);
+const atomicRow = db.prepare('SELECT status, task_id, assignee FROM inbox_items WHERE id = ?').get('atomic-item') as {
+  status: string; task_id: string | null; assignee: string;
+};
+assert.equal(atomicRow.status, 'open', 'convert 失败后条目必须仍 open');
+assert.equal(atomicRow.task_id, null, 'convert 失败后不能写 task_id');
+assert.equal(atomicRow.assignee, '', 'convert 失败后不能留下认领残留');
+db.prepare('DELETE FROM inbox_items WHERE id = ?').run('atomic-item');
+
+// 13) 老库迁移：补列、审计表、终态边界回填（解决后发生的新事件不能被吞）
+const legacyDb = new DatabaseSync(':memory:');
+legacyDb.exec(`
+  CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+  CREATE TABLE tasks (
+    id TEXT PRIMARY KEY, task_no TEXT, project_id TEXT NOT NULL, title TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'todo', ai_state TEXT NOT NULL DEFAULT '',
+    ai_state_at TEXT NOT NULL DEFAULT '', ruling_at TEXT, updated_at TEXT NOT NULL
+  );
+  CREATE TABLE exec_sessions (
+    id TEXT PRIMARY KEY, status TEXT NOT NULL, started_at TEXT NOT NULL, last_heartbeat TEXT NOT NULL
+  );
+  CREATE TABLE task_events (
+    id TEXT PRIMARY KEY, task_id TEXT NOT NULL, kind TEXT NOT NULL, detail TEXT NOT NULL, created_at TEXT NOT NULL
+  );
+  CREATE TABLE inbox_items (
+    id TEXT PRIMARY KEY, type TEXT NOT NULL, source TEXT NOT NULL, task_id TEXT, run_id TEXT,
+    project_id TEXT, title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', severity TEXT NOT NULL DEFAULT 'warning',
+    status TEXT NOT NULL DEFAULT 'open', assignee TEXT NOT NULL DEFAULT '', event_key TEXT NOT NULL,
+    unread INTEGER NOT NULL DEFAULT 1, resolution TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, claimed_at TEXT, resolved_at TEXT, last_seen_at TEXT NOT NULL
+  );
+  INSERT INTO projects (id, name) VALUES ('p1', '老库项目');
+  INSERT INTO tasks (id, task_no, project_id, title, status, ai_state, ai_state_at, ruling_at, updated_at)
+  VALUES ('legacy-task', 'T-legacy', 'p1', '老库任务', 'todo', 'failed', '${newAiAt ?? ''}', NULL, '${recent}');
+  INSERT INTO inbox_items
+    (id, type, source, task_id, project_id, title, body, severity, status, assignee, event_key, unread,
+     resolution, created_at, updated_at, claimed_at, resolved_at, last_seen_at)
+  VALUES
+    ('terminal-newer', 'ai_failed', 'task', 'legacy-task', 'p1', '终态后新事件', '', 'danger', 'ignored', '',
+     'task_ai_failed:legacy-terminal', 0, 'ignored_by_user', '${recent}', '${stale}', NULL, '${recent}', '${recent}'),
+    ('terminal-same', 'ai_failed', 'task', 'legacy-task', 'p1', '同一实例', '', 'danger', 'ignored', '',
+     'task_ai_failed:legacy-same', 0, 'ignored_by_user', '${recent}', '${stale}', NULL, '${recent}', '${recent}');
+`);
+// terminal-newer：来源时间（任务 ai_state_at）晚于 resolved_at，回填 legacy
+// terminal-same：来源时间早于 resolved_at，回填来源时间
+legacyDb.prepare('UPDATE tasks SET ai_state_at = ? WHERE id = ?').run(new Date(now - 3600000).toISOString(), 'legacy-task');
+legacyDb.prepare('UPDATE inbox_items SET resolved_at = ? WHERE id = ?').run(new Date(now - 2 * 3600000).toISOString(), 'terminal-newer');
+legacyDb.prepare('UPDATE inbox_items SET resolved_at = ? WHERE id = ?').run(new Date(now).toISOString(), 'terminal-same');
+ensureInboxSchema(legacyDb as unknown as Database.Database);
+const legacyCols = (legacyDb.prepare('PRAGMA table_info(inbox_items)').all() as Array<{ name: string }>).map((r) => r.name);
+assert.ok(legacyCols.includes('event_version'), '老库应补 event_version');
+assert.ok(legacyCols.includes('claim_expires_at'), '老库应补 claim_expires_at');
+assert.equal(
+  (legacyDb.prepare('SELECT event_version FROM inbox_items WHERE id = ?').get('terminal-newer') as { event_version: string }).event_version,
+  'legacy', '解决后发生的新事件必须回填 legacy',
+);
+assert.notEqual(
+  (legacyDb.prepare('SELECT event_version FROM inbox_items WHERE id = ?').get('terminal-same') as { event_version: string }).event_version,
+  'legacy', '解决前发生的事件应回填真实版本',
+);
+
+// 14) 规模摄入：超过旧 LIMIT 1000 的活跃候选必须全部入箱，不能静默截断
+const beforeScale = service.list({ type: 'ai_failed' }).total;
+for (let i = 0; i < 1001; i += 1) {
+  task(`scale-${i}`, `规模任务 ${i}`, 'p1', { ai: 'failed' });
+}
+service.sync();
+assert.equal(service.list({ type: 'ai_failed' }).total, beforeScale + 1001, '>1000 活跃任务应全部入箱');
 
 console.log(JSON.stringify({
   ok: true,

@@ -996,6 +996,7 @@ export interface InboxItem {
   created_at: string;
   updated_at: string;
   claimed_at: string | null;
+  claim_expires_at: string | null;
   resolved_at: string | null;
 }
 
@@ -1012,6 +1013,8 @@ export interface InboxListResult {
   items: InboxItem[];
   total: number;
   counts: InboxCounts;
+  /** 服务端解析的当前操作者，用于「我认领的」判断，前端不再硬编码身份 */
+  viewer: string;
   generated_at: string;
 }
 

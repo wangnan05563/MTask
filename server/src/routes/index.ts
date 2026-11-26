@@ -23,7 +23,7 @@ import { RunQueryService, RunQueryError } from '../services/RunQueryService'; //
 import { RunLegacyMapper } from '../services/RunLegacyMapper'; // T06332：旧队列/会话/用量映射
 import { RunRiskService, RunRiskError, type RiskDecision, type ApprovalStatus, type AuditEventType } from '../services/RunRiskService'; // T06299（REQ-007 / PRD §B7）：风险分级、审批与审计
 import { buildTodayView } from '../services/TodayService'; // T06294（REQ-001）：Today View 首页聚合
-import { inboxService, InboxError, type InboxStatus, type InboxType } from '../services/InboxService'; // T06295（REQ-032）：可操作收件箱
+import { inboxService, InboxError, LOCAL_INBOX_ACTOR, type InboxStatus, type InboxType } from '../services/InboxService'; // T06295（REQ-032）：可操作收件箱
 import { PushService } from '../services/PushService'; // T01440：Web Push
 import { TaskExportService, type ExportFormat } from '../services/TaskExportService'; // T01480：任务导出
 import { listImportedKeys, normalizeExternalId, normalizeImportSource, claimImported, bindImportedTask, type ImportSource } from '../services/ImportKeyService'; // T06304/T06308（REQ-071 / AC-36）：来源+外部 ID 原子去重
@@ -562,10 +562,21 @@ function sendInboxError(res: import('express').Response, e: unknown): void {
   res.status(500).json({ error: e instanceof Error ? e.message : '收件箱操作失败' });
 }
 
-/** 当前单机默认「我」；团队模式接入账号后改由服务端会话解析，不再信任请求体。 */
-function inboxActor(req: import('express').Request): string | undefined {
-  const raw = req.body?.actor ?? req.body?.assignee;
-  return typeof raw === 'string' ? raw : undefined;
+/** 服务端解析当前操作者：优先用登录会话，单机未接入账号时回退到本机默认身份。绝不读请求体。 */
+function inboxActor(req: import('express').Request): string {
+  const auth = (req as unknown as {
+    user?: { inboxActor?: string; displayName?: string };
+  }).user;
+  return auth?.inboxActor?.trim() || auth?.displayName?.trim() || LOCAL_INBOX_ACTOR;
+}
+
+/** 强制释放是管理动作：未接账号的单机模式允许；一旦有登录用户，必须显式管理员角色。 */
+function inboxCanManage(req: import('express').Request): boolean {
+  const auth = (req as unknown as {
+    user?: { role?: string; inboxRole?: string };
+  }).user;
+  if (!auth) return true;
+  return auth.inboxRole === 'admin' || auth.role === 'admin';
 }
 
 api.get('/inbox/summary', (req, res) => {
@@ -582,13 +593,14 @@ api.get('/inbox', (req, res) => {
     const status = typeof req.query.status === 'string' ? req.query.status as InboxStatus : 'open';
     const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
     const assignee = typeof req.query.assignee === 'string' ? req.query.assignee : '';
-    const claimed = typeof req.query.claimed === 'string' ? req.query.claimed as 'yes' | 'no' | '' : '';
+    const claimed = typeof req.query.claimed === 'string' ? req.query.claimed as 'yes' | 'no' | 'mine' | '' : '';
     const result = inboxService.list({
       type,
       status,
       projectId,
       assignee,
       claimed,
+      actor: inboxActor(req),
       limit: Number(req.query.limit) || undefined,
       offset: Number(req.query.offset) || undefined,
     });
@@ -614,6 +626,19 @@ api.post('/inbox/:id/claim', (req, res) => {
 
 api.post('/inbox/:id/unclaim', (req, res) => {
   try { res.json({ item: inboxService.unclaim(req.params.id, inboxActor(req)) }); } catch (e) { sendInboxError(res, e); }
+});
+
+// 管理员强制释放：单机默认本机操作者即管理员；团队模式必须由后续权限中间件拦截非管理员。
+api.post('/inbox/:id/force-unclaim', (req, res) => {
+  try {
+    if (!inboxCanManage(req)) { res.status(403).json({ error: '需要管理员权限' }); return; }
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason : 'force_release';
+    res.json({ item: inboxService.forceUnclaim(req.params.id, inboxActor(req), reason) });
+  } catch (e) { sendInboxError(res, e); }
+});
+
+api.post('/inbox/:id/reopen', (req, res) => {
+  try { res.json({ item: inboxService.reopen(req.params.id, inboxActor(req)) }); } catch (e) { sendInboxError(res, e); }
 });
 
 api.post('/inbox/:id/ignore', (req, res) => {

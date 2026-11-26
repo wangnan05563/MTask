@@ -31,9 +31,8 @@ const STATUS_LABEL: Record<InboxStatus, string> = { open: '待处理', ignored: 
 const RESOLUTION_LABEL: Record<string, string> = {
   ignored_by_user: '已忽略', converted_to_task: '已转为任务', source_cleared: '来源已清除',
 };
-/** 当前单机本地身份；接入团队账号后只改这一处（服务端仍需按会话身份校验）。 */
-const INBOX_ACTOR = '我';
-type ClaimFilter = '' | 'mine' | 'unclaimed';
+/** 当前身份由服务端解析并随列表返回 viewer；前端不再硬编码任何操作者。 */
+type ClaimFilter = '' | 'mine' | 'unclaimed' | 'claimed';
 
 function relTime(iso: string): string {
   if (!iso) return '';
@@ -82,8 +81,9 @@ export function InboxPage() {
       const params = new URLSearchParams({ status, limit: '50', offset: String(offset) });
       if (typeFilter) params.set('type', typeFilter);
       if (projectFilter) params.set('projectId', projectFilter);
-      if (claimFilter === 'mine') params.set('assignee', INBOX_ACTOR);
+      if (claimFilter === 'mine') params.set('claimed', 'mine');
       else if (claimFilter === 'unclaimed') params.set('claimed', 'no');
+      else if (claimFilter === 'claimed') params.set('claimed', 'yes');
       const result = await api.get<InboxListResult>(`/inbox?${params.toString()}`);
       if (seq !== seqRef.current) return;
       setData((prev) => append && prev
@@ -125,7 +125,7 @@ export function InboxPage() {
     globalThis.setTimeout(() => setFlash(''), 2600);
   }
 
-  async function act(item: InboxItem, action: 'claim' | 'unclaim' | 'ignore' | 'convert'): Promise<void> {
+  async function act(item: InboxItem, action: 'claim' | 'unclaim' | 'ignore' | 'convert' | 'reopen'): Promise<void> {
     if (action === 'convert' && !targetProjectId) {
       setError('请先选择「转入项目」');
       return;
@@ -134,18 +134,21 @@ export function InboxPage() {
     setError('');
     try {
       if (action === 'claim') {
-        await api.post(`/inbox/${item.id}/claim`, { actor: INBOX_ACTOR });
+        await api.post(`/inbox/${item.id}/claim`, {});
         showFlash('已认领，可打开任务处理或取消认领');
       } else if (action === 'unclaim') {
-        await api.post(`/inbox/${item.id}/unclaim`, { actor: INBOX_ACTOR });
+        await api.post(`/inbox/${item.id}/unclaim`, {});
         showFlash('已取消认领，条目回到未认领');
       } else if (action === 'ignore') {
-        await api.post(`/inbox/${item.id}/ignore`, { actor: INBOX_ACTOR });
-        showFlash('已忽略');
+        await api.post(`/inbox/${item.id}/ignore`, {});
+        showFlash('已忽略，可在「已忽略」中恢复');
+      } else if (action === 'reopen') {
+        await api.post(`/inbox/${item.id}/reopen`, {});
+        showFlash('已恢复为待处理');
       } else {
         const created = await api.post<{ task: { task_no: string | null } }>(
           `/inbox/${item.id}/convert`,
-          { projectId: targetProjectId, actor: INBOX_ACTOR },
+          { projectId: targetProjectId },
         );
         showFlash(`已转为任务 ${created.task.task_no ?? ''}`);
       }
@@ -159,6 +162,7 @@ export function InboxPage() {
   }
 
   const counts: InboxCounts = data?.counts ?? { open: 0, unread: 0, decision: 0, ai_failed: 0, verify_pending: 0, system: 0 };
+  const viewer = data?.viewer ?? '';
   const canLoadMore = Boolean(data && data.items.length < data.total);
 
   return (
@@ -209,6 +213,7 @@ export function InboxPage() {
           <select value={claimFilter} onChange={(e) => setClaimFilter(e.target.value as ClaimFilter)}>
             <option value="">全部</option>
             <option value="mine">我认领的</option>
+            <option value="claimed">全部已认领</option>
             <option value="unclaimed">未认领</option>
           </select>
         </label>
@@ -301,9 +306,10 @@ export function InboxPage() {
                 const Icon = meta.icon;
                 const isOpen = item.status === 'open';
                 const busy = actionId === item.id;
-                const claimedByMe = isOpen && item.assignee === INBOX_ACTOR;
+                const claimedByMe = isOpen && viewer !== '' && item.assignee === viewer;
                 const canAct = !item.assignee || claimedByMe;
                 const canConvert = isOpen && !item.task_id && canAct;
+                const canReopen = item.status === 'ignored';
                 return (
                   <article key={item.id} className="mt-inbox-row" data-type={item.type} data-unread={item.unread || undefined}>
                     <span className="mt-inbox-row-icon" data-tone={meta.tone} aria-hidden="true"><Icon size={16} /></span>
@@ -328,10 +334,10 @@ export function InboxPage() {
                         <Badge tone={meta.tone}>{meta.label}</Badge>
                         {item.project_name && <span>{item.project_name}</span>}
                         {item.task_no && <span className="mt-inbox-mono">{item.task_no}</span>}
-                        {item.assignee && (
+                        {item.assignee && isOpen && (
                           <span
                             className="mt-inbox-assignee"
-                            title={item.claimed_at ? `${item.assignee} 于 ${item.claimed_at} 认领` : `${item.assignee} 认领`}
+                            title={item.claimed_at ? `${item.assignee} 于 ${item.claimed_at} 认领${item.claim_expires_at ? `，${item.claim_expires_at} 自动释放` : ''}` : `${item.assignee} 认领`}
                           >
                             <UserRound size={11} />{item.assignee}
                             {item.claimed_at && <span className="mt-inbox-claim-time">· {relTime(item.claimed_at)}认领</span>}
@@ -378,6 +384,12 @@ export function InboxPage() {
                         <Button size="sm" variant="ghost" loading={busy}
                           onClick={() => { void act(item, 'ignore'); }}>
                           忽略
+                        </Button>
+                      )}
+                      {canReopen && (
+                        <Button size="sm" variant="ghost" loading={busy}
+                          onClick={() => { void act(item, 'reopen'); }}>
+                          恢复
                         </Button>
                       )}
                     </div>
