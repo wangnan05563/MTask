@@ -212,16 +212,47 @@
     ],
     "extraResources": [
       {
-        "from": "node_modules/call-bind-apply-helpers",
-        "to": "runtime-node_modules/call-bind-apply-helpers"
-      },
-      {
-        "from": "node_modules/function-bind",
-        "to": "runtime-node_modules/function-bind"
-      },
-      {
-        "from": "node_modules/es-errors",
-        "to": "runtime-node_modules/es-errors"
+        "from": "node_modules",
+        "to": "runtime-node_modules",
+        "filter": [
+          "call-bind-apply-helpers/**/*",
+          "function-bind/**/*",
+          "es-errors/**/*",
+          "es-abstract-get/**/*",
+          "es-object-atoms/**/*",
+          "is-callable/**/*",
+          "object-inspect/**/*",
+          "@fast-csv/format/**/*",
+          "@fast-csv/parse/**/*",
+          "@hono/node-server/**/*",
+          "@modelcontextprotocol/sdk/**/*",
+          "@napi-rs/canvas/**/*",
+          "@napi-rs/canvas-win32-x64-msvc/**/*",
+          "@noble/ciphers/**/*",
+          "@noble/hashes/**/*",
+          "@swc/helpers/**/*",
+          "@xmldom/xmldom/**/*",
+          "archiver-utils/**/*",
+          "entities/**/*",
+          "events/**/*",
+          "graphology/**/*",
+          "graphology-layout-forceatlas2/**/*",
+          "graphology-utils/**/*",
+          "js-tokens/**/*",
+          "linkify-it/**/*",
+          "loose-envify/**/*",
+          "markdown-it/**/*",
+          "mdurl/**/*",
+          "punycode.js/**/*",
+          "react/**/*",
+          "react-dom/**/*",
+          "scheduler/**/*",
+          "side-channel-list/**/*",
+          "side-channel-map/**/*",
+          "side-channel-weakmap/**/*",
+          "sigma/**/*",
+          "uc.micro/**/*"
+        ]
       }
     ],
     "npmRebuild": false,
