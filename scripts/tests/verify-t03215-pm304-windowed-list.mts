@@ -10,7 +10,7 @@
  *   - **派生气等价**（真实 `web/src/utils/taskListQuery.ts`）：过滤/排序/父子装配与原实现逐条等价，
  *     arrangeTaskTree 用门内保留的 O(n²) 原实现做 oracle 逐项比对（5000 条量级下顺序不能变）；
  *   - **用法**（TasksPage 源码扫描）：三处 `<ul>` 都走窗口切片 + `data-t03215-window` 钩子；
- *     触底续取判据是「距估算末尾不足一屏」而不是窗口区间；贴边不攒步长；行高走累计平均；
+ *     触底续取判据是「距估算末尾不足一屏」而不是窗口区间；贴边不攒步长；行距走累计平均（top 间距含 margin）；
  *     滚动换窗是紧急更新（`startTransition` 实测更差，已回退，防止有人再改回去）。
  *
  * 负对照（判据 4）：M/Q 各造一份「判据被摘掉」的真实副本模块，S 组对同一套扫描器喂摘除锚点的文本副本，
@@ -235,22 +235,31 @@ okN('Q-09 反证：父后子不装配的副本在 Q-07 上变红（等价判据�
 // S 组：TasksPage / 窗口模块用法扫描
 // =====================================================================
 const ulCount = (pageSrc.match(/data-t03215-window=/g) ?? []).length;
-const sliced = ['visibleTodo', 'visibleDone', 'visibleShelved'].filter((name) =>
-  new RegExp(`${name}\\.slice\\(listWin\\.win\\.start, listWin\\.win\\.end\\)`).test(pageSrc));
-okPair(ok, 'S-01 三处列表都挂窗口切片与 data-t03215-window 钩子（待办/已完成/搁置一个不漏）',
-  () => ulCount === 3 && sliced.length === 3,
-  () => /<ul ref=\{listWin\.setListEl\} data-t03215-window=\{listWin\.virtualized \? 'on' : 'off'\}/.test(pageSrc),
-  () => ({ 钩子数: ulCount, 已切片: sliced }));
-const renderAtWin = ['visibleTodo', 'visibleDone', 'visibleShelved'].map((name) =>
-  new RegExp(`${name}\\.slice\\(listWin\\.win\\.start, listWin\\.win\\.end\\)\\.map\\(\\(t\\) => <Fragment key=\\{t\\.id\\}>\\{renderTaskItem\\(t`).test(pageSrc));
-ok('S-02 行渲染入口只有三处，且都在窗口切片之后（旧的全表 map 写法已无残留）',
-  renderAtWin.every(Boolean) && (pageSrc.match(/renderTaskItem\(t, /g) ?? []).length === 3
-  && !/visible(Todo|Done|Shelved)\.map\(\(t\) => <Fragment/.test(pageSrc),
-  { 切片入口: renderAtWin, 渲染调用点: (pageSrc.match(/renderTaskItem\(t, /g) ?? []).length });
+const listUsage = (pageSrc.match(/<TaskListWindow /g) ?? []).length;
+const childSlice = /items\.slice\(api\.win\.start, api\.win\.end\)/.test(pageSrc);
+okPair(ok, 'S-01 三处列表都复用窗口子树与 data-t03215-window 钩子（待办/已完成/搁置一个不漏）',
+  () => listUsage === 3 && childSlice && ulCount === 1,
+  () => /<TaskListWindow ref=\{taskListRef\} items=\{visibleTodo\}/.test(pageSrc)
+    && /<TaskListWindow ref=\{taskListRef\} items=\{visibleDone\}/.test(pageSrc)
+    && /<TaskListWindow ref=\{taskListRef\} items=\{visibleShelved\}/.test(pageSrc),
+  () => ({ 列表用法: listUsage, 窗口钩子: ulCount, 子树切片: childSlice }));
+const renderAtWin = ['visibleTodo', 'visibleDone', 'visibleShelved'].filter((name) =>
+  new RegExp(`<TaskListWindow ref=\\{taskListRef\\} items=\\{${name}\\}`).test(pageSrc));
+const renderItemProps = (pageSrc.match(/renderItem=\{renderTaskItem\}/g) ?? []).length;
+ok('S-02 行渲染入口收敛到窗口子树（三处列表都传 renderTaskItem，旧的全表 map 与父层 listWin 已无残留）',
+  renderAtWin.length === 3 && renderItemProps === 3 && childSlice
+  && /rowCacheRef/.test(pageSrc)
+  && !/visible(Todo|Done|Shelved)\.map\(\(t\) => <Fragment/.test(pageSrc)
+  && !/listWin\./.test(pageSrc),
+  { 切片入口: renderAtWin, 渲染传参: renderItemProps });
 
 ok('S-03 触底续取只对待办/已完成生效，且分页请求在飞时不占额度（canLoadMore=!loadingMore）',
-  /hasMore && viewMode === 'list' && activeTab !== 'shelved'/.test(pageSrc) && /^\s*!loadingMore,$/m.test(pageSrc),
-  { 片段: /loadMore,\n\s*!loadingMore,/.test(pageSrc) });
+  /hasMore=\{hasMore && activeTab === 'todo'\}/.test(pageSrc)
+  && /hasMore=\{hasMore && activeTab === 'done'\}/.test(pageSrc)
+  && /hasMore=\{false\}/.test(pageSrc)
+  && /canLoadMore=\{!loadingMore\}/.test(pageSrc)
+  && /useTaskListWindow\(items\.length, hasMore, onReachEnd, canLoadMore\)/.test(pageSrc),
+  { 待办: /hasMore=\{hasMore && activeTab === 'todo'\}/.test(pageSrc), 已完成: /hasMore=\{hasMore && activeTab === 'done'\}/.test(pageSrc) });
 
 okPair(ok, 'S-04 触底判据用「距估算末尾不足一屏」（nearEnd），而不是窗口区间 win.end（后者在浏览器钳位后永远差一两行）',
   () => /const nearEnd = count > 0\n\s*&& geom\.listTop \+ count \* geom\.rowH - \(geom\.scrollY \+ geom\.viewportH\) < geom\.viewportH;/.test(windowSrc)
@@ -261,8 +270,10 @@ okPair(ok, 'S-04 触底判据用「距估算末尾不足一屏」（nearEnd）�
 ok('S-05 贴边不攒步长：窗口贴顶或贴已加载末尾时必须立刻落地（否则钳位后的修正会被吞掉，续取失灵）',
   /const atEdge = next\.start === 0 \|\| next\.end >= count;/.test(windowSrc) && /else if \(!atEdge &&/.test(windowSrc));
 
-ok('S-06 行高走「已观测行累计平均」而非当前窗口中位数（中位数会让占位总高随窗口位置 2 倍跳变）',
-  /rowAccRef = useRef<\{ sum: number; n: number \}>/.test(windowSrc) && /acc\.sum \+= h/.test(windowSrc)
+ok('S-06 行距走「已观测行累计平均」而非当前窗口中位数（中位数会让占位总高随窗口位置 2 倍跳变）',
+  /rowAccRef = useRef<\{ sum: number; n: number \}>/.test(windowSrc)
+  && /const pitch = rect\.top - prevTop;/.test(windowSrc)
+  && /acc\.sum \+= pitch/.test(windowSrc)
   && /rowH = Math\.max\(24, Math\.round\(acc\.sum \/ acc\.n\)\)/.test(windowSrc)
   && !/hs\.sort\(/.test(windowSrc));
 ok('S-07 条数回落（换项目/换筛选/切 tab）时累计行高清零重测',
@@ -272,17 +283,17 @@ ok('S-08 滚动换窗是紧急更新：不许再用 startTransition（实测 45.
   !/startTransition\s*\(/.test(windowSrc) && !/import[^;]*startTransition/.test(windowSrc) && /setGeom\(g\);/.test(windowSrc));
 
 const SCANNERS: Array<{ name: string; src: string; page: boolean; check: (s: string) => boolean }> = [
-  { name: 'S-01 列表切片', page: true, src: pageSrc.replace(/visibleTodo\.slice\(listWin\.win\.start, listWin\.win\.end\)/, 'visibleTodo'),
-    check: (s) => /visibleTodo\.slice\(listWin\.win\.start, listWin\.win\.end\)/.test(s) },
-  { name: 'S-01 窗口钩子', page: true, src: pageSrc.replace('data-t03215-window={listWin.virtualized ? \'on\' : \'off\'}', ''),
-    check: (s) => (s.match(/data-t03215-window=/g) ?? []).length === 3 },
-  { name: 'S-03 忙态额度', page: true, src: pageSrc.replace(/^\s*!loadingMore,$/m, '    true,'),
-    check: (s) => /^\s*!loadingMore,$/m.test(s) },
+  { name: 'S-01 列表切片', page: true, src: pageSrc.replace('items.slice(api.win.start, api.win.end)', 'items'),
+    check: (s) => /items\.slice\(api\.win\.start, api\.win\.end\)/.test(s) },
+  { name: 'S-01 窗口钩子', page: true, src: pageSrc.replace('data-t03215-window={api.virtualized ? \'on\' : \'off\'}', ''),
+    check: (s) => (s.match(/data-t03215-window=/g) ?? []).length === 1 },
+  { name: 'S-03 忙态额度', page: true, src: pageSrc.replace(/canLoadMore=\{!loadingMore\}/g, 'canLoadMore={true}'),
+    check: (s) => /canLoadMore=\{!loadingMore\}/.test(s) },
   { name: 'S-04 nearEnd 判据', page: false, src: windowSrc.replace('!nearEnd) return;', 'win.end < count) return;'),
     check: (s) => /!nearEnd\) return;/.test(s) && !/win\.end < count\) return;/.test(s) },
   { name: 'S-05 贴边豁免', page: false, src: windowSrc.replace('else if (!atEdge && ', 'else if ('),
     check: (s) => /else if \(!atEdge &&/.test(s) },
-  { name: 'S-06 累计行高', page: false, src: windowSrc.replace(/rowH = Math\.max\(24, Math\.round\(acc\.sum \/ acc\.n\)\);/, 'rowH = TASK_ROW_H;'),
+  { name: 'S-06 累计行距', page: false, src: windowSrc.replace(/rowH = Math\.max\(24, Math\.round\(acc\.sum \/ acc\.n\)\);/, 'rowH = TASK_ROW_H;'),
     check: (s) => /rowH = Math\.max\(24, Math\.round\(acc\.sum \/ acc\.n\)\);/.test(s) },
   { name: 'S-08 无 startTransition', page: false, src: windowSrc.replace('    setGeom(g);', '    startTransition(() => setGeom(g));'),
     check: (s) => !/startTransition/.test(s) },

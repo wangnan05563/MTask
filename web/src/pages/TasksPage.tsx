@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type CSSProperties } from 'react';
+import { Fragment, forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type CSSProperties, type ReactNode } from 'react';
 import { FILE_INPUT_SR_ONLY } from '../ui/fileInput'; // T01674：file input 视觉隐藏但保留键盘焦点
 import { createPortal } from 'react-dom';
 import { api, imageUrl, fetchImage, imageDataURL, type AITool, type CustomField, type CustomFieldType, type Project, type PromptCategory, type ReqCategory, type SavedView, type Task, type TaskCategory, type TaskImage, type TemplateInstanceResult } from '../api/client';
@@ -776,6 +776,94 @@ function readClipboardImages(e: ClipboardEvent<HTMLElement>, onImages: (url: str
 const priorityBorderColor = priorityColor;
 const priorityLabel = priorityAriaLabel;
 
+export interface TaskListHandle {
+  revealIndex: (index: number) => void;
+}
+
+interface TaskListWindowProps {
+  items: Task[];
+  kind: ActiveTab;
+  listIds: string[];
+  renderItem: (task: Task, kind: ActiveTab, listIds: string[]) => ReactNode;
+  densityStyle: CSSProperties;
+  hasMore: boolean;
+  canLoadMore: boolean;
+  onReachEnd: () => void;
+  onRevealNonce: () => void;
+}
+
+/**
+ * T06314：窗口状态下沉到列表子树。
+ *
+ * 原实现把 `useTaskListWindow` 挂在 TasksPage 顶层，滚动换窗一次就会重渲染整页
+ * （5k 条时整页派生数据/工具条/侧栏全部陪跑），实测列表 5k 仅 16.3fps。
+ * 这里只让列表自身订阅窗口状态，父页面不再因滚动重渲染；父层需要的定位能力
+ * 通过 ref 暴露，reveal 产生的 nonce 仅以低频回调通知父层重跑定位 effect。
+ */
+const TaskListWindow = forwardRef<TaskListHandle, TaskListWindowProps>(function TaskListWindow({
+  items, kind, listIds, renderItem, densityStyle, hasMore, canLoadMore, onReachEnd, onRevealNonce,
+}, ref) {
+  const api = useTaskListWindow(items.length, hasMore, onReachEnd, canLoadMore);
+  // T06314：滚动期禁止行内 toolbar 因 hover 展开。该工具栏 max-height 0→96 会触发布局，
+  // 指针停在列表中央时，每换一窗就换一行被 hover，连续滚动等于让布局每帧抖一次（实测 p95 83ms）。
+  const [scrolling, setScrolling] = useState(false);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const onScroll = () => {
+      setScrolling(true);
+      if (timer != null) clearTimeout(timer);
+      timer = setTimeout(() => setScrolling(false), 160);
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', onScroll);
+      if (timer != null) clearTimeout(timer);
+    };
+  }, []);
+  useImperativeHandle(ref, () => ({ revealIndex: api.revealIndex }), [api.revealIndex]);
+  const lastNonceRef = useRef(api.nonce);
+  useEffect(() => {
+    if (api.nonce === lastNonceRef.current) return;
+    lastNonceRef.current = api.nonce;
+    onRevealNonce();
+  }, [api.nonce, onRevealNonce]);
+
+  // T06314：复用已渲染的行元素。滚动换窗时父层不重渲染，renderItem 引用保持稳定；
+  // 只有新进入窗口的行才重新调用 renderTaskItem，旧行用同一 ReactNode 引用让协调器直接 bailout。
+  // 缓存上限 160（窗口最多约 40 行），超出后优先淘汰不在当前窗口的旧行，避免长列表滚动把元素树无限留住。
+  const rowCacheRef = useRef<{ renderItem: typeof renderItem; rows: Map<string, ReactNode> }>({
+    renderItem,
+    rows: new Map(),
+  });
+  if (rowCacheRef.current.renderItem !== renderItem) {
+    rowCacheRef.current = { renderItem, rows: new Map() };
+  }
+  const visibleItems = items.slice(api.win.start, api.win.end);
+  const rowNodes: ReactNode[] = [];
+  for (const task of visibleItems) {
+    let node = rowCacheRef.current.rows.get(task.id);
+    if (node === undefined) {
+      node = renderItem(task, kind, listIds);
+      rowCacheRef.current.rows.set(task.id, node);
+    }
+    rowNodes.push(<Fragment key={task.id}>{node}</Fragment>);
+  }
+  if (rowCacheRef.current.rows.size > 160) {
+    const keep = new Set(visibleItems.map((task) => task.id));
+    for (const id of rowCacheRef.current.rows.keys()) {
+      if (rowCacheRef.current.rows.size <= 160) break;
+      if (!keep.has(id)) rowCacheRef.current.rows.delete(id);
+    }
+  }
+  return (
+    <ul ref={api.setListEl} data-t03215-window={api.virtualized ? 'on' : 'off'}
+      data-task-scrolling={scrolling ? '1' : '0'}
+      style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: api.win.padTop, paddingBottom: api.win.padBottom, ...densityStyle }}>
+      {rowNodes}
+    </ul>
+  );
+});
+
 export function TasksPage() {
   // 新建任务表单字段：跨切换会话持久化，录入一半切页后可续写
   const [newTitle, setNewTitle] = useSessionState('tasks.new.title', '');
@@ -1522,13 +1610,11 @@ export function TasksPage() {
     void loadTasks(activeProject);
   }
 
-  // 搁置列表是全量拉取（不分页），触底续取只对带分页的待办/已完成生效，否则会在看不见的列表上白取一页
-  const listWin = useTaskListWindow(
-    viewMode === 'list' ? activeVisible.length : 0,
-    hasMore && viewMode === 'list' && activeTab !== 'shelved',
-    loadMore,
-    !loadingMore,
-  );
+  // T06314：窗口状态由列表子树自己持有（见 TaskListWindow），父页面只保留定位入口与低频 nonce。
+  // 搁置列表是全量拉取（不分页），触底续取只对带分页的待办/已完成生效。
+  const taskListRef = useRef<TaskListHandle | null>(null);
+  const [listRevealNonce, setListRevealNonce] = useState(0);
+  const onListRevealNonce = useCallback(() => setListRevealNonce((n) => n + 1), []);
   const revealedForRef = useRef('');
   /** 目标行没渲染在 DOM 里（被窗口切掉）时按索引把它滚进窗口；同一目标只强制一次，避免定位与窗口互相打转 */
   const revealTaskRow = useMemo(() => (id: string, taskNo = ''): boolean => {
@@ -1536,9 +1622,9 @@ export function TasksPage() {
     const key = id || `no:${taskNo}`;
     if (idx < 0 || revealedForRef.current === key) return false;
     revealedForRef.current = key;
-    listWin.revealIndex(idx);
+    taskListRef.current?.revealIndex(idx);
     return true;
-  }, [activeVisibleIds, activeVisible, listWin.revealIndex]);
+  }, [activeVisibleIds, activeVisible]);
   useEffect(() => {
     // 换目标即解除「已强制入窗过一次」的锁，否则回到同一任务时不再滚动定位
     if (!focusTaskId && revealedForRef.current) revealedForRef.current = '';
@@ -1723,7 +1809,7 @@ export function TasksPage() {
     if (locateTaskRow(focusTaskId)) return;
     // 目标行尚未渲染：保留定位意图（focusTaskId 不清），列表每次变化都会重跑本 effect 再认一次
     if (!focusDeadline) setFocusDeadline(Date.now() + 8000);
-  }, [focusTaskId, todo, done, activeTab, activeProject, focusProjectId, catFilter, priorityFilter, fieldFilterField, focusDeadline, listWin.nonce, revealTaskRow]);
+  }, [focusTaskId, todo, done, activeTab, activeProject, focusProjectId, catFilter, priorityFilter, fieldFilterField, focusDeadline, listRevealNonce, revealTaskRow]);
 
   // T02206：到点收口。列表若一直不再变化，重试等不到下一次触发，故用定时器兜底放弃并**明示**一次
   //（原实现在此处静默清键，用户只看到视图变了却不知定位到哪）。
@@ -1777,7 +1863,7 @@ export function TasksPage() {
     flash(`原任务 ${badgeLocate.taskNo} 不在当前列表（视图未呈现该行），已按编号检索定位`);
     setBadgeLocate({ ...badgeLocate, id: '', retrieved: true, until: Date.now() + 8000 });
     void focusTaskByNo(badgeLocate.taskNo);
-  }, [badgeLocate, activeTab, todo, done, shelvedTasks, listWin.nonce, revealTaskRow]);
+  }, [badgeLocate, activeTab, todo, done, shelvedTasks, listRevealNonce, revealTaskRow]);
 
   /** T02196：「派生自 xxx」徽标点击——按编号在当前已加载列表里找父任务，命中即原地定位（零视图状态变更）。
    *  派生单与原任务同项目是常态，故绝大多数点击走的是这条通道；只有列表里确实没有该行
@@ -5485,8 +5571,8 @@ export function TasksPage() {
       </div>
     );
     // T03215（PM-304）：过滤/排序/父子装配（matches、sortTasks、arrangeTaskTree）与三份可见列表
-    // 已上移到组件级 useMemo（见 listWin 所在块）——窗口化后滚动会重渲染本组件，
-    // 这些派生计算若仍留在渲染体内，每帧都要重跑 filter+sort+O(n²) 装配，虚拟滚动就白做了。
+    // 已上移到组件级 useMemo（见上方 list 相关派生块）——T06314 后窗口状态下沉到 TaskListWindow，
+    // 滚动不再重渲染父组件，但本地渲染仍需这些稳定派生值支撑行内容与列表定位。
     // T00922：tab 标题已完成/待办统计改取项目级全量计数——原列表长度仅覆盖当前已加载页，
     // 首屏需「加载更多」后才趋近真实总量；改用项目级全量计数字段后首屏即显示全量。未验证数保持原语义（已完成中未验证）
     const curProj = projects.find((p) => p.id === activeProject);
@@ -5611,8 +5697,10 @@ export function TasksPage() {
               style={{ cursor: 'pointer' }} />
           </div>
         )}
-        {/* T03215（PM-304）：窗口化渲染——只渲染视口±overscan 行，其余用 ul 上下内边距占位撑出等总高的滚动区间 */}
-        {viewMode === 'list' && <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom, ...densityStyle }}>{visibleTodo.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'todo', todoIds)}</Fragment>)}</ul>}
+        {/* T06314：窗口化渲染由列表子树持有，父页面滚动时不重渲染 */}
+        {viewMode === 'list' && <TaskListWindow ref={taskListRef} items={visibleTodo} kind="todo" listIds={todoIds}
+          renderItem={renderTaskItem} densityStyle={densityStyle}
+          hasMore={hasMore && activeTab === 'todo'} canLoadMore={!loadingMore} onReachEnd={loadMore} onRevealNonce={onListRevealNonce} />}
         {viewMode === 'table' && renderTaskTable(visibleTodo, 'todo', tasksPhase === 'loading' && visibleTodo.length === 0)}
         {viewMode === 'calendar' && renderTaskCalendar(visibleTodo, tasksPhase === 'loading' && visibleTodo.length === 0)}
         {/* T02283：取数失败时不渲染空态——「暂无待办任务」会把后端故障说成没活干（项目列表失败导致
@@ -5668,7 +5756,9 @@ export function TasksPage() {
               style={{ cursor: 'pointer' }} />
           </div>
         )}
-        {viewMode === 'list' && <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom, ...densityStyle }}>{visibleDone.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'done', doneIds)}</Fragment>)}</ul>}
+        {viewMode === 'list' && <TaskListWindow ref={taskListRef} items={visibleDone} kind="done" listIds={doneIds}
+          renderItem={renderTaskItem} densityStyle={densityStyle}
+          hasMore={hasMore && activeTab === 'done'} canLoadMore={!loadingMore} onReachEnd={loadMore} onRevealNonce={onListRevealNonce} />}
         {viewMode === 'table' && renderTaskTable(visibleDone, 'done', tasksPhase === 'loading' && visibleDone.length === 0)}
         {viewMode === 'calendar' && renderTaskCalendar(visibleDone, tasksPhase === 'loading' && visibleDone.length === 0)}
         {viewMode === 'list' && visibleDone.length === 0 && tasksPhase !== 'error' && (
@@ -5697,7 +5787,9 @@ export function TasksPage() {
             label="搁置列表"
           />
         </div>
-        {viewMode === 'list' && <ul ref={listWin.setListEl} data-t03215-window={listWin.virtualized ? 'on' : 'off'} style={{ listStyle: 'none', padding: 0, margin: 0, paddingTop: listWin.win.padTop, paddingBottom: listWin.win.padBottom, ...densityStyle }}>{visibleShelved.slice(listWin.win.start, listWin.win.end).map((t) => <Fragment key={t.id}>{renderTaskItem(t, 'shelved', shelvedIds)}</Fragment>)}</ul>}
+        {viewMode === 'list' && <TaskListWindow ref={taskListRef} items={visibleShelved} kind="shelved" listIds={shelvedIds}
+          renderItem={renderTaskItem} densityStyle={densityStyle}
+          hasMore={false} canLoadMore={false} onReachEnd={loadMore} onRevealNonce={onListRevealNonce} />}
         {viewMode === 'table' && renderTaskTable(visibleShelved, 'shelved', shelvedPhase === 'loading' && visibleShelved.length === 0)}
         {viewMode === 'calendar' && renderTaskCalendar(visibleShelved, shelvedPhase === 'loading' && visibleShelved.length === 0)}
         {viewMode === 'list' && visibleShelved.length === 0 && shelvedPhase !== 'error' && (
@@ -6184,6 +6276,14 @@ export function TasksPage() {
         .task-item.task-editing .task-toolbar {
           max-height: 96px;
           margin-top: 2px;
+        }
+        /* T06314：滚动中指针会随窗口落到不同行上，若仍让 hover 展开 toolbar，
+           max-height 0→96 的过渡会在滚动期间反复触发布局。滚动期只保留鼠标样式，不展开工具条。 */
+        ul[data-task-scrolling="1"] .task-item:hover .task-toolbar,
+        ul[data-task-scrolling="1"] .task-item:focus-within .task-toolbar {
+          max-height: 0;
+          margin-top: 0;
+          transition: none;
         }
         /* 请求进行中的呼吸反馈：缩放 + 外发光脉冲，与主题主色一致 */
         .task-breathe { animation: task-breathe 1.3s ease-in-out infinite; }

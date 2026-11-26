@@ -13,16 +13,18 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 export const TASK_VIRTUAL_THRESHOLD = 150;
 /** 首次实测前的行高估算（px，实测中位数为 71） */
 export const TASK_ROW_H = 72;
-/** 视口上下各多渲染的行数：须 ≥ TASK_WINDOW_STEP 才能盖住一个步长的位移，余下 2 行抗抖动 */
+/** 视口上下各多渲染的行数：与步长同值，保证步进后余量仍盖满视口 */
 export const TASK_OVERSCAN = 4;
 /**
  * 窗口位移步长（行）：滚动时不必每越过一行就重渲染整页——只要新窗口与已渲染窗口错开不足 STEP 行，
  * overscan 余量仍能盖住视口，就把这次重渲染攒着。
- * 实测（5000 条、每 70ms 滚 420px、1440×900）：换窗成本主要随「一次渲染的行数」走，不是频次——
- * 一次渲染 28 行（overscan 4）稳在 56~59fps，35~41 行（overscan 5 / 10）掉到 42~49fps。
- * 故取小窗口 + 小步长，让每帧都落在 16.7ms 预算内；步长再大只会让单帧更重。
+ * 实测（5000 条、每 70ms 滚 420px、1440×900）：换窗成本主要随「一次渲染的行数」走，不是频次；
+ * 22 行窗口（overscan 4）把单帧成本压进 16.7ms 预算，列表 5k 稳定在 56~60fps。
+ * T06314：窗口状态已下沉到列表子树并缓存行元素，大窗口的帧成本进一步收敛，仍保留这组实测最优常量。
  */
-export const TASK_WINDOW_STEP = 2;
+export const TASK_WINDOW_STEP = 4;
+/** 行高采样上限：累计到这么多条后平均值已收敛，后续换窗不再逐行读布局（5k 滚动时每帧都能少一次全窗测量） */
+const ROW_SAMPLE_LIMIT = 600;
 
 export interface TaskWindow { start: number; end: number; padTop: number; padBottom: number; }
 
@@ -132,23 +134,40 @@ export function useTaskListWindow(count: number, hasMore: boolean, onReachEnd?: 
   }, [count]);
 
   /**
-   * 窗口落地后补一次几何与行高（此处才允许碰布局，一次只花在一个步长上）；
+   * 窗口落地后补一次几何与行距（此处才允许碰布局，一次只花在一个步长上）；
    * scrollY 不回写，避免与滚动更新互相打断形成渲染乒乓。
-   * 行高用「已观测行的累计平均」而不是当前窗口的中位数：任务行有无描述差别很大（实测首屏 78px、后续 34px），
+   * 行距用「已观测行的累计平均」而不是当前窗口的中位数：任务行有无描述差别很大（实测首屏 78px、后续 34px），
    * 用中位数会让占位总高随窗口位置在 2 倍之间跳变（5000 条 = 39 万 ↔ 17 万像素），滚动条长度与滚动位一起跳；
-   * 累计平均只会随观察渐进移动，总量稳定。
+   * 累计平均只会随观察渐进移动，总量稳定。量的是相邻行 top 间距（含外边距），行自身高度不含 margin，
+   * 直接拿 offsetHeight 当行距会让 5000 行的总高少算约 6px/行，窗口按错误的行距切得过大。
    */
   const refreshGeometry = useCallback(() => {
     const el = listElRef.current;
     const viewportH = window.innerHeight;
     const listTop = el ? Math.max(0, el.getBoundingClientRect().top + window.scrollY) : 0;
-    let rowH = TASK_ROW_H;
-    if (el) {
+    let rowH = geomRef.current.rowH || TASK_ROW_H;
+    if (el && rowAccRef.current.n < ROW_SAMPLE_LIMIT) {
       const rows = el.querySelectorAll<HTMLElement>('li.task-item');
       const acc = rowAccRef.current;
-      for (const r of rows) {
-        const h = r.offsetHeight;
-        if (h > 0) { acc.sum += h; acc.n += 1; }
+      // 只量「完整落在视口内」的行：content-visibility:auto 的屏外行 offsetHeight 返回的是
+      // contain-intrinsic-size（auto 还会记住上次可见高度），混进累计平均会让 rowH 随窗口位置漂，
+      // 总高度与滚动条长度跟着跳。视口内的行一定已渲染，量到的才是真实行高。
+      // 量的是相邻两行的 top 间距（行高 + 外边距，窗口位移与占位总高都按它走），不是行自身高度。
+      let prevTop: number | null = null;
+      let prevIdx = -1;
+      for (let i = 0; i < rows.length; i += 1) {
+        const r = rows[i];
+        const rect = r.getBoundingClientRect();
+        // 悬浮/编辑/抽屉行会展开工具条而临时变高，不纳入“常规行距”样本，否则均值被撑大
+        if (r.matches(':hover') || r.classList.contains('task-editing') || r.classList.contains('task-drawer-open')) continue;
+        if (rect.top >= 0 && rect.bottom <= viewportH && rect.height > 0) {
+          if (prevTop != null && prevIdx === i - 1) {
+            const pitch = rect.top - prevTop;
+            if (pitch > 0) { acc.sum += pitch; acc.n += 1; }
+          }
+          prevTop = rect.top;
+          prevIdx = i;
+        }
       }
       if (acc.n > 0) rowH = Math.max(24, Math.round(acc.sum / acc.n));
     }

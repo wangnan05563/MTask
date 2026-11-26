@@ -1,0 +1,180 @@
+{
+  "checks": [
+    {
+      "name": "T06314-API-00 隔离服务就绪",
+      "ok": true,
+      "extra": {
+        "ok": true,
+        "service": "mtask-server",
+        "time": "2026-11-26T03:56:19.404Z"
+      }
+    },
+    {
+      "name": "T06314-API-01 5k 数据集就绪",
+      "ok": true,
+      "extra": {
+        "todo_count": 5000,
+        "done_count": 0
+      }
+    },
+    {
+      "name": "T06314-API-02 搜索返回行数受 limit=200 约束",
+      "ok": true,
+      "extra": {
+        "q": "压测任务",
+        "rows": 200
+      }
+    },
+    {
+      "name": "T06314-API-02-1 搜索返回行数受 limit=200 约束",
+      "ok": true,
+      "extra": {
+        "q": "性能滚动",
+        "rows": 200
+      }
+    },
+    {
+      "name": "T06314-API-02-2 搜索返回行数受 limit=200 约束",
+      "ok": true,
+      "extra": {
+        "q": "T06314-4",
+        "rows": 200
+      }
+    },
+    {
+      "name": "T06314-API-02-3 搜索返回行数受 limit=200 约束",
+      "ok": true,
+      "extra": {
+        "q": "压测任务 4999",
+        "rows": 1
+      }
+    },
+    {
+      "name": "T06314-API-03 5k 搜索 p95 < 300ms",
+      "ok": true,
+      "extra": {
+        "p50": 28.5,
+        "p95": 37,
+        "max": 44.6,
+        "min": 9
+      }
+    },
+    {
+      "name": "T06314-UI-01 5k 项目任务页首屏可用",
+      "ok": true,
+      "extra": {
+        "rows": 21,
+        "ms": 632
+      }
+    },
+    {
+      "name": "T06314-UI-02 首屏按页加载且 DOM 行数有界",
+      "ok": true,
+      "extra": {
+        "rows": 21
+      }
+    },
+    {
+      "name": "T06314-UI-03 切到看板视图",
+      "ok": true,
+      "extra": {
+        "board": true
+      }
+    },
+    {
+      "name": "T06314-UI-04 看板首屏卡片与两列结构",
+      "ok": true,
+      "extra": {
+        "boardCards200": 200,
+        "boardCols": 2
+      }
+    },
+    {
+      "name": "T06314-UI-05 看板首屏(200卡) 滚动帧率",
+      "ok": true,
+      "extra": {
+        "frames": 150,
+        "elapsed": 2532.3060000000005,
+        "avgFps": 58.8,
+        "p95": 16.8,
+        "max": 66.5,
+        "longFrames": 1,
+        "scrollY": 5460,
+        "scrollHeight": 7358
+      }
+    },
+    {
+      "name": "T06314-UI-05b 看板首屏 DOM 卡片数=当前页",
+      "ok": true,
+      "extra": {
+        "boardCards200": 200
+      }
+    },
+    {
+      "name": "T06314-UI-06 5k 全量续取后 DOM 行仍窗口化",
+      "ok": true,
+      "extra": {
+        "rows5k": 26,
+        "loaded": 32,
+        "apiSample": 1,
+        "ms": 19156
+      }
+    },
+    {
+      "name": "T06314-UI-07 列表5k全量 滚动帧率",
+      "ok": true,
+      "extra": {
+        "frames": 156,
+        "elapsed": 2599.2000000000007,
+        "avgFps": 59.6,
+        "p95": 16.8,
+        "max": 33.3,
+        "longFrames": 0,
+        "scrollY": 125166,
+        "scrollHeight": 220248
+      }
+    },
+    {
+      "name": "T06314-UI-08 5k 全量切看板后的 DOM 卡片规模",
+      "ok": true,
+      "extra": {
+        "boardCards5k": 5000,
+        "switchMs": 903
+      }
+    },
+    {
+      "name": "T06314-UI-09 看板5k全量 滚动帧率",
+      "ok": true,
+      "extra": {
+        "frames": 156,
+        "elapsed": 2599.2999999999993,
+        "avgFps": 59.6,
+        "p95": 16.8,
+        "max": 33.3,
+        "longFrames": 0,
+        "scrollY": 102711,
+        "scrollHeight": 175342
+      }
+    }
+  ],
+  "list5k": {
+    "frames": 156,
+    "elapsed": 2599.2000000000007,
+    "avgFps": 59.6,
+    "p95": 16.8,
+    "max": 33.3,
+    "longFrames": 0,
+    "scrollY": 125166,
+    "scrollHeight": 220248
+  },
+  "board200": {
+    "frames": 150,
+    "elapsed": 2532.3060000000005,
+    "avgFps": 58.8,
+    "p95": 16.8,
+    "max": 66.5,
+    "longFrames": 1,
+    "scrollY": 5460,
+    "scrollHeight": 7358
+  }
+}

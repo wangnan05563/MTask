@@ -9,7 +9,7 @@ import { join } from 'node:path';
 const API = process.env.T06314_API || 'http://127.0.0.1:5217';
 const PROJECT = 'p-t06314-perf';
 const CHROME = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
-const OUT = 'C:/Users/hspcadmin/AppData/Local/Temp/t06314-ui';
+const OUT = process.env.T06314_OUT || 'D:/tmp/t06314-ui';
 if (!existsSync(CHROME)) throw new Error(`Chrome 不存在：${CHROME}`);
 mkdirSync(OUT, { recursive: true });
 try { rmSync(join(OUT, 'profile'), { recursive: true, force: true }); } catch { /* ignore */ }
@@ -158,6 +158,8 @@ try {
   })()`);
   await send('Page.navigate', { url: `${API}/index.html` });
   await until(`Boolean(document.querySelector('#root aside'))`, 30_000);
+  // 冷启动/首屏懒加载可能比 aside 出现晚一拍；留出稳定窗口再派发导航，避免事件在 App effect 挂载前丢失
+  await sleep(1000);
   const tNav = Date.now();
   await evl(`(() => { window.dispatchEvent(new CustomEvent('mtaskNavigate', { detail: { tab: 'tasks' } })); return true; })()`);
   const ready = await until(`document.querySelectorAll('li.task-item').length > 0`, 20_000);
