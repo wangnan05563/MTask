@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  AlertTriangle, ArrowRight, CheckCircle2, ClipboardCheck, FolderInput, Gavel, Inbox,
+  AlertTriangle, ArrowRight, CheckCircle2, ChevronDown, ClipboardCheck, FolderInput, Gavel, Inbox,
   RefreshCw, ShieldCheck, UserRound,
 } from 'lucide-react';
 import type { InboxCounts, InboxItem, InboxListResult, InboxStatus, InboxType } from '../api/client';
@@ -21,7 +21,7 @@ import './inboxPage.css';
  */
 
 const TYPE_META: Record<InboxType, { label: string; icon: LucideIcon; tone: 'danger' | 'warning' | 'accent' | 'neutral' }> = {
-  decision: { label: '待我决策', icon: Gavel, tone: 'warning' },
+  decision: { label: '待决策', icon: Gavel, tone: 'warning' },
   ai_failed: { label: 'AI 失败', icon: AlertTriangle, tone: 'danger' },
   verify_pending: { label: '待验证', icon: ClipboardCheck, tone: 'warning' },
   system: { label: '系统', icon: ShieldCheck, tone: 'neutral' },
@@ -154,17 +154,7 @@ export function InboxPage() {
       <PageHeader
         title="收件箱"
         minimal
-        description="统一处理 AI 失败、待我决策、待验证与系统停滞；认领不改变 open 状态，转任务生成普通任务。本页不接邮件。"
-        primaryAction={(
-          <Button
-            variant="secondary"
-            leftIcon={<RefreshCw size={14} />}
-            loading={loading}
-            onClick={() => { void fetchPage(0, false); }}
-          >
-            刷新
-          </Button>
-        )}
+        description="统一处理 AI 失败、待决策、待验证与系统停滞；认领不改变 open 状态，转任务生成普通任务。本页不接邮件。"
       />
 
       <FilterBar ariaLabel="收件箱筛选">
@@ -213,13 +203,29 @@ export function InboxPage() {
           </select>
         </label>
 
-        <label className="mt-inbox-field mt-inbox-target">
-          <span>转入项目</span>
-          <select value={targetProjectId} onChange={(e) => setTargetProjectId(e.target.value)}>
-            {projects.length === 0 && <option value="">{projectListPlaceholder(projectView, '无可用项目')}</option>}
-            {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
-        </label>
+        <div className="mt-inbox-target-group">
+          <label className="mt-inbox-field">
+            <span>转入项目</span>
+            <span className="mt-inbox-select">
+              <select value={targetProjectId} onChange={(e) => setTargetProjectId(e.target.value)}>
+                {projects.length === 0 && <option value="">{projectListPlaceholder(projectView, '无可用项目')}</option>}
+                {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+              <ChevronDown size={13} className="mt-inbox-select-arrow" aria-hidden="true" />
+            </span>
+          </label>
+          <button
+            type="button"
+            className="mt-inbox-refresh"
+            aria-label="刷新收件箱"
+            title="刷新"
+            data-loading={loading || undefined}
+            disabled={loading}
+            onClick={() => { void fetchPage(0, false); }}
+          >
+            <RefreshCw size={14} aria-hidden="true" />
+          </button>
+        </div>
       </FilterBar>
 
       {flash && <div className="mt-inbox-flash" role="status">{flash}</div>}

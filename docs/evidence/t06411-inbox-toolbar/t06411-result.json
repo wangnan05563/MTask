@@ -1,0 +1,280 @@
+{
+  "at": "2026-11-26T12:23:07.834Z",
+  "api": "http://127.0.0.1:5217",
+  "checks": [
+    {
+      "name": "T06411-01 「待决策」文案替换完成",
+      "ok": true,
+      "extra": {
+        "tabs": [
+          "全部0",
+          "待决策0",
+          "AI 失败0",
+          "待验证0",
+          "系统0"
+        ],
+        "old": false
+      }
+    },
+    {
+      "name": "T06411-02 页头刷新按钮已移除",
+      "ok": true,
+      "extra": {
+        "header": null,
+        "headerButtons": [],
+        "headerHasRefreshText": false
+      }
+    },
+    {
+      "name": "T06411-03 刷新按钮位于转入项目下拉条之后",
+      "ok": true,
+      "extra": {
+        "group": {
+          "left": 1191,
+          "right": 1408,
+          "top": 76,
+          "bottom": 106,
+          "width": 217,
+          "height": 30
+        },
+        "targetSelect": {
+          "left": 1241,
+          "right": 1372,
+          "top": 76,
+          "bottom": 106,
+          "width": 131,
+          "height": 30
+        },
+        "refresh": {
+          "left": 1378,
+          "right": 1408,
+          "top": 76,
+          "bottom": 106,
+          "width": 30,
+          "height": 30
+        }
+      }
+    },
+    {
+      "name": "T06411-04 刷新与转入项目同排、垂直居中",
+      "ok": true,
+      "extra": {
+        "label": {
+          "left": 1191,
+          "right": 1372,
+          "top": 76,
+          "bottom": 106,
+          "width": 181,
+          "height": 30
+        },
+        "refresh": {
+          "left": 1378,
+          "right": 1408,
+          "top": 76,
+          "bottom": 106,
+          "width": 30,
+          "height": 30
+        },
+        "targetSelect": {
+          "left": 1241,
+          "right": 1372,
+          "top": 76,
+          "bottom": 106,
+          "width": 131,
+          "height": 30
+        }
+      }
+    },
+    {
+      "name": "T06411-05 刷新按钮纯图标 30×30",
+      "ok": true,
+      "extra": {
+        "text": "",
+        "svg": 1,
+        "size": [
+          30,
+          30
+        ]
+      }
+    },
+    {
+      "name": "T06411-06 刷新按钮具备可访问名称",
+      "ok": true,
+      "extra": {
+        "aria": "刷新收件箱",
+        "title": "刷新"
+      }
+    },
+    {
+      "name": "T06411-07 转入项目右侧箭头清晰可见",
+      "ok": true,
+      "extra": {
+        "arrow": {
+          "left": 1350,
+          "right": 1363,
+          "top": 85,
+          "bottom": 98,
+          "width": 13,
+          "height": 13
+        },
+        "appearance": "none",
+        "select": {
+          "left": 1241,
+          "right": 1372,
+          "top": 76,
+          "bottom": 106,
+          "width": 131,
+          "height": 30
+        }
+      }
+    },
+    {
+      "name": "T06411-08 转入项目组在 1440 行尾右对齐",
+      "ok": true,
+      "extra": {
+        "filter": {
+          "left": 272,
+          "right": 1408,
+          "top": 76,
+          "bottom": 124,
+          "width": 1136,
+          "height": 48
+        },
+        "group": {
+          "left": 1191,
+          "right": 1408,
+          "top": 76,
+          "bottom": 106,
+          "width": 217,
+          "height": 30
+        },
+        "gap": 0
+      }
+    },
+    {
+      "name": "T06411-09 1440 无横向溢出",
+      "ok": true,
+      "extra": {
+        "viewport": [
+          1440,
+          1000
+        ],
+        "pageScrollWidth": 1440
+      }
+    },
+    {
+      "name": "T06411-10 点击刷新触发收件箱请求",
+      "ok": true,
+      "extra": {
+        "before": 5,
+        "after": 6
+      }
+    },
+    {
+      "name": "T06411-11 1024 刷新与转入项目同排",
+      "ok": true,
+      "extra": {
+        "group": {
+          "left": 775,
+          "right": 992,
+          "top": 116,
+          "bottom": 146,
+          "width": 217,
+          "height": 30
+        },
+        "refresh": {
+          "left": 962,
+          "right": 992,
+          "top": 116,
+          "bottom": 146,
+          "width": 30,
+          "height": 30
+        },
+        "targetSelect": {
+          "left": 825,
+          "right": 956,
+          "top": 116,
+          "bottom": 146,
+          "width": 131,
+          "height": 30
+        }
+      }
+    },
+    {
+      "name": "T06411-12 1024 无页面横向溢出",
+      "ok": true,
+      "extra": {
+        "viewport": [
+          1024,
+          900
+        ],
+        "pageScrollWidth": 1024,
+        "filter": {
+          "scrollWidth": 720,
+          "clientWidth": 720
+        }
+      }
+    },
+    {
+      "name": "T06411-13 760 刷新与转入项目同排",
+      "ok": true,
+      "extra": {
+        "group": {
+          "left": 272,
+          "right": 489,
+          "top": 154,
+          "bottom": 184,
+          "width": 217,
+          "height": 30
+        },
+        "refresh": {
+          "left": 459,
+          "right": 489,
+          "top": 154,
+          "bottom": 184,
+          "width": 30,
+          "height": 30
+        },
+        "targetSelect": {
+          "left": 322,
+          "right": 453,
+          "top": 154,
+          "bottom": 184,
+          "width": 131,
+          "height": 30
+        }
+      }
+    },
+    {
+      "name": "T06411-14 760 无页面横向溢出",
+      "ok": true,
+      "extra": {
+        "viewport": [
+          760,
+          900
+        ],
+        "pageScrollWidth": 760,
+        "filter": {
+          "scrollWidth": 456,
+          "clientWidth": 456
+        }
+      }
+    },
+    {
+      "name": "T06411-15 760 转入项目箭头仍可见",
+      "ok": true,
+      "extra": {
+        "arrow": {
+          "left": 431,
+          "right": 444,
+          "top": 163,
+          "bottom": 176,
+          "width": 13,
+          "height": 13
+        }
+      }
+    }
+  ],
+  "pass": 15,
+  "total": 15
+}
