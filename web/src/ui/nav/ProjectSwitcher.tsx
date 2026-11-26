@@ -131,7 +131,7 @@ export function ProjectSwitcher() {
       document.removeEventListener('pointerdown', onDoc, true);
       document.removeEventListener('keydown', onKey, true);
     };
-  }, [open, projectId, options, close]);
+  }, [open, projectId, projects.length, sortMode, close]);
 
   useEffect(() => {
     if (open) optionRefs.current[cursor]?.focus();

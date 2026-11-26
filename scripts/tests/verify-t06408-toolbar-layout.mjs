@@ -69,6 +69,11 @@ if (!switcher.includes('useTasksProjectSort') || sortCallAt < 0 || sortModeAt < 
 if (!switcher.includes('...sortedProjects.map')) {
   failures.push('项目切换器未把排序结果喂给选项列表');
 }
+const cursorResetAt = switcher.indexOf('setCursor(Math.max');
+const cursorDepsAt = cursorResetAt >= 0 ? switcher.indexOf('}, [open', cursorResetAt) : -1;
+if (cursorDepsAt < 0 || !switcher.slice(cursorDepsAt, cursorDepsAt + 120).includes('sortMode')) {
+  failures.push('项目切换器光标未跟随排序偏好重算');
+}
 if (!sortPref.includes("'tasks.projectSort'") || !sortPref.includes('CustomEvent')) {
   failures.push('项目排序共享状态未沿用 tasks.projectSort 持久化键或缺少同页广播');
 }
