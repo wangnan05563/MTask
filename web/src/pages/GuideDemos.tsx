@@ -142,7 +142,7 @@ export function ToTaskFlowDemo({ noun }: { readonly noun: '提示词' | '需求'
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         <span style={{ ...line(), borderColor: 'var(--accent)' }}>{noun}条目</span>
         <span className="pgd-fly" style={{ position: 'absolute', left: 56, top: 34, color: 'var(--accent)', fontSize: 'var(--fs-l)' }}>➜</span>
-        <span style={{ marginLeft: 46, ...line(), display: 'inline-flex', alignItems: 'center', gap: 4 }}><ListTodo size={11} /> 收件箱待办</span>
+        <span style={{ marginLeft: 46, ...line(), display: 'inline-flex', alignItems: 'center', gap: 4 }}><ListTodo size={11} /> 收集箱待办</span>
       </div>
       <div style={{ marginTop: 22, color: 'var(--text-muted)' }}>「复制到待办任务」→ 选目标项目 → 生成待办，衔接 AI 执行链路</div>
     </div>

@@ -363,7 +363,7 @@ export function ReqPage() {
   }
 
   /**
-   * 默认项目预选（UX-05①）：弹窗打开且项目列表就绪后，按「当前正在看的项目 → 默认记事项目 → 收件箱」
+   * 默认项目预选（UX-05①）：弹窗打开且项目列表就绪后，按「当前正在看的项目 → 默认记事项目 → 收集箱」
    * 依次取第一个仍然有效的 ID。合法性以列表为准，持久化的项目指针可能已随项目删除而失效。
    */
   useEffect(() => {
@@ -389,12 +389,12 @@ export function ReqPage() {
     finally { setPlanBusy(false); }
   }
 
-  /** T00629：复制到待办任务——支持**指定目标项目**（弹窗选择；不选则落默认记事项目/收件箱） */
+  /** T00629：复制到待办任务——支持**指定目标项目**（弹窗选择；不选则落默认记事项目/收集箱） */
   async function copyToTask(p: ReqEntry) {
     setTaskCopyEntry(p);
     setTaskCopyProjectId('');
     // T02201：弹窗打开时强制刷新一次（单飞 + 超时 + 重试由容错层承担），
-    // 失败不再静默——下拉显示占位文案并可点重试；不选项目仍落默认收件箱。
+    // 失败不再静默——下拉显示占位文案并可点重试；不选项目仍落默认收集箱。
     void loadProjectList(true);
   }
 
@@ -404,7 +404,7 @@ export function ReqPage() {
     const p = taskCopyEntry;
     const targetName = taskCopyProjectId
       ? (projects.find((x) => x.id === taskCopyProjectId)?.name ?? '所选项目')
-      : '默认记事项目（收件箱）';
+      : '默认记事项目（收集箱）';
     setTaskCopyBusy(true);
     try {
       const r = await api.post<{ ok: boolean; reused: boolean }>(`/req-entries/${p.id}/to-task`,
@@ -568,7 +568,7 @@ export function ReqPage() {
         .move-btn:hover { color: var(--accent); }
       `}</style>
       {/* 工具栏：分类切换与管理 */}
-      <FilterBar className="op-host" ariaLabel="通用需求筛选" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+      <FilterBar className="op-host" ariaLabel="通用需求筛选" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
         <select value={activeCat} aria-label="需求分类筛选" onChange={(e) => setActiveCat(e.target.value)} style={{ padding: 6, fontSize: 'var(--fs-s)', minWidth: 180, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)' }}>
           {/* T05687：首项固定「全部收藏」，跨分组聚合；主题色底与普通分类区分 */}
           <option value={ALL_FAV} style={{ background: 'var(--accent)', color: 'var(--accent-text)', fontWeight: 600 }}>★ 全部收藏</option>
@@ -835,9 +835,9 @@ export function ReqPage() {
                     )}
                     <span className="abtn" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', flexShrink: 0 }} title={`更新于 ${p.updated_at}`}>{relTime(p.updated_at)}</span>
                     <CopyButton getText={() => p.title + (p.content ? '\n' + p.content : '')} title="复制 — 复制通用需求内容到剪贴板" ariaLabel="复制：复制通用需求内容" />
-                    {/* T00436：复制到待办任务 — 转成收件箱项目的待办，悬浮提示按任务规格 */}
+                    {/* T00436：复制到待办任务 — 转成收集箱项目的待办，悬浮提示按任务规格 */}
                     <button className="abtn" onClick={() => void copyToTask(p)} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-                      title="复制到待办任务 — 以该通用需求创建一条待办任务（收件箱项目）" aria-label="复制到待办任务">
+                      title="复制到待办任务 — 以该通用需求创建一条待办任务（收集箱项目）" aria-label="复制到待办任务">
                       <ListTodo size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
                     </button>
                     <button
@@ -955,7 +955,7 @@ export function ReqPage() {
                 <select value={taskCopyProjectId} onChange={(e) => setTaskCopyProjectId(e.target.value)} disabled={taskCopyBusy}
                   aria-label="目标项目" title="选择待办任务落到哪个项目"
                   style={{ width: '100%', padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>
-                  <option value="">默认记事项目（收件箱）</option>
+                  <option value="">默认记事项目（收集箱）</option>
                   {projects.map((pj) => <option key={pj.id} value={pj.id}>{pj.name}</option>)}
                 </select>
                 <div style={{ marginTop: 4 }}>

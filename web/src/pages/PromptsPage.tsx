@@ -241,7 +241,7 @@ function PromptLaunchModal({ p, title, onTitle, values, onValue, tools, toolId, 
   );
 }
 
-/** T00629：复制到待办任务——目标项目选择弹窗（不选则落默认记事项目/收件箱） */
+/** T00629：复制到待办任务——目标项目选择弹窗（不选则落默认记事项目/收集箱） */
 function TaskCopyModal({ taskCopyPrompt, taskCopyBusy, setTaskCopyPrompt, taskCopyProjectId, setTaskCopyProjectId, projects, view, confirmCopyToTask }: {
   readonly taskCopyPrompt: Prompt; readonly taskCopyBusy: boolean; readonly setTaskCopyPrompt: (v: Prompt | null) => void;
   readonly taskCopyProjectId: string; readonly setTaskCopyProjectId: React.Dispatch<React.SetStateAction<string>>;
@@ -267,10 +267,10 @@ function TaskCopyModal({ taskCopyPrompt, taskCopyBusy, setTaskCopyPrompt, taskCo
             <select value={taskCopyProjectId} onChange={(e) => setTaskCopyProjectId(e.target.value)} disabled={taskCopyBusy}
               aria-label="目标项目" title="选择待办任务落到哪个项目"
               style={{ width: '100%', padding: 6, border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', fontSize: 'var(--fs-s)' }}>
-              <option value="">默认记事项目（收件箱）</option>
+              <option value="">默认记事项目（收集箱）</option>
               {projects.map((pj) => <option key={pj.id} value={pj.id}>{pj.name}</option>)}
             </select>
-            {/* T02201：目标项目取数失败时显式提示并给重试入口（此前静默只剩「收件箱」可选） */}
+            {/* T02201：目标项目取数失败时显式提示并给重试入口（此前静默只剩「收集箱」可选） */}
             <ProjectListHint view={view} />
             <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4 }}>
               目标项目若已存在同标题待办，将自动复用（不重复创建）。
@@ -420,7 +420,7 @@ export function PromptsPage() {
   });
   const optimizing = useMemo(() => busyScope(optimizeSnap, OPTIMIZE_SCOPE_PROMPTS), [optimizeSnap]); // key: 'new' 或 提示词 id
 
-  // T00629：复制到待办任务——目标项目选择弹窗（不选则落默认记事项目/收件箱）
+  // T00629：复制到待办任务——目标项目选择弹窗（不选则落默认记事项目/收集箱）
   const [taskCopyPrompt, setTaskCopyPrompt] = useState<Prompt | null>(null);
   const [taskCopyProjectId, setTaskCopyProjectId] = useState('');
   const [taskCopyBusy, setTaskCopyBusy] = useState(false);
@@ -744,11 +744,11 @@ export function PromptsPage() {
     }
   }
 
-  /** T00629：复制到待办任务——支持**指定目标项目**（弹窗选择；不选则落默认记事项目/收件箱） */
+  /** T00629：复制到待办任务——支持**指定目标项目**（弹窗选择；不选则落默认记事项目/收集箱） */
   async function copyToTask(p: Prompt) {
     setTaskCopyPrompt(p);
     setTaskCopyProjectId('');
-    // T02201：交统一容错层强刷一次（失败不再静默落回「只有收件箱」——弹窗内显式提示并可重试）
+    // T02201：交统一容错层强刷一次（失败不再静默落回「只有收集箱」——弹窗内显式提示并可重试）
     void loadProjectList(true);
   }
 
@@ -758,7 +758,7 @@ export function PromptsPage() {
     const p = taskCopyPrompt;
     const targetName = taskCopyProjectId
       ? (projects.find((x) => x.id === taskCopyProjectId)?.name ?? '所选项目')
-      : '默认记事项目（收件箱）';
+      : '默认记事项目（收集箱）';
     setTaskCopyBusy(true);
     try {
       const r = await api.post<{ ok: boolean; reused: boolean }>(`/prompts/${p.id}/to-task`,
@@ -1203,9 +1203,9 @@ export function PromptsPage() {
                       </span>
                     )}
                     <CopyButton getText={() => p.title + (p.content ? '\n' + p.content : '')} title="复制 — 复制提示词内容到剪贴板" ariaLabel="复制：复制提示词内容" />
-                    {/* T00436：复制到待办任务 — 转成收件箱项目的待办，悬浮提示按任务规格 */}
+                    {/* T00436：复制到待办任务 — 转成收集箱项目的待办，悬浮提示按任务规格 */}
                     <button className="abtn" onClick={() => void copyToTask(p)} style={{ fontSize: 'var(--fs-s)', display: 'inline-flex', alignItems: 'center', padding: '2px 4px' }}
-                      title="复制到待办任务 — 以该提示词创建一条待办任务（收件箱项目）" aria-label="复制到待办任务">
+                      title="复制到待办任务 — 以该提示词创建一条待办任务（收集箱项目）" aria-label="复制到待办任务">
                       <ListTodo size={13} style={{ display: 'inline-block', verticalAlign: '-2px' }} />
                     </button>
                     <button
@@ -1271,7 +1271,7 @@ export function PromptsPage() {
         })}
       </ul>
 
-      {/* T00629：复制到待办任务——目标项目选择弹窗（不选则落默认记事项目/收件箱） */}
+      {/* T00629：复制到待办任务——目标项目选择弹窗（不选则落默认记事项目/收集箱） */}
       {taskCopyPrompt && (
         <TaskCopyModal taskCopyPrompt={taskCopyPrompt} taskCopyBusy={taskCopyBusy} setTaskCopyPrompt={setTaskCopyPrompt}
           taskCopyProjectId={taskCopyProjectId} setTaskCopyProjectId={setTaskCopyProjectId}

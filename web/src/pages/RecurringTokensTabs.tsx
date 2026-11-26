@@ -4,7 +4,7 @@ import { askConfirm } from '../ui/dialogs'; // T01699：确认框归一（原生
 import { AlertTriangle, ChevronDown, HelpCircle, KeyRound, LayoutTemplate, Pencil, Play, Save, X } from 'lucide-react';
 import { SettingsHelpIcon } from '../ui/settingsHelp'; // T06019：子页说明文字改为语义图标
 import { RecurringSchedulePicker, defaultSchedule, ruleFromSchedule, scheduleFromRule, scheduleSummary, type RecurringSchedule } from './RecurringSchedulePicker';
-import { ProjectListHint, loadProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表统一容错层
+import { INBOX_PROJECT_ID, INBOX_PROJECT_LABEL, ProjectListHint, loadProjectList, useProjectList } from '../ui/projectList'; // T02201：项目列表统一容错层
 import { getLang, onLangChange, registerDict, setLang as setGlobalLang, t, term, useLang, type Lang } from '../i18n';
 
 /**
@@ -116,9 +116,8 @@ const freqLabel = (k: string): string => t(FREQ_LABELS[k] ?? k, FREQ_LABELS[k] ?
 const CRON_PLACEHOLDER = '0 9 * * 1';
 
 /** T05818：后端 next_run_at 是 UTC 存储串；展示时转本地（不再直接 slice）。 */
-const INBOX_PROJECT_ID = 'sys-inbox';
 
-/** T06003：常用循环任务模板——卡片只负责填表，项目统一落收件箱，创建仍走原 /recurring 接口。 */
+/** T06003：常用循环任务模板——卡片只负责填表，项目统一落收集箱，创建仍走原 /recurring 接口。 */
 interface RecurringTemplate {
   id: string;
   name: string;
@@ -288,7 +287,7 @@ export function RecurringTab() {
     } catch (e) { flash(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
   }
 
-  /** T06003：套用模板——项目强制收件箱，其余字段按模板预填，用户可继续微调。 */
+  /** T06003：套用模板——项目强制收集箱，其余字段按模板预填，用户可继续微调。 */
   function applyTemplate(tpl: RecurringTemplate) {
     const base = defaultSchedule();
     setProjectId(INBOX_PROJECT_ID);
@@ -302,7 +301,7 @@ export function RecurringTab() {
       monthDay: tpl.monthDay ?? base.monthDay, intervalN: tpl.intervalN ?? base.intervalN,
     });
     setTemplatesOpen(false);
-    flash(`已套用模板「${tpl.name}」：项目已设为收件箱，确认周期与执行说明后点「添加规则」。`);
+    flash(`已套用模板「${tpl.name}」：项目已设为收集箱，确认周期与执行说明后点「添加规则」。`);
   }
 
   async function toggleRule(rule: RecurringRule) {
@@ -322,9 +321,9 @@ export function RecurringTab() {
 
   const cell: { padding: number; borderBottom: string; fontSize: string } = { padding: 8, borderBottom: '1px solid var(--surface-2)', fontSize: 'var(--fs-s)' };
   const projectSelectIdleText = projectList.phase === 'loading' ? t('项目列表加载中…', '项目列表加载中…') : t('选择项目…', '选择项目…');
-  // T06002：收件箱始终作为显式选项（sys-inbox 与任务菜单收件箱同值）；其余活跃项目来自统一容错层（已排除收件箱）
+  // T06002：收集箱始终作为显式选项（sys-inbox 与任务菜单收集箱同值）；其余活跃项目来自统一容错层（已排除收集箱）
   const projectOptions = [
-    { id: INBOX_PROJECT_ID, name: '收件箱' },
+    { id: INBOX_PROJECT_ID, name: INBOX_PROJECT_LABEL },
     ...projects.filter((p) => p.id !== INBOX_PROJECT_ID),
   ];
   const rule = ruleFromSchedule(schedule);
@@ -397,7 +396,7 @@ export function RecurringTab() {
           </button>
           {/* T06003：模板入口固定在「添加规则」右侧 */}
           <button type="button" onClick={() => setTemplatesOpen((v) => !v)} aria-expanded={templatesOpen} aria-controls="recurring-templates"
-            title="从模板添加 — 套用预设的名称/说明/周期/分类/优先级，项目默认收件箱"
+            title="从模板添加 — 套用预设的名称/说明/周期/分类/优先级，项目默认收集箱"
             style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '7px 12px', background: 'var(--surface-2)', color: 'var(--text)', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer', fontSize: 'var(--fs-s)' }}>
             <LayoutTemplate size={13} /> 从模板添加
             <ChevronDown size={12} style={{ transform: templatesOpen ? 'rotate(180deg)' : 'none', transition: 'transform .15s ease' }} />
@@ -406,11 +405,11 @@ export function RecurringTab() {
         {notice && <div data-t05823="notice" style={{ fontSize: 'var(--fs-s)', color: 'var(--accent)' }}>{notice}</div>}
       </div>
 
-      {/* T06003：模板卡片容器——点击任意卡片即回填表单，项目强制收件箱 */}
+      {/* T06003：模板卡片容器——点击任意卡片即回填表单，项目强制收集箱 */}
       {templatesOpen && (
         <div id="recurring-templates" data-t06003="templates" style={{ marginBottom: 14, padding: 12, border: '1px solid var(--border)', borderRadius: 10, background: 'var(--surface)' }}>
           <div style={{ fontSize: 'var(--fs-m)', fontWeight: 700, color: 'var(--text)', marginBottom: 2 }}>从模板添加</div>
-          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 10 }}>选择常用场景，自动填入规则名称、执行说明、周期、分类与优先级；项目统一使用收件箱，仍可创建前微调。</div>
+          <div style={{ fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', marginBottom: 10 }}>选择常用场景，自动填入规则名称、执行说明、周期、分类与优先级；项目统一使用收集箱，仍可创建前微调。</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 8 }}>
             {RECURRING_TEMPLATES.map((tpl) => (
               <button key={tpl.id} type="button" data-t06003="template-card" onClick={() => applyTemplate(tpl)}

@@ -2150,8 +2150,8 @@ export function TasksPage() {
     if (!hasConcreteProject) return flash('请先选择具体项目');
     const proj = projects.find((p) => p.id === activeProject);
     if (!proj) return flash('该项目不存在或已被删除，请刷新项目列表');
-    // 系统收件箱是移动端随手记默认归属，后端已禁止删除；前端提前拦截给出与后端一致的明确提示
-    if (proj.id === 'sys-inbox') return flash('系统收件箱项目不可删除');
+    // 系统收集箱是移动端随手记默认归属，后端已禁止删除；前端提前拦截给出与后端一致的明确提示
+    if (proj.id === 'sys-inbox') return flash('系统收集箱项目不可删除');
     const ok = await askConfirm(
       `确定要删除项目「${proj.name}」吗？\n\n【风险提醒】\n该操作不可恢复，项目及其全部任务、截图将一并删除！\n建议先通过「任务 → 复用」将重要任务复制到其他项目再删除。`,
     );

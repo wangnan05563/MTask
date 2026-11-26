@@ -2,7 +2,7 @@
  * T06329 顶栏项目/工作区切换器：常驻显示当前作用域，键盘可选择，切换后各页面订阅同一全局值。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { refreshProjectList, useProjectList } from '../projectList';
+import { INBOX_PROJECT_ID, INBOX_PROJECT_LABEL, refreshProjectList, useProjectList } from '../projectList';
 import { sortProjects } from '../projectOrder';
 import { useTasksProjectSort } from '../tasksProjectSort';
 import { CopyButton } from '../CopyButton';
@@ -47,7 +47,9 @@ function ProjectBadges({ todo, unverified, scopeName }: {
 }
 
 export function ProjectSwitcher() {
-  const { projects, phase, error, retry } = useProjectList({ excludeInbox: true });
+  // 收集箱从菜单承接后，顶栏仍保留一个常驻作用域；项目列表不把它当普通项目，
+  // 但切换器需要它的计数与名称，故这里取全量列表后再做展示层改名/分流。
+  const { projects, phase, error, retry } = useProjectList();
   const [projectId, setProjectId] = useActiveProject();
   const [sortMode] = useTasksProjectSort(); // T06408：顶栏项目排序与切换器列表共用同一偏好
   const [open, setOpen] = useState(false);
@@ -56,19 +58,32 @@ export function ProjectSwitcher() {
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
-  const sortedProjects = useMemo(() => sortProjects(projects, sortMode), [projects, sortMode]);
+  const displayProjects = useMemo(
+    () => projects.map((p) => (p.id === INBOX_PROJECT_ID ? { ...p, name: INBOX_PROJECT_LABEL } : p)),
+    [projects],
+  );
+  const sortedProjects = useMemo(
+    () => sortProjects(displayProjects.filter((p) => p.id !== INBOX_PROJECT_ID), sortMode),
+    [displayProjects, sortMode],
+  );
   const options = useMemo(
-    () => [{ id: '', name: '全部项目' }, ...sortedProjects.map((p) => ({ id: p.id, name: p.name }))],
+    () => [
+      { id: '', name: '全部项目' },
+      { id: INBOX_PROJECT_ID, name: INBOX_PROJECT_LABEL },
+      ...sortedProjects.map((p) => ({ id: p.id, name: p.name })),
+    ],
     [sortedProjects],
   );
   // 首屏项目列表未返回时不要把仍未解析的 ID 误报为“项目已删除”。
-  const label = projectId && projects.length === 0
-    ? (phase === 'loading' ? '项目列表加载中…' : phase === 'error' ? '项目列表加载失败' : activeProjectLabel(projectId, projects))
-    : activeProjectLabel(projectId, projects);
+  const label = projectId === INBOX_PROJECT_ID
+    ? INBOX_PROJECT_LABEL
+    : projectId && projects.length === 0
+      ? (phase === 'loading' ? '项目列表加载中…' : phase === 'error' ? '项目列表加载失败' : activeProjectLabel(projectId, displayProjects))
+      : activeProjectLabel(projectId, displayProjects);
 
-  const currentProject = projectId ? projects.find((p) => p.id === projectId) : undefined;
-  const allTodo = useMemo(() => projects.reduce((sum, p) => sum + (p.todo_count ?? 0), 0), [projects]);
-  const allUnverified = useMemo(() => projects.reduce((sum, p) => sum + (p.unverified_count ?? 0), 0), [projects]);
+  const currentProject = projectId ? displayProjects.find((p) => p.id === projectId) : undefined;
+  const allTodo = useMemo(() => displayProjects.reduce((sum, p) => sum + (p.todo_count ?? 0), 0), [displayProjects]);
+  const allUnverified = useMemo(() => displayProjects.reduce((sum, p) => sum + (p.unverified_count ?? 0), 0), [displayProjects]);
   // 全部项目取合计；具体项目取自身计数。列表尚未就绪时不展示 0/0，避免把“加载中”误报成空。
   const counts = projectId
     ? (currentProject ? { todo: currentProject.todo_count ?? 0, unverified: currentProject.unverified_count ?? 0 } : null)
@@ -194,7 +209,7 @@ export function ProjectSwitcher() {
             </div>
           )}
           {options.map((o, index) => {
-            const optionProject = o.id ? projects.find((p) => p.id === o.id) : undefined;
+            const optionProject = o.id ? displayProjects.find((p) => p.id === o.id) : undefined;
             const optionTodo = o.id ? (optionProject?.todo_count ?? 0) : allTodo;
             const optionUnverified = o.id ? (optionProject?.unverified_count ?? 0) : allUnverified;
             return (
@@ -219,8 +234,8 @@ export function ProjectSwitcher() {
               </button>
             );
           })}
-          {projects.length === 0 && phase === 'ready' && (
-            <output className="mt-project-menu-hint">暂无项目；可在任务菜单新建项目。</output>
+          {projects.filter((p) => p.id !== INBOX_PROJECT_ID).length === 0 && phase === 'ready' && (
+            <output className="mt-project-menu-hint">暂无项目；可直接使用收集箱，或在任务菜单新建项目。</output>
           )}
         </div>
       )}

@@ -39,7 +39,10 @@ const READY_TTL_MS = 60_000;
 /** 失败后的自动重取最小间隔：避免页面来回切换时对刚失败的后端连环打 */
 const ERROR_RETRY_GAP_MS = 3_000;
 
-const INBOX_ID = 'sys-inbox';
+export const INBOX_PROJECT_ID = 'sys-inbox';
+export const INBOX_PROJECT_LABEL = '收集箱';
+
+const INBOX_ID = INBOX_PROJECT_ID;
 
 let snap: Snapshot = { projects: [], phase: 'loading', error: '', at: 0 };
 const listeners = new Set<() => void>();
@@ -70,7 +73,9 @@ async function runRound(): Promise<void> {
       const list = await api.get<Project[]>('/projects', ctrl.signal);
       clearTimeout(timer);
       if (!Array.isArray(list)) throw new Error('项目列表返回格式异常');
-      commit({ projects: list, phase: 'ready', error: '', at: Date.now() });
+      // `sys-inbox` 是收集任务桶，不再是用户概念里的“收件箱”项目；
+      // 统一在取数层改展示名，保证任务页、随手记、循环任务等处不再出现同名两义。
+      commit({ projects: list.map((p) => (p.id === INBOX_ID ? { ...p, name: INBOX_PROJECT_LABEL } : p)), phase: 'ready', error: '', at: Date.now() });
       return;
     } catch (e) {
       clearTimeout(timer);

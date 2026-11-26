@@ -1034,7 +1034,7 @@ function OfflineWorkPanel({ label, templates, templateId, onTemplateChange, form
   );
 }
 
-/** T00558 / PRD AI-5：生成后把摘要写入收件箱任务（状态未经服务端确认时禁用并如实标注） */
+/** T00558 / PRD AI-5：生成后把摘要写入收集箱任务（状态未经服务端确认时禁用并如实标注） */
 function SummaryInboxToggle({ label, view, checked, onChange }: {
   readonly label: string;
   readonly view: ResourceHintView;
@@ -1046,13 +1046,13 @@ function SummaryInboxToggle({ label, view, checked, onChange }: {
   return (
     <>
       <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 10, fontSize: 'var(--fs-s)', color: 'var(--text-secondary)', cursor }}
-        title={`勾选后，${label}时会把洞察摘要写入「收件箱」项目的一条待办任务（便于后续跟进）`}>
+        title={`勾选后，${label}时会把洞察摘要写入「收集箱」项目的一条待办任务（便于后续跟进）`}>
         <input type="checkbox" checked={checked} disabled={!ready} style={{ cursor }}
           onChange={(e) => onChange(e.target.checked)} />
         {' '}
-        生成后把摘要写入收件箱任务
+        生成后把摘要写入收集箱任务
       </label>
-      <ResourceHint view={view} label="摘要写入收件箱开关状态" showLoading style={{ marginLeft: 6 }} />
+      <ResourceHint view={view} label="摘要写入收集箱开关状态" showLoading style={{ marginLeft: 6 }} />
     </>
   );
 }
@@ -1259,7 +1259,7 @@ export function ReportPage() {
   const [prdRemountKey, setPrdRemountKey] = useState(0);
   const [aiTools, setAiTools] = useState<AITool[]>([]);
   const [aiToolId, setAiToolId] = useSessionState('report.aiTool', '');
-  // T00558 / PRD AI-5：周报摘要写入收件箱开关（服务端 report.aiSummaryToInbox）——开关状态持久于服务端
+  // T00558 / PRD AI-5：周报摘要写入收集箱开关（服务端 report.aiSummaryToInbox）——开关状态持久于服务端
   // T02213：取值改走可见失败态层。此前 GET 失败被 `.catch(() => undefined)` 吞掉，界面按初始 false
   // 渲染成「后端是关的」——而真实值可能是开的，回显与后端不一致会直接误导一次生成结果的去向。
   const summaryInboxView = useResource<{ enabled: boolean }>(() => api.get<{ enabled: boolean }>('/settings/ai-summary-inbox'));
@@ -1295,7 +1295,7 @@ export function ReportPage() {
   // T03241（AI-101⑤）：提示走主题内分级组件（错误常驻且可复制/关闭），不再调用原生 alert
   const { notice, flash, dismiss: dismissNotice } = useNotice();
 
-  // T00558：摘要写入收件箱开关（S3776：回调下沉）
+  // T00558：摘要写入收集箱开关（S3776：回调下沉）
   const changeSummaryInbox = (v: boolean) => {
     summaryInboxView.setData({ enabled: v });
     void api.post('/settings/ai-summary-inbox', { enabled: v }).catch((e) => {

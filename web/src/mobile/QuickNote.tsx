@@ -82,7 +82,7 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
   const [priority, setPriority] = useState('normal');
   const [categoryId, setCategoryId] = useState('');
   const [projectId, setProjectId] = useState('');
-  const [projectName, setProjectName] = useState('收件箱');
+  const [projectName, setProjectName] = useState('收集箱');
   const [images, setImages] = useState<string[]>([]);
   const projectList = useProjectList(); // T02212：项目列表由统一容错层供给（失败可见 + 重试，离线时仍给上次数据）
   const projects = projectList.projects;
@@ -107,10 +107,10 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
       try {
         const np = await api.get<{ projectId: string }>('/settings/note-project');
         setProjectId(np.projectId);
-        // 评审修复：用本次拉取的项目列表匹配（原闭包读 projects state，恒为 [] 永远回退收件箱）
+        // 评审修复：用本次拉取的项目列表匹配（原闭包读 projects state，恒为 [] 永远回退收集箱）
         // T02212：同一份列表改由容错层快照给出（原来这里为取一个名字又发一次 /projects）
-        setProjectName(getProjectListSnapshot().find((x) => x.id === np.projectId)?.name ?? '收件箱');
-      } catch { /* 忽略，回退收件箱 */ }
+        setProjectName(getProjectListSnapshot().find((x) => x.id === np.projectId)?.name ?? '收集箱');
+      } catch { /* 忽略，回退收集箱 */ }
       // T01426：记忆上次——优先级/分类默认带出上次选择（项目仍以「默认记事项目」设置优先）
       try {
         const last = JSON.parse(localStorage.getItem(LAST_KEY) ?? '{}') as { priority?: string; categoryId?: string };
@@ -368,7 +368,7 @@ export function QuickNote({ onDone, onCancel, notify }: Props) {
         {/* 项目归属（默认记事项目，可展开改） */}
         <div style={{ marginTop: 14 }}>
           <div style={{ fontSize: 'var(--fs-m)', color: 'var(--text-secondary)', marginBottom: 6 }}>归属项目</div>
-          <select value={projectId} onChange={(e) => { setProjectId(e.target.value); const p = projects.find((x) => x.id === e.target.value); setProjectName(p?.name ?? '收件箱'); }} aria-label="随手记归属项目" style={selectFull}>
+          <select value={projectId} onChange={(e) => { setProjectId(e.target.value); const p = projects.find((x) => x.id === e.target.value); setProjectName(p?.name ?? '收集箱'); }} aria-label="随手记归属项目" style={selectFull}>
             {projects.length === 0 && !projectId && <option value="">{projectListPlaceholder(projectList)}</option>}
             {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
