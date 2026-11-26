@@ -1,0 +1,163 @@
+{
+  "checks": [
+    {
+      "name": "T06352-V01 设置页就绪",
+      "ok": true
+    },
+    {
+      "name": "T06352-V00 新手引导已关闭",
+      "ok": true,
+      "extra": {
+        "dismissed": {
+          "ok": true,
+          "found": true,
+          "label": "跳过"
+        },
+        "modalGone": true
+      }
+    },
+    {
+      "name": "T06352-V02 浅色主题与品牌 CSS 注入",
+      "ok": true,
+      "extra": {
+        "theme": "light",
+        "brandCss": true,
+        "accent": "#2563EB",
+        "accentInk": "#1D4ED8",
+        "accentSoft": "#EFF6FF",
+        "accentText": "#FFFFFF",
+        "tagBg": "#EFF6FF",
+        "tagFg": "#1D4ED8",
+        "buttonBg": "#2563EB",
+        "buttonFg": "#FFFFFF",
+        "primitiveBlue700": "#1D4ED8"
+      }
+    },
+    {
+      "name": "T06352-V03 品牌主色生效",
+      "ok": true,
+      "extra": {
+        "accent": "#2563EB",
+        "buttonBg": "#2563EB"
+      }
+    },
+    {
+      "name": "T06352-V04 品牌深色文字生效",
+      "ok": true,
+      "extra": {
+        "accentInk": "#1D4ED8",
+        "primitiveBlue700": "#1D4ED8"
+      }
+    },
+    {
+      "name": "T06352-V05 品牌浅底生效",
+      "ok": true,
+      "extra": {
+        "accentSoft": "#EFF6FF"
+      }
+    },
+    {
+      "name": "T06352-V06 tag 组件令牌生效",
+      "ok": true,
+      "extra": {
+        "tagBg": "#EFF6FF",
+        "tagFg": "#1D4ED8"
+      }
+    },
+    {
+      "name": "T06352-V07 主按钮前景/背景令牌生效",
+      "ok": true,
+      "extra": {
+        "buttonBg": "#2563EB",
+        "buttonFg": "#FFFFFF"
+      }
+    },
+    {
+      "name": "T06352-V08 深色主题不被品牌覆盖",
+      "ok": true,
+      "extra": {
+        "theme": "dark",
+        "brandCss": true,
+        "accent": "#5b9bf8",
+        "accentInk": "#5b9bf8",
+        "accentSoft": "#1e293b",
+        "accentText": "#0b1220",
+        "tagBg": "#0b1220",
+        "tagFg": "#5b9bf8",
+        "buttonBg": "#5b9bf8",
+        "buttonFg": "#0b1220",
+        "primitiveBlue700": "#1d4ed8"
+      }
+    },
+    {
+      "name": "T06352-V09 切回浅色品牌令牌恢复",
+      "ok": true,
+      "extra": {
+        "theme": "light",
+        "brandCss": true,
+        "accent": "#2563EB",
+        "accentInk": "#1D4ED8",
+        "accentSoft": "#EFF6FF",
+        "accentText": "#FFFFFF",
+        "tagBg": "#EFF6FF",
+        "tagFg": "#1D4ED8",
+        "buttonBg": "#2563EB",
+        "buttonFg": "#FFFFFF",
+        "primitiveBlue700": "#1D4ED8"
+      }
+    },
+    {
+      "name": "T06352-V10 Badge accent 实际消费品牌 tag 令牌",
+      "ok": true,
+      "extra": {
+        "backgroundColor": "rgb(239, 246, 255)",
+        "color": "rgb(29, 78, 216)",
+        "text": "品牌徽标"
+      }
+    }
+  ],
+  "light": {
+    "theme": "light",
+    "brandCss": true,
+    "accent": "#2563EB",
+    "accentInk": "#1D4ED8",
+    "accentSoft": "#EFF6FF",
+    "accentText": "#FFFFFF",
+    "tagBg": "#EFF6FF",
+    "tagFg": "#1D4ED8",
+    "buttonBg": "#2563EB",
+    "buttonFg": "#FFFFFF",
+    "primitiveBlue700": "#1D4ED8"
+  },
+  "dark": {
+    "theme": "dark",
+    "brandCss": true,
+    "accent": "#5b9bf8",
+    "accentInk": "#5b9bf8",
+    "accentSoft": "#1e293b",
+    "accentText": "#0b1220",
+    "tagBg": "#0b1220",
+    "tagFg": "#5b9bf8",
+    "buttonBg": "#5b9bf8",
+    "buttonFg": "#0b1220",
+    "primitiveBlue700": "#1d4ed8"
+  },
+  "back": {
+    "theme": "light",
+    "brandCss": true,
+    "accent": "#2563EB",
+    "accentInk": "#1D4ED8",
+    "accentSoft": "#EFF6FF",
+    "accentText": "#FFFFFF",
+    "tagBg": "#EFF6FF",
+    "tagFg": "#1D4ED8",
+    "buttonBg": "#2563EB",
+    "buttonFg": "#FFFFFF",
+    "primitiveBlue700": "#1D4ED8"
+  },
+  "badge": {
+    "backgroundColor": "rgb(239, 246, 255)",
+    "color": "rgb(29, 78, 216)",
+    "text": "品牌徽标"
+  }
+}
