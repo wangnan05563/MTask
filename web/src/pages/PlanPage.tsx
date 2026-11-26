@@ -519,13 +519,14 @@ function PlanMoreMenu({ busy, projectId, projectName, createPlan, importExcel, e
         onClick={() => setOpen((v) => !v)}
         title="更多 — 新建计划、导入导出、模板与分享快照"
         aria-label="更多：计划工具与数据操作"
+        aria-controls="plan-more-panel"
         aria-expanded={open}
         style={{ ...btnStyle, marginLeft: 'auto', padding: '6px 8px', color: open ? 'var(--accent)' : 'var(--text-muted)', borderColor: open ? 'var(--accent)' : undefined }}
       >
         <MoreHorizontal size={13} />
       </button>
       {open && (
-        <div ref={panelRef} role="group" aria-label="更多操作：计划" data-t06410="more-panel" style={PLAN_MORE_PANEL_STYLE}>
+        <div ref={panelRef} id="plan-more-panel" role="group" aria-label="更多操作：计划" data-t06410="more-panel" style={PLAN_MORE_PANEL_STYLE}>
           {groups.map((g, gi) => (
             <div key={g.key} data-t06410-group={g.key}
               style={{ ...PLAN_MORE_GROUP_STYLE, paddingBottom: gi === groups.length - 1 ? 0 : 6, borderBottom: gi === groups.length - 1 ? 'none' : '1px solid var(--border)' }}>
@@ -663,8 +664,9 @@ function ShareSnapshotDialog({ open, onClose, projectId, projectName }: {
   return (
     <button onClick={() => runAsync(batchEvaluatePlans())} disabled={evalBusy || busy || blocked}
       title={blocked ? (blockedTitle ?? baseTitle) : `AI 评估（${plans.length} 条待评估）— 对全部计划条目评估工期合理性/风险与建议，结果自动录入各条描述（确认后执行）`}
-      aria-label={`批量 AI 评估：${plans.length} 条待评估`} data-t03622="eval" data-t06410="eval"
-      className={'op-hidden' + (evalBusy ? ' task-breathe' : '')}
+      aria-label={blocked ? `批量 AI 评估不可用：${blockedTitle ?? baseTitle}` : `批量 AI 评估：${plans.length} 条待评估`}
+      data-t03622="eval" data-t06410="eval" data-ai-blocked={blocked ? 'true' : undefined}
+      className={(blocked ? '' : 'op-hidden') + (evalBusy ? ' task-breathe' : '')}
       style={{ ...btnStyle, color: 'var(--accent)', borderColor: 'var(--accent)', padding: '6px 8px' }}>
       {evalBusy ? <Loader2 size={13} className="aispin" /> : <Zap size={13} />}
       {(plans.length > 0 || evalBusy) && countText !== '' && (

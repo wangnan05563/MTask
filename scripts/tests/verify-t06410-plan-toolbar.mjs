@@ -64,8 +64,11 @@ if (!toolbar.includes('data-t03622="holiday"') || toolbar.indexOf('data-t03622="
   failures.push('节假日管理与 AI 评估的相对顺序异常');
 }
 
-if (!/className=\{'op-hidden' \+ \(evalBusy \? ' task-breathe' : ''\)\}/.test(evalButton)) {
-  failures.push('AI 评估未保持默认 op-hidden 隐身');
+if (!/className=\{\(blocked \? '' : 'op-hidden'\) \+ \(evalBusy \? ' task-breathe' : ''\)\}/.test(evalButton)) {
+  failures.push('AI 评估未保持默认 op-hidden、AI 不可用时可见禁用');
+}
+if (!evalButton.includes('data-ai-blocked={blocked')) {
+  failures.push('AI 评估缺少不可用状态标记');
 }
 if (!/className=\{'op-hidden' \+ \(evalBusy \? ' task-breathe' : ''\)\}/.test(complexityButton)) {
   failures.push('补算复杂度未改为默认 op-hidden 隐身');
@@ -82,6 +85,9 @@ if (plan.includes('TaskMoreMenu') || plan.includes('TaskMoreMenuItem')) {
 }
 if (!moreMenu.includes('aria-expanded={open}') || !moreMenu.includes('data-t06410="more-panel"')) {
   failures.push('「更多」触发按钮与行内面板缺少展开状态绑定');
+}
+if (!moreMenu.includes('aria-controls="plan-more-panel"') || !moreMenu.includes('id="plan-more-panel"')) {
+  failures.push('「更多」触发按钮与面板缺少 aria-controls/id 关联');
 }
 if (!moreMenu.includes('data-t06410="more-trigger"')) failures.push('「更多」触发按钮缺少稳定标识');
 if (!moreMenu.includes("marginLeft: 'auto'")) failures.push('「更多」触发按钮未用 margin-left:auto 贴住工具栏行尾');

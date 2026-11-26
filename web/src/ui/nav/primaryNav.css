@@ -405,6 +405,12 @@
   background: var(--surface-2);
 }
 
+.mt-project-sort-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  background: var(--surface-2);
+}
+
 .mt-project-sort-item[aria-checked="true"] {
   background: var(--accent-soft);
   color: var(--accent-ink);

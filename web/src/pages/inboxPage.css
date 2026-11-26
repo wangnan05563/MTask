@@ -144,6 +144,12 @@
   to { transform: rotate(360deg); }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .mt-inbox-refresh[data-loading='true'] svg {
+    animation: none;
+  }
+}
+
 .mt-inbox-flash,
 .mt-inbox-error {
   display: flex;

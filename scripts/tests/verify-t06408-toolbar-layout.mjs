@@ -51,16 +51,23 @@ for (const marker of [
   'role="menuitemradio"',
   'PROJ_SORT_OPTIONS',
   'useTasksProjectSort',
+  'aria-controls={open ? MENU_ID : undefined}',
+  'ArrowDown',
+  'ArrowUp',
+  'Home',
+  'End',
+  'tabIndex={index === cursor ? 0 : -1}',
 ]) {
   if (!sortButton.includes(marker)) failures.push(`顶栏项目排序缺少 ${marker}`);
 }
 
-for (const marker of [
-  'useTasksProjectSort',
-  'sortProjects(projects, sortMode)',
-  '...sortedProjects.map',
-]) {
-  if (!switcher.includes(marker)) failures.push(`项目切换器未共享排序偏好：${marker}`);
+const sortCallAt = switcher.indexOf('sortProjects(');
+const sortModeAt = sortCallAt >= 0 ? switcher.indexOf('sortMode', sortCallAt) : -1;
+if (!switcher.includes('useTasksProjectSort') || sortCallAt < 0 || sortModeAt < 0) {
+  failures.push('项目切换器未共享排序偏好：useTasksProjectSort / sortProjects(..., sortMode)');
+}
+if (!switcher.includes('...sortedProjects.map')) {
+  failures.push('项目切换器未把排序结果喂给选项列表');
 }
 if (!sortPref.includes("'tasks.projectSort'") || !sortPref.includes('CustomEvent')) {
   failures.push('项目排序共享状态未沿用 tasks.projectSort 持久化键或缺少同页广播');

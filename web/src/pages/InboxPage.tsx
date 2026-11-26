@@ -163,11 +163,8 @@ export function InboxPage() {
 
   return (
     <PageShell className="mt-inbox-page">
-      <PageHeader
-        title="收件箱"
-        minimal
-        description="认领是排他标记，不改变 open；可随时取消认领。打开源任务处理或转任务后，来源恢复会自动从待处理消失。本页不接邮件。"
-      />
+      {/* T06342：核心页不再重复可见标题/说明，页面名由顶栏承接；minimal 会忽略 description。 */}
+      <PageHeader title="收件箱" minimal />
 
       <FilterBar ariaLabel="收件箱筛选">
         <div className="mt-inbox-tabs" role="tablist" aria-label="收件箱分类">
@@ -239,6 +236,7 @@ export function InboxPage() {
             type="button"
             className="mt-inbox-refresh"
             aria-label="刷新收件箱"
+            aria-busy={loading}
             title="刷新"
             data-loading={loading || undefined}
             disabled={loading}

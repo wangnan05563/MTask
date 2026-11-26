@@ -19,7 +19,10 @@ check('收件箱页不存在「待我决策」', !page.includes('待我决策'))
 check('帮助页不存在「待我决策」', !help.includes('待我决策'));
 
 check('页头不再承载刷新按钮', !/primaryAction=\{\s*\(\s*<Button[\s\S]{0,400}刷新/.test(page));
+check('收件箱保持 T06342 紧凑页头', /<PageHeader title="收件箱" minimal \/>/.test(page) && !/description=/.test(page.slice(page.indexOf('<PageHeader'), page.indexOf('<FilterBar'))));
 check('刷新按钮位于 FilterBar 内', /<FilterBar[\s\S]*?className="mt-inbox-refresh"[\s\S]*?<\/FilterBar>/.test(page));
+check('刷新按钮具备 aria-busy 加载状态', /aria-busy=\{loading\}/.test(page));
+check('刷新 spinner 支持 reduced-motion', /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.mt-inbox-refresh\[data-loading='true'\] svg[\s\S]*?animation:\s*none/.test(css));
 check('刷新按钮在「转入项目」组之后', /mt-inbox-target-group[\s\S]*?mt-inbox-refresh/.test(page));
 check('刷新按钮无文字、仅有刷新图标', /className="mt-inbox-refresh"[\s\S]*?<RefreshCw size=\{14\}[\s\S]*?<\/button>/.test(page)
   && !/<button[\s\S]{0,400}className="mt-inbox-refresh"[\s\S]{0,400}>\s*刷新\s*<\/button>/.test(page));
