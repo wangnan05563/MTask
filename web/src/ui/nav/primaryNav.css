@@ -321,37 +321,58 @@
   }
 }
 
-/* T06329：顶栏项目/工作区切换器——常驻当前作用域，下拉键盘可达。 */
+/* T06329：顶栏项目/工作区切换器——常驻当前作用域，下拉键盘可达。
+   T06403：切换按钮 + 待办/未验证徽标 + 项目名复制按钮组成一个 segmented control。 */
 .mt-project-switcher {
   position: relative;
-  flex-shrink: 0;
+  display: inline-flex;
+  align-items: stretch;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 330px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--card-bg);
+}
+
+.mt-project-switcher:hover,
+.mt-project-switcher:focus-within {
+  border-color: var(--accent);
+}
+
+.mt-project-switcher:focus-within {
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 .mt-project-switcher-button {
   display: inline-flex;
   align-items: center;
+  flex: 1 1 auto;
   gap: 6px;
-  max-width: 210px;
-  padding: 5px 9px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--card-bg);
+  min-width: 0;
+  padding: 5px 6px 5px 9px;
+  border: none;
+  border-radius: 7px 0 0 7px;
+  background: transparent;
   color: var(--text-secondary);
   font-size: var(--fs-s);
 }
 
 .mt-project-switcher-button:hover,
 .mt-project-switcher-button[aria-expanded="true"] {
-  border-color: var(--accent);
   color: var(--accent);
 }
 
 .mt-project-switcher-button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: none;
+}
+
+.mt-project-switcher-button > svg {
+  flex-shrink: 0;
 }
 
 .mt-project-switcher-label {
+  flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -364,6 +385,43 @@
 
 .mt-project-switcher-button svg:last-child.is-open {
   transform: rotate(180deg);
+}
+
+.mt-project-copy {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 0 6px 6px 0;
+}
+
+.mt-project-badges {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 3px;
+}
+
+.mt-project-badge {
+  min-width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  padding: 0 4px;
+  border-radius: 8px;
+  font-size: var(--fs-2xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+  text-align: center;
+}
+
+.mt-project-badge--todo {
+  background: var(--danger-soft, rgba(220, 38, 38, .12));
+  color: var(--danger);
+}
+
+.mt-project-badge--unverified {
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .mt-project-menu {
@@ -409,9 +467,18 @@
 }
 
 .mt-project-option-name {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.mt-project-option-meta {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 6px;
 }
 
 .mt-project-menu-hint {
@@ -434,14 +501,17 @@
 }
 
 @media (max-width: 1180px) {
-  .mt-project-switcher-button {
-    max-width: 160px;
+  .mt-project-switcher {
+    max-width: 280px;
   }
 }
 
 @media (max-width: 960px) {
+  .mt-project-switcher {
+    max-width: 230px;
+  }
+
   .mt-project-switcher-button {
-    max-width: 120px;
-    padding: 4px 7px;
+    padding: 4px 5px 4px 7px;
   }
 }

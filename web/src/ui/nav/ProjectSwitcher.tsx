@@ -1,8 +1,9 @@
 /**
  * T06329 顶栏项目/工作区切换器：常驻显示当前作用域，键盘可选择，切换后各页面订阅同一全局值。
  */
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { useProjectList } from '../projectList';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { refreshProjectList, useProjectList } from '../projectList';
+import { CopyButton } from '../CopyButton';
 import { activeProjectLabel, useActiveProject } from '../activeProject';
 
 function FolderIcon() {
@@ -29,6 +30,20 @@ function CheckIcon() {
   );
 }
 
+/** T06403：项目徽标沿用任务页口径——红=待办、蓝=未验证；仅数字，悬浮与读屏补全文。 */
+function ProjectBadges({ todo, unverified, scopeName }: {
+  readonly todo: number;
+  readonly unverified: number;
+  readonly scopeName: string;
+}) {
+  return (
+    <span className="mt-project-badges" aria-hidden="true">
+      <span className="mt-project-badge mt-project-badge--todo" title={`${scopeName}待办 ${todo} 条`}>{todo}</span>
+      <span className="mt-project-badge mt-project-badge--unverified" title={`${scopeName}未验证 ${unverified} 条`}>{unverified}</span>
+    </span>
+  );
+}
+
 export function ProjectSwitcher() {
   const { projects, phase, error, retry } = useProjectList({ excludeInbox: true });
   const [projectId, setProjectId] = useActiveProject();
@@ -43,6 +58,32 @@ export function ProjectSwitcher() {
   const label = projectId && projects.length === 0
     ? (phase === 'loading' ? '项目列表加载中…' : phase === 'error' ? '项目列表加载失败' : activeProjectLabel(projectId, projects))
     : activeProjectLabel(projectId, projects);
+
+  const currentProject = projectId ? projects.find((p) => p.id === projectId) : undefined;
+  const allTodo = useMemo(() => projects.reduce((sum, p) => sum + (p.todo_count ?? 0), 0), [projects]);
+  const allUnverified = useMemo(() => projects.reduce((sum, p) => sum + (p.unverified_count ?? 0), 0), [projects]);
+  // 全部项目取合计；具体项目取自身计数。列表尚未就绪时不展示 0/0，避免把“加载中”误报成空。
+  const counts = projectId
+    ? (currentProject ? { todo: currentProject.todo_count ?? 0, unverified: currentProject.unverified_count ?? 0 } : null)
+    : (projects.length > 0 ? { todo: allTodo, unverified: allUnverified } : null);
+
+  const refreshAtRef = useRef(0);
+  const refreshCounts = useCallback(() => {
+    const now = Date.now();
+    if (now - refreshAtRef.current < 800) return;
+    refreshAtRef.current = now;
+    void refreshProjectList();
+  }, []);
+
+  const openMenu = useCallback(() => {
+    setOpen(true);
+    refreshCounts();
+  }, [refreshCounts]);
+
+  const toggleMenu = useCallback(() => {
+    if (open) setOpen(false);
+    else openMenu();
+  }, [open, openMenu]);
 
   const close = useCallback((restoreFocus = true) => {
     setOpen(false);
@@ -104,20 +145,31 @@ export function ProjectSwitcher() {
         className="mt-project-switcher-button"
         aria-haspopup="listbox"
         aria-expanded={open}
-        aria-label={`当前项目/工作区：${label}`}
-        title={`当前项目/工作区：${label}；点击切换`}
-        onClick={() => setOpen((v) => !v)}
+        aria-label={`当前项目/工作区：${label}${counts ? `，待办 ${counts.todo} 条，未验证 ${counts.unverified} 条` : ''}`}
+        title={`当前项目/工作区：${label}${counts ? `；待办 ${counts.todo} 条，未验证 ${counts.unverified} 条` : ''}；点击切换`}
+        onClick={toggleMenu}
         onKeyDown={(e) => {
           if (e.key === 'ArrowDown' && !open) {
             e.preventDefault();
-            setOpen(true);
+            openMenu();
           }
         }}
       >
         <FolderIcon />
         <span className="mt-project-switcher-label">{label}</span>
+        {counts && <ProjectBadges todo={counts.todo} unverified={counts.unverified} scopeName={label} />}
         <ChevronIcon open={open} />
       </button>
+      {/* T06403：复制按钮与切换按钮做兄弟节点——HTML 不允许按钮套按钮；点击只复制，不展开下拉。 */}
+      <span className="mt-project-copy" data-t06403="project-copy">
+        <CopyButton
+          getText={() => label}
+          title="复制项目名称"
+          ariaLabel={`复制项目名称：${label}`}
+          size={12}
+          style={{ padding: '4px 7px', borderRadius: '0 6px 6px 0', background: 'transparent', border: 'none', color: 'var(--text-muted)' }}
+        />
+      </span>
       {open && (
         <div
           className="mt-project-menu"
@@ -134,22 +186,32 @@ export function ProjectSwitcher() {
               <button type="button" onClick={() => retry()}>重试</button>
             </div>
           )}
-          {options.map((o, index) => (
-            <button
-              key={o.id || '__all__'}
-              ref={(el) => { optionRefs.current[index] = el; }}
-              type="button"
-              role="option"
-              aria-selected={o.id === projectId}
-              tabIndex={-1}
-              className="mt-project-option"
-              onMouseEnter={() => setCursor(index)}
-              onClick={() => select(o.id)}
-            >
-              <span className="mt-project-option-name">{o.name}</span>
-              {o.id === projectId && <CheckIcon />}
-            </button>
-          ))}
+          {options.map((o, index) => {
+            const optionProject = o.id ? projects.find((p) => p.id === o.id) : undefined;
+            const optionTodo = o.id ? (optionProject?.todo_count ?? 0) : allTodo;
+            const optionUnverified = o.id ? (optionProject?.unverified_count ?? 0) : allUnverified;
+            return (
+              <button
+                key={o.id || '__all__'}
+                ref={(el) => { optionRefs.current[index] = el; }}
+                type="button"
+                role="option"
+                aria-selected={o.id === projectId}
+                tabIndex={-1}
+                className="mt-project-option"
+                onMouseEnter={() => setCursor(index)}
+                onClick={() => select(o.id)}
+                aria-label={`${o.name}，待办 ${optionTodo} 条，未验证 ${optionUnverified} 条`}
+                title={`${o.name}：待办 ${optionTodo} 条，未验证 ${optionUnverified} 条`}
+              >
+                <span className="mt-project-option-name">{o.name}</span>
+                <span className="mt-project-option-meta">
+                  <ProjectBadges todo={optionTodo} unverified={optionUnverified} scopeName={o.name} />
+                  {o.id === projectId && <CheckIcon />}
+                </span>
+              </button>
+            );
+          })}
           {projects.length === 0 && phase === 'ready' && (
             <output className="mt-project-menu-hint">暂无项目；可在任务菜单新建项目。</output>
           )}
