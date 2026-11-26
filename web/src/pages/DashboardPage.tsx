@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Activity, CheckCircle2, Clock3, ListTodo, ShieldCheck } from 'lucide-react';
 import { api, type TodayView } from '../api/client';
-import { Button } from '../ui/components';
 import { FlowProgress } from '../ui/FlowProgress'; // T01068-FR4.4：流光进度条
 import { PageHeader, PageShell } from '../ui/layout';
 import { useActiveProject } from '../ui/activeProject'; // T06395：项目范围统一由顶栏切换器驱动，页面不再保留独立下拉
 import { priorityBadgeLabel, priorityColor } from '../ui/priority'; // T05777：优先级分布沿用单源文案/颜色
-import { TODAY_REFRESH_ICON, TodayBoard } from './TodayBoard';
+import { TodayBoard } from './TodayBoard';
 
 /** T01059-FR2.2：统计仪表盘——周吞吐/AI 成功率/AI 平均耗时/验证通过率四指标 + 吞吐趋势条形图。
  *  数据源 /api/stats/dashboard；纯 CSS 条形图（无图表库依赖）；项目/时间窗筛选。 */
@@ -283,16 +282,6 @@ export function DashboardPage() {
         title="今日"
         minimal
         description={`${dateLabel} · 先做最要紧的事；一屏看完待办、需要你处理的积压和 AI 进度。`}
-        secondaryActions={(
-          <>
-            <Button variant="ghost" size="sm" onClick={() => setReloadKey((n) => n + 1)} loading={todayLoading} leftIcon={TODAY_REFRESH_ICON}>
-              刷新
-            </Button>
-            <Button variant="secondary" size="sm" onClick={() => setShowStats((v) => !v)}>
-              {showStats ? '收起项目统计' : '项目统计'}
-            </Button>
-          </>
-        )}
       />
 
       <TodayBoard
@@ -301,9 +290,11 @@ export function DashboardPage() {
         error={todayError}
         onRetry={() => setReloadKey((n) => n + 1)}
         generatedAt={generatedAt}
+        statsOpen={showStats}
+        onToggleStats={() => setShowStats((v) => !v)}
       />
 
-      {showStats && <StatsSection projectId={projectId} />}
+      {showStats && <div id="today-stats"><StatsSection projectId={projectId} /></div>}
     </PageShell>
   );
 }

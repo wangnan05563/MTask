@@ -3,17 +3,63 @@
 .mt-today-toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin: -4px 0 12px;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: nowrap;
+  min-width: 0;
+  margin: -8px 0 10px;
 }
 
 .mt-today-generated {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  min-width: 0;
+  overflow: hidden;
   color: var(--text-muted);
   font-size: var(--fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mt-today-toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.mt-today-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--card-bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color .15s ease, border-color .15s ease, background-color .15s ease, transform .15s ease;
+}
+
+.mt-today-icon-button:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.mt-today-icon-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.mt-today-icon-button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .mt-today-filter-note {
@@ -69,17 +115,40 @@
   gap: 10px;
   padding: 10px 12px;
   border: 1px solid var(--border);
+  border-left: 3px solid var(--stat-color, var(--border));
   border-radius: 10px;
-  background: var(--card-bg);
+  background: var(--stat-soft, var(--card-bg));
   color: var(--text);
   text-align: left;
   cursor: pointer;
-  transition: border-color .15s ease, background-color .15s ease;
+  transition: border-color .15s ease, background-color .15s ease, transform .15s ease;
+}
+
+/* T06397：四类统计各用一套主色；图标形状本身也不同，不依赖颜色单通道区分 */
+.mt-today-summary-item[data-tone="today"] {
+  --stat-color: #2563eb;
+  --stat-soft: color-mix(in srgb, #2563eb 7%, var(--card-bg));
+}
+
+.mt-today-summary-item[data-tone="waiting"] {
+  --stat-color: #b45309;
+  --stat-soft: color-mix(in srgb, #b45309 8%, var(--card-bg));
+}
+
+.mt-today-summary-item[data-tone="running"] {
+  --stat-color: #0d9488;
+  --stat-soft: color-mix(in srgb, #0d9488 8%, var(--card-bg));
+}
+
+.mt-today-summary-item[data-tone="alerts"] {
+  --stat-color: #dc2626;
+  --stat-soft: color-mix(in srgb, #dc2626 8%, var(--card-bg));
 }
 
 .mt-today-summary-item:hover {
-  border-color: var(--accent);
-  background: var(--accent-soft);
+  border-color: var(--stat-color, var(--accent));
+  background: color-mix(in srgb, var(--stat-color, var(--accent)) 12%, var(--card-bg));
+  transform: translateY(-1px);
 }
 
 .mt-today-summary-label {
@@ -91,12 +160,36 @@
   font-size: var(--fs-s);
 }
 
+.mt-today-summary-label svg {
+  flex-shrink: 0;
+  color: var(--stat-color, var(--text-secondary));
+}
+
 .mt-today-summary-value {
-  color: var(--text);
+  color: var(--stat-color, var(--text));
   font-size: var(--fs-display);
   font-weight: 700;
   line-height: 1;
   font-variant-numeric: tabular-nums;
+  transform-origin: right center;
+  animation: mt-today-stat-pop .42s cubic-bezier(.2, .8, .2, 1);
+}
+
+@keyframes mt-today-stat-pop {
+  0% { opacity: .35; transform: translateY(5px) scale(.86); }
+  55% { opacity: 1; transform: translateY(-1px) scale(1.08); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mt-today-summary-item,
+  .mt-today-icon-button {
+    transition: none;
+  }
+
+  .mt-today-summary-value {
+    animation: none;
+  }
 }
 
 .mt-today-alerts {

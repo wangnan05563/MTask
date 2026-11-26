@@ -1,5 +1,5 @@
 import {
-  AlertTriangle, ArrowRight, Bot, CalendarDays, CheckCircle2, Clock3, Inbox, ListTodo,
+  AlertTriangle, ArrowRight, BarChart3, Bot, CalendarDays, CheckCircle2, Clock3, Inbox, ListTodo,
   Pin, Play, RefreshCw, ShieldAlert,
 } from 'lucide-react';
 import type { TodayAlert, TodayRunningItem, TodayTaskItem, TodayView, TodayWaitReason } from '../api/client';
@@ -163,17 +163,18 @@ function AlertBar({ alerts }: { readonly alerts: TodayAlert[] }) {
 
 function SummaryStrip({ summary }: { readonly summary: TodayView['summary'] }) {
   const items = [
-    { icon: <CalendarDays size={13} />, label: '今天做', value: summary.today, tab: 'tasks' as TabTarget },
-    { icon: <Inbox size={13} />, label: '等我处理', value: summary.waiting, tab: 'tasks' as TabTarget },
-    { icon: <Bot size={13} />, label: 'AI 正在跑', value: summary.running, tab: 'exec-sessions' as TabTarget },
-    { icon: <AlertTriangle size={13} />, label: '告警', value: summary.alerts, tab: 'tasks' as TabTarget },
+    { icon: <CalendarDays size={13} />, label: '今天做', value: summary.today, tab: 'tasks' as TabTarget, tone: 'today' },
+    { icon: <Inbox size={13} />, label: '等我处理', value: summary.waiting, tab: 'tasks' as TabTarget, tone: 'waiting' },
+    { icon: <Bot size={13} />, label: 'AI 正在跑', value: summary.running, tab: 'exec-sessions' as TabTarget, tone: 'running' },
+    { icon: <AlertTriangle size={13} />, label: '告警', value: summary.alerts, tab: 'tasks' as TabTarget, tone: 'alerts' },
   ];
   return (
     <div className="mt-today-summary" aria-label="今日看板摘要">
       {items.map((item) => (
-        <button key={item.label} type="button" className="mt-today-summary-item" onClick={() => navigate(item.tab)}>
+        <button key={item.label} type="button" className="mt-today-summary-item" data-tone={item.tone} onClick={() => navigate(item.tab)}>
           <span className="mt-today-summary-label">{item.icon}{item.label}</span>
-          <span className="mt-today-summary-value">{item.value}</span>
+          {/* T06397：数值变化时以 key 重挂载触发轻量弹入，刷新后能感知数据更新 */}
+          <span key={item.value} className="mt-today-summary-value">{item.value}</span>
         </button>
       ))}
     </div>
@@ -207,13 +208,15 @@ function LoadingBoard() {
 }
 
 export function TodayBoard({
-  data, loading, error, onRetry, generatedAt,
+  data, loading, error, onRetry, generatedAt, statsOpen, onToggleStats,
 }: {
   readonly data: TodayView | null;
   readonly loading: boolean;
   readonly error: string;
   readonly onRetry: () => void;
   readonly generatedAt: string;
+  readonly statsOpen: boolean;
+  readonly onToggleStats: () => void;
 }) {
   if (loading) return <LoadingBoard />;
   if (error && !data) {
@@ -233,10 +236,22 @@ export function TodayBoard({
   const emptyAll = data.summary.today === 0 && data.summary.waiting === 0 && data.summary.running === 0;
   return (
     <>
+      {/* T06397：更新时间、刷新与项目统计收口到同一行；动作只留图标，语义由 title/aria 承载 */}
       <div className="mt-today-toolbar">
         <span className="mt-today-generated">
           <Clock3 size={12} aria-hidden="true" /> 数据更新于 {generatedAt || whenLabel(data.generated_at)}
         </span>
+        <div className="mt-today-toolbar-actions">
+          <button type="button" className="mt-today-icon-button" onClick={onRetry}
+            title="刷新今日看板数据" aria-label="刷新今日看板数据">
+            <RefreshCw size={14} aria-hidden="true" />
+          </button>
+          <button type="button" className="mt-today-icon-button" onClick={onToggleStats}
+            title={statsOpen ? '收起项目统计' : '展开项目统计'} aria-label={statsOpen ? '收起项目统计' : '展开项目统计'}
+            aria-pressed={statsOpen} aria-controls="today-stats">
+            <BarChart3 size={14} aria-hidden="true" />
+          </button>
+        </div>
       </div>
       <SummaryStrip summary={data.summary} />
       <AlertBar alerts={data.alerts} />
@@ -297,6 +312,3 @@ export function TodayBoard({
     </>
   );
 }
-
-/** 首页刷新按钮在页头复用：与 onRetry 同一入口，避免出现两套“刷新”语义 */
-export const TODAY_REFRESH_ICON = <RefreshCw size={14} aria-hidden="true" />;
