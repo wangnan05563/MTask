@@ -597,42 +597,18 @@ export function QueuePage() {
 
   return (
     <PageShell className="mt-queue-page">
-      <PageHeader
-        title="投递队列"
-        minimal
-        description="把「任务 + AI 工具」排成序列逐条交付，回执留档可采纳；队列监控与并行任务池分层展示。"
-        primaryAction={(
-          <QueueToolButton
-            label="新建队列"
-            hint="创建新的任务队列"
-            icon={<Plus size={16} />}
-            onClick={() => void createQueue()}
-            style={BTN_PRIMARY}
-          />
-        )}
-        secondaryActions={(
-          <>
-            {active && <QueueHeadline queue={active} metrics={metrics} />}
-            <QueueToolButton
-              label="派发记录"
-              hint="查看 CodeBuddy 网关 / MCP 就绪池自动派发与监督中继的内部队列（只读）"
-              icon={<Send size={14} />}
-              onClick={() => setView('dispatch')}
-              style={BTN_SECONDARY_MD}
-            />
-          </>
-        )}
-      />
+      {/* T06342：页面名已在顶栏标签展示，这里只保留读屏标题；操作与队列状态合并为一条紧凑工具条 */}
+      <PageHeader title="投递队列" minimal />
 
-      {/* 工具条 */}
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
+      {/* 工具条：左侧队列切换与操作，右侧状态摘要与全局入口；比原来的「页头 + 工具条」两行省一行 */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 6 }}>
         <select
           value={active?.id ?? ''}
           onChange={(e) => { if (e.target.value) void open(e.target.value); }}
           aria-label="选择队列"
           title="切换当前队列"
           disabled={loadingQueues && queues.length === 0}
-          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', minWidth: 200, cursor: 'pointer' }}
+          style={{ padding: 6, fontSize: 'var(--fs-s)', border: '1px solid var(--border-strong)', borderRadius: 6, background: 'var(--card-bg)', color: 'var(--text)', minWidth: 200, maxWidth: 420, flex: '0 1 auto', cursor: 'pointer' }}
         >
           <option value="">{loadingQueues && queues.length === 0 ? '加载中…' : queues.length === 0 ? '暂无队列' : '选择队列…'}</option>
           {queues.map((q) => {
@@ -692,9 +668,26 @@ export function QueuePage() {
           />
         )}
 
-        <span style={{ flex: 1 }} />
-        <NoticeToast notice={notice} onDismiss={dismiss} />
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          {active && <QueueHeadline queue={active} metrics={metrics} />}
+          <QueueToolButton
+            label="派发记录"
+            hint="查看 CodeBuddy 网关 / MCP 就绪池自动派发与监督中继的内部队列（只读）"
+            icon={<Send size={14} />}
+            onClick={() => setView('dispatch')}
+            style={BTN_SECONDARY_MD}
+          />
+          <QueueToolButton
+            label="新建队列"
+            hint="创建新的任务队列"
+            icon={<Plus size={16} />}
+            onClick={() => void createQueue()}
+            style={BTN_PRIMARY}
+          />
+        </div>
       </div>
+
+      <NoticeToast notice={notice} onDismiss={dismiss} />
 
       {/* 队列设置：两个会影响「回执如何产出/如何完成」的全局开关 */}
       <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10, padding: '7px 10px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface-2)', fontSize: 'var(--fs-s)' }}>

@@ -1211,7 +1211,7 @@ export function AIToolsPage() {
           原实现 h3 后直接是三个 op-hidden 控件，纯键盘 Tab 掠过工具栏后整段筛选/搜索不可达。
           现将常驻「新增配置」按钮前置（图标旁保留文字标签）：Tab 到按钮即触发 :focus-within
           显形，后续 Tab 依 DOM 序自然抵达筛选下拉与搜索框。 */}
-      <FilterBar className="op-host" ariaLabel="AI 工具筛选" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+      <FilterBar className="op-host" ariaLabel="AI 工具筛选" style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
         <h3 style={{ fontSize: 'var(--fs-xl)', margin: 0 }}>配置记录（{filtered.length}/{tools.length}）</h3>
         <button
           onClick={openCreate}

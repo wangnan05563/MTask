@@ -604,7 +604,7 @@ function Shell() {
         </output>
       )}
 
-          <div className="mt-page-host" style={{ padding: tab === 'queue' || tab === 'plan' ? '12px 24px 40px' : '24px 24px 40px' }}>
+          <div className="mt-page-host">
             {tab === 'dashboard' && <DashboardPage />}
             {tab === 'inbox' && <InboxPage />}
             {tab === 'tasks' && <TasksPage />}
