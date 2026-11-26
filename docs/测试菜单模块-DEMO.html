@@ -545,6 +545,124 @@ a{color:var(--blue);text-decoration:none}
 .export-card:hover{border-color:var(--blue-line);background:var(--blue-soft)}
 .export-card b{display:block;font-size:12px;margin-bottom:3px}
 .export-card span{font-size:10px;color:var(--muted);line-height:1.5;display:block}
+
+/* ===== v1.2.2 Motion & Visual Polish ===== */
+:root{--ease-out:cubic-bezier(.22,.8,.36,1);--ease-spring:cubic-bezier(.34,1.35,.44,1)}
+@keyframes viewIn{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:none}}
+.view{animation:viewIn .3s var(--ease-out) both}
+@keyframes riseIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+@keyframes scopeIn{0%{opacity:.3;transform:translateY(7px)}100%{opacity:1;transform:none}}
+@keyframes segPop{from{transform:scale(.9)}to{transform:none}}
+@keyframes menuIn{from{opacity:0;transform:translateY(-7px) scale(.98)}to{opacity:1;transform:none}}
+@keyframes cellIn{from{opacity:0;transform:scale(.55)}to{opacity:1;transform:none}}
+@keyframes drawLine{to{stroke-dashoffset:0}}
+@keyframes areaIn{from{opacity:0}to{opacity:1}}
+@keyframes modalIn{from{opacity:0;transform:translateY(16px) scale(.955)}to{opacity:1;transform:none}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes shimmer{from{background-position:200% 0}to{background-position:-200% 0}}
+@keyframes pulseDot{0%,100%{box-shadow:0 0 0 3px rgba(245,158,11,.14)}50%{box-shadow:0 0 0 7px rgba(245,158,11,.04)}}
+@keyframes pulseBlue{0%,100%{box-shadow:0 0 0 3px rgba(37,99,235,.18)}50%{box-shadow:0 0 0 7px rgba(37,99,235,.05)}}
+
+/* staggered entrance */
+.view.active .kpi{animation:riseIn .45s var(--ease-out) backwards}
+.view.active .kpi:nth-child(1){animation-delay:.03s}
+.view.active .kpi:nth-child(2){animation-delay:.08s}
+.view.active .kpi:nth-child(3){animation-delay:.13s}
+.view.active .kpi:nth-child(4){animation-delay:.18s}
+.view.active .kpi:nth-child(5){animation-delay:.23s}
+.view.active .kpi:nth-child(6){animation-delay:.28s}
+.view.active .two-col>.card,.view.active .three-col>.card{animation:riseIn .5s var(--ease-out) backwards;animation-delay:.12s}
+.view.active .two-col>.card:nth-child(2),.view.active .three-col>.card:nth-child(2){animation-delay:.2s}
+.view.active .three-col>.card:nth-child(3){animation-delay:.28s}
+.view.active .scope-strip{animation:riseIn .4s var(--ease-out) backwards}
+
+/* hover depth */
+.kpi{transition:transform .2s var(--ease-out),box-shadow .2s var(--ease-out),border-color .2s}
+.kpi:after{transition:transform .25s var(--ease-out)}
+.kpi:hover{transform:translateY(-3px);box-shadow:0 12px 28px rgba(16,24,40,.1);border-color:var(--blue-line)}
+.kpi:hover:after{transform:scale(1.3)}
+.kpi .kpi-value{transition:color .2s}
+.kpi:hover .kpi-value{color:var(--blue-hover)}
+.snapshot-card{transition:transform .2s var(--ease-out),box-shadow .2s,border-color .2s}
+.snapshot-card:hover{transform:translateY(-2px);box-shadow:var(--shadow);border-color:var(--blue-line)}
+.run-card{transition:border-color .18s,box-shadow .18s,transform .18s var(--ease-out)}
+.run-card:hover{transform:translateY(-2px);box-shadow:var(--shadow);border-color:var(--blue-line)}
+.draft-item{transition:border-color .15s,background .15s,transform .16s var(--ease-out),box-shadow .16s}
+.draft-item:hover{transform:translateX(3px);box-shadow:0 4px 14px rgba(16,24,40,.06)}
+.issue-row{transition:background .15s,transform .15s var(--ease-out)}
+.issue-row:hover{transform:translateX(2px)}
+.variant-card{transition:border-color .18s,transform .18s var(--ease-out),box-shadow .18s}
+.variant-card:hover{transform:translateY(-2px);box-shadow:var(--shadow)}
+.table tbody tr,.archive-table tbody tr{transition:background .15s}
+.table tbody tr:hover td,.archive-table tbody tr:hover td{background:#fafbff}
+
+/* controls */
+.btn{transition:background .15s,color .15s,border-color .15s,box-shadow .15s,transform .12s var(--ease-out)}
+.btn:active:not(:disabled){transform:scale(.955)}
+.btn.primary{background:linear-gradient(180deg,#3b82f6,#2563eb)}
+.btn.primary:hover:not(:disabled){background:linear-gradient(180deg,#2563eb,#1d4ed8);box-shadow:0 4px 14px rgba(37,99,235,.35)}
+.btn.danger:hover:not(:disabled){box-shadow:0 4px 14px rgba(220,38,38,.25)}
+.dimension-btn{transition:background .18s var(--ease-out),color .18s,box-shadow .18s}
+.dimension-btn.active{animation:segPop .26s var(--ease-spring)}
+.segmented button{transition:background .16s,color .16s}
+.segmented button.active{animation:segPop .24s var(--ease-spring)}
+.scope-menu.open{animation:menuIn .18s var(--ease-out)}
+.scope-menu button{transition:background .12s}
+.scope-trigger{transition:border-color .15s,box-shadow .15s}
+.scope-trigger:hover{border-color:var(--blue-line);box-shadow:0 2px 8px rgba(37,99,235,.08)}
+.nav-sub-item{transition:background .15s,color .15s}
+.tab-btn{transition:background .15s,color .15s,border-color .15s}
+.run-tab{transition:background .15s,color .15s,border-color .15s}
+.filter-chip{transition:border-color .15s,color .15s,background .15s,transform .12s}
+.filter-chip:hover{transform:translateY(-1px)}
+.filter-chip.active{animation:segPop .22s var(--ease-spring)}
+
+/* scope switch refresh pulse (class toggled by setScope) */
+.main.scope-refresh .view.active{animation:scopeIn .4s var(--ease-out)}
+.main.scope-refresh .scope-strip{animation:scopeIn .4s var(--ease-out)}
+.scope-strip .mode-pill{transition:background .2s,color .2s}
+
+/* heatmap entrance + hover */
+.heat-cell{animation:cellIn .45s var(--ease-out) backwards;transition:transform .15s var(--ease-spring),box-shadow .15s,filter .15s}
+.heat-row:nth-child(2) .heat-cell{animation-delay:.05s}
+.heat-row:nth-child(3) .heat-cell{animation-delay:.1s}
+.heat-row:nth-child(4) .heat-cell{animation-delay:.15s}
+.heat-row:nth-child(5) .heat-cell{animation-delay:.2s}
+.heat-row:nth-child(6) .heat-cell{animation-delay:.25s}
+.heat-cell:hover{transform:scale(1.18);box-shadow:0 4px 12px rgba(16,24,40,.18);filter:brightness(1.06);z-index:2}
+.legend i{transition:transform .15s}
+.legend span:hover i{transform:scale(1.25)}
+
+/* trend chart draw-in */
+.chart-svg polyline:first-of-type{stroke-dasharray:720;stroke-dashoffset:720;animation:drawLine 1.15s .18s var(--ease-out) forwards}
+.chart-svg path[fill^="url"]{animation:areaIn .9s .35s ease backwards}
+.chart-svg circle{animation:fadeIn .5s .8s ease backwards}
+.chart-svg text{animation:fadeIn .6s .5s ease backwards}
+
+/* progress shimmer for running/optimizing bars */
+.mini-progress i.purple{background-image:linear-gradient(90deg,rgba(255,255,255,0) 0%,rgba(255,255,255,.4) 50%,rgba(255,255,255,0) 100%);background-size:200% 100%;animation:shimmer 1.8s linear infinite}
+.mini-progress i.blue{background-image:linear-gradient(90deg,rgba(255,255,255,0) 0%,rgba(255,255,255,.35) 50%,rgba(255,255,255,0) 100%);background-size:200% 100%;animation:shimmer 2.2s linear infinite}
+
+/* modal / drawer / toast */
+.modal-layer.open{animation:fadeIn .18s ease}
+.modal{animation:modalIn .24s var(--ease-spring) both}
+.drawer{transition:transform .28s var(--ease-out)}
+.drawer.open .drawer-section{animation:riseIn .4s var(--ease-out) backwards}
+.drawer.open .drawer-section:nth-child(2){animation-delay:.06s}
+.drawer.open .drawer-section:nth-child(3){animation-delay:.12s}
+.drawer.open .drawer-section:nth-child(4){animation-delay:.18s}
+.drawer.open .drawer-section:nth-child(5){animation-delay:.24s}
+.toast{transition:opacity .2s var(--ease-out),transform .26s var(--ease-spring);transform:translateX(-50%) translateY(18px) scale(.96)}
+.toast.show{transform:translateX(-50%) translateY(0) scale(1)}
+.demo-pill .pulse{animation:pulseDot 2.4s ease infinite}
+.scope-strip .mode-pill.product{animation:pulseBlue 2.6s ease infinite}
+.demo-banner{animation:riseIn .45s var(--ease-out) backwards}
+
+/* accessibility: reduce motion */
+@media (prefers-reduced-motion:reduce){
+  *,*:before,*:after{animation-duration:.01ms !important;animation-iteration-count:1 !important;transition-duration:.01ms !important}
+  .chart-svg polyline:first-of-type{stroke-dashoffset:0}
+}
 </style>
 </head>
 <body>
@@ -614,7 +732,7 @@ a{color:var(--blue);text-decoration:none}
         </div>
       </div>
     </nav>
-    <div class="sidebar-foot"><b>交互演示 · v1.2.1</b><span class="sidebar-foot-text">数据为模拟；顶栏切换「项目 / 产品」维度，测试数据、历史资产与归档 sheet 随之联动。点击右下角「PRD 对照」查看 v1.2 增量与 v1.2.1 补丁。</span></div>
+    <div class="sidebar-foot"><b>交互演示 · v1.2.2</b><span class="sidebar-foot-text">数据为模拟；顶栏切换「项目 / 产品」维度，测试数据、历史资产与归档 sheet 随之联动。点击右下角「PRD 对照」查看 v1.2.2 跨模块联动契约。</span></div>
   </aside>
 
   <main class="main">
@@ -639,7 +757,7 @@ a{color:var(--blue);text-decoration:none}
       </div>
       <div class="topbar-right">
         <span class="topbar-hint">项目 / 产品互斥 · 测试模块数据随切换</span>
-        <span class="demo-pill"><span class="pulse"></span>DEMO v1.2.1</span>
+        <span class="demo-pill"><span class="pulse"></span>DEMO v1.2.2</span>
       </div>
     </header>
     <div class="scope-strip" id="scopeStrip">
@@ -937,7 +1055,7 @@ a{color:var(--blue);text-decoration:none}
 <button class="prd-fab" id="prdFab"><svg class="ico ico-sm"><use href="#i-shield"></use></svg>PRD 对照</button>
 <div class="drawer-backdrop" id="drawerBackdrop"></div>
 <aside class="drawer" id="prdDrawer" aria-label="PRD 对照与评审发现">
-  <div class="drawer-head"><div><h2>PRD 对照 · v1.2.1 复审</h2><p>对照 <code>PRD-测试菜单模块-T06393.md</code> v1.2.1（2026-11-26 · 作用域维度 + 测试资产归档）· 演示数据为模拟</p></div><button class="modal-close" id="drawerClose" aria-label="关闭"><svg class="ico"><use href="#i-x"></use></svg></button></div>
+  <div class="drawer-head"><div><h2>PRD 对照 · v1.2.2 联动评审</h2><p>对照 <code>PRD-测试菜单模块-T06393.md</code> v1.2.2（2026-11-26 · 跨模块联动契约 + 作用域 + 测试资产归档）· 演示数据为模拟</p></div><button class="modal-close" id="drawerClose" aria-label="关闭"><svg class="ico"><use href="#i-x"></use></svg></button></div>
   <div class="drawer-body">
     <div class="drawer-section"><h3><svg class="ico ico-sm" style="color:var(--green)"><use href="#i-check"></use></svg>v1.2 增量已呈现（UI 走查）</h3><div class="checklist">
       <div class="check-item"><span class="tick"><svg class="ico" style="width:11px;height:11px"><use href="#i-check"></use></svg></span>顶栏新增「项目 / 产品」互斥切换 + 作用域下拉；切换后看板、地图、草稿、运行、历史与归档数据同步刷新</div>
@@ -989,7 +1107,14 @@ a{color:var(--blue);text-decoration:none}
       <div class="resolved-note"><span class="name">P1-08 「派发」语义不清</span><span class="tag">已修复 §2.2 / §9.1 / 附录 B</span><div class="desc">P0「派发到任务菜单」= 创建任务 + 标签 + meta + 进入任务列表；P2「自动派发」= Agent 自动领取。Demo：确认弹窗与抽屉均按此口径。</div></div>
       <div class="resolved-note"><span class="name">P2-01 ~ 04 导出 API / 布局说明 / 证据约束 / 竞品时效</span><span class="tag">已修复 §6.5 / §7.2 / §6.2 / §2.4</span><div class="desc">新增地图与草稿导出端点；监控页线框与运行详情 6 Tab 字段映射；<code>CHECK(path &lt;&gt; '' OR url &lt;&gt; '')</code>；竞品快照标注以仓库当前代码为准。Demo：导出按钮可用，证据卡显示 path。</div></div>
     </div>
-    <div class="drawer-section"><h3>结论</h3><p>PRD v1.2.1 复审通过：v1.1 的 14 项发现保持关闭；v1.2 新增 4 项（作用域切换、去重键修订、项目沉淀/归档联动、归档测试资产恢复/彻底删除）全部落地；v1.2.1 再关闭 4 项一致性补丁（产品列表来源、P0/P1 可写性、purge 产品地图隔离、审计追加）。新增 AC-34~AC-41。Demo 已覆盖顶层项目/产品互斥切换、产品 rollup 只读预览（P1 超前演示）、历史资产测试区块、归档第 8 个 sheet 与恢复/彻底删除动作，Playwright v1.2.1 回归 <code>errors=[]</code>。Demo 仍是交互走查稿，不是功能实现，不能替代 MCP / 服务端联调验收。</p></div>
+    <div class="drawer-section"><h3><svg class="ico ico-sm" style="color:var(--blue)"><use href="#i-activity"></use></svg>v1.2.2 跨模块联动契约 · §4.13（L-01~L-11）</h3>
+      <div class="resolved-note"><span class="tag">L-01/02</span><div class="body"><b>框架顶栏 / 项目模块</b><span class="desc">scope 单源解析；<code>projects</code> 变更重拉 <code>/api/test/scopes</code>，失效收敛只读 + toast。本 Demo：顶栏切换与深链已演示。</span></div></div>
+      <div class="resolved-note"><span class="tag">L-03</span><div class="body"><b>任务菜单</b><span class="desc">done/归档/删除释放 dedupe 必须广播 <code>test:drafts</code>；purge 后任务详情测试区块显示「测试资产已删除」占位，不残留死链。</span></div></div>
+      <div class="resolved-note"><span class="tag">L-05/06/07</span><div class="body"><b>历史 / 归档 / 测试四页</b><span class="desc">沉淀/恢复/purge 发 <code>test:archive</code>，测试四页与 scope 下拉订阅自动刷新。本 Demo：历史恢复后草稿/归档即时联动已演示。</span></div></div>
+      <div class="resolved-note"><span class="tag">L-08</span><div class="body"><b>AI 控制台 / 会话</b><span class="desc">会话终止不改 run 终态；租约到期回收，监控页「会话失联」黄条；立即停止走测试侧 abort。</span></div></div>
+      <div class="resolved-note"><span class="tag">L-09/10/11</span><div class="body"><b>全局搜索 / 收件箱 / 需求矩阵</b><span class="desc">仅活跃项目实体进搜索索引；通知复用收件箱（P0 三类）；需求追溯 P2 只读。深链统一带作用域参数，非法回落只读。</span></div></div>
+    </div>
+    <div class="drawer-section"><h3>结论</h3><p>PRD v1.2.2 复审通过：v1.1 的 14 项、v1.2 的 4 项、v1.2.1 的 4 项补丁保持关闭；本轮跨模块联动专项关闭 7 个联动断点（dedupe 释放广播、purge 后任务详情降级、scope 自动刷新、全局搜索过滤、会话失联边界、product_key 变更收敛、通知通道），新增 §4.13 契约 L-01~L-11 与 AC-42。Demo 完成动效与视觉优化（视图/作用域过渡、KPI 与卡片入场、趋势图描线、热力图逐行入场、模态/抽屉/toast 弹性动效、<code>prefers-reduced-motion</code> 降级），Playwright 回归 <code>errors=[]</code>。开发以整合文档 <code>测试菜单模块-PRD与DEMO-T06393.html</code> 为唯一对照基线；Demo 仍是交互走查稿，不能替代 MCP / 服务端联调验收。</p></div>
   </div>
 </aside>
 <div class="modal-layer" id="modalLayer" role="dialog" aria-modal="true"><div class="modal" id="modalBox"><div class="modal-head"><div><h3 id="modalTitle">标题</h3><p id="modalSub">说明</p></div><button class="modal-close" id="modalClose" aria-label="关闭"><svg class="ico"><use href="#i-x"></use></svg></button></div><div class="modal-body" id="modalBody"></div><div class="modal-foot" id="modalFoot"></div></div></div>
@@ -2193,6 +2318,14 @@ a{color:var(--blue);text-decoration:none}
     if (!silent) {
       toast(`已切换至${p.dimension === "product" ? "产品" : "项目"}维度：${p.label}${p.readonly ? "（只读聚合）" : ""}，测试数据已刷新`, "success");
       try { localStorage.setItem("mtask.activeScope.v1", JSON.stringify({ dimension: state.dimension, lastProjectId: state.projectId, lastProductKey: state.productKey })); } catch (err) {}
+      // v1.2.2: scope-refresh pulse on main content (CSS-only, retrigger via reflow)
+      const mainEl = document.querySelector(".main");
+      if (mainEl) {
+        mainEl.classList.remove("scope-refresh");
+        void mainEl.offsetWidth;
+        mainEl.classList.add("scope-refresh");
+        setTimeout(() => mainEl.classList.remove("scope-refresh"), 450);
+      }
     }
   }
 
