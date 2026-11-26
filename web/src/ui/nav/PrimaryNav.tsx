@@ -1,5 +1,6 @@
 import { ChevronDown, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import type { Tab } from '../tabs';
+import mtaskLogo from '../../assets/mtask-logo.png'; // T06398：官方 256px 应用图标，替换原文本占位“M”
 import { NAV_GROUPS, navGroupForTab } from './primaryNavGroups';
 
 interface PrimaryNavProps {
@@ -27,7 +28,7 @@ export function PrimaryNav({ activeTab, collapsed, onToggle, onSelect }: Primary
           title="MTask 首页"
           aria-label="MTask 首页"
         >
-          M
+          <img src={mtaskLogo} alt="" className="mt-nav-logo" draggable={false} />
         </button>
         <span className="mt-nav-name">MTask</span>
         <button
