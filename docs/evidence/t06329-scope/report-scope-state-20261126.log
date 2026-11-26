@@ -1,0 +1,10 @@
+[PASS] T06329-M4-00 测试项目 P/Q/R 就绪 → {"p":"7d6bdce5-ca48-45dc-9d5d-6e4700ad3e75","q":"eadc2741-38fb-423c-84bd-d83bb6d0592d","r":"b066ee48-f642-4062-9e45-e07ee2f068f6"}
+[PASS] T06329-M4-01 报表页与范围选择器就绪
+[PASS] T06329-M4-02 首次进入：顶栏 P 作为默认范围 → {"text":"StudyWork 1/8","title":"项目范围：StudyWork — 可勾选 2~8 个项目聚合生成","expanded":"false"}
+[PASS] T06329-M4-03 清空为全部项目后保持不被顶栏回写 → {"text":"全部项目 不限","title":"项目范围：全部项目（不限范围） — 可勾选 2~8 个项目聚合生成","expanded":"true"}
+[PASS] T06329-M4-04 清空后重挂载仍为全部项目（不被顶栏重新填充） → {"text":"全部项目 不限","title":"项目范围：全部项目（不限范围） — 可勾选 2~8 个项目聚合生成","expanded":"false"}
+[PASS] T06329-M4-05 报表内改选 Q → {"text":"Vgril 1/8","title":"项目范围：Vgril — 可勾选 2~8 个项目聚合生成","expanded":"false"}
+[PASS] T06329-M4-06 顶栏切 R 后范围仍保留 Q（不被覆盖） → {"sw1":{"ok":true,"label":"顶栏切到 R"},"picker":{"text":"Vgril 1/8","title":"项目范围：Vgril — 可勾选 2~8 个项目聚合生成","expanded":"false"}}
+[PASS] T06329-M4-07 顶栏切回 P 后范围仍保留 Q → {"sw2":{"ok":true,"label":"顶栏切到 P"},"picker":{"text":"Vgril 1/8","title":"项目范围：Vgril — 可勾选 2~8 个项目聚合生成","expanded":"false"}}
+[PASS] T06329-M4-08 改选 Q 后重挂载仍保留 Q → {"text":"Vgril 1/8","title":"项目范围：Vgril — 可勾选 2~8 个项目聚合生成","expanded":"false"}
+PASS=9 FAIL=0 OUT=D:/tmp/t06329-scope

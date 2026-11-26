@@ -1,0 +1,194 @@
+{
+  "checks": [
+    {
+      "name": "T06329-M4-00 测试项目 P/Q/R 就绪",
+      "ok": true,
+      "extra": {
+        "p": "7d6bdce5-ca48-45dc-9d5d-6e4700ad3e75",
+        "q": "eadc2741-38fb-423c-84bd-d83bb6d0592d",
+        "r": "b066ee48-f642-4062-9e45-e07ee2f068f6"
+      }
+    },
+    {
+      "name": "T06329-M4-01 报表页与范围选择器就绪",
+      "ok": true
+    },
+    {
+      "name": "T06329-M4-02 首次进入：顶栏 P 作为默认范围",
+      "ok": true,
+      "extra": {
+        "text": "StudyWork 1/8",
+        "title": "项目范围：StudyWork — 可勾选 2~8 个项目聚合生成",
+        "expanded": "false"
+      }
+    },
+    {
+      "name": "T06329-M4-03 清空为全部项目后保持不被顶栏回写",
+      "ok": true,
+      "extra": {
+        "text": "全部项目 不限",
+        "title": "项目范围：全部项目（不限范围） — 可勾选 2~8 个项目聚合生成",
+        "expanded": "true"
+      }
+    },
+    {
+      "name": "T06329-M4-04 清空后重挂载仍为全部项目（不被顶栏重新填充）",
+      "ok": true,
+      "extra": {
+        "text": "全部项目 不限",
+        "title": "项目范围：全部项目（不限范围） — 可勾选 2~8 个项目聚合生成",
+        "expanded": "false"
+      }
+    },
+    {
+      "name": "T06329-M4-05 报表内改选 Q",
+      "ok": true,
+      "extra": {
+        "text": "Vgril 1/8",
+        "title": "项目范围：Vgril — 可勾选 2~8 个项目聚合生成",
+        "expanded": "false"
+      }
+    },
+    {
+      "name": "T06329-M4-06 顶栏切 R 后范围仍保留 Q（不被覆盖）",
+      "ok": true,
+      "extra": {
+        "sw1": {
+          "ok": true,
+          "label": "顶栏切到 R"
+        },
+        "picker": {
+          "text": "Vgril 1/8",
+          "title": "项目范围：Vgril — 可勾选 2~8 个项目聚合生成",
+          "expanded": "false"
+        }
+      }
+    },
+    {
+      "name": "T06329-M4-07 顶栏切回 P 后范围仍保留 Q",
+      "ok": true,
+      "extra": {
+        "sw2": {
+          "ok": true,
+          "label": "顶栏切到 P"
+        },
+        "picker": {
+          "text": "Vgril 1/8",
+          "title": "项目范围：Vgril — 可勾选 2~8 个项目聚合生成",
+          "expanded": "false"
+        }
+      }
+    },
+    {
+      "name": "T06329-M4-08 改选 Q 后重挂载仍保留 Q",
+      "ok": true,
+      "extra": {
+        "text": "Vgril 1/8",
+        "title": "项目范围：Vgril — 可勾选 2~8 个项目聚合生成",
+        "expanded": "false"
+      }
+    }
+  ],
+  "projects": {
+    "P": {
+      "id": "7d6bdce5-ca48-45dc-9d5d-6e4700ad3e75",
+      "name": "StudyWork",
+      "description": "",
+      "sort_weight": 0,
+      "created_at": "2026-08-22T01:07:35.705Z",
+      "updated_at": "2026-11-10T11:34:00.025Z",
+      "history_at": null,
+      "archived": 0,
+      "workspace_path": "D:\\code\\otherProjects\\StudyWork",
+      "wip_limit": 10,
+      "timezone": "",
+      "product_key": "studywork",
+      "memory_auto_extract": 1,
+      "todo_count": 0,
+      "done_count": 28,
+      "unverified_count": 0,
+      "plan_done": 20,
+      "plan_doing": 0,
+      "plan_open": 0
+    },
+    "Q": {
+      "id": "eadc2741-38fb-423c-84bd-d83bb6d0592d",
+      "name": "Vgril",
+      "description": "",
+      "sort_weight": 0,
+      "created_at": "2026-08-22T01:08:25.581Z",
+      "updated_at": "2026-11-10T11:34:00.037Z",
+      "history_at": null,
+      "archived": 0,
+      "workspace_path": "D:\\code\\otherProjects\\Vgril",
+      "wip_limit": 10,
+      "timezone": "",
+      "product_key": "vgril",
+      "memory_auto_extract": 1,
+      "todo_count": 0,
+      "done_count": 4,
+      "unverified_count": 0,
+      "plan_done": 0,
+      "plan_doing": 0,
+      "plan_open": 0
+    },
+    "R": {
+      "id": "b066ee48-f642-4062-9e45-e07ee2f068f6",
+      "name": "AIComic",
+      "description": "",
+      "sort_weight": 0,
+      "created_at": "2026-08-22T01:08:41.983Z",
+      "updated_at": "2026-11-10T11:34:00.043Z",
+      "history_at": null,
+      "archived": 0,
+      "workspace_path": "D:\\code\\otherProjects\\AIComic",
+      "wip_limit": 10,
+      "timezone": "",
+      "product_key": "aicomic",
+      "memory_auto_extract": 1,
+      "todo_count": 0,
+      "done_count": 0,
+      "unverified_count": 0,
+      "plan_done": 0,
+      "plan_doing": 0,
+      "plan_open": 0
+    }
+  },
+  "picker": {
+    "p0": {
+      "text": "StudyWork 1/8",
+      "title": "项目范围：StudyWork — 可勾选 2~8 个项目聚合生成",
+      "expanded": "false"
+    },
+    "p1": {
+      "text": "全部项目 不限",
+      "title": "项目范围：全部项目（不限范围） — 可勾选 2~8 个项目聚合生成",
+      "expanded": "true"
+    },
+    "p2": {
+      "text": "全部项目 不限",
+      "title": "项目范围：全部项目（不限范围） — 可勾选 2~8 个项目聚合生成",
+      "expanded": "false"
+    },
+    "p3": {
+      "text": "Vgril 1/8",
+      "title": "项目范围：Vgril — 可勾选 2~8 个项目聚合生成",
+      "expanded": "false"
+    },
+    "p4": {
+      "text": "Vgril 1/8",
+      "title": "项目范围：Vgril — 可勾选 2~8 个项目聚合生成",
+      "expanded": "false"
+    },
+    "p5": {
+      "text": "Vgril 1/8",
+      "title": "项目范围：Vgril — 可勾选 2~8 个项目聚合生成",
+      "expanded": "false"
+    },
+    "p6": {
+      "text": "Vgril 1/8",
+      "title": "项目范围：Vgril — 可勾选 2~8 个项目聚合生成",
+      "expanded": "false"
+    }
+  }
+}
