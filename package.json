@@ -1,6 +1,6 @@
 {
   "name": "mtask",
-  "version": "0.1.1126.287",
+  "version": "0.1.1127.288",
   "private": true,
   "main": "electron/main.js",
   "description": "AI 任务开发管理工具：项目维度任务管理 + AI 梳理 + 队列分发（Electron + React + Express + SQLite）",
@@ -209,6 +209,20 @@
     "electronDist": "node_modules/electron/dist",
     "asarUnpack": [
       "node_modules/better-sqlite3/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "node_modules/call-bind-apply-helpers",
+        "to": "runtime-node_modules/call-bind-apply-helpers"
+      },
+      {
+        "from": "node_modules/function-bind",
+        "to": "runtime-node_modules/function-bind"
+      },
+      {
+        "from": "node_modules/es-errors",
+        "to": "runtime-node_modules/es-errors"
+      }
     ],
     "npmRebuild": false,
     "afterPack": "scripts/trim-locales.js",

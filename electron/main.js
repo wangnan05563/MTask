@@ -115,6 +115,12 @@ function startServer() {
 
   if (app.isPackaged) {
     env.ELECTRON_RUN_AS_NODE = '1';
+    // electron-builder 的依赖裁剪可能把 call-bind-apply-helpers 只留在 call-bind 的嵌套目录里，
+    // 而 dunder-proto 是从顶层解析它，导致安装包启动即 Cannot find module。
+    // runtime-node_modules 由 build.extraResources 固定随包携带；NODE_PATH 只作兜底，
+    // 不改变正常 asar 内依赖解析顺序。
+    const runtimeNodeModules = path.join(process.resourcesPath, 'runtime-node_modules');
+    env.NODE_PATH = [runtimeNodeModules, process.env.NODE_PATH].filter(Boolean).join(path.delimiter);
     // 后端子进程的 stdout/stderr 重定向到 userData 下的日志文件：
     // 桌面双击启动无控制台，stdio:'inherit' 时 server 的报错会被直接丢弃，导致“未连接”时无从定位。
     // 落盘后即便再次失败，也能从该日志复现真实原因（端口占用/缺依赖/被杀软拦截等）。
